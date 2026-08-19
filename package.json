@@ -1,0 +1,23 @@
+{
+  "name": "ai-admin-dashboard",
+  "version": "1.0.0",
+  "description": "Local AI Admin dashboard for Metric Property Management (Task Manager + SOPs + Asana + Email/Calendar + Platform Projects Tracker + EOD Summary)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "author": "Arturo Mendoza",
+  "license": "MIT",
+  "dependencies": {
+    "@azure/msal-node": "^2.13.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-cron": "^3.0.3",
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

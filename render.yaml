@@ -1,0 +1,62 @@
+services:
+  - type: web
+    name: metric-ai-admin-dashboard
+    env: node
+    region: oregon
+    plan: starter
+    buildCommand: npm install
+    startCommand: node server.js
+    disk:
+      # Render's filesystem is otherwise ephemeral — without this, every
+      # deploy/restart wipes tasks.json, the Lyndsay message queue, the
+      # Graph token cache, and everything else in data/. DATA_DIR below
+      # points server.js at this mount instead of its own ./data folder.
+      name: dashboard-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
+      # Must be the service's actual public URL (Render assigns this on
+      # first deploy — update it here and redeploy once known). Required for
+      # the Microsoft OAuth redirect to work; that exact URL + /auth/callback
+      # must also be added as a redirect URI in the Azure App Registration.
+      - key: APP_BASE_URL
+        sync: false
+      # Everything below must be set manually in the Render dashboard
+      # (Environment tab) — never committed to the repo. See .env.example
+      # for what each one does.
+      - key: ASANA_TOKEN
+        sync: false
+      - key: ASANA_EXTRA_PROJECTS
+        sync: false
+      - key: GRAPH_TENANT_ID
+        sync: false
+      - key: GRAPH_CLIENT_ID
+        sync: false
+      - key: GRAPH_CLIENT_SECRET
+        sync: false
+      - key: MAILBOX_ARTURO
+        sync: false
+      - key: MAILBOX_LYNDSAY
+        sync: false
+      - key: METRIC_MAILBOXES
+        sync: false
+      - key: INBOX_TRACKING_MAPPING
+        sync: false
+      - key: EMAIL_REFRESH_MINUTES
+        sync: false
+      - key: REMINDER_MINUTES_CLIENT
+        sync: false
+      - key: REMINDER_MINUTES_INTERNAL
+        sync: false
+      - key: REMINDER_MINUTES_LEGAL
+        sync: false
+      - key: REMINDER_MINUTES_DEFAULT
+        sync: false
+      - key: ARTURO_TIMEZONE
+        sync: false
+      - key: LYNDSAY_TIMEZONE
+        sync: false
