@@ -1964,35 +1964,6 @@ async function buildSummary() {
   };
 }
 
-// Temporary diagnostic for the Render persistent-disk investigation — safe
-// to remove once persistence is confirmed working (no secrets exposed).
-app.get('/api/_diag/data-dir', async (req, res) => {
-  try {
-    const stat = await fsp.stat(DATA_DIR).catch(e => ({ error: e.message }));
-    const listing = await fsp.readdir(DATA_DIR).catch(e => ({ error: e.message }));
-    const testFile = path.join(DATA_DIR, '_write_test.txt');
-    let writeResult = 'not attempted';
-    try {
-      await fsp.writeFile(testFile, `written at ${new Date().toISOString()}`);
-      writeResult = 'ok';
-    } catch (e) {
-      writeResult = `FAILED: ${e.message}`;
-    }
-    res.json({
-      DATA_DIR_env: process.env.DATA_DIR || null,
-      DATA_DIR_resolved: DATA_DIR,
-      dirExists: !stat.error,
-      statError: stat.error || null,
-      listing,
-      writeResult,
-      cwd: process.cwd(),
-      __dirname_value: __dirname,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 app.get('/api/summary', async (req, res) => {
   res.json(await buildSummary());
 });
