@@ -4,6 +4,10 @@ Local Node/Express dashboard + MCP server for Arturo's AI Admin role at
 Metric Property Management. Separate from `metric-dashboard` (maintenance
 role) — runs on port 3001 so both can run at the same time.
 
+Also deployed to Render (`https://ai-admin-dashboard-jkde.onrender.com`),
+with runtime data persisted to a mounted disk at `DATA_DIR=/var/data` so it
+survives redeploys.
+
 ## Architectural principle
 
 The dashboard's own backend does background work on a schedule (node-cron),
