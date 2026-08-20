@@ -24,6 +24,11 @@ const path = require('path');
 const cron = require('node-cron');
 const { ConfidentialClientApplication } = require('@azure/msal-node');
 const { PDFDocument } = require('pdf-lib');
+const { randomUUID } = require('crypto');
+const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
+const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
+const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
+const { registerAllTools } = require('./mcp-tools.cjs');
 
 // ---- Crash logging ----------------------------------------------------------
 const LOG_FILE = path.join(__dirname, 'dashboard.log');
@@ -2043,6 +2048,76 @@ cron.schedule('0 8 * * *', async () => {
     logLine(`[inbox-tracking-excel] ERROR: ${err.message}`);
   }
 }, { timezone: LYNDSAY_TIMEZONE });
+
+// =====================================================================
+// MCP over HTTP — /mcp (StreamableHTTP transport, for mcp-remote / cloud)
+// =====================================================================
+// Same tool set as the local stdio server (mcp-server.mjs), from the shared
+// mcp-tools.cjs — just reached over HTTP instead of stdio, and calling this
+// same process's own REST API via a loopback fetch instead of a child
+// process talking to a separately-running dashboard. No auth: mcp-remote
+// (the Claude Desktop bridge) is the thing that needs to reach this, and it
+// doesn't authenticate to the dashboards it proxies.
+
+const MCP_BASE = `http://localhost:${PORT}`;
+
+async function mcpGetJSON(pathname, timeoutMs = 30_000) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await fetchFn(`${MCP_BASE}${pathname}`, { signal: ac.signal });
+    if (!res.ok) return { _error: `El dashboard respondió ${res.status} en ${pathname}` };
+    return await res.json();
+  } catch (err) {
+    if (err.name === 'AbortError') return { _error: `El dashboard tardó demasiado en responder (${timeoutMs / 1000}s).` };
+    return { _error: `No se pudo conectar al dashboard en ${MCP_BASE}.` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const mcpText = v => ({ content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }] });
+
+async function mcpDoFetch(url, options = {}, timeoutMs = 30_000) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    return await fetchFn(url, { ...options, signal: ac.signal });
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error(`Request to ${url} timed out after ${timeoutMs / 1000}s`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// sessionId -> transport, per the SDK's stateful StreamableHTTP pattern.
+const mcpTransports = {};
+
+app.all('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'];
+  let transport;
+
+  if (sessionId && mcpTransports[sessionId]) {
+    transport = mcpTransports[sessionId];
+  } else if (!sessionId && req.method === 'POST' && isInitializeRequest(req.body)) {
+    transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (newSessionId) => { mcpTransports[newSessionId] = transport; },
+    });
+    transport.onclose = () => {
+      if (transport.sessionId) delete mcpTransports[transport.sessionId];
+    };
+    const mcpServer = new McpServer({ name: 'ai-admin-dashboard', version: '1.0.0' });
+    registerAllTools(mcpServer, { BASE: MCP_BASE, getJSON: mcpGetJSON, doFetch: mcpDoFetch, text: mcpText });
+    await mcpServer.connect(transport);
+  } else {
+    res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session ID provided' }, id: null });
+    return;
+  }
+
+  await transport.handleRequest(req, res, req.body);
+});
 
 // ---- Boot -------------------------------------------------------------------
 app.listen(PORT, () => {
