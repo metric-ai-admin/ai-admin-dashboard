@@ -23,6 +23,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const cron = require('node-cron');
 const { ConfidentialClientApplication } = require('@azure/msal-node');
+const { PDFDocument } = require('pdf-lib');
 
 // ---- Crash logging ----------------------------------------------------------
 const LOG_FILE = path.join(__dirname, 'dashboard.log');
@@ -88,6 +89,14 @@ const METRIC_MAILBOX_NAMES = {
 const EXCEL_DRIVE_ID = 'b!AZ0EyNFgSkaAOz1CehgsFrQRkPpTsgRLulPUnuRUG5m8qQlMQtVUT6KE4v8ENcL2';
 const EXCEL_ITEM_ID = '01HZ3W3BRSZCY2F72MRZDICZ2ORQX3L3QQ';
 const EXCEL_SHEET_NAME = 'Inbox Tracking';
+
+// SOPS docx -> PDF conversion. Real path confirmed live via Graph — it's
+// "Desktop/SOPS" (the synced Windows Desktop folder), NOT
+// "Documents/Desktop/SOPS" as originally assumed; that path 404s.
+const SOPS_MAILBOX = 'lyndsay@metricpropertymanagement.com';
+const SOPS_SOURCE_PATH = 'Desktop/SOPS';
+const SOPS_DEST_FOLDER_NAME = 'SOPS-PDF';
+const SOPS_MAX_PAGES_PER_FILE = 100;
 // The complete inbox-tracking mapping — every Excel row this dashboard
 // keeps in sync, both mailbox-level (folderName: "Inbox") and personal
 // per-person folder rows. Jay confirmed this mapping on 2026-08-19; it lives
@@ -410,6 +419,23 @@ app.delete('/api/tasks/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Bulk import preserving exact ids/timestamps — for migrating data between
+// instances (e.g. local -> cloud). Unlike POST /api/tasks (which always
+// mints a fresh id/created_at), this upserts by id so it's safe to re-run.
+app.post('/api/tasks/bulk-import', async (req, res) => {
+  const incoming = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
+  if (!incoming.length) return res.status(400).json({ error: '"tasks" array required' });
+  const tasks = await readJSON(TASKS_FILE, []);
+  let added = 0, updated = 0;
+  for (const t of incoming) {
+    if (!t.id) continue;
+    const idx = tasks.findIndex(x => x.id === t.id);
+    if (idx === -1) { tasks.push(t); added++; } else { tasks[idx] = t; updated++; }
+  }
+  await writeJSON(TASKS_FILE, tasks);
+  res.json({ ok: true, added, updated, total: tasks.length });
+});
+
 // =====================================================================
 // MODULE 2 — SOPs KNOWLEDGE BASE
 // =====================================================================
@@ -456,6 +482,22 @@ app.delete('/api/sops/:id', async (req, res) => {
   if (index.length === before) return res.status(404).json({ error: 'SOP not found' });
   await writeJSON(SOPS_INDEX, index);
   res.json({ ok: true });
+});
+
+// Bulk import preserving exact ids/uploadedAt — see /api/tasks/bulk-import
+// for why (migrating between instances without minting fresh ids).
+app.post('/api/sops/bulk-import', async (req, res) => {
+  const incoming = Array.isArray(req.body?.sops) ? req.body.sops : [];
+  if (!incoming.length) return res.status(400).json({ error: '"sops" array required' });
+  const index = await readJSON(SOPS_INDEX, []);
+  let added = 0, updated = 0;
+  for (const s of incoming) {
+    if (!s.id) continue;
+    const idx = index.findIndex(x => x.id === s.id);
+    if (idx === -1) { index.push(s); added++; } else { index[idx] = s; updated++; }
+  }
+  await writeJSON(SOPS_INDEX, index);
+  res.json({ ok: true, added, updated, total: index.length });
 });
 
 app.get('/api/sops/search/:q', async (req, res) => {
@@ -620,6 +662,22 @@ app.post('/api/platform-projects', async (req, res) => {
   projects.push(entry);
   await writeJSON(PLATFORM_PROJECTS_FILE, projects);
   res.json(entry);
+});
+
+// Bulk import preserving exact ids/lastUpdate/subtasks — see
+// /api/tasks/bulk-import for why.
+app.post('/api/platform-projects/bulk-import', async (req, res) => {
+  const incoming = Array.isArray(req.body?.projects) ? req.body.projects : [];
+  if (!incoming.length) return res.status(400).json({ error: '"projects" array required' });
+  const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
+  let added = 0, updated = 0;
+  for (const p of incoming) {
+    if (!p.id) continue;
+    const idx = projects.findIndex(x => x.id === p.id);
+    if (idx === -1) { projects.push(p); added++; } else { projects[idx] = p; updated++; }
+  }
+  await writeJSON(PLATFORM_PROJECTS_FILE, projects);
+  res.json({ ok: true, added, updated, total: projects.length });
 });
 
 app.put('/api/platform-projects/:id', async (req, res) => {
@@ -1096,6 +1154,128 @@ app.post('/api/email/inbox-tracking/sync-excel', async (req, res) => {
   }
 });
 
+// Uploads one small file (these PDFs are all well under Graph's 4MB simple-
+// upload limit) by addressing it as a path relative to a known parent
+// folder ID — safer than building a full path-based URL when filenames
+// contain emoji/special characters (several SOPS docx names do).
+async function uploadSopsFile(base, headers, destFolderId, filename, buffer) {
+  const r = await fetchFn(`${base}/items/${destFolderId}:/${encodeURIComponent(filename)}:/content`, {
+    method: 'PUT', headers: { ...headers, 'Content-Type': 'application/pdf' }, body: buffer,
+  });
+  const json = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(json.error?.message || `upload error ${r.status}`);
+  return json;
+}
+
+// Converts every .docx in Lyndsay's SOPS folder to PDF (via Graph's native
+// format=pdf conversion — no LibreOffice/local conversion needed), splitting
+// any result over SOPS_MAX_PAGES_PER_FILE pages into PartN chunks with
+// pdf-lib. Optional `limit` processes only the first N files, for testing
+// before running the full batch. Rate-limited (500ms between files) and
+// isolates one file's failure from the rest.
+async function convertSopsToPdf({ limit, names } = {}) {
+  const token = await graphMailToken();
+  const headers = { Authorization: `Bearer ${token}` };
+  const base = `https://graph.microsoft.com/v1.0/users/${SOPS_MAILBOX}/drive`;
+
+  let url = `${base}/root:/${SOPS_SOURCE_PATH}:/children?$top=200&$select=id,name,file`;
+  let files = [];
+  while (url) {
+    const r = await fetchFn(url, { headers });
+    const json = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(json.error?.message || `Graph error listing source folder (${r.status})`);
+    files.push(...(json.value || []));
+    url = json['@odata.nextLink'] || null;
+  }
+  files = files.filter(f => f.file && f.name.toLowerCase().endsWith('.docx'));
+  if (names && names.length) {
+    const wanted = new Set(names.map(n => n.toLowerCase()));
+    files = files.filter(f => wanted.has(f.name.toLowerCase()));
+  } else if (limit) {
+    files = files.slice(0, limit);
+  }
+
+  // Ensure the SOPS-PDF destination subfolder exists.
+  let destFolderId;
+  const destRes = await fetchFn(`${base}/root:/${SOPS_SOURCE_PATH}/${SOPS_DEST_FOLDER_NAME}`, { headers });
+  if (destRes.status === 404) {
+    const parentRes = await fetchFn(`${base}/root:/${SOPS_SOURCE_PATH}`, { headers });
+    const parentJson = await parentRes.json().catch(() => ({}));
+    if (!parentRes.ok) throw new Error(parentJson.error?.message || `source folder "${SOPS_SOURCE_PATH}" not found`);
+    const createRes = await fetchFn(`${base}/items/${parentJson.id}/children`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: SOPS_DEST_FOLDER_NAME, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }),
+    });
+    const createJson = await createRes.json().catch(() => ({}));
+    if (!createRes.ok) throw new Error(createJson.error?.message || 'failed to create SOPS-PDF folder');
+    destFolderId = createJson.id;
+    logLine(`[sops-convert] created destination folder ${SOPS_DEST_FOLDER_NAME}`);
+  } else {
+    const destJson = await destRes.json().catch(() => ({}));
+    if (!destRes.ok) throw new Error(destJson.error?.message || `Graph error checking dest folder (${destRes.status})`);
+    destFolderId = destJson.id;
+  }
+
+  const summary = { total: files.length, converted: [], errors: [], splitFiles: [] };
+
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const baseName = file.name.replace(/\.docx$/i, '');
+    logLine(`[sops-convert] Converting ${i + 1}/${files.length}: ${file.name}...`);
+    try {
+      const pdfRes = await fetchFn(`${base}/items/${file.id}/content?format=pdf`, { headers });
+      if (!pdfRes.ok) {
+        const errJson = await pdfRes.json().catch(() => ({}));
+        throw new Error(errJson.error?.message || `Graph conversion error ${pdfRes.status}`);
+      }
+      const pdfBuffer = Buffer.from(await pdfRes.arrayBuffer());
+
+      const pdfDoc = await PDFDocument.load(pdfBuffer);
+      const pageCount = pdfDoc.getPageCount();
+
+      if (pageCount <= SOPS_MAX_PAGES_PER_FILE) {
+        await uploadSopsFile(base, headers, destFolderId, `${baseName}.pdf`, pdfBuffer);
+        summary.converted.push({ name: file.name, pages: pageCount });
+      } else {
+        const parts = Math.ceil(pageCount / SOPS_MAX_PAGES_PER_FILE);
+        for (let p = 0; p < parts; p++) {
+          const startPage = p * SOPS_MAX_PAGES_PER_FILE;
+          const endPage = Math.min(startPage + SOPS_MAX_PAGES_PER_FILE, pageCount);
+          const indices = Array.from({ length: endPage - startPage }, (_, k) => startPage + k);
+          const chunkDoc = await PDFDocument.create();
+          const copiedPages = await chunkDoc.copyPages(pdfDoc, indices);
+          copiedPages.forEach(pg => chunkDoc.addPage(pg));
+          const chunkBytes = Buffer.from(await chunkDoc.save());
+          await uploadSopsFile(base, headers, destFolderId, `${baseName}-Part${p + 1}.pdf`, chunkBytes);
+        }
+        summary.converted.push({ name: file.name, pages: pageCount, split: parts });
+        summary.splitFiles.push({ name: file.name, pages: pageCount, parts });
+      }
+    } catch (err) {
+      logLine(`[sops-convert] ERROR converting ${file.name}: ${err.message}`);
+      summary.errors.push({ name: file.name, error: err.message });
+    }
+
+    if (i < files.length - 1) await new Promise(r => setTimeout(r, 500));
+  }
+
+  logLine(`[sops-convert] Done. Converted ${summary.converted.length}/${summary.total}, errors ${summary.errors.length}, split files ${summary.splitFiles.length}`);
+  return summary;
+}
+
+// POST /api/tools/convert-sops  body: { limit?: number }
+// Pass `limit` to test on the first N files before running the full batch.
+app.post('/api/tools/convert-sops', async (req, res) => {
+  try {
+    const limit = req.body?.limit ? parseInt(req.body.limit, 10) : undefined;
+    const names = Array.isArray(req.body?.names) ? req.body.names : undefined;
+    const result = await convertSopsToPdf({ limit, names });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.post('/api/email/refresh-now', async (req, res) => {
   await refreshEmailAndCalendar();
   res.json({ configured: GRAPH_CONFIGURED, intervalMinutes: EMAIL_REFRESH_MINUTES, authUrl: '/auth/login', ...refreshState });
@@ -1158,6 +1338,33 @@ async function fetchInboxUnreadCount(mailboxKey) {
 // graphMailToken()) and matches every mapped row against it, rather than
 // one Graph call per row. A failure on one mailbox reports an error on just
 // that mailbox's rows, not fatal to the rest.
+// Strip any leading non-letter/non-digit characters before comparing —
+// some old Deleted Items folders carry a stray private-use glyph prefix
+// (e.g. hello@'s "Oscar" folder is literally " Oscar", not a plain
+// space) left over from an old Outlook rule/icon, not real whitespace so
+// .trim() alone doesn't catch it.
+const normalizeFolderName = s => (s || '').replace(/^[^\p{L}\p{N}]+/u, '').trim().toLowerCase();
+
+async function resolveNestedFolder(email, token, pathSegments) {
+  const headers = { Authorization: `Bearer ${token}` };
+  const base = graphMailboxBase(email);
+
+  const topRes = await fetchFn(`${base}/mailFolders?$select=id,displayName&$top=50`, { headers });
+  const topJson = await topRes.json().catch(() => ({}));
+  if (!topRes.ok) throw new Error(topJson.error?.message || `Graph error ${topRes.status}`);
+  let current = (topJson.value || []).find(f => normalizeFolderName(f.displayName) === normalizeFolderName(pathSegments[0]));
+  if (!current) return null;
+
+  for (let i = 1; i < pathSegments.length; i++) {
+    const childRes = await fetchFn(`${base}/mailFolders/${encodeURIComponent(current.id)}/childFolders?$select=id,displayName,unreadItemCount,totalItemCount&$top=50`, { headers });
+    const childJson = await childRes.json().catch(() => ({}));
+    if (!childRes.ok) throw new Error(childJson.error?.message || `Graph error ${childRes.status}`);
+    current = (childJson.value || []).find(f => normalizeFolderName(f.displayName) === normalizeFolderName(pathSegments[i]));
+    if (!current) return null;
+  }
+  return current;
+}
+
 async function fetchAllMailboxCounts() {
   const token = await graphMailToken();
   const byEmail = new Map();
@@ -1166,41 +1373,64 @@ async function fetchAllMailboxCounts() {
     byEmail.get(row.email).push(row);
   }
 
-  // Strip any leading non-letter/non-digit characters before comparing —
-  // some old Deleted Items folders carry a stray private-use glyph prefix
-  // (e.g. hello@'s "Oscar" folder is literally " Oscar", not a plain
-  // space) left over from an old Outlook rule/icon, not real whitespace so
-  // .trim() alone doesn't catch it.
-  const normalizeFolderName = s => (s || '').replace(/^[^\p{L}\p{N}]+/u, '').trim().toLowerCase();
-
   const results = await Promise.all([...byEmail.entries()].map(async ([email, rows]) => {
+    const simpleRows = rows.filter(r => !r.folderPath);
+    const pathRows = rows.filter(r => r.folderPath);
+    const out = [];
+
     try {
-      const folders = await listMailFolders(email, token);
-      return rows.map(row => {
-        // Personal folders are sometimes nested (e.g. "Katie" lives under
-        // support@'s Inbox, not top-level) and occasionally duplicated
-        // under Deleted Items from an old cleanup — prefer a top-level
-        // match, then any non-Deleted-Items match, and only fall back to
-        // a Deleted Items copy (flagged) if that's genuinely the only one.
-        const candidates = folders.filter(f => normalizeFolderName(f.displayName) === normalizeFolderName(row.folderName));
-        const match = candidates.find(f => !f.parentName)
-          || candidates.find(f => f.parentName !== 'Deleted Items')
-          || candidates[0];
-        if (!match) {
-          logLine(`[inbox-tracking] folder "${row.folderName}" not found in ${email}`);
-          return { ...row, unread: null, total: null, error: `folder "${row.folderName}" not found` };
-        }
-        const result = { ...row, unread: match.unreadItemCount || 0, total: match.totalItemCount || 0 };
-        if (match.parentName === 'Deleted Items') {
-          result.note = `only found under Deleted Items — verify this is the intended "${row.folderName}" folder`;
-          logLine(`[inbox-tracking] WARNING: "${row.folderName}" in ${email} only found under Deleted Items`);
-        }
-        return result;
-      });
+      if (simpleRows.length) {
+        const folders = await listMailFolders(email, token);
+        out.push(...simpleRows.map(row => {
+          // Personal folders are sometimes nested (e.g. "Katie" lives under
+          // support@'s Inbox, not top-level) and occasionally duplicated
+          // under Deleted Items from an old cleanup - prefer a top-level
+          // match, then any non-Deleted-Items match, and only fall back to
+          // a Deleted Items copy (flagged) if that's genuinely the only one.
+          const candidates = folders.filter(f => normalizeFolderName(f.displayName) === normalizeFolderName(row.folderName));
+          const match = candidates.find(f => !f.parentName)
+            || candidates.find(f => f.parentName !== 'Deleted Items')
+            || candidates[0];
+          if (!match) {
+            logLine(`[inbox-tracking] folder "${row.folderName}" not found in ${email}`);
+            return { ...row, unread: null, total: null, error: `folder "${row.folderName}" not found` };
+          }
+          const result = { ...row, unread: match.unreadItemCount || 0, total: match.totalItemCount || 0 };
+          if (match.parentName === 'Deleted Items') {
+            result.note = `only found under Deleted Items - verify this is the intended "${row.folderName}" folder`;
+            logLine(`[inbox-tracking] WARNING: "${row.folderName}" in ${email} only found under Deleted Items`);
+          }
+          return result;
+        }));
+      }
     } catch (err) {
       logLine(`[inbox-tracking] ${email} ERROR: ${err.message}`);
-      return rows.map(row => ({ ...row, unread: null, total: null, error: err.message }));
+      out.push(...simpleRows.map(row => ({ ...row, unread: null, total: null, error: err.message })));
     }
+
+    // Rows nested deeper than listMailFolders()'s one-level recursion
+    // (folderPath: an array of names walked from a top-level folder down)
+    // are resolved individually via resolveNestedFolder(). A failure here
+    // (e.g. Sammy Ramos's different-domain mailbox being 403/404) only
+    // skips that row, logged as a warning, never fatal to the rest.
+    for (const row of pathRows) {
+      const derivedFolderName = row.folderName || row.folderPath[row.folderPath.length - 1];
+      try {
+        const folder = await resolveNestedFolder(email, token, row.folderPath);
+        if (!folder) {
+          const msg = `nested folder path "${row.folderPath.join(' > ')}" not found in ${email}`;
+          logLine(`[inbox-tracking] WARNING: ${msg}`);
+          out.push({ ...row, folderName: derivedFolderName, unread: null, total: null, error: msg });
+        } else {
+          out.push({ ...row, folderName: derivedFolderName, unread: folder.unreadItemCount || 0, total: folder.totalItemCount || 0 });
+        }
+      } catch (err) {
+        logLine(`[inbox-tracking] WARNING: nested folder path "${row.folderPath.join(' > ')}" in ${email} ERROR: ${err.message}`);
+        out.push({ ...row, folderName: derivedFolderName, unread: null, total: null, error: err.message });
+      }
+    }
+
+    return out;
   }));
   return results.flat();
 }
@@ -1287,10 +1517,19 @@ async function writeInboxTrackingToExcel() {
   const labelsRes = await fetchFn(`${base}/range(address='A1:A80')`, { headers });
   const labelsJson = await labelsRes.json().catch(() => ({}));
   const labelRows = new Map();
+  const duplicateLabels = new Set();
   (labelsJson.values || []).forEach((row, i) => {
     const label = String(row[0] || '').trim().toLowerCase();
-    if (label) labelRows.set(label, i + 1); // 1-indexed row number
+    if (!label) return;
+    // First occurrence wins if a label is duplicated in the sheet (flagged
+    // below) - deterministic and matches how a human reading top-to-bottom
+    // would pick "the" row for that label.
+    if (labelRows.has(label)) { duplicateLabels.add(label); return; }
+    labelRows.set(label, i + 1); // 1-indexed row number
   });
+  if (duplicateLabels.size) {
+    logLine(`[inbox-tracking-excel] WARNING: duplicate row label(s) in column A, used first occurrence: ${[...duplicateLabels].join(', ')}`);
+  }
 
   const trackedRows = await fetchAllMailboxCounts();
   const results = [];
@@ -1320,7 +1559,7 @@ async function writeInboxTrackingToExcel() {
     }
   }
   logLine(`[inbox-tracking-excel] wrote column ${colLetter} (${nowCT.toDateString()}): ${JSON.stringify(results)}`);
-  return { column: colLetter, results };
+  return { column: colLetter, results, duplicateRowLabels: [...duplicateLabels] };
 }
 
 async function fetchFolderChildren(mailboxKey, token, parentId) {
@@ -1613,6 +1852,23 @@ app.post('/api/lyndsay-queue', async (req, res) => {
   queue.unshift(entry);
   await writeJSON(LYNDSAY_QUEUE_FILE, queue);
   res.json(entry);
+});
+
+// Bulk import preserving exact ids/createdAt/sent state — see
+// /api/tasks/bulk-import for why. Goes through readLyndsayQueue() so the
+// normal 24h-sent-item purge still applies on the next read.
+app.post('/api/lyndsay-queue/bulk-import', async (req, res) => {
+  const incoming = Array.isArray(req.body?.queue) ? req.body.queue : [];
+  if (!incoming.length) return res.status(400).json({ error: '"queue" array required' });
+  const queue = await readLyndsayQueue();
+  let added = 0, updated = 0;
+  for (const m of incoming) {
+    if (!m.id) continue;
+    const idx = queue.findIndex(x => x.id === m.id);
+    if (idx === -1) { queue.push(m); added++; } else { queue[idx] = m; updated++; }
+  }
+  await writeJSON(LYNDSAY_QUEUE_FILE, queue);
+  res.json({ ok: true, added, updated, total: queue.length });
 });
 
 app.post('/api/lyndsay-queue/:id/sent', async (req, res) => {
