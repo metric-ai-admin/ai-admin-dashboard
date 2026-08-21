@@ -1774,6 +1774,60 @@ app.get('/api/email/message/:id', async (req, res) => {
   }
 });
 
+// ---- Copilot Export — secure read of Lyndsay's latest 100 inbox emails ----
+// Validates x-api-key against COPILOT_API_KEY env var before serving.
+function requireCopilotApiKey(req, res, next) {
+  if (!process.env.COPILOT_API_KEY) {
+    return res.status(500).json({ error: 'COPILOT_API_KEY is not configured on this server.' });
+  }
+  if (req.headers['x-api-key'] !== process.env.COPILOT_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+app.get('/api/copilot/export', requireCopilotApiKey, async (req, res) => {
+  if (!GRAPH_CONFIGURED) {
+    return res.status(503).json({ error: 'Graph API not configured — set GRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET in .env.' });
+  }
+  let token;
+  try {
+    token = await graphMailboxToken('lyndsay');
+  } catch (err) {
+    if (err instanceof GraphAuthRequiredError) return res.status(503).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
+  }
+  try {
+    const select = 'id,subject,sender,from,receivedDateTime,isRead,hasAttachments,bodyPreview,importance';
+    const url = `${graphMailboxBase('lyndsay')}/mailFolders/inbox/messages?$top=100&$orderby=receivedDateTime desc&$select=${select}`;
+    const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
+    const json = await r.json().catch(() => ({}));
+    if (!r.ok) return res.status(r.status).json({ error: json.error?.message || `Graph error ${r.status}` });
+    const raw = json.value || [];
+    const emails = raw.map(m => ({
+      id: m.id,
+      subject: m.subject || '',
+      sender: m.sender?.emailAddress?.name || m.from?.emailAddress?.name || '',
+      senderEmail: m.sender?.emailAddress?.address || m.from?.emailAddress?.address || '',
+      receivedAt: m.receivedDateTime || null,
+      isRead: !!m.isRead,
+      importance: m.importance || 'normal',
+      hasAttachments: !!m.hasAttachments,
+      preview: m.bodyPreview || '',
+    }));
+    const unreadCount = emails.filter(e => !e.isRead).length;
+    res.json({
+      generatedAt: new Date().toISOString(),
+      mailbox: MAILBOX_LYNDSAY,
+      unreadCount,
+      totalCount: emails.length,
+      emails,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Real unread/total counts + top senders per mailbox — backs get_email_triage_status.
 app.get('/api/email/triage', async (req, res) => {
   if (!GRAPH_CONFIGURED) {
