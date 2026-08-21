@@ -583,6 +583,20 @@ async function addReminderForMeeting(meeting) {
 $('#support-inbox-toggle').addEventListener('click', () => $('#support-inbox-panel').classList.toggle('open'));
 $('#lyndsay-inbox-toggle').addEventListener('click', () => $('#lyndsay-inbox-panel').classList.toggle('open'));
 $('#inbox-tracking-toggle').addEventListener('click', () => $('#inbox-tracking-panel').classList.toggle('open'));
+
+$('#copy-inbox-copilot-btn').addEventListener('click', async () => {
+  const statusEl = $('#copy-inbox-copilot-status');
+  statusEl.textContent = 'Exporting…';
+  try {
+    const res = await fetch('/api/copilot/export-internal');
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+    await navigator.clipboard.writeText(JSON.stringify(json, null, 2));
+    statusEl.textContent = '✅ Inbox copied for Copilot';
+  } catch (err) {
+    statusEl.textContent = `❌ Failed to export inbox: ${err.message}`;
+  }
+});
 $('#inbox-tracking-refresh-btn').addEventListener('click', async (e) => {
   e.stopPropagation();
   await api('/api/email/refresh-now', { method: 'POST' });
