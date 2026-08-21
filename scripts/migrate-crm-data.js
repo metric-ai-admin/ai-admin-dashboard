@@ -42,34 +42,41 @@ if (!fs.existsSync(htmlPath)) {
 console.log(`Reading: ${htmlPath}`);
 const html = fs.readFileSync(htmlPath, 'utf8');
 
-// Try to find the data variable — common patterns in offline CRM HTMLs:
-//   var properties = [...];
-//   const properties = [...];
-//   let propertiesData = [...];
-//   window.crmData = { properties: [...] };
+// The CRM HTML stores data in: const PRELOADED_DB = { "settings":{...}, "properties":{...}, ... }
+// Properties are keyed by ID ("prop_mr846r18u5ktx"), so we use Object.values() to get the array.
 let rawProperties = null;
 
-// Pattern 1: var/const/let <name> = [ ... ] (array of property objects)
-const arrayMatch = html.match(/(?:var|const|let)\s+(\w+)\s*=\s*(\[[\s\S]*?\]);/);
-if (arrayMatch) {
-  try {
-    const fn = new Function(`return ${arrayMatch[2]}`);
-    const data = fn();
-    if (Array.isArray(data) && data.length > 0 && data[0].propertyName !== undefined) {
-      rawProperties = data;
-      console.log(`Found ${data.length} properties in variable '${arrayMatch[1]}'`);
+// PRELOADED_DB is a large nested object — we can't use a simple regex because
+// a greedy/lazy `{...}` match will cut off at the wrong closing brace.
+// Instead, find the opening `{` and walk the string counting brace depth.
+const dbStart = html.indexOf('const PRELOADED_DB =');
+if (dbStart !== -1) {
+  const openBrace = html.indexOf('{', dbStart);
+  if (openBrace !== -1) {
+    let depth = 0, inStr = false, strChar = '', i = openBrace;
+    for (; i < html.length; i++) {
+      const ch = html[i];
+      if (inStr) {
+        if (ch === '\\') { i++; continue; }  // skip escaped char
+        if (ch === strChar) inStr = false;
+      } else {
+        if (ch === '"' || ch === "'") { inStr = true; strChar = ch; }
+        else if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) break; }
+      }
     }
-  } catch {}
-}
-
-// Pattern 2: JSON embedded in a script tag
-if (!rawProperties) {
-  const jsonMatch = html.match(/<script[^>]*>\s*(?:var|const|let)\s+\w+\s*=\s*JSON\.parse\('([\s\S]*?)'\)/);
-  if (jsonMatch) {
+    const jsonStr = html.slice(openBrace, i + 1);
     try {
-      const data = JSON.parse(jsonMatch[1].replace(/\\'/g, "'"));
-      if (Array.isArray(data)) { rawProperties = data; console.log(`Found ${data.length} properties via JSON.parse`); }
-    } catch {}
+      const db = JSON.parse(jsonStr);
+      if (db.properties && typeof db.properties === 'object') {
+        rawProperties = Object.values(db.properties);
+        console.log(`Found ${rawProperties.length} properties in PRELOADED_DB.properties`);
+      } else {
+        console.error('PRELOADED_DB parsed OK but has no .properties key. Keys found:', Object.keys(db));
+      }
+    } catch (e) {
+      console.error('Failed to parse PRELOADED_DB JSON:', e.message);
+    }
   }
 }
 
