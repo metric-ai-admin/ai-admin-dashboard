@@ -54,6 +54,7 @@
       <button data-tab="platform"><span class="nav-dot"></span>Projects</button>
       <button data-tab="email"><span class="nav-dot"></span>Email / Cal<span id="reminder-badge" class="reminder-badge hidden">0</span></button>
       <button data-tab="eod"><span class="nav-dot"></span>End of Day</button>
+      <button data-tab="crm"><span class="nav-dot"></span>BD CRM</button>
     </nav>
     <div class="sidebar-foot">
       <div class="sync-status">
@@ -246,6 +247,60 @@
           <tbody id="inbox-tracking-body"></tbody>
         </table>
       </div>
+    </div>
+  </section>
+
+  <!-- ============ BD CRM ============ -->
+  <section id="tab-crm" class="tab">
+    <div class="view-head crm-head">
+      <div>
+        <h2 class="crm-title">BD CRM <span class="crm-badge">Austin TX</span></h2>
+        <p class="muted small" id="crm-status-line">Loading…</p>
+      </div>
+      <div class="view-actions crm-toolbar">
+        <input id="crm-search" type="search" placeholder="Search properties…" class="crm-search-input">
+        <select id="crm-filter-submarket" class="crm-select"><option value="">All Submarkets</option></select>
+        <select id="crm-filter-assigned" class="crm-select"><option value="">All Reps</option></select>
+        <select id="crm-filter-status" class="crm-select"><option value="">All Statuses</option></select>
+        <select id="crm-filter-class" class="crm-select"><option value="">All Classes</option></select>
+        <button id="crm-refresh-btn" title="Refresh">🔄</button>
+      </div>
+    </div>
+
+    <!-- summary stat tiles -->
+    <div class="crm-stats" id="crm-stats"></div>
+
+    <!-- property table -->
+    <div class="crm-table-wrap">
+      <table class="crm-table" id="crm-table">
+        <thead>
+          <tr>
+            <th>Property</th>
+            <th>Submarket</th>
+            <th>Class</th>
+            <th>Units</th>
+            <th>Vacancy</th>
+            <th>Asking/Unit</th>
+            <th>Assigned To</th>
+            <th>Status</th>
+            <th>Lyndsay ✓</th>
+          </tr>
+        </thead>
+        <tbody id="crm-tbody"></tbody>
+      </table>
+      <div id="crm-empty" class="crm-empty hidden">No properties match the current filters.</div>
+    </div>
+
+    <!-- pagination -->
+    <div class="crm-pagination" id="crm-pagination"></div>
+
+    <!-- property detail drawer -->
+    <div id="crm-drawer" class="crm-drawer hidden">
+      <div class="crm-drawer-header">
+        <h3 id="crm-drawer-title">Property Detail</h3>
+        <button id="crm-drawer-close" class="btn-sm">✕ Close</button>
+      </div>
+      <div id="crm-drawer-body" class="crm-drawer-body"></div>
     </div>
   </section>
 

@@ -973,5 +973,244 @@ async function updateReminderAlerts() {
 updateReminderAlerts();
 setInterval(updateReminderAlerts, 60000);
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BD CRM module
+// ═══════════════════════════════════════════════════════════════════════════
+
+const crmState = {
+  page: 1, limit: 50, total: 0, pages: 0,
+  search: '', submarket: '', assigned_to: '', rop_status: '', asset_class: '',
+};
+
+async function crmFetch(path) {
+  const r = await fetch(path);
+  return r.json();
+}
+
+function crmBuildQuery() {
+  const p = new URLSearchParams({
+    page: crmState.page, limit: crmState.limit,
+    ...(crmState.search      && { search:      crmState.search }),
+    ...(crmState.submarket   && { submarket:    crmState.submarket }),
+    ...(crmState.assigned_to && { assigned_to:  crmState.assigned_to }),
+    ...(crmState.rop_status  && { rop_status:   crmState.rop_status }),
+    ...(crmState.asset_class && { asset_class:  crmState.asset_class }),
+  });
+  return `/api/crm/properties?${p}`;
+}
+
+function fmtCurrency(v) {
+  if (v == null) return '—';
+  return '$' + Number(v).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+function fmtPct(v) { return v == null ? '—' : Number(v).toFixed(1) + '%'; }
+
+function crmRenderStats(properties, total) {
+  const el = $('#crm-stats');
+  if (!total) { el.innerHTML = ''; return; }
+  const withUnits = properties.filter(p => p.units);
+  const totalUnits = withUnits.reduce((s, p) => s + (p.units || 0), 0);
+  const avgVac = properties.filter(p => p.vacancy_pct != null);
+  const avgV = avgVac.length ? (avgVac.reduce((s, p) => s + Number(p.vacancy_pct), 0) / avgVac.length) : null;
+  el.innerHTML = `
+    <div class="crm-stat"><span class="crm-stat-val">${total.toLocaleString()}</span><span class="crm-stat-label">Properties</span></div>
+    <div class="crm-stat"><span class="crm-stat-val">${totalUnits.toLocaleString()}</span><span class="crm-stat-label">Total Units</span></div>
+    <div class="crm-stat"><span class="crm-stat-val">${avgV != null ? avgV.toFixed(1) + '%' : '—'}</span><span class="crm-stat-label">Avg Vacancy</span></div>
+  `;
+}
+
+function crmRenderTable(properties) {
+  const tbody = $('#crm-tbody');
+  const empty = $('#crm-empty');
+  if (!properties.length) {
+    tbody.innerHTML = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  tbody.innerHTML = properties.map(p => `
+    <tr class="crm-row" data-id="${esc(p.id)}" title="Click to view detail">
+      <td class="crm-prop-name">${esc(p.property_name || '—')}<div class="crm-address">${esc(p.address || '')}</div></td>
+      <td>${esc(p.submarket || '—')}</td>
+      <td><span class="crm-class crm-class-${(p.asset_class||'').toLowerCase()}">${esc(p.asset_class || '—')}</span></td>
+      <td>${p.units != null ? p.units : '—'}</td>
+      <td>${fmtPct(p.vacancy_pct)}</td>
+      <td>${fmtCurrency(p.avg_asking_unit)}</td>
+      <td>${esc(p.assigned_to || '—')}</td>
+      <td><span class="crm-status-badge">${esc(p.rop_status || '—')}</span></td>
+      <td>${p.lyndsay_reviewed ? '✅' : ''}</td>
+    </tr>
+  `).join('');
+
+  $$('#crm-tbody .crm-row').forEach(row =>
+    row.addEventListener('click', () => crmOpenDrawer(row.dataset.id))
+  );
+}
+
+function crmRenderPagination() {
+  const el = $('#crm-pagination');
+  if (crmState.pages <= 1) { el.innerHTML = ''; return; }
+  const start = (crmState.page - 1) * crmState.limit + 1;
+  const end = Math.min(crmState.page * crmState.limit, crmState.total);
+  el.innerHTML = `
+    <button class="btn-sm" id="crm-prev" ${crmState.page === 1 ? 'disabled' : ''}>← Prev</button>
+    <span class="crm-page-info">${start}–${end} of ${crmState.total.toLocaleString()}</span>
+    <button class="btn-sm" id="crm-next" ${crmState.page >= crmState.pages ? 'disabled' : ''}>Next →</button>
+  `;
+  $('#crm-prev')?.addEventListener('click', () => { crmState.page--; crmLoadProperties(); });
+  $('#crm-next')?.addEventListener('click', () => { crmState.page++; crmLoadProperties(); });
+}
+
+async function crmLoadProperties() {
+  $('#crm-status-line').textContent = 'Loading…';
+  try {
+    const data = await crmFetch(crmBuildQuery());
+    if (data.error) { $('#crm-status-line').textContent = `❌ ${data.error}`; return; }
+    crmState.total = data.total; crmState.pages = data.pages;
+    $('#crm-status-line').textContent = `${data.total.toLocaleString()} properties · page ${data.page}/${data.pages}`;
+    crmRenderStats(data.properties, data.total);
+    crmRenderTable(data.properties);
+    crmRenderPagination();
+  } catch (err) {
+    $('#crm-status-line').textContent = `❌ ${err.message}`;
+  }
+}
+
+async function crmLoadMeta() {
+  try {
+    const meta = await crmFetch('/api/crm/meta');
+    const populate = (selectId, values) => {
+      const sel = $(selectId);
+      if (!sel) return;
+      const cur = sel.value;
+      sel.innerHTML = `<option value="">${sel.options[0].text}</option>` +
+        values.map(v => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(v)}</option>`).join('');
+    };
+    populate('#crm-filter-submarket', meta.submkts || []);
+    populate('#crm-filter-assigned',  meta.assignees || []);
+    populate('#crm-filter-status',    meta.statuses || []);
+    populate('#crm-filter-class',     meta.classes || []);
+  } catch {}
+}
+
+async function crmOpenDrawer(id) {
+  const drawer = $('#crm-drawer');
+  const body = $('#crm-drawer-body');
+  drawer.classList.remove('hidden');
+  body.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const p = await crmFetch(`/api/crm/properties/${id}`);
+    if (p.error) { body.innerHTML = `<p class="error">${esc(p.error)}</p>`; return; }
+    body.innerHTML = `
+      <div class="crm-detail-grid">
+        <div class="crm-detail-col">
+          <h4>Property</h4>
+          <dl class="crm-dl">
+            <dt>Name</dt><dd>${esc(p.property_name||'—')}</dd>
+            <dt>Address</dt><dd>${esc(p.address||'—')}, ${esc(p.city||'')} ${esc(p.zip||'')}</dd>
+            <dt>Submarket</dt><dd>${esc(p.submarket||'—')}</dd>
+            <dt>Style</dt><dd>${esc(p.style||'—')}</dd>
+            <dt>Year Built</dt><dd>${p.year_built||'—'}</dd>
+            <dt>Class</dt><dd>${esc(p.asset_class||'—')}</dd>
+            <dt>Units</dt><dd>${p.units||'—'}</dd>
+            <dt>Vacancy</dt><dd>${fmtPct(p.vacancy_pct)}</dd>
+            <dt>Avg Asking/Unit</dt><dd>${fmtCurrency(p.avg_asking_unit)}</dd>
+            <dt>Avg Unit SF</dt><dd>${p.avg_unit_sf ? p.avg_unit_sf + ' sf' : '—'}</dd>
+            <dt>Management Co.</dt><dd>${esc(p.management_company||'—')}</dd>
+            <dt>Mgmt Type</dt><dd>${esc(p.management_type||'—')}</dd>
+          </dl>
+        </div>
+        <div class="crm-detail-col">
+          <h4>Owner</h4>
+          <dl class="crm-dl">
+            <dt>Owner</dt><dd>${esc(p.owner_name||'—')}</dd>
+            <dt>Contact</dt><dd>${esc(p.owner_contact_name||'—')}</dd>
+            <dt>Phone</dt><dd>${esc(p.owner_phone||'—')}</dd>
+            <dt>Email</dt><dd>${esc(p.owner_email||'—')}</dd>
+            <dt>Address</dt><dd>${esc(p.owner_address||'—')}</dd>
+          </dl>
+          <h4 style="margin-top:16px">Assignments</h4>
+          <dl class="crm-dl">
+            <dt>Assigned To</dt><dd>${esc(p.assigned_to||'—')}</dd>
+            <dt>Phone Assignee</dt><dd>${esc(p.phone_assignee||'—')}</dd>
+            <dt>DM Assignee</dt><dd>${esc(p.online_dm_assignee||'—')}</dd>
+          </dl>
+          <h4 style="margin-top:16px">Status</h4>
+          <dl class="crm-dl">
+            <dt>ROP Status</dt><dd>${esc(p.rop_status||'—')}</dd>
+            <dt>Lead Score</dt><dd>${p.lead_score_override??'—'}</dd>
+            <dt>Lyndsay Reviewed</dt><dd>${p.lyndsay_reviewed ? '✅ Yes' : 'No'}</dd>
+          </dl>
+        </div>
+      </div>
+      ${p.notes ? `<div class="crm-notes"><strong>Notes:</strong> ${esc(p.notes)}</div>` : ''}
+      <div class="crm-detail-section">
+        <h4>Follow-ups (${p.follow_ups.length})</h4>
+        ${p.follow_ups.length ? `<table class="crm-sub-table"><thead><tr><th>Date</th><th>Method</th><th>Contact</th><th>Outcome</th><th>Next Action</th></tr></thead><tbody>${
+          p.follow_ups.map(f => `<tr><td>${f.follow_up_date||'—'}</td><td>${esc(f.method||'—')}</td><td>${esc(f.contact_name||'—')}</td><td>${esc(f.outcome||'—')}</td><td>${esc(f.next_action||'—')}</td></tr>`).join('')
+        }</tbody></table>` : '<p class="muted small">No follow-ups yet.</p>'}
+      </div>
+      <div class="crm-detail-section">
+        <h4>Outreach Drafts (${p.outreach_drafts.length})</h4>
+        ${p.outreach_drafts.length ? p.outreach_drafts.map(d => `
+          <div class="crm-draft-card">
+            <div class="crm-draft-meta">${esc(d.channel||'—')} · <span class="crm-status-badge">${esc(d.status)}</span> · ${d.created_at ? new Date(d.created_at).toLocaleDateString() : ''}</div>
+            ${d.subject ? `<div class="crm-draft-subject">${esc(d.subject)}</div>` : ''}
+            <pre class="crm-draft-body">${esc(d.body||'')}</pre>
+          </div>`).join('') : '<p class="muted small">No drafts yet.</p>'}
+      </div>
+      <div class="crm-detail-section">
+        <h4>Phone Shops (${p.phone_shops.length})</h4>
+        ${p.phone_shops.length ? `<table class="crm-sub-table"><thead><tr><th>Date</th><th>Agent</th><th>Score</th><th>Notes</th></tr></thead><tbody>${
+          p.phone_shops.map(s => `<tr><td>${s.shop_date||'—'}</td><td>${esc(s.agent_name||'—')}</td><td>${s.score??'—'}</td><td>${esc(s.notes||'—')}</td></tr>`).join('')
+        }</tbody></table>` : '<p class="muted small">No phone shops yet.</p>'}
+      </div>
+      <div class="crm-detail-section">
+        <h4>Online Shops (${p.online_shops.length})</h4>
+        ${p.online_shops.length ? `<table class="crm-sub-table"><thead><tr><th>Date</th><th>Platform</th><th>Score</th><th>Notes</th></tr></thead><tbody>${
+          p.online_shops.map(s => `<tr><td>${s.shop_date||'—'}</td><td>${esc(s.platform||'—')}</td><td>${s.score??'—'}</td><td>${esc(s.notes||'—')}</td></tr>`).join('')
+        }</tbody></table>` : '<p class="muted small">No online shops yet.</p>'}
+      </div>
+    `;
+  } catch (err) {
+    body.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+  }
+}
+
+// Wire up CRM controls
+$('#crm-drawer-close').addEventListener('click', () => $('#crm-drawer').classList.add('hidden'));
+
+let crmSearchTimer;
+$('#crm-search').addEventListener('input', e => {
+  clearTimeout(crmSearchTimer);
+  crmSearchTimer = setTimeout(() => {
+    crmState.search = e.target.value.trim();
+    crmState.page = 1;
+    crmLoadProperties();
+  }, 350);
+});
+
+['#crm-filter-submarket','#crm-filter-assigned','#crm-filter-status','#crm-filter-class'].forEach(sel => {
+  const key = { '#crm-filter-submarket': 'submarket', '#crm-filter-assigned': 'assigned_to',
+                '#crm-filter-status': 'rop_status', '#crm-filter-class': 'asset_class' }[sel];
+  $(sel).addEventListener('change', e => { crmState[key] = e.target.value; crmState.page = 1; crmLoadProperties(); });
+});
+
+$('#crm-refresh-btn').addEventListener('click', () => { crmLoadMeta(); crmLoadProperties(); });
+
+// Load CRM when its tab is first activated
+let crmLoaded = false;
+$$('#tabs button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.tab === 'crm' && !crmLoaded) {
+      crmLoaded = true;
+      crmLoadMeta();
+      crmLoadProperties();
+    }
+  });
+});
+
+// ── End BD CRM module ────────────────────────────────────────────────────────
+
 // Initial load
 loadTasks();

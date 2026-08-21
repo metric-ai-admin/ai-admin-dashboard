@@ -2218,6 +2218,198 @@ app.all('/mcp', async (req, res) => {
   await transport.handleRequest(req, res, req.body);
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BD CRM — Business Development CRM backed by Supabase
+// Tables: properties, phone_shops, online_shops, follow_ups, outreach_drafts
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const CRM_API_SECRET = process.env.CRM_API_SECRET || '';
+
+let supabaseAdmin = null; // service-role client (writes, migration)
+let supabasePublic = null; // anon client (reads)
+
+if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+  const { createClient } = require('@supabase/supabase-js');
+  supabasePublic = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  if (SUPABASE_SERVICE_ROLE_KEY) {
+    supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+  }
+  logLine('BD CRM: Supabase client initialized');
+} else {
+  logLine('BD CRM: SUPABASE_URL / SUPABASE_ANON_KEY not set — CRM module disabled');
+}
+
+const CRM_CONFIGURED = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+// Middleware: require Supabase to be configured before serving CRM routes
+function requireCRM(req, res, next) {
+  if (!CRM_CONFIGURED) {
+    return res.status(503).json({ error: 'BD CRM not configured — set SUPABASE_URL and SUPABASE_ANON_KEY in .env' });
+  }
+  next();
+}
+
+// ---- GET /api/crm/status -------------------------------------------------------
+app.get('/api/crm/status', (req, res) => {
+  res.json({ configured: CRM_CONFIGURED, hasAdmin: !!supabaseAdmin });
+});
+
+// ---- GET /api/crm/properties ---------------------------------------------------
+// Query params: page (1-based), limit (default 50, max 200), search, submarket,
+//   assigned_to, rop_status, asset_class, lyndsay_reviewed (true/false)
+app.get('/api/crm/properties', requireCRM, async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const from = (page - 1) * limit;
+
+    let query = supabasePublic
+      .from('properties')
+      .select('*', { count: 'exact' })
+      .order('property_name', { ascending: true })
+      .range(from, from + limit - 1);
+
+    if (req.query.search) {
+      const s = req.query.search.trim();
+      query = query.or(`property_name.ilike.%${s}%,address.ilike.%${s}%,management_company.ilike.%${s}%,owner_name.ilike.%${s}%`);
+    }
+    if (req.query.submarket)       query = query.eq('submarket', req.query.submarket);
+    if (req.query.assigned_to)     query = query.eq('assigned_to', req.query.assigned_to);
+    if (req.query.rop_status)      query = query.eq('rop_status', req.query.rop_status);
+    if (req.query.asset_class)     query = query.eq('asset_class', req.query.asset_class);
+    if (req.query.lyndsay_reviewed !== undefined) {
+      query = query.eq('lyndsay_reviewed', req.query.lyndsay_reviewed === 'true');
+    }
+
+    const { data, count, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+
+    res.json({ properties: data, total: count, page, limit, pages: Math.ceil(count / limit) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- GET /api/crm/properties/:id -----------------------------------------------
+app.get('/api/crm/properties/:id', requireCRM, async (req, res) => {
+  try {
+    const { data: property, error: propErr } = await supabasePublic
+      .from('properties').select('*').eq('id', req.params.id).single();
+    if (propErr) return res.status(404).json({ error: propErr.message });
+
+    const [phones, online, follows, drafts] = await Promise.all([
+      supabasePublic.from('phone_shops').select('*').eq('property_id', req.params.id).order('shop_date', { ascending: false }),
+      supabasePublic.from('online_shops').select('*').eq('property_id', req.params.id).order('shop_date', { ascending: false }),
+      supabasePublic.from('follow_ups').select('*').eq('property_id', req.params.id).order('follow_up_date', { ascending: false }),
+      supabasePublic.from('outreach_drafts').select('*').eq('property_id', req.params.id).order('created_at', { ascending: false }),
+    ]);
+
+    res.json({
+      ...property,
+      phone_shops:     phones.data || [],
+      online_shops:    online.data || [],
+      follow_ups:      follows.data || [],
+      outreach_drafts: drafts.data || [],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- PATCH /api/crm/properties/:id ---------------------------------------------
+app.patch('/api/crm/properties/:id', requireCRM, async (req, res) => {
+  try {
+    const allowed = [
+      'rop_status','lead_score_override','lyndsay_reviewed','notes',
+      'assigned_to','phone_assignee','phone_assignee3','online_dm_assignee',
+      'owner_name','owner_contact_name','owner_phone','owner_email','owner_address',
+    ];
+    const updates = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
+
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('properties').update(updates).eq('id', req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- POST /api/crm/properties/:id/follow-ups -----------------------------------
+app.post('/api/crm/properties/:id/follow-ups', requireCRM, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('follow_ups').insert({ ...req.body, property_id: req.params.id }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.status(201).json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- POST /api/crm/properties/:id/outreach-drafts ------------------------------
+app.post('/api/crm/properties/:id/outreach-drafts', requireCRM, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('outreach_drafts').insert({ ...req.body, property_id: req.params.id }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.status(201).json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- GET /api/crm/meta ---------------------------------------------------------
+// Returns distinct values for filter dropdowns (submkts, assignees, statuses, etc.)
+app.get('/api/crm/meta', requireCRM, async (req, res) => {
+  try {
+    const [submkts, assignees, statuses, classes] = await Promise.all([
+      supabasePublic.from('properties').select('submarket').order('submarket'),
+      supabasePublic.from('properties').select('assigned_to').order('assigned_to'),
+      supabasePublic.from('properties').select('rop_status').order('rop_status'),
+      supabasePublic.from('properties').select('asset_class').order('asset_class'),
+    ]);
+    const unique = (arr, key) => [...new Set((arr.data || []).map(r => r[key]).filter(Boolean))];
+    res.json({
+      submkts:   unique(submkts,   'submarket'),
+      assignees: unique(assignees, 'assigned_to'),
+      statuses:  unique(statuses,  'rop_status'),
+      classes:   unique(classes,   'asset_class'),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- POST /api/crm/bulk-import -------------------------------------------------
+// Bulk upsert for data migration. Requires SUPABASE_SERVICE_ROLE_KEY.
+// Accepts { properties: [...], phone_shops: [...], ... }
+app.post('/api/crm/bulk-import', async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Bulk import requires SUPABASE_SERVICE_ROLE_KEY' });
+  }
+  try {
+    const results = {};
+    for (const table of ['properties', 'phone_shops', 'online_shops', 'follow_ups', 'outreach_drafts']) {
+      const rows = req.body[table];
+      if (!Array.isArray(rows) || !rows.length) { results[table] = { skipped: true }; continue; }
+      const { error, count } = await supabaseAdmin.from(table).upsert(rows, { onConflict: 'id', count: 'exact' });
+      if (error) { results[table] = { error: error.message }; } else { results[table] = { upserted: count }; }
+    }
+    res.json({ ok: true, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── End BD CRM ──────────────────────────────────────────────────────────────
+
 // ---- Boot -------------------------------------------------------------------
 app.listen(PORT, () => {
   logLine(`AI Admin Dashboard listening on http://localhost:${PORT}`);
