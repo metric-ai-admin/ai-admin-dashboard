@@ -2268,7 +2268,8 @@ app.get('/api/crm/properties', requireCRM, async (req, res) => {
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const from = (page - 1) * limit;
 
-    let query = supabasePublic
+    const db = supabaseAdmin || supabasePublic;
+    let query = db
       .from('properties')
       .select('*', { count: 'exact' })
       .order('property_name', { ascending: true })
@@ -2298,15 +2299,15 @@ app.get('/api/crm/properties', requireCRM, async (req, res) => {
 // ---- GET /api/crm/properties/:id -----------------------------------------------
 app.get('/api/crm/properties/:id', requireCRM, async (req, res) => {
   try {
-    const { data: property, error: propErr } = await supabasePublic
+    const { data: property, error: propErr } = await (supabaseAdmin || supabasePublic)
       .from('properties').select('*').eq('id', req.params.id).single();
     if (propErr) return res.status(404).json({ error: propErr.message });
 
     const [phones, online, follows, drafts] = await Promise.all([
-      supabasePublic.from('phone_shops').select('*').eq('property_id', req.params.id).order('shop_date', { ascending: false }),
-      supabasePublic.from('online_shops').select('*').eq('property_id', req.params.id).order('shop_date', { ascending: false }),
-      supabasePublic.from('follow_ups').select('*').eq('property_id', req.params.id).order('follow_up_date', { ascending: false }),
-      supabasePublic.from('outreach_drafts').select('*').eq('property_id', req.params.id).order('created_at', { ascending: false }),
+      ( supabaseAdmin || supabasePublic).from('phone_shops').select('*').eq('property_id', req.params.id).order('shop_date', { ascending: false }),
+      ( supabaseAdmin || supabasePublic).from('online_shops').select('*').eq('property_id', req.params.id).order('shop_date', { ascending: false }),
+      ( supabaseAdmin || supabasePublic).from('follow_ups').select('*').eq('property_id', req.params.id).order('follow_up_date', { ascending: false }),
+      ( supabaseAdmin || supabasePublic).from('outreach_drafts').select('*').eq('property_id', req.params.id).order('created_at', { ascending: false }),
     ]);
 
     res.json({
@@ -2370,10 +2371,10 @@ app.post('/api/crm/properties/:id/outreach-drafts', requireCRM, async (req, res)
 app.get('/api/crm/meta', requireCRM, async (req, res) => {
   try {
     const [submkts, assignees, statuses, classes] = await Promise.all([
-      supabasePublic.from('properties').select('submarket').order('submarket'),
-      supabasePublic.from('properties').select('assigned_to').order('assigned_to'),
-      supabasePublic.from('properties').select('rop_status').order('rop_status'),
-      supabasePublic.from('properties').select('asset_class').order('asset_class'),
+      ( supabaseAdmin || supabasePublic).from('properties').select('submarket').order('submarket'),
+      ( supabaseAdmin || supabasePublic).from('properties').select('assigned_to').order('assigned_to'),
+      ( supabaseAdmin || supabasePublic).from('properties').select('rop_status').order('rop_status'),
+      ( supabaseAdmin || supabasePublic).from('properties').select('asset_class').order('asset_class'),
     ]);
     const unique = (arr, key) => [...new Set((arr.data || []).map(r => r[key]).filter(Boolean))];
     res.json({
