@@ -695,6 +695,11 @@ app.put('/api/platform-projects/:id', async (req, res) => {
   for (const k of allowed) {
     if (k in req.body) projects[idx][k] = req.body[k];
   }
+  // Optional: mark a batch of subtask IDs as done: true
+  if (Array.isArray(req.body.completedSubtasks) && req.body.completedSubtasks.length) {
+    const ids = new Set(req.body.completedSubtasks);
+    (projects[idx].subtasks || []).forEach(s => { if (ids.has(s.id)) s.done = true; });
+  }
   projects[idx].lastUpdate = new Date().toISOString();
   await writeJSON(PLATFORM_PROJECTS_FILE, projects);
   res.json(projects[idx]);
