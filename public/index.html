@@ -252,57 +252,628 @@
 
   <!-- ============ BD CRM ============ -->
   <section id="tab-crm" class="tab">
-    <div class="view-head crm-head">
-      <div>
-        <h2 class="crm-title">BD CRM <span class="crm-badge">Austin TX</span></h2>
-        <p class="muted small" id="crm-status-line">Loading…</p>
+
+    <!-- ── CRM Top Bar ── -->
+    <div class="crm-topbar">
+      <div class="crm-topbar-brand">
+        <span class="crm-topbar-title">BD CRM</span>
+        <span class="crm-badge">Austin TX</span>
       </div>
-      <div class="view-actions crm-toolbar">
-        <input id="crm-search" type="search" placeholder="Search properties…" class="crm-search-input">
+      <nav class="crm-nav" id="crm-nav">
+        <button class="crm-nav-btn active" data-crm-view="dashboard">Property List</button>
+        <button class="crm-nav-btn" data-crm-view="tasks">Task Queue</button>
+        <button class="crm-nav-btn" data-crm-view="drafts">Outreach Drafts</button>
+        <button class="crm-nav-btn" data-crm-view="market">Market Changes</button>
+        <button class="crm-nav-btn" data-crm-view="settings">Settings</button>
+      </nav>
+      <div class="crm-agent-selector">
+        <label class="crm-agent-label">Working as</label>
+        <select id="crm-agent-select" class="crm-select">
+          <option value="Lyndsay">Lyndsay</option>
+          <option value="Erick">Erick</option>
+          <option value="Katie">Katie</option>
+          <option value="Rhoxie">Rhoxie</option>
+          <option value="Katrina">Katrina</option>
+          <option value="Oscar">Oscar</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- ══════════════ VIEW: PROPERTY LIST (dashboard) ══════════════ -->
+    <div id="crm-view-dashboard" class="crm-view active">
+
+      <!-- KPI bar -->
+      <div class="crm-kpi-bar" id="crm-kpi-bar"></div>
+
+      <!-- Filter toolbar -->
+      <div class="crm-filter-bar">
+        <input id="crm-search" type="search" placeholder="🔎 Search properties, owner, address…" class="crm-search-input">
+        <select id="crm-filter-class" class="crm-select">
+          <option value="">All Classes</option>
+          <option value="A">Class A</option>
+          <option value="B">Class B</option>
+          <option value="C">Class C</option>
+        </select>
+        <select id="crm-filter-mgmt" class="crm-select">
+          <option value="">All Mgmt Types</option>
+          <option value="third-party">Third-Party</option>
+          <option value="owner-managed">Owner-Managed</option>
+        </select>
         <select id="crm-filter-submarket" class="crm-select"><option value="">All Submarkets</option></select>
-        <select id="crm-filter-assigned" class="crm-select"><option value="">All Reps</option></select>
-        <select id="crm-filter-status" class="crm-select"><option value="">All Statuses</option></select>
-        <select id="crm-filter-class" class="crm-select"><option value="">All Classes</option></select>
-        <button id="crm-refresh-btn" title="Refresh">🔄</button>
+        <select id="crm-filter-assigned" class="crm-select"><option value="">All Agents</option></select>
+        <select id="crm-filter-status" class="crm-select">
+          <option value="">All ROP Status</option>
+          <option value="Yes">ROP: Yes</option>
+          <option value="No">ROP: No</option>
+          <option value="Unknown">ROP: Unknown</option>
+        </select>
+        <select id="crm-sort" class="crm-select">
+          <option value="score">Lead Score ↓</option>
+          <option value="vacancy">Vacancy ↑</option>
+          <option value="name">Name A-Z</option>
+          <option value="company">Mgmt Co. A-Z</option>
+          <option value="submarket">Submarket A-Z</option>
+          <option value="updated">Recently Updated</option>
+        </select>
+        <button id="crm-refresh-btn" class="btn-sm" title="Refresh">🔄</button>
+      </div>
+
+      <p class="small muted" id="crm-status-line" style="margin:4px 0 8px;"></p>
+
+      <!-- Property table -->
+      <div class="crm-table-wrap">
+        <table class="crm-table">
+          <thead>
+            <tr>
+              <th>Score</th>
+              <th>Property</th>
+              <th>Submarket</th>
+              <th>Class</th>
+              <th>Units</th>
+              <th>Vacancy</th>
+              <th>$/Unit</th>
+              <th>Mgmt Type</th>
+              <th>Management Co.</th>
+              <th>Agents</th>
+              <th>ROP</th>
+            </tr>
+          </thead>
+          <tbody id="crm-tbody"></tbody>
+        </table>
+        <div id="crm-empty" class="crm-empty hidden">No properties match the current filters.</div>
+      </div>
+      <div class="crm-pagination" id="crm-pagination"></div>
+    </div>
+
+    <!-- ══════════════ VIEW: TASK QUEUE ══════════════ -->
+    <div id="crm-view-tasks" class="crm-view hidden">
+      <div class="view-head">
+        <div><h3>Task Queue</h3><p class="muted small" id="crm-tasks-status">Loading…</p></div>
+        <div class="view-actions">
+          <select id="crm-task-agent-filter" class="crm-select">
+            <option value="">All Agents</option>
+            <option value="Erick">Erick</option>
+            <option value="Katie">Katie</option>
+            <option value="Rhoxie">Rhoxie</option>
+            <option value="Katrina">Katrina</option>
+            <option value="Lyndsay">Lyndsay</option>
+          </select>
+          <select id="crm-task-type-filter" class="crm-select">
+            <option value="">All Types</option>
+            <option value="phone_shop">Phone Shops</option>
+            <option value="online_shop">Online Shops</option>
+            <option value="lyndsay_review">Ready for Lyndsay</option>
+            <option value="missed_tour">Missed Tour Follow-up</option>
+          </select>
+          <button id="crm-tasks-refresh" class="btn-sm">🔄</button>
+        </div>
+      </div>
+      <div id="crm-tasks-body"></div>
+    </div>
+
+    <!-- ══════════════ VIEW: OUTREACH DRAFTS ══════════════ -->
+    <div id="crm-view-drafts" class="crm-view hidden">
+      <div class="view-head">
+        <div><h3>Outreach Drafts</h3><p class="muted small">All pending outreach across properties</p></div>
+        <button id="crm-drafts-refresh" class="btn-sm">🔄</button>
+      </div>
+      <div id="crm-drafts-body"></div>
+    </div>
+
+    <!-- ══════════════ VIEW: MARKET CHANGES ══════════════ -->
+    <div id="crm-view-market" class="crm-view hidden">
+      <div class="view-head">
+        <div><h3>Owner / Manager Changes</h3><p class="muted small">Flags from Costar re-imports</p></div>
+      </div>
+      <div class="crm-empty" style="margin-top:32px;">
+        Market change tracking requires Costar snapshot imports — coming in Phase 3.
       </div>
     </div>
 
-    <!-- summary stat tiles -->
-    <div class="crm-stats" id="crm-stats"></div>
-
-    <!-- property table -->
-    <div class="crm-table-wrap">
-      <table class="crm-table" id="crm-table">
-        <thead>
-          <tr>
-            <th>Property</th>
-            <th>Submarket</th>
-            <th>Class</th>
-            <th>Units</th>
-            <th>Vacancy</th>
-            <th>Asking/Unit</th>
-            <th>Assigned To</th>
-            <th>Status</th>
-            <th>Lyndsay ✓</th>
-          </tr>
-        </thead>
-        <tbody id="crm-tbody"></tbody>
-      </table>
-      <div id="crm-empty" class="crm-empty hidden">No properties match the current filters.</div>
-    </div>
-
-    <!-- pagination -->
-    <div class="crm-pagination" id="crm-pagination"></div>
-
-    <!-- property detail drawer -->
-    <div id="crm-drawer" class="crm-drawer hidden">
-      <div class="crm-drawer-header">
-        <h3 id="crm-drawer-title">Property Detail</h3>
-        <button id="crm-drawer-close" class="btn-sm">✕ Close</button>
+    <!-- ══════════════ VIEW: SETTINGS ══════════════ -->
+    <div id="crm-view-settings" class="crm-view hidden">
+      <div class="view-head"><h3>CRM Settings</h3></div>
+      <div class="crm-settings-grid">
+        <div class="card">
+          <h4>Working User</h4>
+          <label class="small muted">Your name (signs outreach drafts)</label>
+          <input id="crm-settings-username" class="crm-input" placeholder="e.g. Arturo" value="">
+          <button id="crm-settings-save" class="btn-sm primary" style="margin-top:8px;">Save</button>
+        </div>
+        <div class="card">
+          <h4>Targeted Management Companies</h4>
+          <p class="small muted">Companies Metric is actively pursuing. Shown with 🎯 in the property list.</p>
+          <textarea id="crm-targeted-companies" class="crm-textarea" rows="6" placeholder="One company per line"></textarea>
+          <button id="crm-targeted-save" class="btn-sm primary" style="margin-top:8px;">Save</button>
+        </div>
       </div>
-      <div id="crm-drawer-body" class="crm-drawer-body"></div>
     </div>
-  </section>
+
+    <!-- ══════════════ PROPERTY MODAL ══════════════ -->
+    <div id="crm-modal" class="crm-modal hidden" role="dialog" aria-modal="true">
+      <div class="crm-modal-overlay" id="crm-modal-overlay"></div>
+      <div class="crm-modal-panel">
+
+        <!-- Modal header -->
+        <div class="crm-modal-header">
+          <div class="crm-modal-title-block">
+            <div id="crm-modal-score-badge" class="crm-score-badge">–</div>
+            <div>
+              <h3 id="crm-modal-name">Property</h3>
+              <p id="crm-modal-address" class="small muted"></p>
+            </div>
+          </div>
+          <button id="crm-modal-close" class="crm-modal-close" aria-label="Close">✕</button>
+        </div>
+
+        <!-- Modal tab bar -->
+        <div class="crm-modal-tabs" id="crm-modal-tabs">
+          <button class="crm-modal-tab active" data-modal-tab="overview">Overview</button>
+          <button class="crm-modal-tab" data-modal-tab="phone">Phone Shop</button>
+          <button class="crm-modal-tab" data-modal-tab="online">Online Shop</button>
+          <button class="crm-modal-tab" data-modal-tab="appointments">Appointments</button>
+          <button class="crm-modal-tab" data-modal-tab="followups">Follow-Ups</button>
+          <button class="crm-modal-tab" data-modal-tab="inspection">Inspection</button>
+          <button class="crm-modal-tab" data-modal-tab="dm">DM Review</button>
+          <button class="crm-modal-tab" data-modal-tab="outreach">Outreach</button>
+          <button class="crm-modal-tab" data-modal-tab="history">History</button>
+        </div>
+
+        <!-- Modal body -->
+        <div class="crm-modal-body" id="crm-modal-body">
+
+          <!-- ── OVERVIEW ── -->
+          <div id="crm-mtab-overview" class="crm-modal-pane active">
+            <div class="crm-overview-layout">
+              <div class="crm-overview-main">
+                <!-- Property Details -->
+                <section class="crm-section">
+                  <h4 class="crm-section-title">Property Details</h4>
+                  <div class="crm-detail-grid">
+                    <label>Name<input data-field="property_name" class="crm-input crm-editable"></label>
+                    <label>Address<input data-field="address" class="crm-input crm-editable"></label>
+                    <label>City<input data-field="city" class="crm-input crm-editable"></label>
+                    <label>State<input data-field="state" class="crm-input crm-editable" style="width:80px"></label>
+                    <label>Zip<input data-field="zip" class="crm-input crm-editable"></label>
+                    <label>Submarket<input data-field="submarket" class="crm-input crm-editable"></label>
+                    <label>Year Built<input data-field="year_built" class="crm-input crm-editable" type="number"></label>
+                    <label>Asset Class
+                      <select data-field="asset_class" class="crm-select crm-editable">
+                        <option value="">—</option>
+                        <option>A</option><option>B</option><option>C</option>
+                        <option>Student</option><option>Senior</option><option>Affordable</option>
+                      </select>
+                    </label>
+                    <label>Units<input data-field="units" class="crm-input crm-editable" type="number"></label>
+                  </div>
+                </section>
+
+                <!-- Performance -->
+                <section class="crm-section">
+                  <h4 class="crm-section-title">Performance</h4>
+                  <div class="crm-detail-grid">
+                    <label>Vacancy %<input data-field="vacancy_pct" class="crm-input crm-editable" type="number" step="0.1"></label>
+                    <label>Avg Asking/Unit<input data-field="avg_asking_unit" class="crm-input crm-editable" type="number"></label>
+                    <label>Avg Unit SF<input data-field="avg_unit_sf" class="crm-input crm-editable" type="number"></label>
+                  </div>
+                </section>
+
+                <!-- Management & Ownership -->
+                <section class="crm-section">
+                  <h4 class="crm-section-title">Management &amp; Ownership</h4>
+                  <div class="crm-detail-grid">
+                    <label>Mgmt Company<input data-field="management_company" class="crm-input crm-editable"></label>
+                    <label>Mgmt Type
+                      <select data-field="management_type" class="crm-select crm-editable">
+                        <option value="">Unknown</option>
+                        <option value="third-party">Third-Party</option>
+                        <option value="owner-managed">Owner-Managed</option>
+                      </select>
+                    </label>
+                    <label>Owner Name<input data-field="owner_name" class="crm-input crm-editable"></label>
+                    <label>Owner Contact<input data-field="owner_contact_name" class="crm-input crm-editable"></label>
+                    <label>Owner Phone<input data-field="owner_phone" class="crm-input crm-editable" type="tel"></label>
+                    <label>Owner Email<input data-field="owner_email" class="crm-input crm-editable" type="email"></label>
+                    <label>Owner Address<input data-field="owner_address" class="crm-input crm-editable"></label>
+                  </div>
+                </section>
+
+                <!-- Agent Assignments -->
+                <section class="crm-section">
+                  <h4 class="crm-section-title">Agent Assignments</h4>
+                  <div class="crm-detail-grid">
+                    <label>Assigned To<input data-field="assigned_to" class="crm-input crm-editable"></label>
+                    <label>Phone Agent<input data-field="phone_assignee" class="crm-input crm-editable"></label>
+                    <label>Online/DM Agent<input data-field="online_dm_assignee" class="crm-input crm-editable"></label>
+                  </div>
+                </section>
+
+                <!-- Compliance -->
+                <section class="crm-section">
+                  <h4 class="crm-section-title">Compliance</h4>
+                  <div class="crm-detail-grid">
+                    <label>ROP Status
+                      <select data-field="rop_status" class="crm-select crm-editable">
+                        <option value="Unknown">Unknown</option>
+                        <option value="Yes">Yes</option>
+                        <option value="No">No</option>
+                      </select>
+                    </label>
+                  </div>
+                </section>
+
+                <!-- Notes -->
+                <section class="crm-section">
+                  <h4 class="crm-section-title">Notes</h4>
+                  <textarea data-field="notes" class="crm-textarea crm-editable" rows="4" placeholder="General notes…"></textarea>
+                </section>
+
+                <div class="crm-save-bar">
+                  <button id="crm-overview-save" class="btn-sm primary">💾 Save Changes</button>
+                  <span id="crm-overview-save-status" class="small muted"></span>
+                </div>
+              </div>
+
+              <!-- Right sidebar -->
+              <div class="crm-overview-sidebar">
+                <!-- Lead Score -->
+                <div class="card crm-score-card">
+                  <h4>Lead Score</h4>
+                  <div id="crm-modal-score-large" class="crm-score-large">–</div>
+                  <div class="crm-detail-grid" style="margin-top:8px;">
+                    <label>Override (1-10)
+                      <input data-field="lead_score_override" class="crm-input crm-editable" type="number" min="1" max="10">
+                    </label>
+                  </div>
+                  <div id="crm-score-breakdown" class="crm-score-breakdown small muted"></div>
+                </div>
+
+                <!-- Lyndsay Reviewed -->
+                <div class="card">
+                  <h4>Lyndsay Review</h4>
+                  <label class="crm-checkbox-label">
+                    <input type="checkbox" id="crm-lyndsay-reviewed" data-field="lyndsay_reviewed">
+                    Outreach handled by Lyndsay
+                  </label>
+                </div>
+
+                <!-- Record Info -->
+                <div class="card">
+                  <h4>Record Info</h4>
+                  <dl class="crm-dl">
+                    <dt>ID</dt><dd id="crm-info-id" class="mono small"></dd>
+                    <dt>Created</dt><dd id="crm-info-created"></dd>
+                    <dt>Updated</dt><dd id="crm-info-updated"></dd>
+                  </dl>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── PHONE SHOP ── -->
+          <div id="crm-mtab-phone" class="crm-modal-pane hidden">
+            <div class="crm-tab-toolbar">
+              <button id="crm-phone-add-btn" class="btn-sm primary">+ Log Call</button>
+              <span id="crm-phone-count" class="small muted"></span>
+            </div>
+            <!-- New call form (hidden by default) -->
+            <div id="crm-phone-form" class="crm-entry-form hidden">
+              <div class="crm-detail-grid">
+                <label>Shopped By
+                  <select id="pf-agent" class="crm-select">
+                    <option>Erick</option><option>Katie</option><option>Rhoxie</option>
+                    <option>Katrina</option><option>Oscar</option><option>Lyndsay</option>
+                  </select>
+                </label>
+                <label>Date<input id="pf-date" type="date" class="crm-input"></label>
+                <label>Connection Result
+                  <select id="pf-connection" class="crm-select">
+                    <option value="answered_agent">Answered by Agent</option>
+                    <option value="answered_ai">Answered by AI/Service</option>
+                    <option value="voicemail">Voicemail Only</option>
+                    <option value="no_answer">No Answer / No Voicemail</option>
+                    <option value="wrong_number">Wrong / Disconnected</option>
+                  </select>
+                </label>
+                <label>Score (0-100)<input id="pf-score" type="number" min="0" max="100" class="crm-input"></label>
+              </div>
+              <label>Notes<textarea id="pf-notes" class="crm-textarea" rows="3"></textarea></label>
+              <div style="display:flex;gap:8px;margin-top:8px;">
+                <button id="crm-phone-save" class="btn-sm primary">Save Call</button>
+                <button id="crm-phone-cancel" class="btn-sm">Cancel</button>
+              </div>
+            </div>
+            <div id="crm-phone-list"></div>
+          </div>
+
+          <!-- ── ONLINE SHOP ── -->
+          <div id="crm-mtab-online" class="crm-modal-pane hidden">
+            <div class="crm-tab-toolbar">
+              <button id="crm-online-add-btn" class="btn-sm primary">+ Log Online Shop</button>
+            </div>
+            <div id="crm-online-form" class="crm-entry-form hidden">
+              <div class="crm-detail-grid">
+                <label>Shopped By
+                  <select id="of-agent" class="crm-select">
+                    <option>Katie</option><option>Rhoxie</option><option>Katrina</option>
+                    <option>Erick</option><option>Oscar</option><option>Lyndsay</option>
+                  </select>
+                </label>
+                <label>Date<input id="of-date" type="date" class="crm-input"></label>
+                <label>Platform<input id="of-platform" class="crm-input" placeholder="e.g. Apartments.com"></label>
+                <label>Score (0-100)<input id="of-score" type="number" min="0" max="100" class="crm-input"></label>
+              </div>
+              <label>Notes<textarea id="of-notes" class="crm-textarea" rows="3"></textarea></label>
+              <div style="display:flex;gap:8px;margin-top:8px;">
+                <button id="crm-online-save" class="btn-sm primary">Save</button>
+                <button id="crm-online-cancel" class="btn-sm">Cancel</button>
+              </div>
+            </div>
+            <div id="crm-online-list"></div>
+          </div>
+
+          <!-- ── APPOINTMENTS ── -->
+          <div id="crm-mtab-appointments" class="crm-modal-pane hidden">
+            <div class="crm-tab-toolbar">
+              <button id="crm-appt-add-btn" class="btn-sm primary">+ Add Appointment</button>
+            </div>
+            <div id="crm-appt-form" class="crm-entry-form hidden">
+              <div class="crm-detail-grid">
+                <label>Agent<input id="af-agent" class="crm-input"></label>
+                <label>Date &amp; Time<input id="af-datetime" type="datetime-local" class="crm-input"></label>
+                <label>Status
+                  <select id="af-status" class="crm-select">
+                    <option value="scheduled">Scheduled</option>
+                    <option value="completed">Completed</option>
+                    <option value="no_show">No Show</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </label>
+              </div>
+              <label>Outcome / Notes<textarea id="af-notes" class="crm-textarea" rows="3"></textarea></label>
+              <div style="display:flex;gap:8px;margin-top:8px;">
+                <button id="crm-appt-save" class="btn-sm primary">Save</button>
+                <button id="crm-appt-cancel" class="btn-sm">Cancel</button>
+              </div>
+            </div>
+            <div id="crm-appt-list"></div>
+          </div>
+
+          <!-- ── FOLLOW-UPS ── -->
+          <div id="crm-mtab-followups" class="crm-modal-pane hidden">
+            <div class="crm-tab-toolbar">
+              <button id="crm-fu-add-btn" class="btn-sm primary">+ Log Follow-Up</button>
+            </div>
+            <div id="crm-fu-form" class="crm-entry-form hidden">
+              <div class="crm-detail-grid">
+                <label>Method
+                  <select id="ff-method" class="crm-select">
+                    <option value="call_back">Call Back Received</option>
+                    <option value="email_response">Email Response</option>
+                    <option value="text">Text Received</option>
+                    <option value="owner_response">Owner Responded</option>
+                  </select>
+                </label>
+                <label>Date Received<input id="ff-date" type="date" class="crm-input"></label>
+                <label>Completed
+                  <select id="ff-completed" class="crm-select">
+                    <option value="false">No</option>
+                    <option value="true">Yes</option>
+                  </select>
+                </label>
+              </div>
+              <label>Outcome<textarea id="ff-outcome" class="crm-textarea" rows="2"></textarea></label>
+              <label>Next Action<input id="ff-next" class="crm-input" placeholder="What's the follow-up action?"></label>
+              <div style="display:flex;gap:8px;margin-top:8px;">
+                <button id="crm-fu-save" class="btn-sm primary">Save</button>
+                <button id="crm-fu-cancel" class="btn-sm">Cancel</button>
+              </div>
+            </div>
+            <div id="crm-fu-list"></div>
+          </div>
+
+          <!-- ── INSPECTION ── -->
+          <div id="crm-mtab-inspection" class="crm-modal-pane hidden">
+            <div class="crm-tab-toolbar">
+              <button id="crm-insp-add-btn" class="btn-sm primary">+ Log Inspection</button>
+            </div>
+            <div id="crm-insp-form" class="crm-entry-form hidden">
+              <div class="crm-detail-grid">
+                <label>Date Visited<input id="if-date" type="date" class="crm-input"></label>
+                <label>Office Open
+                  <select id="if-office" class="crm-select"><option value="">—</option><option value="true">Yes</option><option value="false">No</option></select>
+                </label>
+                <label>Building Condition
+                  <select id="if-building" class="crm-select">
+                    <option value="">—</option><option>Excellent</option><option>Good</option><option>Fair</option><option>Poor</option>
+                  </select>
+                </label>
+                <label>Grounds Condition
+                  <select id="if-grounds" class="crm-select">
+                    <option value="">—</option><option>Excellent</option><option>Good</option><option>Fair</option><option>Poor</option>
+                  </select>
+                </label>
+                <label>ROP Sign Posted
+                  <select id="if-rop" class="crm-select"><option value="">—</option><option value="true">Yes</option><option value="false">No</option></select>
+                </label>
+                <label>Phone Test Result
+                  <select id="if-phone" class="crm-select">
+                    <option value="">—</option>
+                    <option value="answered_agent">Answered by Agent</option>
+                    <option value="answered_ai">Answered by AI/Service</option>
+                    <option value="voicemail">Voicemail</option>
+                    <option value="no_answer">No Answer</option>
+                  </select>
+                </label>
+              </div>
+              <label>Notes<textarea id="if-notes" class="crm-textarea" rows="3"></textarea></label>
+              <div style="display:flex;gap:8px;margin-top:8px;">
+                <button id="crm-insp-save" class="btn-sm primary">Save</button>
+                <button id="crm-insp-cancel" class="btn-sm">Cancel</button>
+              </div>
+            </div>
+            <div id="crm-insp-list"></div>
+          </div>
+
+          <!-- ── DM REVIEW ── -->
+          <div id="crm-mtab-dm" class="crm-modal-pane hidden">
+            <div class="crm-tab-toolbar">
+              <span id="crm-dm-overall" class="crm-dm-score-pill">—</span>
+              <button id="crm-dm-save-btn" class="btn-sm primary">💾 Save DM Review</button>
+            </div>
+
+            <div id="crm-dm-sections">
+              <!-- Website -->
+              <details class="crm-dm-section" open>
+                <summary class="crm-dm-section-title">🌐 Website</summary>
+                <div class="crm-dm-criteria" id="dm-website-criteria">
+                  <div class="crm-dm-row"><span>SEO / Findability</span><div class="crm-grade-picker" data-section="website" data-key="seo"></div></div>
+                  <div class="crm-dm-row"><span>Navigation Quality</span><div class="crm-grade-picker" data-section="website" data-key="nav"></div></div>
+                  <div class="crm-dm-row"><span>Mobile Quality</span><div class="crm-grade-picker" data-section="website" data-key="mobile"></div></div>
+                  <div class="crm-dm-row"><span>Content &amp; Depth</span><div class="crm-grade-picker" data-section="website" data-key="content"></div></div>
+                  <div class="crm-dm-row"><span>Photo Quality</span><div class="crm-grade-picker" data-section="website" data-key="photos"></div></div>
+                  <div class="crm-dm-row"><span>Instagram Active</span><div class="crm-yn-picker" data-section="website" data-key="instagram"></div></div>
+                  <div class="crm-dm-row"><span>TikTok Active</span><div class="crm-yn-picker" data-section="website" data-key="tiktok"></div></div>
+                  <div class="crm-dm-row"><span>Chatbot Present</span><div class="crm-yn-picker" data-section="website" data-key="chatbot"></div></div>
+                  <div class="crm-dm-row"><span>Address + Map</span><div class="crm-yn-picker" data-section="website" data-key="map"></div></div>
+                  <div class="crm-dm-row"><span>Fair Housing Logo</span><div class="crm-yn-picker" data-section="website" data-key="fair_housing"></div></div>
+                </div>
+              </details>
+
+              <!-- Floor Plans -->
+              <details class="crm-dm-section">
+                <summary class="crm-dm-section-title">🏠 Floor Plans &amp; Availability</summary>
+                <div class="crm-dm-criteria" id="dm-floorplan-criteria">
+                  <div class="crm-dm-row"><span>Pricing Transparency</span><div class="crm-grade-picker" data-section="floorplan" data-key="pricing"></div></div>
+                  <div class="crm-dm-row"><span>Real-Time Availability</span><div class="crm-yn-picker" data-section="floorplan" data-key="realtime"></div></div>
+                  <div class="crm-dm-row"><span>Apply Now CTA</span><div class="crm-yn-picker" data-section="floorplan" data-key="apply_now"></div></div>
+                  <div class="crm-dm-row"><span>Self-Schedule Tour</span><div class="crm-yn-picker" data-section="floorplan" data-key="self_schedule"></div></div>
+                  <div class="crm-dm-row"><span>Specials Listed</span><div class="crm-yn-picker" data-section="floorplan" data-key="specials"></div></div>
+                </div>
+              </details>
+
+              <!-- Google Business -->
+              <details class="crm-dm-section">
+                <summary class="crm-dm-section-title">📍 Google Business Profile</summary>
+                <div class="crm-dm-criteria" id="dm-gbp-criteria">
+                  <div class="crm-dm-row"><span>GBP Active</span><div class="crm-yn-picker" data-section="gbp" data-key="active"></div></div>
+                  <div class="crm-dm-row"><span>Hours Listed</span><div class="crm-yn-picker" data-section="gbp" data-key="hours"></div></div>
+                  <div class="crm-dm-row"><span>Photos / Videos Quality</span><div class="crm-grade-picker" data-section="gbp" data-key="photos"></div></div>
+                  <div class="crm-dm-row"><span>Posts Active + Quality</span><div class="crm-grade-picker" data-section="gbp" data-key="posts"></div></div>
+                  <div class="crm-dm-row"><span>Reviews Responded To</span><div class="crm-yn-picker" data-section="gbp" data-key="reviews_responded"></div></div>
+                  <div class="crm-dm-row"><span>Book Appointment</span><div class="crm-yn-picker" data-section="gbp" data-key="book_appt"></div></div>
+                </div>
+              </details>
+
+              <!-- Facebook -->
+              <details class="crm-dm-section">
+                <summary class="crm-dm-section-title">📘 Facebook</summary>
+                <div class="crm-dm-criteria" id="dm-facebook-criteria">
+                  <div class="crm-dm-row"><span>Active</span><div class="crm-yn-picker" data-section="facebook" data-key="active"></div></div>
+                  <div class="crm-dm-row"><span>Hours Listed</span><div class="crm-yn-picker" data-section="facebook" data-key="hours"></div></div>
+                  <div class="crm-dm-row"><span>Photos / Videos</span><div class="crm-grade-picker" data-section="facebook" data-key="photos"></div></div>
+                  <div class="crm-dm-row"><span>Post Quality</span><div class="crm-grade-picker" data-section="facebook" data-key="post_quality"></div></div>
+                  <div class="crm-dm-row"><span>Reviews Responded To</span><div class="crm-yn-picker" data-section="facebook" data-key="reviews_responded"></div></div>
+                </div>
+              </details>
+
+              <!-- ILS -->
+              <details class="crm-dm-section">
+                <summary class="crm-dm-section-title">🏢 ILS Listings</summary>
+                <div class="crm-dm-criteria" id="dm-ils-criteria">
+                  <div class="crm-dm-row"><span>Apartments.com Listed</span><div class="crm-yn-picker" data-section="ils" data-key="apts_listed"></div></div>
+                  <div class="crm-dm-row"><span>Apts Photos Quality</span><div class="crm-grade-picker" data-section="ils" data-key="apts_photos"></div></div>
+                  <div class="crm-dm-row"><span>Apts Pricing Accurate</span><div class="crm-yn-picker" data-section="ils" data-key="apts_pricing"></div></div>
+                  <div class="crm-dm-row"><span>Zillow Listed</span><div class="crm-yn-picker" data-section="ils" data-key="zillow_listed"></div></div>
+                  <div class="crm-dm-row"><span>Zillow Photos Quality</span><div class="crm-grade-picker" data-section="ils" data-key="zillow_photos"></div></div>
+                </div>
+              </details>
+            </div>
+
+            <div class="crm-section" style="margin-top:16px;">
+              <h4 class="crm-section-title">Audit Notes &amp; Top Action Items</h4>
+              <textarea id="crm-dm-audit-notes" class="crm-textarea" rows="4" placeholder="Key findings and recommendations…"></textarea>
+            </div>
+          </div>
+
+          <!-- ── OUTREACH & NOTES ── -->
+          <div id="crm-mtab-outreach" class="crm-modal-pane hidden">
+            <!-- Owner response flag -->
+            <div id="crm-owner-responded-banner" class="crm-flag-banner crm-flag-ok hidden">
+              🔥 Owner has responded — assign to Lyndsay immediately
+            </div>
+
+            <!-- AI Dossier -->
+            <div class="crm-dossier" id="crm-dossier">
+              <div class="crm-dossier-kicker">Field Report — Why This Is a Lead</div>
+              <div id="crm-dossier-body" class="crm-dossier-body">Loading…</div>
+            </div>
+
+            <!-- Outreach drafts -->
+            <div class="crm-section">
+              <div class="crm-tab-toolbar">
+                <h4 class="crm-section-title">Outreach Drafts</h4>
+                <button id="crm-draft-add-btn" class="btn-sm primary">+ New Draft</button>
+              </div>
+              <div id="crm-draft-form" class="crm-entry-form hidden">
+                <div class="crm-detail-grid">
+                  <label>Channel<input id="df-channel" class="crm-input" placeholder="Email / LinkedIn / Phone"></label>
+                  <label>Status
+                    <select id="df-status" class="crm-select">
+                      <option value="draft">Draft</option>
+                      <option value="sent">Sent</option>
+                      <option value="replied">Replied</option>
+                    </select>
+                  </label>
+                </div>
+                <label>Subject<input id="df-subject" class="crm-input" placeholder="Email subject line"></label>
+                <label>Body<textarea id="df-body" class="crm-textarea" rows="6"></textarea></label>
+                <label>Notes<input id="df-notes" class="crm-input" placeholder="Internal notes"></label>
+                <div style="display:flex;gap:8px;margin-top:8px;">
+                  <button id="crm-draft-save" class="btn-sm primary">Save Draft</button>
+                  <button id="crm-draft-cancel" class="btn-sm">Cancel</button>
+                </div>
+              </div>
+              <div id="crm-draft-list"></div>
+            </div>
+
+            <!-- Notes log -->
+            <div class="crm-section">
+              <h4 class="crm-section-title">Notes</h4>
+              <div id="crm-notes-display" class="small muted" style="white-space:pre-wrap;"></div>
+            </div>
+          </div>
+
+          <!-- ── HISTORY ── -->
+          <div id="crm-mtab-history" class="crm-modal-pane hidden">
+            <div id="crm-history-list"></div>
+          </div>
+
+        </div><!-- /crm-modal-body -->
+      </div><!-- /crm-modal-panel -->
+    </div><!-- /crm-modal -->
+
+  </section><!-- /tab-crm -->
 
   <!-- ============ END OF DAY ============ -->
   <section id="tab-eod" class="tab">
