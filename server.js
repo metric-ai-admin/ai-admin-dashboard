@@ -1873,6 +1873,103 @@ app.get('/api/copilot/export', requireCopilotApiKey, async (req, res) => {
   }
 });
 
+// ---- POST /api/triage/log-session -----------------------------------------------
+// Inserts one triage session record into Supabase triage_sessions table.
+app.post('/api/triage/log-session', async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const db = supabaseAdmin || supabasePublic;
+  const {
+    session_date, emails_processed, lyndsay_review, bekah_follow_up,
+    rocio, mpm_team, clients, archive, unsubscribe, do_not_move,
+    manual_corrections, correction_notes, confidence_avg,
+  } = req.body || {};
+  if (!emails_processed && emails_processed !== 0) {
+    return res.status(400).json({ error: 'emails_processed is required' });
+  }
+  const row = {
+    session_date:       session_date       || undefined,
+    emails_processed:   emails_processed   ?? 0,
+    lyndsay_review:     lyndsay_review     ?? 0,
+    bekah_follow_up:    bekah_follow_up    ?? 0,
+    rocio:              rocio              ?? 0,
+    mpm_team:           mpm_team           ?? 0,
+    clients:            clients            ?? 0,
+    archive:            archive            ?? 0,
+    unsubscribe:        unsubscribe        ?? 0,
+    do_not_move:        do_not_move        ?? 0,
+    manual_corrections: manual_corrections ?? 0,
+    correction_notes:   correction_notes   || null,
+    confidence_avg:     confidence_avg     ?? null,
+  };
+  const { data, error } = await db.from('triage_sessions').insert([row]).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.status(201).json({ ok: true, session: data });
+});
+
+// ---- GET /api/triage/summary ----------------------------------------------------
+// Returns cumulative stats across all triage sessions.
+app.get('/api/triage/summary', async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const db = supabaseAdmin || supabasePublic;
+
+  const { data, error } = await db
+    .from('triage_sessions')
+    .select('*')
+    .order('session_date', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+
+  const sessions = data || [];
+  const total_sessions = sessions.length;
+
+  // Cumulative counters
+  const totals = {
+    emails_processed:   0,
+    lyndsay_review:     0,
+    bekah_follow_up:    0,
+    rocio:              0,
+    mpm_team:           0,
+    clients:            0,
+    archive:            0,
+    unsubscribe:        0,
+    do_not_move:        0,
+    manual_corrections: 0,
+  };
+  let confidenceSum = 0, confidenceCount = 0;
+  for (const s of sessions) {
+    for (const k of Object.keys(totals)) totals[k] += (s[k] || 0);
+    if (s.confidence_avg != null) { confidenceSum += parseFloat(s.confidence_avg); confidenceCount++; }
+  }
+
+  const accuracy_rate = totals.emails_processed > 0
+    ? ((totals.emails_processed - totals.manual_corrections) / totals.emails_processed)
+    : null;
+
+  // Weekly corrections trend: group by ISO week
+  const weeklyMap = {};
+  for (const s of sessions) {
+    const d = new Date(s.session_date);
+    // ISO week number
+    const jan4 = new Date(d.getFullYear(), 0, 4);
+    const week = Math.ceil(((d - jan4) / 86400000 + jan4.getDay() + 1) / 7);
+    const key = `${d.getFullYear()}-W${String(week).padStart(2, '0')}`;
+    if (!weeklyMap[key]) weeklyMap[key] = { week: key, sessions: 0, emails: 0, corrections: 0 };
+    weeklyMap[key].sessions    += 1;
+    weeklyMap[key].emails      += (s.emails_processed || 0);
+    weeklyMap[key].corrections += (s.manual_corrections || 0);
+  }
+  const weekly_trend = Object.values(weeklyMap).sort((a, b) => a.week.localeCompare(b.week));
+
+  res.json({
+    ok: true,
+    total_sessions,
+    totals,
+    accuracy_rate: accuracy_rate !== null ? parseFloat(accuracy_rate.toFixed(4)) : null,
+    accuracy_pct:  accuracy_rate !== null ? `${(accuracy_rate * 100).toFixed(1)}%` : null,
+    confidence_avg_overall: confidenceCount > 0 ? parseFloat((confidenceSum / confidenceCount).toFixed(4)) : null,
+    weekly_trend,
+  });
+});
+
 // ---- POST /api/email/setup-outlook-rules ----------------------------------------
 // Creates 8 Outlook message rules in Lyndsay's inbox via Graph API.
 // Requires MailboxSettings.ReadWrite application permission.
