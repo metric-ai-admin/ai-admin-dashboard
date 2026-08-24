@@ -2517,15 +2517,19 @@ app.get('/api/crm/properties', requireCRM, async (req, res) => {
 // ---- GET /api/crm/properties/:id -----------------------------------------------
 app.get('/api/crm/properties/:id', requireCRM, async (req, res) => {
   try {
-    const { data: property, error: propErr } = await (supabaseAdmin || supabasePublic)
+    const db = supabaseAdmin || supabasePublic;
+    const { data: property, error: propErr } = await db
       .from('properties').select('*').eq('id', req.params.id).single();
     if (propErr) return res.status(404).json({ error: propErr.message });
 
-    const [phones, online, follows, drafts] = await Promise.all([
-      ( supabaseAdmin || supabasePublic).from('phone_shops').select('*').eq('property_id', req.params.id).order('shop_date', { ascending: false }),
-      ( supabaseAdmin || supabasePublic).from('online_shops').select('*').eq('property_id', req.params.id).order('shop_date', { ascending: false }),
-      ( supabaseAdmin || supabasePublic).from('follow_ups').select('*').eq('property_id', req.params.id).order('follow_up_date', { ascending: false }),
-      ( supabaseAdmin || supabasePublic).from('outreach_drafts').select('*').eq('property_id', req.params.id).order('created_at', { ascending: false }),
+    const [phones, online, follows, drafts, appts, insp, dm] = await Promise.all([
+      db.from('phone_shops').select('*').eq('property_id', req.params.id).order('shop_date', { ascending: false }),
+      db.from('online_shops').select('*').eq('property_id', req.params.id).order('shop_date', { ascending: false }),
+      db.from('follow_ups').select('*').eq('property_id', req.params.id).order('follow_up_date', { ascending: false }),
+      db.from('outreach_drafts').select('*').eq('property_id', req.params.id).order('created_at', { ascending: false }),
+      db.from('appointments').select('*').eq('property_id', req.params.id).order('appointment_at', { ascending: false }),
+      db.from('inspections').select('*').eq('property_id', req.params.id).order('visited_date', { ascending: false }),
+      db.from('dm_reviews').select('*').eq('property_id', req.params.id).maybeSingle(),
     ]);
 
     res.json({
@@ -2534,6 +2538,9 @@ app.get('/api/crm/properties/:id', requireCRM, async (req, res) => {
       online_shops:    online.data || [],
       follow_ups:      follows.data || [],
       outreach_drafts: drafts.data || [],
+      appointments:    appts.data  || [],
+      inspections:     insp.data   || [],
+      dm_review:       dm.data     || null,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2544,9 +2551,12 @@ app.get('/api/crm/properties/:id', requireCRM, async (req, res) => {
 app.patch('/api/crm/properties/:id', requireCRM, async (req, res) => {
   try {
     const allowed = [
-      'rop_status','lead_score_override','lyndsay_reviewed','notes',
-      'assigned_to','phone_assignee','phone_assignee3','online_dm_assignee',
+      'property_name','address','city','state','zip','submarket','style',
+      'year_built','asset_class','units','vacancy_pct','avg_asking_unit','avg_unit_sf',
+      'management_company','management_type',
       'owner_name','owner_contact_name','owner_phone','owner_email','owner_address',
+      'assigned_to','phone_assignee','phone_assignee3','online_dm_assignee',
+      'rop_status','lead_score_override','lyndsay_reviewed','notes',
     ];
     const updates = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
@@ -2582,6 +2592,229 @@ app.post('/api/crm/properties/:id/outreach-drafts', requireCRM, async (req, res)
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ---- POST /api/crm/properties/:id/phone-shops ----------------------------------
+app.post('/api/crm/properties/:id/phone-shops', requireCRM, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('phone_shops')
+      .insert({ ...req.body, property_id: req.params.id }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.status(201).json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- POST /api/crm/properties/:id/online-shops ---------------------------------
+app.post('/api/crm/properties/:id/online-shops', requireCRM, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('online_shops')
+      .insert({ ...req.body, property_id: req.params.id }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.status(201).json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- GET /api/crm/properties/:id/appointments ----------------------------------
+app.get('/api/crm/properties/:id/appointments', requireCRM, async (req, res) => {
+  try {
+    const { data, error } = await (supabaseAdmin || supabasePublic)
+      .from('appointments').select('*').eq('property_id', req.params.id)
+      .order('appointment_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- POST /api/crm/properties/:id/appointments ---------------------------------
+app.post('/api/crm/properties/:id/appointments', requireCRM, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('appointments')
+      .insert({ ...req.body, property_id: req.params.id }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.status(201).json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- PATCH /api/crm/appointments/:id -------------------------------------------
+app.patch('/api/crm/appointments/:id', requireCRM, async (req, res) => {
+  try {
+    const allowed = ['status', 'outcome', 'notes', 'appointment_at'];
+    const updates = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
+    const { data, error } = await (supabaseAdmin || supabasePublic)
+      .from('appointments').update(updates).eq('id', req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- GET /api/crm/properties/:id/inspections -----------------------------------
+app.get('/api/crm/properties/:id/inspections', requireCRM, async (req, res) => {
+  try {
+    const { data, error } = await (supabaseAdmin || supabasePublic)
+      .from('inspections').select('*').eq('property_id', req.params.id)
+      .order('visited_date', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- POST /api/crm/properties/:id/inspections ----------------------------------
+app.post('/api/crm/properties/:id/inspections', requireCRM, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('inspections')
+      .insert({ ...req.body, property_id: req.params.id }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.status(201).json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- GET /api/crm/properties/:id/dm-review -------------------------------------
+app.get('/api/crm/properties/:id/dm-review', requireCRM, async (req, res) => {
+  try {
+    const { data, error } = await (supabaseAdmin || supabasePublic)
+      .from('dm_reviews').select('*').eq('property_id', req.params.id).maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || null);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- PUT /api/crm/properties/:id/dm-review (upsert) ----------------------------
+app.put('/api/crm/properties/:id/dm-review', requireCRM, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { website_scores, floorplan_scores, gbp_scores, facebook_scores, ils_scores, audit_notes, ai_filled } = req.body;
+
+    // Compute overall_score: average of all numeric grade/yn values across sections
+    const allScores = [website_scores, floorplan_scores, gbp_scores, facebook_scores, ils_scores]
+      .filter(Boolean).flatMap(section => Object.values(section))
+      .filter(v => typeof v === 'number' && !isNaN(v));
+    const overall_score = allScores.length
+      ? parseFloat((allScores.reduce((a, b) => a + b, 0) / allScores.length).toFixed(2))
+      : null;
+
+    const row = {
+      property_id: req.params.id,
+      reviewed_at: new Date().toISOString(),
+      overall_score,
+      website_scores:   website_scores   || {},
+      floorplan_scores: floorplan_scores || {},
+      gbp_scores:       gbp_scores       || {},
+      facebook_scores:  facebook_scores  || {},
+      ils_scores:       ils_scores       || {},
+      audit_notes:      audit_notes      || null,
+      ai_filled:        ai_filled        || false,
+      updated_at:       new Date().toISOString(),
+    };
+
+    const { data, error } = await db.from('dm_reviews')
+      .upsert(row, { onConflict: 'property_id' }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- GET /api/crm/properties/:id/history ---------------------------------------
+// Returns a reconstructed change timeline from sub-table created_at timestamps.
+app.get('/api/crm/properties/:id/history', requireCRM, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const [phones, online, follows, appts, insp, dm, drafts] = await Promise.all([
+      db.from('phone_shops').select('id,shop_date,agent_name,notes,created_at').eq('property_id', req.params.id),
+      db.from('online_shops').select('id,shop_date,platform,notes,created_at').eq('property_id', req.params.id),
+      db.from('follow_ups').select('id,follow_up_date,method,outcome,created_at').eq('property_id', req.params.id),
+      db.from('appointments').select('id,appointment_at,status,outcome,created_at').eq('property_id', req.params.id),
+      db.from('inspections').select('id,visited_date,building_condition,created_at').eq('property_id', req.params.id),
+      db.from('dm_reviews').select('id,reviewed_at,overall_score,updated_at').eq('property_id', req.params.id).maybeSingle(),
+      db.from('outreach_drafts').select('id,channel,subject,status,created_at').eq('property_id', req.params.id),
+    ]);
+
+    const events = [
+      ...(phones.data  || []).map(r => ({ when: r.created_at, area: 'Phone Shop',    detail: `${r.agent_name || '—'} · ${r.notes || ''}`.trim() })),
+      ...(online.data  || []).map(r => ({ when: r.created_at, area: 'Online Shop',   detail: `${r.platform || '—'} · ${r.notes || ''}`.trim() })),
+      ...(follows.data || []).map(r => ({ when: r.created_at, area: 'Follow-Up',     detail: `${r.method || '—'} → ${r.outcome || ''}`.trim() })),
+      ...(appts.data   || []).map(r => ({ when: r.created_at, area: 'Appointment',   detail: `${r.status || ''}${r.outcome ? ' · ' + r.outcome : ''}` })),
+      ...(insp.data    || []).map(r => ({ when: r.created_at, area: 'Inspection',    detail: `Building: ${r.building_condition || '—'}` })),
+      ...(drafts.data  || []).map(r => ({ when: r.created_at, area: 'Outreach Draft',detail: `${r.channel || '—'} · ${r.subject || ''}`.trim() })),
+      ...(dm.data ? [{ when: dm.data.updated_at, area: 'DM Review', detail: `Score: ${dm.data.overall_score ?? '—'}` }] : []),
+    ].sort((a, b) => new Date(b.when) - new Date(a.when));
+
+    res.json(events);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- GET /api/crm/tasks --------------------------------------------------------
+// Derives tasks from properties in Supabase — no separate tasks table.
+app.get('/api/crm/tasks', requireCRM, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { agent } = req.query; // optional filter by assigned_to
+
+    const query = db.from('properties').select(
+      'id,property_name,management_company,management_type,assigned_to,' +
+      'phone_assignee,online_dm_assignee,rop_status,vacancy_pct,lead_score_override,' +
+      'lyndsay_reviewed,notes,updated_at'
+    );
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+
+    const properties = data || [];
+
+    // Pull latest activity counts per property
+    const ids = properties.map(p => p.id);
+    const [phones, follows, appts] = ids.length ? await Promise.all([
+      db.from('phone_shops').select('property_id').in('property_id', ids),
+      db.from('follow_ups').select('property_id,completed').in('property_id', ids),
+      db.from('appointments').select('property_id,status').in('property_id', ids),
+    ]) : [{ data: [] }, { data: [] }, { data: [] }];
+
+    const phoneCount   = {};
+    const followCount  = {};
+    const missedTours  = {};
+    (phones.data  || []).forEach(r => { phoneCount[r.property_id]  = (phoneCount[r.property_id]  || 0) + 1; });
+    (follows.data || []).forEach(r => { if (!r.completed) followCount[r.property_id] = (followCount[r.property_id] || 0) + 1; });
+    (appts.data   || []).forEach(r => { if (r.status === 'no_show' || r.status === 'missed_follow_up') missedTours[r.property_id] = true; });
+
+    const tasks = [];
+    for (const p of properties) {
+      if (!p.assigned_to && !p.phone_assignee && !p.online_dm_assignee) continue;
+
+      // Skip if filtered by agent
+      const relevantAgents = [p.assigned_to, p.phone_assignee, p.online_dm_assignee].filter(Boolean);
+      if (agent && !relevantAgents.some(a => a.toLowerCase().includes(agent.toLowerCase()))) continue;
+
+      // Phone shop task
+      if (p.phone_assignee && (phoneCount[p.id] || 0) < 3) {
+        tasks.push({ type: 'phone_shop', property_id: p.id, property_name: p.property_name,
+          agent: p.phone_assignee, management_company: p.management_company, units: null,
+          detail: `${phoneCount[p.id] || 0}/3 calls logged`, priority: p.lead_score_override || 5 });
+      }
+      // Online shop task
+      if (p.online_dm_assignee) {
+        tasks.push({ type: 'online_shop', property_id: p.id, property_name: p.property_name,
+          agent: p.online_dm_assignee, management_company: p.management_company, units: null,
+          detail: 'DM audit pending', priority: p.lead_score_override || 4 });
+      }
+      // Ready for Lyndsay
+      if (p.lyndsay_reviewed === false && (phoneCount[p.id] || 0) >= 1) {
+        tasks.push({ type: 'lyndsay_review', property_id: p.id, property_name: p.property_name,
+          agent: 'Lyndsay', management_company: p.management_company, units: null,
+          detail: 'Ready for review', priority: (p.lead_score_override || 5) + 2 });
+      }
+      // Missed tour follow-up
+      if (missedTours[p.id]) {
+        tasks.push({ type: 'missed_tour', property_id: p.id, property_name: p.property_name,
+          agent: p.phone_assignee || p.assigned_to, management_company: p.management_company, units: null,
+          detail: 'Tour was a no-show — follow up', priority: 9 });
+      }
+    }
+
+    tasks.sort((a, b) => b.priority - a.priority);
+    res.json({ ok: true, total: tasks.length, tasks });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---- GET /api/crm/meta ---------------------------------------------------------
