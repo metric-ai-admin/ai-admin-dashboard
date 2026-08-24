@@ -1873,6 +1873,118 @@ app.get('/api/copilot/export', requireCopilotApiKey, async (req, res) => {
   }
 });
 
+// ---- POST /api/email/setup-outlook-rules ----------------------------------------
+// Creates 8 Outlook message rules in Lyndsay's inbox via Graph API.
+// Requires MailboxSettings.ReadWrite application permission.
+// Idempotent-ish: skips rules whose displayName already exists.
+app.post('/api/email/setup-outlook-rules', async (req, res) => {
+  if (!GRAPH_CONFIGURED) return res.status(503).json({ error: 'Graph API not configured' });
+  try {
+    const token = await graphMailboxToken('lyndsay');
+    const base  = graphMailboxBase('lyndsay');
+    const h     = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+    // ── 1. Resolve Archive folder ID ────────────────────────────────────────
+    const archR = await fetchFn(`${base}/mailFolders/archive`, { headers: h });
+    const archJ = await archR.json();
+    if (!archR.ok) return res.status(502).json({ error: `Cannot resolve Archive folder: ${archJ.error?.message}` });
+    const archiveId = archJ.id;
+
+    // ── 2. Find or create "Rocio" folder in Inbox ────────────────────────────
+    const childR = await fetchFn(`${base}/mailFolders/inbox/childFolders?$top=100`, { headers: h });
+    const childJ = await childR.json();
+    let rocioFolder = (childJ.value || []).find(f => f.displayName.toLowerCase() === 'rocio');
+    let rocioCreated = false;
+    if (!rocioFolder) {
+      rocioCreated = true;
+      const mkR = await fetchFn(`${base}/mailFolders/inbox/childFolders`, {
+        method: 'POST', headers: h,
+        body: JSON.stringify({ displayName: 'Rocio' }),
+      });
+      const mkJ = await mkR.json();
+      if (!mkR.ok) return res.status(502).json({ error: `Cannot create Rocio folder: ${mkJ.error?.message}` });
+      rocioFolder = mkJ;
+    }
+    const rocioId = rocioFolder.id;
+
+    // ── 3. Fetch existing rule names (to skip duplicates) ────────────────────
+    const existR = await fetchFn(`${base}/mailFolders/inbox/messageRules?$top=250`, { headers: h });
+    const existJ = await existR.json();
+    const existingNames = new Set((existJ.value || []).map(r => r.displayName.toLowerCase()));
+
+    // ── 4. Rule definitions ──────────────────────────────────────────────────
+    const rules = [
+      {
+        displayName: 'SimpleVoip no-reply → Archive',
+        conditions: { senderContains: ['noreply@simplevoip.com'] },
+        actions:    { moveToFolder: archiveId, stopProcessingRules: true },
+      },
+      {
+        displayName: 'AppFolio Mailer → Archive',
+        conditions: { senderContains: ['communications@metricpropertymanagement.mailer.appfolio.us'] },
+        actions:    { moveToFolder: archiveId, stopProcessingRules: true },
+      },
+      {
+        displayName: 'AppFolio Box Score → Archive',
+        conditions: { senderContains: ['donotreply@appfolio.com'], subjectContains: ['Box Score'] },
+        actions:    { moveToFolder: archiveId, stopProcessingRules: true },
+      },
+      {
+        displayName: 'AppFolio Bank Feed → Archive',
+        conditions: { senderContains: ['donotreply@appfolio.com'], subjectContains: ['Bank Feed'] },
+        actions:    { moveToFolder: archiveId, stopProcessingRules: true },
+      },
+      {
+        displayName: 'WebWork no-reply → Archive',
+        conditions: { senderContains: ['noreply@webwork-tracker.com'] },
+        actions:    { moveToFolder: archiveId, stopProcessingRules: true },
+      },
+      {
+        displayName: 'Supabase welcome → Archive',
+        conditions: { senderContains: ['welcome@supabase.com'] },
+        actions:    { moveToFolder: archiveId, stopProcessingRules: true },
+      },
+      {
+        displayName: 'Asana no-reply → Archive',
+        conditions: { senderContains: ['no-reply@asana.com'] },
+        actions:    { moveToFolder: archiveId, stopProcessingRules: true },
+      },
+      {
+        displayName: 'AppFolio countersign → Rocio',
+        conditions: { senderContains: ['donotreply@appfolio.com'], subjectContains: ['countersign'] },
+        actions:    { moveToFolder: rocioId, stopProcessingRules: true },
+      },
+    ];
+
+    // ── 5. Create each rule, skip if display name already exists ─────────────
+    const results = [];
+    for (const rule of rules) {
+      if (existingNames.has(rule.displayName.toLowerCase())) {
+        results.push({ rule: rule.displayName, status: 'skipped (already exists)' });
+        continue;
+      }
+      const body = { displayName: rule.displayName, sequence: 1, isEnabled: true,
+                     conditions: rule.conditions, actions: rule.actions };
+      const r = await fetchFn(`${base}/mailFolders/inbox/messageRules`, {
+        method: 'POST', headers: h, body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (r.ok) {
+        results.push({ rule: rule.displayName, status: 'created', id: j.id });
+      } else {
+        results.push({ rule: rule.displayName, status: 'error', error: j.error?.message });
+      }
+    }
+
+    const created = results.filter(r => r.status === 'created').length;
+    const skipped = results.filter(r => r.status.startsWith('skipped')).length;
+    const errors  = results.filter(r => r.status === 'error').length;
+    res.json({ ok: true, summary: { created, skipped, errors }, rocioFolderCreated: rocioCreated, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Real unread/total counts + top senders per mailbox — backs get_email_triage_status.
 app.get('/api/email/triage', async (req, res) => {
   if (!GRAPH_CONFIGURED) {
