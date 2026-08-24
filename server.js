@@ -217,28 +217,30 @@ function requireRole(...roles) {
 
 // ---- POST /api/auth/login --------------------------------------------------
 app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body || {};
-  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Auth not configured' });
 
-  try {
-    // 1. Verify credentials with Supabase Auth
-    const { data: authData, error: authErr } = await supabasePublic.auth.signInWithPassword({ email, password });
-    if (authErr || !authData?.user) return res.status(401).json({ error: 'Invalid email or password' });
+  const fictionalEmail = `${username.toLowerCase().trim()}@metric.internal`;
 
-    // 2. Look up role in dashboard_users
+  try {
+    // 1. Verify credentials with Supabase Auth using fictional email
+    const { data: authData, error: authErr } = await supabasePublic.auth.signInWithPassword({ email: fictionalEmail, password });
+    if (authErr || !authData?.user) return res.status(401).json({ error: 'Invalid username or password' });
+
+    // 2. Look up role in dashboard_users by username
     const db = supabaseAdmin || supabasePublic;
     const { data: dbUser, error: dbErr } = await db
       .from('dashboard_users')
-      .select('id, email, name, role, agent_name, active')
-      .eq('email', email.toLowerCase())
+      .select('id, email, username, name, role, agent_name, active')
+      .eq('username', username.toLowerCase().trim())
       .single();
 
     if (dbErr || !dbUser) return res.status(403).json({ error: 'User not found in dashboard — contact Arturo' });
     if (!dbUser.active) return res.status(403).json({ error: 'Account inactive — contact Arturo' });
 
     // 3. Issue JWT in HttpOnly cookie (7 days)
-    const payload = { userId: dbUser.id, email: dbUser.email, name: dbUser.name, role: dbUser.role, agentName: dbUser.agent_name };
+    const payload = { userId: dbUser.id, email: dbUser.email, username: dbUser.username, name: dbUser.name, role: dbUser.role, agentName: dbUser.agent_name };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 
     res.cookie('dashboardToken', token, {
@@ -273,13 +275,15 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 // ---- POST /api/auth/reset-password -----------------------------------------
-// Sends a Supabase password-reset email (works for first-time setup too)
+// Sends a Supabase password-reset email. Accepts username; constructs
+// the fictional @metric.internal email used in Supabase Auth.
 app.post('/api/auth/reset-password', async (req, res) => {
-  const { email } = req.body || {};
-  if (!email) return res.status(400).json({ error: 'Email required' });
+  const { username } = req.body || {};
+  if (!username) return res.status(400).json({ error: 'Username required' });
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Auth not configured' });
+  const fictionalEmail = `${username.toLowerCase().trim()}@metric.internal`;
   try {
-    const { error } = await supabasePublic.auth.resetPasswordForEmail(email, {
+    const { error } = await supabasePublic.auth.resetPasswordForEmail(fictionalEmail, {
       redirectTo: `${process.env.APP_BASE_URL || 'https://ai-admin-dashboard-jkde.onrender.com'}/login.html`,
     });
     if (error) return res.status(400).json({ error: error.message });

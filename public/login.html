@@ -119,11 +119,11 @@
   </div>
 
   <h1>Sign in</h1>
-  <p class="subtitle">Use your Metric email address</p>
+  <p class="subtitle">Use your Metric username</p>
 
   <form id="login-form">
-    <label for="email">Email</label>
-    <input id="email" type="email" placeholder="you@metricpropertymanagement.com" autocomplete="email" required>
+    <label for="username">Username</label>
+    <input id="username" type="text" placeholder="arturo" autocomplete="username" required>
     <label for="password">Password</label>
     <input id="password" type="password" placeholder="••••••••" autocomplete="current-password" required>
     <button class="btn" type="submit" id="login-btn">Sign in</button>
@@ -136,9 +136,9 @@
 
   <div class="reset-section" id="reset-section">
     <h2>Set or reset your password</h2>
-    <p>Enter your Metric email and we'll send you a link to set your password.</p>
-    <label for="reset-email">Email</label>
-    <input id="reset-email" type="email" placeholder="you@metricpropertymanagement.com" autocomplete="email">
+    <p>Enter your username and we'll send a reset link to the email on file.</p>
+    <label for="reset-username">Username</label>
+    <input id="reset-username" type="text" placeholder="arturo" autocomplete="username">
     <button class="btn" type="button" id="reset-btn">Send reset link</button>
     <div class="msg" id="reset-msg"></div>
   </div>
@@ -156,14 +156,14 @@ loginForm.addEventListener('submit', async (e) => {
   loginMsg.className = 'msg';
   loginMsg.textContent = '';
 
-  const email    = document.getElementById('email').value.trim();
+  const username = document.getElementById('username').value.trim();
   const password = document.getElementById('password').value;
 
   try {
     const r = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ username, password }),
       credentials: 'same-origin',
     });
     const data = await r.json();
@@ -188,10 +188,10 @@ document.getElementById('forgot-toggle').addEventListener('click', () => {
 });
 
 document.getElementById('reset-btn').addEventListener('click', async () => {
-  const email = document.getElementById('reset-email').value.trim();
+  const username = document.getElementById('reset-username').value.trim();
   const resetMsg = document.getElementById('reset-msg');
   const resetBtn = document.getElementById('reset-btn');
-  if (!email) { resetMsg.className = 'msg error'; resetMsg.textContent = 'Enter your email first'; return; }
+  if (!username) { resetMsg.className = 'msg error'; resetMsg.textContent = 'Enter your username first'; return; }
 
   resetBtn.disabled = true;
   resetBtn.textContent = 'Sending…';
@@ -202,7 +202,7 @@ document.getElementById('reset-btn').addEventListener('click', async () => {
     const r = await fetch('/api/auth/reset-password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ username }),
     });
     const data = await r.json();
     if (!r.ok) {
