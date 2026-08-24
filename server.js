@@ -3101,7 +3101,7 @@ app.post('/api/crm/bulk-import', async (req, res) => {
 
 // ── Maintenance routes (Erick's board, property assignments, Lyndsay snapshots,
 //    AppFolio analyzer) — registered on the same app instance using Supabase db ──
-registerMetricRoutes(app, db);
+registerMetricRoutes(app, supabaseAdmin || supabasePublic);
 
 // ---- Boot -------------------------------------------------------------------
 app.listen(PORT, () => {
