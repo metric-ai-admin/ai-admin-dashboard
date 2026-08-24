@@ -1895,17 +1895,21 @@ app.post('/api/email/setup-outlook-rules', async (req, res) => {
     const childJ = await childR.json();
     let rocioFolder = (childJ.value || []).find(f => f.displayName.toLowerCase() === 'rocio');
     let rocioCreated = false;
+    let rocioError = null;
     if (!rocioFolder) {
-      rocioCreated = true;
       const mkR = await fetchFn(`${base}/mailFolders/inbox/childFolders`, {
         method: 'POST', headers: h,
         body: JSON.stringify({ displayName: 'Rocio' }),
       });
       const mkJ = await mkR.json();
-      if (!mkR.ok) return res.status(502).json({ error: `Cannot create Rocio folder: ${mkJ.error?.message}` });
-      rocioFolder = mkJ;
+      if (mkR.ok) {
+        rocioFolder = mkJ;
+        rocioCreated = true;
+      } else {
+        rocioError = mkJ.error?.message || 'Access denied — add Mail.ReadWrite application permission';
+      }
     }
-    const rocioId = rocioFolder.id;
+    const rocioId = rocioFolder?.id || null;
 
     // ── 3. Fetch existing rule names (to skip duplicates) ────────────────────
     const existR = await fetchFn(`${base}/mailFolders/inbox/messageRules?$top=250`, { headers: h });
@@ -1963,6 +1967,11 @@ app.post('/api/email/setup-outlook-rules', async (req, res) => {
         results.push({ rule: rule.displayName, status: 'skipped (already exists)' });
         continue;
       }
+      // Skip rules that require rocioId if folder creation failed
+      if (rule.actions.moveToFolder === rocioId && !rocioId) {
+        results.push({ rule: rule.displayName, status: 'skipped (Rocio folder unavailable)', error: rocioError });
+        continue;
+      }
       const body = { displayName: rule.displayName, sequence: 1, isEnabled: true,
                      conditions: rule.conditions, actions: rule.actions };
       const r = await fetchFn(`${base}/mailFolders/inbox/messageRules`, {
@@ -1979,7 +1988,7 @@ app.post('/api/email/setup-outlook-rules', async (req, res) => {
     const created = results.filter(r => r.status === 'created').length;
     const skipped = results.filter(r => r.status.startsWith('skipped')).length;
     const errors  = results.filter(r => r.status === 'error').length;
-    res.json({ ok: true, summary: { created, skipped, errors }, rocioFolderCreated: rocioCreated, results });
+    res.json({ ok: true, summary: { created, skipped, errors }, rocioFolderCreated: rocioCreated, rocioError: rocioError || undefined, results });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
