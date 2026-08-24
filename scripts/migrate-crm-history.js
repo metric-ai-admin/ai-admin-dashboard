@@ -269,8 +269,16 @@ async function apiFetch(path, opts = {}) {
 }
 
 async function fetchAllProperties() {
-  const data = await apiFetch('/api/crm/properties?limit=1000');
-  return data.properties || [];
+  const all = [];
+  let page = 1;
+  while (true) {
+    const data = await apiFetch(`/api/crm/properties?limit=200&page=${page}`);
+    const batch = data.properties || [];
+    all.push(...batch);
+    if (page >= (data.pages || 1)) break;
+    page++;
+  }
+  return all;
 }
 
 // ── 6. Main ───────────────────────────────────────────────────────────────────
