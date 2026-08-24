@@ -388,6 +388,166 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
     description: 'Resumen de fin de día: tareas completadas y abiertas, reuniones de hoy, elementos aún marcados para Lyndsay, y las prioridades top para mañana. Formato de viñetas listo para compartir con Lyndsay.',
     inputSchema: {},
   }, async () => text(await getJSON('/api/summary')));
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MAINTENANCE TOOLS — Erick Frey (Maintenance Coordinator)
+  // These tools operate on metric-dashboard data: operational_tasks,
+  // property_assignments, lyndsay_snapshots, and the AppFolio analyzer.
+  // All names are prefixed with "maintenance_" to avoid collision with the
+  // AI Admin tools above (which target Arturo's /api/tasks, not Erick's
+  // /api/operational or the Supabase operational_tasks table).
+  // ══════════════════════════════════════════════════════════════════════════
+
+  server.registerTool('maintenance_get_tasks', {
+    title: 'Ver tareas de mantenimiento',
+    description: 'Devuelve todas las tareas del tablero de mantenimiento de Erick (operational_tasks en Supabase). Incluye prioridad, persona responsable, notas e historial.',
+    inputSchema: {},
+  }, async () => text(await getJSON('/api/operational')));
+
+  server.registerTool('maintenance_add_task', {
+    title: 'Agregar tarea de mantenimiento',
+    description: 'Crea una nueva tarea en el tablero de mantenimiento de Erick.',
+    inputSchema: {
+      title: z.string().describe('Descripción de la tarea (requerido)'),
+      type: z.enum(['WO Follow-up','Translation','Resident Contact','Tech Contact','Escalation','Billing QC','Daily Recurring','Other']).optional(),
+      person: z.string().optional().describe('Técnico o persona responsable'),
+      action: z.string().optional().describe('Acción a tomar o contexto detallado'),
+      priority: z.enum(['🔴 Critical','🟡 Follow-up','🟢 In Progress','🔁 Daily Task','✅ Done']).optional(),
+      notes: z.string().optional(),
+    },
+  }, async (params) => {
+    try {
+      const res = await doFetch(`${BASE}/api/operational`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      return text({ ok: true, message: `✅ Tarea creada (${data.id})`, task: data });
+    } catch { return text('No se pudo conectar al dashboard.'); }
+  });
+
+  server.registerTool('maintenance_update_task', {
+    title: 'Modificar tarea de mantenimiento',
+    description: 'Actualiza campos de una tarea existente en el tablero de Erick. Pasar notes agrega una entrada al historial.',
+    inputSchema: {
+      id: z.string().describe('ID de la tarea (op_...)'),
+      title: z.string().optional(),
+      type: z.enum(['WO Follow-up','Translation','Resident Contact','Tech Contact','Escalation','Billing QC','Daily Recurring','Other']).optional(),
+      person: z.string().optional(),
+      action: z.string().optional(),
+      priority: z.enum(['🔴 Critical','🟡 Follow-up','🟢 In Progress','🔁 Daily Task','✅ Done']).optional(),
+      notes: z.string().optional().describe('Nota a agregar al historial'),
+    },
+  }, async ({ id, ...rest }) => {
+    try {
+      const res = await doFetch(`${BASE}/api/operational/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rest) });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      return text({ ok: true, task: data });
+    } catch { return text('No se pudo conectar al dashboard.'); }
+  });
+
+  server.registerTool('maintenance_complete_task', {
+    title: 'Completar tarea de mantenimiento',
+    description: 'Marca una tarea de mantenimiento de Erick como completada.',
+    inputSchema: {
+      id: z.string().describe('ID de la tarea (op_...)'),
+    },
+  }, async ({ id }) => {
+    try {
+      const res = await doFetch(`${BASE}/api/operational/${encodeURIComponent(id)}/done`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      return text({ ok: true, message: `✅ Tarea completada`, task: data });
+    } catch { return text('No se pudo conectar al dashboard.'); }
+  });
+
+  server.registerTool('maintenance_get_property_assignments', {
+    title: 'Ver asignaciones por propiedad',
+    description: 'Devuelve la tabla de asignaciones de mantenimiento por propiedad: técnico de grounds, técnico de mantenimiento, pest control, landscaping.',
+    inputSchema: {},
+  }, async () => text(await getJSON('/api/assignments')));
+
+  server.registerTool('maintenance_update_property', {
+    title: 'Actualizar asignación de propiedad',
+    description: 'Actualiza los campos de asignación de una propiedad específica.',
+    inputSchema: {
+      property: z.string().describe('Nombre exacto de la propiedad'),
+      units: z.number().optional(),
+      hasPool: z.boolean().optional(),
+      groundsTech: z.string().optional(),
+      groundsFrequency: z.string().optional(),
+      maintenanceTech: z.string().optional(),
+      pestControl: z.string().optional(),
+      landscaping: z.string().optional(),
+    },
+  }, async ({ property, ...rest }) => {
+    try {
+      const res = await doFetch(`${BASE}/api/assignments/${encodeURIComponent(property)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ property, ...rest }) });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      return text({ ok: true, assignment: data });
+    } catch { return text('No se pudo conectar al dashboard.'); }
+  });
+
+  server.registerTool('maintenance_get_lyndsay_tasks', {
+    title: 'Ver tareas de Lyndsay (mantenimiento)',
+    description: 'Devuelve el snapshot más reciente de tareas del Daily Command Center de Lyndsay con su estado de completado.',
+    inputSchema: {},
+  }, async () => text(await getJSON('/api/lyndsay/tasks')));
+
+  server.registerTool('maintenance_complete_lyndsay_task', {
+    title: 'Marcar tarea de Lyndsay como hecha',
+    description: 'Marca una tarea del Command Center de Lyndsay como completada. Acepta IDs de tareas (ej. "code:14986") y de rutina (ej. "routine:qc").',
+    inputSchema: {
+      id: z.string().describe('ID de la tarea (p. ej. "code:14986" o "routine:qc")'),
+    },
+  }, async ({ id }) => {
+    try {
+      const res = await doFetch(`${BASE}/api/lyndsay/tasks/${encodeURIComponent(id)}/done`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      return text({ ok: true, message: `✅ Tarea marcada como hecha`, id });
+    } catch { return text('No se pudo conectar al dashboard.'); }
+  });
+
+  server.registerTool('maintenance_get_appfolio_analysis', {
+    title: 'Ver análisis AppFolio más reciente',
+    description: 'Devuelve el análisis más reciente de work orders de AppFolio: grupos urgent, followup, ready for QC.',
+    inputSchema: {},
+  }, async () => text(await getJSON('/api/appfolio/latest')));
+
+  server.registerTool('maintenance_get_eod_summary', {
+    title: 'Resumen de fin de día (mantenimiento)',
+    description: 'Resumen de fin de día de Erick: tareas operacionales completadas y abiertas, work orders de AppFolio, y prioridades para mañana.',
+    inputSchema: {},
+  }, async () => text(await getJSON('/api/maintenance/summary')));
+
+  server.registerTool('maintenance_get_daily_report', {
+    title: 'Reporte diario de trabajo (Erick)',
+    description: 'Reporte detallado de trabajo del día de Erick: tareas completadas, daily tasks, notas agregadas, y resumen de AppFolio. Listo para compartir con Lyndsay.',
+    inputSchema: {},
+  }, async () => text(await getJSON('/api/report')));
+
+  server.registerTool('maintenance_list_sops', {
+    title: 'Listar SOPs de mantenimiento',
+    description: 'Lista los documentos de procedimientos estándar del departamento de mantenimiento.',
+    inputSchema: {},
+  }, async () => text(await getJSON('/api/maintenance/sops')));
+
+  server.registerTool('maintenance_get_sop', {
+    title: 'Ver SOP de mantenimiento',
+    description: 'Devuelve el contenido completo de un SOP de mantenimiento por su ID.',
+    inputSchema: {
+      id: z.string().describe('ID del SOP (sop_...)'),
+    },
+  }, async ({ id }) => text(await getJSON(`/api/maintenance/sops/${encodeURIComponent(id)}`)));
+
+  server.registerTool('maintenance_search_sops', {
+    title: 'Buscar en SOPs de mantenimiento',
+    description: 'Busca por palabra clave en los SOPs de mantenimiento. Devuelve snippets relevantes.',
+    inputSchema: {
+      query: z.string().describe('Término de búsqueda'),
+    },
+  }, async ({ query }) => text(await getJSON(`/api/maintenance/sops/search/${encodeURIComponent(query)}`)));
 }
 
 module.exports = { registerAllTools };

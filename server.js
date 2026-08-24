@@ -29,6 +29,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
+const { registerMetricRoutes } = require('./metric-routes.js');
 const XLSX        = require('xlsx');
 const multer      = require('multer');
 const jwt         = require('jsonwebtoken');
@@ -3097,6 +3098,10 @@ app.post('/api/crm/bulk-import', async (req, res) => {
 });
 
 // ── End BD CRM ──────────────────────────────────────────────────────────────
+
+// ── Maintenance routes (Erick's board, property assignments, Lyndsay snapshots,
+//    AppFolio analyzer) — registered on the same app instance using Supabase db ──
+registerMetricRoutes(app, db);
 
 // ---- Boot -------------------------------------------------------------------
 app.listen(PORT, () => {

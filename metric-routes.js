@@ -1,0 +1,642 @@
+/**
+ * metric-routes.js
+ * Registers Erick's maintenance dashboard routes on the ai-admin-dashboard Express app.
+ * Called once from server.js: registerMetricRoutes(app, db)
+ *
+ * Routes mounted:
+ *   /api/operational/*          – Erick's maintenance task board (Supabase: operational_tasks)
+ *   /api/assignments/*          – Property maintenance assignments (Supabase: property_assignments)
+ *   /api/lyndsay/*              – Lyndsay's Command Center task snapshots (Supabase: lyndsay_snapshots)
+ *   /api/appfolio/*             – AppFolio WO analyzer + v2 Reports API sync
+ *   /api/report                 – Erick's daily work report
+ *   /api/maintenance/summary    – Erick's EOD summary (prefixed to avoid collision with /api/summary)
+ *   /api/maintenance/sops/*     – Maintenance SOPs (prefixed to avoid collision with /api/sops)
+ *
+ * NOT registered here (already exist in server.js or intentionally excluded):
+ *   /api/asana/*    – ai-admin-dashboard's Asana routes cover the same token/workspace
+ *   public/         – Erick uses MCP (Claude Desktop), not the web UI
+ */
+
+'use strict';
+
+const fs   = require('fs');
+const fsp  = require('fs/promises');
+const path = require('path');
+const multer = require('multer');
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+const fetchFn = (typeof fetch === 'function') ? fetch : require('node-fetch');
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// ── AppFolio file directories (ephemeral on Render free tier — acceptable for
+//    the analyzer use case: upload → instant analysis → discard) ───────────────
+const REPORTS_DIR = path.join(__dirname, 'data', 'appfolio_reports');
+const SOPS_DIR    = path.join(__dirname, 'data', 'maintenance_sops_files');
+
+// ── AppFolio v2 client ────────────────────────────────────────────────────────
+// Only required if the AppFolio Reports module is present.
+let afReports = null;
+try { afReports = require('./appfolio-reports'); } catch { /* not available */ }
+
+// ── CSV parser (minimal, handles quotes/commas) ───────────────────────────────
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  text = text.replace(/^﻿/, '');
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i], next = text[i + 1];
+    if (inQuotes) {
+      if (ch === '"' && next === '"') { field += '"'; i++; }
+      else if (ch === '"') inQuotes = false;
+      else field += ch;
+    } else {
+      if (ch === '"') inQuotes = true;
+      else if (ch === ',') { row.push(field); field = ''; }
+      else if (ch === '\r') { /* ignore */ }
+      else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else field += ch;
+    }
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(c => c.trim() !== ''));
+}
+
+// ── multer instances ──────────────────────────────────────────────────────────
+const csvMemUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+// ── AppFolio WO analyzer helpers (extracted from metric-dashboard/server.js) ──
+
+function buildHeaderMap(headers) {
+  const norm = h => h.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const map = {};
+  headers.forEach((h, i) => {
+    const n = norm(h);
+    if (/(workorder|^wo|wonumber|wonum|ticket)/.test(n) && map.wo === undefined) map.wo = i;
+    if (/(property|building|community)/.test(n) && map.property === undefined) map.property = i;
+    if (/(unit|aptapt|apartment)/.test(n) && map.unit === undefined) map.unit = i;
+    if (/(status|stage)/.test(n) && map.status === undefined) map.status = i;
+    if (/(assign|tech|vendor|technician)/.test(n) && map.assignee === undefined) map.assignee = i;
+    if (/(description|issue|details|summary|problem)/.test(n) && map.description === undefined) map.description = i;
+    if (/(created|opened|requestdate|datereceived|submitted)/.test(n) && map.created === undefined) map.created = i;
+    if (/(updated|modified|lastactivity)/.test(n) && map.updated === undefined) map.updated = i;
+    if (/(photo|image|attachment)/.test(n) && map.photos === undefined) map.photos = i;
+  });
+  return map;
+}
+
+function looksSpanish(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  if (/[ñáéíóú¿¡]/.test(t)) return true;
+  const words = ['el ','la ','los ','las ','no ','con ','por ','para ','una ','que ','agua','fuga','baño','cocina','puerta','luz','reparar','inquilino','esta','tiene','hay '];
+  return words.filter(w => t.includes(w)).length >= 2;
+}
+
+function daysBetween(dateStr, now) {
+  const d = new Date(dateStr);
+  if (isNaN(d)) return null;
+  return Math.floor((now - d) / 86400000);
+}
+
+function analyzeWorkOrders(rows) {
+  if (rows.length < 2) return { actions: [], count: 0, headers: [] };
+  const headers = rows[0].map(h => h.trim());
+  const map = buildHeaderMap(headers);
+  const now = new Date();
+  const dataRows = rows.slice(1);
+  const records = dataRows.map((r, i) => {
+    const get = key => (map[key] !== undefined ? (r[map[key]] || '').trim() : '');
+    const fields = {};
+    headers.forEach((h, j) => { if (h) fields[h] = (r[j] || '').trim(); });
+    const description = get('description');
+    const status = get('status');
+    const created = get('created');
+    const updated = get('updated');
+    const ageDays = created ? daysBetween(created, now) : null;
+    const updatedDays = updated ? daysBetween(updated, now) : ageDays;
+    return { idx: i, wo: get('wo') || `(row ${i+2})`, property: get('property') || '—', unit: get('unit') || '',
+      status, statusLower: status.toLowerCase(), assignee: get('assignee'), description,
+      isSpanish: looksSpanish(description), hasPhotos: !!/[^ ]/.test(get('photos')) && !/^(no|none|0|false)$/i.test(get('photos')),
+      created, updated, ageDays, updatedDays, fields };
+  });
+  const openByUnit = {};
+  for (const rec of records) {
+    if (/(complete|closed|done|cancel)/.test(rec.statusLower) && !/work done/.test(rec.statusLower)) continue;
+    if (rec.unit) (openByUnit[`${rec.property}||${rec.unit}`.toLowerCase()] = openByUnit[`${rec.property}||${rec.unit}`.toLowerCase()] || []).push(rec.wo);
+  }
+  const order = { urgent: 0, followup: 1, ready: 2, none: 3 };
+  const actions = records.map(rec => {
+    const acts = [];
+    const isWorkDone = /work\s*done|completed work/.test(rec.statusLower);
+    const isNew = /new|open|received|submitted/.test(rec.statusLower);
+    const isClosed = /closed|complete|cancel/.test(rec.statusLower);
+    if (rec.isSpanish) acts.push({ action: 'Translate to English', tier: 'followup', recommendation: 'Descripción en español. Tradúcela antes de asignar.' });
+    if (isNew && !rec.assignee) acts.push({ action: 'Assign technician', tier: 'urgent', recommendation: 'Orden nueva sin técnico. Asigna uno cuanto antes.' });
+    if (isWorkDone && !rec.hasPhotos) acts.push({ action: 'Request photos', tier: 'followup', recommendation: 'Work Done sin fotos. Solicita fotos al técnico.' });
+    if (rec.ageDays !== null && rec.ageDays > 30 && !isClosed) acts.push({ action: 'Escalate', tier: 'urgent', recommendation: `${rec.ageDays} días abierta. Escala de inmediato.` });
+    else if (rec.updatedDays !== null && rec.updatedDays > 7 && !isClosed && !isWorkDone) acts.push({ action: 'Follow up with tech', tier: 'followup', recommendation: `Sin actualización en ${rec.updatedDays} días.` });
+    if (isWorkDone && !rec.isSpanish && rec.hasPhotos) acts.push({ action: 'QC Ready', tier: 'ready', recommendation: 'Lista para QC / facturación.' });
+    const key = `${rec.property}||${rec.unit}`.toLowerCase();
+    if (rec.unit && openByUnit[key] && openByUnit[key].length > 1) acts.push({ action: 'Possible duplicate', tier: 'followup', recommendation: `${openByUnit[key].length} órdenes abiertas en la misma unidad.` });
+    if (!acts.length) acts.push({ action: 'No action needed', tier: 'none', recommendation: 'Sin acción por ahora.' });
+    const topTier = acts.reduce((best, a) => order[a.tier] < order[best] ? a.tier : best, 'none');
+    return { wo: rec.wo, property: rec.property, unit: rec.unit, status: rec.status || '—',
+      assignee: rec.assignee || null, ageDays: rec.ageDays, isSpanish: rec.isSpanish, hasPhotos: rec.hasPhotos,
+      description: rec.description, descriptionPreview: rec.description.slice(0, 120), fields: rec.fields,
+      actions: acts, topTier };
+  });
+  return { actions, count: actions.length, headers };
+}
+
+// ── Property assignment field mapping ─────────────────────────────────────────
+
+const normHeader = h => h.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+function mapAssignmentCols(headers) {
+  const nh = headers.map(normHeader);
+  const find = (...cands) => { for (const c of cands) { const i = nh.indexOf(c); if (i !== -1) return i; } return -1; };
+  return {
+    property:         find('property', 'propertyname', 'name'),
+    units:            find('units', 'unitcount', 'numunits'),
+    hasPool:          find('haspool', 'pool'),
+    groundsTech:      find('groundstech', 'groundstechnician'),
+    groundsFrequency: find('groundsfrequency', 'frequency'),
+    maintenanceTech:  find('maintenancetech', 'technician', 'tech'),
+    pestControl:      find('pestcontrol', 'pest'),
+    landscaping:      find('landscaping', 'landscape'),
+  };
+}
+
+function rowToAssignment(r, col) {
+  const get = (k, fb = '') => col[k] >= 0 ? (r[col[k]] || '').trim() : fb;
+  return {
+    property: get('property'), units: parseInt(get('units')) || null,
+    hasPool: /^(yes|true|1|y)$/i.test(get('hasPool').trim()),
+    groundsTech: get('groundsTech'), groundsFrequency: get('groundsFrequency'),
+    maintenanceTech: get('maintenanceTech'), pestControl: get('pestControl'), landscaping: get('landscaping'),
+  };
+}
+
+function assignmentToSnake(row) {
+  return {
+    property: row.property, units: row.units ?? null,
+    has_pool: row.hasPool ?? row.has_pool ?? false,
+    grounds_tech: row.groundsTech ?? row.grounds_tech ?? null,
+    grounds_frequency: row.groundsFrequency ?? row.grounds_frequency ?? null,
+    maintenance_tech: row.maintenanceTech ?? row.maintenance_tech ?? null,
+    pest_control: row.pestControl ?? row.pest_control ?? null,
+    landscaping: row.landscaping ?? null,
+  };
+}
+
+function assignmentToCamel(row) {
+  if (!row) return row;
+  return {
+    property: row.property, units: row.units, hasPool: row.has_pool,
+    groundsTech: row.grounds_tech, groundsFrequency: row.grounds_frequency,
+    maintenanceTech: row.maintenance_tech, pestControl: row.pest_control,
+    landscaping: row.landscaping,
+  };
+}
+
+// ── Lyndsay snapshot helper ───────────────────────────────────────────────────
+
+async function lyndsayLatest(db) {
+  const { data, error } = await db
+    .from('lyndsay_snapshots').select('*')
+    .order('created_at', { ascending: false }).limit(1).single();
+  if (error && error.code !== 'PGRST116') throw error;
+  return data || { id: null, imported_at: null, report_date: null, tasks: [], checks: {} };
+}
+
+const ROUTINE_IDS = ['whereby','dashboard','texts','emergencies','assign-all','waiting','qc','inspections','residents','whatsapp','parts'];
+
+// ── Operational tasks helpers ─────────────────────────────────────────────────
+
+const OPS_TYPES = ['WO Follow-up','Translation','Resident Contact','Tech Contact','Escalation','Billing QC','Daily Recurring','Other'];
+const OPS_PRIORITIES = ['🔴 Critical','🟡 Follow-up','🟢 In Progress','🔁 Daily Task','✅ Done'];
+const DAILY_STATUS = '🔁 Daily Task';
+
+function opsShape(row) {
+  if (!row) return row;
+  return { ...row, noteHistory: row.note_history || [] };
+}
+
+async function opsGetAll(db) {
+  const { data, error } = await db.from('operational_tasks').select('*').order('created_at', { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+async function resetDailyTasks(db, tasks) {
+  const today = todayStr();
+  const stale = tasks.filter(t => t.priority === DAILY_STATUS && t.completed_at && t.completed_at.slice(0, 10) < today);
+  if (!stale.length) return;
+  await Promise.all(stale.map(t => db.from('operational_tasks').update({ completed_at: null }).eq('id', t.id)));
+  stale.forEach(t => { t.completed_at = null; });
+}
+
+// ── Maintenance SOPs: file-based (stored in data/maintenance_sops_files/) ─────
+
+const MAINT_SOPS_INDEX = path.join(SOPS_DIR, '_index.json');
+
+async function mSopsReadIndex() {
+  try { return JSON.parse(await fsp.readFile(MAINT_SOPS_INDEX, 'utf8')); } catch { return []; }
+}
+
+async function mSopsWriteIndex(data) {
+  const tmp = MAINT_SOPS_INDEX + '.tmp';
+  await fsp.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
+  await fsp.rename(tmp, MAINT_SOPS_INDEX);
+}
+
+// ── AppFolio upload multer ────────────────────────────────────────────────────
+
+const afUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, REPORTS_DIR),
+    filename: (req, file, cb) => {
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      const m = file.originalname.match(/\.(pdf|csv|png|jpe?g)$/i);
+      cb(null, `appfolio_${stamp}${m ? '.' + m[1].toLowerCase() : '.csv'}`);
+    },
+  }),
+  fileFilter: (req, file, cb) => {
+    const ok = /\.(csv|pdf|png|jpe?g)$/i.test(file.originalname);
+    cb(ok ? null : new Error('Allowed: CSV, PDF, PNG, JPG'), ok);
+  },
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
+
+// ── EOD + Daily report builders ───────────────────────────────────────────────
+
+async function latestAppfolioAnalysis() {
+  try {
+    const files = (await fsp.readdir(REPORTS_DIR)).filter(f => f.endsWith('_analysis.json'));
+    if (!files.length) return null;
+    files.sort();
+    const raw = await fsp.readFile(path.join(REPORTS_DIR, files[files.length - 1]), 'utf8');
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+async function buildMaintenanceSummary(db) {
+  const today = todayStr();
+  const ops = await opsGetAll(db);
+  const opsCompletedToday = ops.filter(t => t.completed_at && t.completed_at.slice(0, 10) === today);
+  const opsOpen = ops.filter(t => t.priority !== '✅ Done');
+  const appfolio = await latestAppfolioAnalysis();
+  const appfolioToday = appfolio && appfolio.analyzedAt && appfolio.analyzedAt.slice(0, 10) === today ? appfolio : null;
+  const candidates = [];
+  for (const t of opsOpen) {
+    if (t.priority === '🔴 Critical') candidates.push({ source: 'Operational', label: t.title, reason: 'Critical priority', weight: 90 });
+  }
+  if (appfolioToday) {
+    for (const a of (appfolioToday.groups.urgent || [])) candidates.push({ source: 'AppFolio', label: `WO ${a.wo} — ${a.property}`, reason: a.actions.map(x => x.action).join(', '), weight: 80 });
+  }
+  candidates.sort((a, b) => b.weight - a.weight);
+  return {
+    generatedAt: new Date().toISOString(), date: today,
+    operational: {
+      completedToday: opsCompletedToday.map(t => ({ title: t.title, type: t.type })),
+      open: opsOpen.map(t => ({ title: t.title, type: t.type, priority: t.priority })),
+    },
+    appfolio: appfolioToday ? { analyzedAt: appfolioToday.analyzedAt, totalWorkOrders: appfolioToday.totalWorkOrders, urgent: appfolioToday.groups.urgent.length, followup: appfolioToday.groups.followup.length, ready: appfolioToday.groups.ready.length } : null,
+    topPriorities: candidates.slice(0, 3),
+  };
+}
+
+async function buildDailyWorkReport(db) {
+  const today = todayStr();
+  const ops = await opsGetAll(db);
+  const opsDone = ops.filter(t => t.completed_at && t.completed_at.slice(0, 10) === today && t.priority !== DAILY_STATUS)
+    .map(t => ({ title: t.title, type: t.type, noteHistory: t.note_history || [] }));
+  const dailyDone = ops.filter(t => t.priority === DAILY_STATUS && t.completed_at && t.completed_at.slice(0, 10) === today)
+    .map(t => ({ title: t.title }));
+  const dailyPending = ops.filter(t => t.priority === DAILY_STATUS && (!t.completed_at || t.completed_at.slice(0, 10) !== today))
+    .map(t => ({ title: t.title }));
+  const notesToday = ops.flatMap(t =>
+    (t.note_history || []).filter(n => n.createdAt && n.createdAt.slice(0, 10) === today)
+      .map(n => ({ taskTitle: t.title, text: n.text, createdAt: n.createdAt }))
+  ).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const appfolio = await latestAppfolioAnalysis();
+  const appfolioToday = appfolio && appfolio.analyzedAt && appfolio.analyzedAt.slice(0, 10) === today ? appfolio : null;
+  return {
+    generatedAt: new Date().toISOString(), date: today, person: 'Erick Frey',
+    operationalDone: opsDone, dailyTasksDone: dailyDone, dailyTasksPending: dailyPending,
+    notesToday,
+    appfolio: appfolioToday ? { totalWorkOrders: appfolioToday.totalWorkOrders, urgent: appfolioToday.groups.urgent.length, followup: appfolioToday.groups.followup.length, ready: appfolioToday.groups.ready.length } : null,
+  };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// registerMetricRoutes — called once from server.js
+// ═════════════════════════════════════════════════════════════════════════════
+
+function registerMetricRoutes(app, db) {
+  // Ensure required directories exist (ephemeral on Render, recreated on boot)
+  for (const dir of [REPORTS_DIR, SOPS_DIR]) {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  }
+  if (!fs.existsSync(MAINT_SOPS_INDEX)) fs.writeFileSync(MAINT_SOPS_INDEX, '[]');
+
+  // ── MODULE: Operational Tasks (Erick's maintenance board) ─────────────────
+
+  app.get('/api/operational', async (req, res) => {
+    try {
+      const tasks = await opsGetAll(db);
+      await resetDailyTasks(db, tasks);
+      res.json(tasks.map(opsShape));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/operational', async (req, res) => {
+    const { title, type, person, action, priority, notes } = req.body;
+    if (!title?.trim()) return res.status(400).json({ error: 'Title required' });
+    const now = new Date().toISOString();
+    const row = {
+      id: `op_${Date.now()}_${Math.floor(Math.random() * 1e4)}`,
+      title: title.trim(),
+      type: OPS_TYPES.includes(type) ? type : 'Other',
+      person: person || '', action: action || '',
+      priority: OPS_PRIORITIES.includes(priority) ? priority : '🟢 In Progress',
+      notes: notes || '',
+      note_history: notes?.trim() ? [{ text: notes.trim(), createdAt: now }] : [],
+      created_at: now, completed_at: null,
+    };
+    try {
+      const { data, error } = await db.from('operational_tasks').insert(row).select().single();
+      if (error) throw error;
+      res.json(opsShape(data));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.put('/api/operational/:id', async (req, res) => {
+    try {
+      const { data: existing, error: fe } = await db.from('operational_tasks').select('*').eq('id', req.params.id).single();
+      if (fe || !existing) return res.status(404).json({ error: 'Task not found' });
+      const updates = {};
+      for (const k of ['title','type','person','action','priority']) if (k in req.body) updates[k] = req.body[k];
+      if (req.body.notes?.trim()) {
+        const history = existing.note_history || [];
+        history.push({ text: req.body.notes.trim(), createdAt: new Date().toISOString() });
+        updates.note_history = history; updates.notes = req.body.notes.trim();
+      }
+      if (req.body.priority === '✅ Done' && !existing.completed_at) updates.completed_at = new Date().toISOString();
+      else if (req.body.priority && req.body.priority !== '✅ Done') updates.completed_at = null;
+      const { data, error } = await db.from('operational_tasks').update(updates).eq('id', req.params.id).select().single();
+      if (error) throw error;
+      res.json(opsShape(data));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/operational/:id/done', async (req, res) => {
+    try {
+      const { data: existing, error: fe } = await db.from('operational_tasks').select('priority,completed_at').eq('id', req.params.id).single();
+      if (fe || !existing) return res.status(404).json({ error: 'Task not found' });
+      const updates = { completed_at: new Date().toISOString() };
+      if (existing.priority !== DAILY_STATUS) updates.priority = '✅ Done';
+      const { data, error } = await db.from('operational_tasks').update(updates).eq('id', req.params.id).select().single();
+      if (error) throw error;
+      res.json(opsShape(data));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/operational/:id/notes', async (req, res) => {
+    const text = (req.body.text || '').trim();
+    if (!text) return res.status(400).json({ error: 'Note text required' });
+    try {
+      const { data: existing, error: fe } = await db.from('operational_tasks').select('note_history').eq('id', req.params.id).single();
+      if (fe || !existing) return res.status(404).json({ error: 'Task not found' });
+      const history = [...(existing.note_history || []), { text, createdAt: new Date().toISOString() }];
+      const { data, error } = await db.from('operational_tasks').update({ note_history: history, notes: text }).eq('id', req.params.id).select().single();
+      if (error) throw error;
+      res.json(opsShape(data));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete('/api/operational/:id', async (req, res) => {
+    try {
+      const { data: existing } = await db.from('operational_tasks').select('id').eq('id', req.params.id).single();
+      if (!existing) return res.status(404).json({ error: 'Task not found' });
+      const { error } = await db.from('operational_tasks').delete().eq('id', req.params.id);
+      if (error) throw error;
+      res.json({ ok: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ── MODULE: Property Assignments ──────────────────────────────────────────
+
+  app.get('/api/assignments', async (req, res) => {
+    try {
+      const { data, error } = await db.from('property_assignments').select('*').order('property');
+      if (error) throw error;
+      res.json((data || []).map(assignmentToCamel));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/assignments', async (req, res) => {
+    if (!Array.isArray(req.body)) return res.status(400).json({ error: 'Expected an array' });
+    try {
+      const { error } = await db.from('property_assignments').upsert(req.body.map(assignmentToSnake), { onConflict: 'property' });
+      if (error) throw error;
+      res.json({ ok: true, count: req.body.length });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/assignments/upload', csvMemUpload.single('csv'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const rows = parseCSV(req.file.buffer.toString('utf8'));
+    if (rows.length < 2) return res.status(400).json({ error: 'CSV has no data rows' });
+    const col = mapAssignmentCols(rows[0]);
+    if (col.property === -1) return res.status(400).json({ error: 'Could not find a "Property" column' });
+    const data = rows.slice(1).filter(r => r.some(c => c.trim())).map(r => rowToAssignment(r, col)).filter(r => r.property);
+    try {
+      const { error } = await db.from('property_assignments').upsert(data.map(assignmentToSnake), { onConflict: 'property' });
+      if (error) throw error;
+      res.json({ ok: true, count: data.length });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.put('/api/assignments/:property', async (req, res) => {
+    try {
+      const { data: existing } = await db.from('property_assignments').select('property').eq('property', req.params.property).single();
+      if (!existing) return res.status(404).json({ error: 'Property not found' });
+      const fieldMap = { property:'property', units:'units', hasPool:'has_pool', groundsTech:'grounds_tech', groundsFrequency:'grounds_frequency', maintenanceTech:'maintenance_tech', pestControl:'pest_control', landscaping:'landscaping' };
+      const updates = {};
+      for (const [camel, snake] of Object.entries(fieldMap)) if (camel in req.body) updates[snake] = req.body[camel];
+      const { data, error } = await db.from('property_assignments').update(updates).eq('property', req.params.property).select().single();
+      if (error) throw error;
+      res.json(assignmentToCamel(data));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete('/api/assignments/:property', async (req, res) => {
+    try {
+      const { data: existing } = await db.from('property_assignments').select('property').eq('property', req.params.property).single();
+      if (!existing) return res.status(404).json({ error: 'Property not found' });
+      const { error } = await db.from('property_assignments').delete().eq('property', req.params.property);
+      if (error) throw error;
+      res.json({ ok: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ── MODULE: Lyndsay Command Center snapshots ──────────────────────────────
+
+  app.post('/api/lyndsay/import', async (req, res) => {
+    const { tasks, checks, date, exportedAt } = req.body;
+    if (!Array.isArray(tasks)) return res.status(400).json({ error: 'tasks[] array required' });
+    try {
+      const row = { imported_at: new Date().toISOString(), exported_at: exportedAt || null, report_date: date || todayStr(), tasks, checks: checks || {} };
+      const { error } = await db.from('lyndsay_snapshots').insert(row);
+      if (error) throw error;
+      const open = tasks.filter(t => !(checks || {})[t.id]).length;
+      res.json({ ok: true, count: tasks.length, open, date: row.report_date });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get('/api/lyndsay/tasks', async (req, res) => {
+    try {
+      const snap = await lyndsayLatest(db);
+      const checks = snap.checks || {};
+      const tasks = (snap.tasks || []).map(t => ({ id: t.id, cat: t.cat, title: t.title, instr: t.instr, wo: t.wo || {}, age: t.age || null, link: t.link || null, extraMeta: t.extraMeta || null, completed: !!checks[t.id] }));
+      const routineChecks = Object.fromEntries(Object.entries(checks).filter(([k]) => k.startsWith('routine:')));
+      const routineTotal = ROUTINE_IDS.length;
+      const routineDone  = ROUTINE_IDS.filter(id => checks['routine:' + id]).length;
+      res.json({ importedAt: snap.imported_at, date: snap.report_date, total: tasks.length + routineTotal, open: tasks.filter(t => !t.completed).length + (routineTotal - routineDone), tasks, routineChecks, routineTotal, routineDone });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/lyndsay/tasks/:id/done', async (req, res) => {
+    try {
+      const snap = await lyndsayLatest(db);
+      if (!snap.id) return res.status(404).json({ error: 'No snapshot found' });
+      const task = (snap.tasks || []).find(t => t.id === req.params.id);
+      if (!task && !req.params.id.startsWith('routine:')) return res.status(404).json({ error: 'Task not found' });
+      const checks = { ...(snap.checks || {}), [req.params.id]: 1 };
+      const { error } = await db.from('lyndsay_snapshots').update({ checks }).eq('id', snap.id);
+      if (error) throw error;
+      res.json({ ok: true, id: req.params.id, title: task ? task.title : req.params.id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete('/api/lyndsay/tasks/:id/done', async (req, res) => {
+    try {
+      const snap = await lyndsayLatest(db);
+      if (!snap.id) return res.status(404).json({ error: 'No snapshot found' });
+      const task = (snap.tasks || []).find(t => t.id === req.params.id);
+      if (!task && !req.params.id.startsWith('routine:')) return res.status(404).json({ error: 'Task not found' });
+      const checks = { ...(snap.checks || {}) };
+      delete checks[req.params.id];
+      const { error } = await db.from('lyndsay_snapshots').update({ checks }).eq('id', snap.id);
+      if (error) throw error;
+      res.json({ ok: true, id: req.params.id, title: task ? task.title : req.params.id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ── MODULE: AppFolio WO Analyzer ──────────────────────────────────────────
+
+  app.post('/api/appfolio/upload', afUpload.single('csv'), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+      const text = await fsp.readFile(req.file.path, 'utf8');
+      const rows = parseCSV(text);
+      const analysis = analyzeWorkOrders(rows);
+      const groups = { urgent: [], followup: [], ready: [], none: [] };
+      for (const a of analysis.actions) groups[a.topTier].push(a);
+      const result = { analyzedAt: new Date().toISOString(), file: req.file.filename, sourceType: 'csv', totalWorkOrders: analysis.count, headers: analysis.headers, groups };
+      const analysisPath = path.join(REPORTS_DIR, req.file.filename.replace(/\.csv$/i, '_analysis.json'));
+      await fsp.writeFile(analysisPath, JSON.stringify(result, null, 2), 'utf8');
+      res.json(result);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get('/api/appfolio/latest', async (req, res) => {
+    const data = await latestAppfolioAnalysis();
+    res.json(data || { totalWorkOrders: 0, groups: { urgent: [], followup: [], ready: [], none: [] }, analyzedAt: null });
+  });
+
+  // AppFolio v2 Reports API (proxied from metric-dashboard) — only if module present
+  if (afReports) {
+    app.get('/api/appfolio/reports', async (req, res) => {
+      try { res.json(await afReports.overview()); } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+    app.post('/api/appfolio/reports/:id/sync', async (req, res) => {
+      const result = await afReports.syncReport(req.params.id);
+      res.status(result.ok ? 200 : 502).json(result);
+    });
+    app.get('/api/appfolio/reports/:id/data', async (req, res) => {
+      const data = await afReports.readReportData(req.params.id);
+      if (!data) return res.status(404).json({ error: 'No synced data yet.' });
+      const limit = Math.min(parseInt(req.query.limit, 10) || 100, 1000);
+      res.json({ ...data, rows: data.rows.slice(0, limit) });
+    });
+    app.get('/api/appfolio/feed/efficiency', async (req, res) => {
+      try { res.json(await afReports.efficiencyMetrics()); } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+    app.get('/api/appfolio/feed/urgent-wos', async (req, res) => {
+      const data = await afReports.urgentWorkOrders();
+      if (!data) return res.status(404).json({ error: 'Not synced yet.' });
+      res.json(data);
+    });
+  }
+
+  // ── MODULE: Erick's EOD Summary (prefixed — avoids /api/summary collision) ─
+
+  app.get('/api/maintenance/summary', async (req, res) => {
+    try { res.json(await buildMaintenanceSummary(db)); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ── MODULE: Erick's Daily Work Report ────────────────────────────────────
+
+  app.get('/api/report', async (req, res) => {
+    try { res.json(await buildDailyWorkReport(db)); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ── MODULE: Maintenance SOPs (prefixed — avoids /api/sops collision) ──────
+
+  app.get('/api/maintenance/sops', async (req, res) => {
+    const index = await mSopsReadIndex();
+    res.json(index.map(s => ({ id: s.id, title: s.title, uploadedAt: s.uploadedAt, chars: s.chars })));
+  });
+
+  app.get('/api/maintenance/sops/search/:q', async (req, res) => {
+    const q = (req.params.q || '').toLowerCase();
+    if (!q) return res.json({ results: [] });
+    const index = await mSopsReadIndex();
+    const results = [];
+    for (const sop of index) {
+      const lc = (sop.text || '').toLowerCase();
+      const pos = lc.indexOf(q);
+      if (pos !== -1) {
+        const start = Math.max(0, pos - 120);
+        results.push({ id: sop.id, title: sop.title, snippet: (start > 0 ? '…' : '') + sop.text.slice(start, pos + q.length + 200).trim() + '…' });
+      }
+    }
+    res.json({ results });
+  });
+
+  app.get('/api/maintenance/sops/:id', async (req, res) => {
+    const index = await mSopsReadIndex();
+    const sop = index.find(s => s.id === req.params.id);
+    if (!sop) return res.status(404).json({ error: 'SOP not found' });
+    res.json(sop);
+  });
+
+  app.delete('/api/maintenance/sops/:id', async (req, res) => {
+    let index = await mSopsReadIndex();
+    const sop = index.find(s => s.id === req.params.id);
+    if (!sop) return res.status(404).json({ error: 'SOP not found' });
+    index = index.filter(s => s.id !== req.params.id);
+    await mSopsWriteIndex(index);
+    res.json({ ok: true });
+  });
+}
+
+module.exports = { registerMetricRoutes };
