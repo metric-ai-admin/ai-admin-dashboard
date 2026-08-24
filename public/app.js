@@ -119,7 +119,7 @@ function loadTab(tab) {
   if (tab === 'platform') loadPlatform();
   if (tab === 'email') loadEmail();
   if (tab === 'eod') loadEod();
-  if (tab === 'crm') { crmApplyUserRole(); crmLoadProperties(); }
+  if (tab === 'crm') { crmApplyUserRole(); crmLoadMeta(); crmLoadProperties(); }
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
