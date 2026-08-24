@@ -29,8 +29,13 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
-const XLSX   = require('xlsx');
-const multer = require('multer');
+const XLSX        = require('xlsx');
+const multer      = require('multer');
+const jwt         = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
+
+const JWT_SECRET = process.env.JWT_SECRET || '';
+if (!JWT_SECRET) logLine('[WARN] JWT_SECRET not set — dashboard auth will not work');
 
 // ---- Crash logging ----------------------------------------------------------
 const LOG_FILE = path.join(__dirname, 'dashboard.log');
@@ -187,8 +192,102 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
+app.use(cookieParser());
 app.use(express.json({ limit: '5mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ---- Auth helpers ----------------------------------------------------------
+function requireAuth(req, res, next) {
+  const token = req.cookies?.dashboardToken;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'Session expired' });
+  }
+}
+
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!roles.includes(req.user?.role)) return res.status(403).json({ error: 'Access denied' });
+    next();
+  };
+}
+
+// ---- POST /api/auth/login --------------------------------------------------
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Auth not configured' });
+
+  try {
+    // 1. Verify credentials with Supabase Auth
+    const { data: authData, error: authErr } = await supabasePublic.auth.signInWithPassword({ email, password });
+    if (authErr || !authData?.user) return res.status(401).json({ error: 'Invalid email or password' });
+
+    // 2. Look up role in dashboard_users
+    const db = supabaseAdmin || supabasePublic;
+    const { data: dbUser, error: dbErr } = await db
+      .from('dashboard_users')
+      .select('id, email, name, role, agent_name, active')
+      .eq('email', email.toLowerCase())
+      .single();
+
+    if (dbErr || !dbUser) return res.status(403).json({ error: 'User not found in dashboard — contact Arturo' });
+    if (!dbUser.active) return res.status(403).json({ error: 'Account inactive — contact Arturo' });
+
+    // 3. Issue JWT in HttpOnly cookie (7 days)
+    const payload = { userId: dbUser.id, email: dbUser.email, name: dbUser.name, role: dbUser.role, agentName: dbUser.agent_name };
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+
+    res.cookie('dashboardToken', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV !== 'development',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.json({ user: payload });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- POST /api/auth/logout -------------------------------------------------
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('dashboardToken', { httpOnly: true, sameSite: 'strict' });
+  res.json({ ok: true });
+});
+
+// ---- GET /api/auth/me ------------------------------------------------------
+app.get('/api/auth/me', (req, res) => {
+  const token = req.cookies?.dashboardToken;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const user = jwt.verify(token, JWT_SECRET);
+    res.json({ user });
+  } catch {
+    res.status(401).json({ error: 'Session expired' });
+  }
+});
+
+// ---- POST /api/auth/reset-password -----------------------------------------
+// Sends a Supabase password-reset email (works for first-time setup too)
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { email } = req.body || {};
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Auth not configured' });
+  try {
+    const { error } = await supabasePublic.auth.resetPasswordForEmail(email, {
+      redirectTo: `${process.env.APP_BASE_URL || 'https://ai-admin-dashboard-jkde.onrender.com'}/login.html`,
+    });
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ ok: true, message: 'Password reset email sent' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ---- Helpers ---------------------------------------------------------------
 // Date-only string in the SERVER'S LOCAL TIMEZONE (Arturo's machine, Venezuela
@@ -2487,7 +2586,7 @@ app.get('/api/crm/status', (req, res) => {
 // ---- GET /api/crm/properties ---------------------------------------------------
 // Query params: page (1-based), limit (default 50, max 200), search, submarket,
 //   assigned_to, rop_status, asset_class, lyndsay_reviewed (true/false)
-app.get('/api/crm/properties', requireCRM, async (req, res) => {
+app.get('/api/crm/properties', requireCRM, requireAuth, async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
@@ -2499,6 +2598,14 @@ app.get('/api/crm/properties', requireCRM, async (req, res) => {
       .select('*', { count: 'exact' })
       .order('property_name', { ascending: true })
       .range(from, from + limit - 1);
+
+    // Role-based property filter: bd_agent and maintenance only see their assigned properties
+    const restrictedRoles = ['bd_agent', 'maintenance'];
+    const callerRole = req.user?.role;
+    const callerAgent = req.user?.agentName;
+    if (restrictedRoles.includes(callerRole) && callerAgent) {
+      query = query.or(`phone_assignee.eq.${callerAgent},phone_assignee3.eq.${callerAgent},online_dm_assignee.eq.${callerAgent}`);
+    }
 
     if (req.query.search) {
       const s = req.query.search.trim();

@@ -44,6 +44,64 @@ function copyToClipboard(text) {
     .catch(() => toast('Could not copy — select and copy manually', 'error'));
 }
 
+// ---- Auth / session ---------------------------------------------------------
+const TAB_ACCESS = {
+  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'crm'],
+  ceo:         ['crm', 'platform', 'eod'],
+  operations:  ['tasks', 'platform', 'email', 'eod'],
+  maintenance: ['crm'],
+  bd_agent:    ['crm'],
+};
+
+let currentUser = null;
+
+async function initAuth() {
+  try {
+    const data = await fetch('/api/auth/me', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : null);
+    if (!data?.user) { window.location.href = '/login.html'; return; }
+    currentUser = data.user;
+  } catch {
+    window.location.href = '/login.html';
+    return;
+  }
+
+  // Update sidebar brand with user name/role
+  const brandName = $('.brand-name');
+  const brandRole = $('.brand-role');
+  const brandEmail = $('.brand-email');
+  if (brandName) brandName.textContent = currentUser.name;
+  if (brandRole) brandRole.textContent = roleLabelFor(currentUser.role);
+  if (brandEmail) brandEmail.textContent = currentUser.email;
+
+  // Gate tabs by role
+  const allowed = TAB_ACCESS[currentUser.role] || [];
+  const allTabBtns = $$('#tabs button[data-tab]');
+  allTabBtns.forEach(btn => {
+    if (!allowed.includes(btn.dataset.tab)) btn.style.display = 'none';
+  });
+
+  // Activate first allowed tab
+  const firstAllowed = allTabBtns.find(b => allowed.includes(b.dataset.tab));
+  if (firstAllowed) {
+    $$('#tabs button').forEach(b => b.classList.remove('active'));
+    $$('.tab').forEach(t => t.classList.remove('active'));
+    firstAllowed.classList.add('active');
+    const tabEl = $(`#tab-${firstAllowed.dataset.tab}`);
+    if (tabEl) tabEl.classList.add('active');
+    loadTab(firstAllowed.dataset.tab);
+  }
+
+  // Wire logout button
+  $('#logout-btn')?.addEventListener('click', async () => {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    window.location.href = '/login.html';
+  });
+}
+
+function roleLabelFor(role) {
+  return { admin: 'AI Admin', ceo: 'CEO', operations: 'Operations Manager', maintenance: 'Maintenance Coordinator', bd_agent: 'BD Agent' }[role] || role;
+}
+
 // ---- Tabs -------------------------------------------------------------------
 $$('#tabs button').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -61,6 +119,7 @@ function loadTab(tab) {
   if (tab === 'platform') loadPlatform();
   if (tab === 'email') loadEmail();
   if (tab === 'eod') loadEod();
+  if (tab === 'crm') { crmApplyUserRole(); crmLoadProperties(); }
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -1068,6 +1127,17 @@ $$('.crm-nav-btn').forEach(btn =>
 
 $('#crm-agent-select').addEventListener('change', e => { crmState.agent = e.target.value; });
 
+function crmApplyUserRole() {
+  const sel = $('#crm-agent-select');
+  if (!sel || !currentUser) return;
+  const lockedRoles = ['bd_agent', 'maintenance'];
+  if (lockedRoles.includes(currentUser.role) && currentUser.agentName) {
+    sel.value = currentUser.agentName;
+    crmState.agent = currentUser.agentName;
+    sel.disabled = true;
+  }
+}
+
 // ── KPI bar ───────────────────────────────────────────────────────────────────
 function crmRenderKPI(data) {
   const props = data.properties || [];
@@ -1759,19 +1829,7 @@ $('#crm-search').addEventListener('input', e => {
 
 $('#crm-sort')?.addEventListener('change', e => { crmState.sort = e.target.value; crmLoadProperties(); });
 
-// ── Load CRM when tab first activated ────────────────────────────────────────
-let crmLoaded = false;
-$$('#tabs button').forEach(btn => {
-  btn.addEventListener('click', () => {
-    if (btn.dataset.tab === 'crm' && !crmLoaded) {
-      crmLoaded = true;
-      crmLoadMeta();
-      crmLoadProperties();
-    }
-  });
-});
-
 // ── End BD CRM Phase 2 module ─────────────────────────────────────────────────
 
-// Initial load
-loadTasks();
+// Boot — verify session, gate tabs, then load initial tab
+initAuth();
