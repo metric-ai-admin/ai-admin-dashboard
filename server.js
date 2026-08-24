@@ -29,6 +29,8 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
+const XLSX   = require('xlsx');
+const multer = require('multer');
 
 // ---- Crash logging ----------------------------------------------------------
 const LOG_FILE = path.join(__dirname, 'dashboard.log');
@@ -2744,6 +2746,124 @@ app.get('/api/crm/properties/:id/history', requireCRM, async (req, res) => {
 
     res.json(events);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- GET /api/crm/outreach-drafts -----------------------------------------------
+// Returns all outreach_drafts with status='draft', joined to property info.
+app.get('/api/crm/outreach-drafts', requireCRM, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client
+      .from('outreach_drafts')
+      .select('id, property_id, channel, subject, body, status, notes, created_at, properties(property_name, assigned_to, online_dm_assignee)')
+      .eq('status', 'draft')
+      .order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Group by property_id
+    const grouped = {};
+    for (const d of (data || [])) {
+      const pid = d.property_id;
+      if (!grouped[pid]) {
+        grouped[pid] = {
+          property_id: pid,
+          property_name: d.properties?.property_name || '—',
+          assigned_to:   d.properties?.assigned_to   || null,
+          dm_assignee:   d.properties?.online_dm_assignee || null,
+          drafts: [],
+        };
+      }
+      grouped[pid].drafts.push({
+        id: d.id, channel: d.channel, subject: d.subject,
+        body: d.body, notes: d.notes, created_at: d.created_at,
+      });
+    }
+    res.json({ groups: Object.values(grouped), total: (data||[]).length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- POST /api/crm/import-costar ------------------------------------------------
+// Accepts a .xlsx CoStar export, fuzzy-matches properties by name, updates fields.
+const multerMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+// Normalise a string for fuzzy matching: lowercase, strip non-alphanumeric.
+function costarNorm(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+// Map flexible CoStar column header variations to canonical keys.
+const COSTAR_COL_ALIASES = {
+  property_name:      ['propertyname','property name','name','propertyaddress'],
+  address:            ['address','propertyaddress','streetaddress'],
+  vacancy_pct:        ['vacancy%','vacancyrate','vac%','vacancypct','vacancy'],
+  avg_asking_unit:    ['avgaskingrent/unit','avgasking/unit','avgaskingunit','askingrent/unit','avgrent'],
+  management_company: ['managementcompany','managingcompany','managementfirm','manager'],
+  owner_name:         ['ownername','owner','propertyowner'],
+};
+
+function costarMapRow(rawRow) {
+  // Build a normalised-key → raw-value lookup from the row's keys.
+  const normKeys = {};
+  for (const k of Object.keys(rawRow)) { normKeys[costarNorm(k)] = rawRow[k]; }
+
+  const out = {};
+  for (const [canonical, aliases] of Object.entries(COSTAR_COL_ALIASES)) {
+    for (const alias of aliases) {
+      if (normKeys[alias] !== undefined) { out[canonical] = normKeys[alias]; break; }
+    }
+  }
+  return out;
+}
+
+app.post('/api/crm/import-costar', requireCRM, multerMemory.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded. Send as multipart field "file".' });
+  try {
+    // Parse xlsx
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+    if (!rows.length) return res.status(400).json({ error: 'Spreadsheet is empty or unreadable.' });
+
+    // Fetch all properties (id + property_name) for matching
+    const client = supabaseAdmin || supabasePublic;
+    const { data: allProps, error: propErr } = await client
+      .from('properties').select('id, property_name').limit(5000);
+    if (propErr) return res.status(500).json({ error: propErr.message });
+
+    // Build normalised lookup: normName → { id, property_name }
+    const propIndex = {};
+    for (const p of (allProps || [])) { propIndex[costarNorm(p.property_name)] = p; }
+
+    const results = { matched: 0, updated: 0, skipped: 0, unmatched: [] };
+
+    for (const rawRow of rows) {
+      const row = costarMapRow(rawRow);
+      if (!row.property_name) continue;
+
+      const normName = costarNorm(row.property_name);
+      const match = propIndex[normName];
+      if (!match) { results.unmatched.push(row.property_name); continue; }
+      results.matched++;
+
+      // Build update payload — only include fields that have a value
+      const updates = {};
+      if (row.vacancy_pct     != null && row.vacancy_pct     !== '') updates.vacancy_pct        = parseFloat(String(row.vacancy_pct).replace(/[^0-9.]/g, '')) || null;
+      if (row.avg_asking_unit != null && row.avg_asking_unit !== '') updates.avg_asking_unit     = parseFloat(String(row.avg_asking_unit).replace(/[^0-9.]/g, '')) || null;
+      if (row.management_company)                                     updates.management_company = String(row.management_company).trim();
+      if (row.owner_name)                                             updates.owner_name         = String(row.owner_name).trim();
+      if (row.address)                                                updates.address            = String(row.address).trim();
+
+      if (!Object.keys(updates).length) { results.skipped++; continue; }
+
+      const { error: upErr } = await client.from('properties').update(updates).eq('id', match.id);
+      if (upErr) { results.unmatched.push(`${row.property_name} (update error: ${upErr.message})`); continue; }
+      results.updated++;
+    }
+
+    res.json({ ok: true, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---- GET /api/crm/tasks --------------------------------------------------------

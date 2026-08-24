@@ -1501,45 +1501,107 @@ $('#crm-dm-save-btn').addEventListener('click', async () => {
 
 // ── Outreach tab ──────────────────────────────────────────────────────────────
 function crmRenderOutreach(p) {
-  // AI dossier
-  const { score, breakdown } = computeLeadScore(p);
-  const angles = [];
-  if (p.vacancy_pct && parseFloat(p.vacancy_pct) > 12) angles.push(`📉 Vacancy at ${parseFloat(p.vacancy_pct).toFixed(1)}% — underperforming`);
-  if ((p.phone_shops||[]).length === 0) angles.push('📞 No phone shops on record — unreachable?');
-  else if ((p.phone_shops||[]).some(s => { try { return JSON.parse(s.notes)?.connection === 'no_answer'; } catch { return false; } })) angles.push('📞 Phone shop — no answer logged');
-  if (breakdown.length) angles.push(...breakdown.map(b => `📊 ${b}`));
-  const dossierBody = angles.length ? `<ul>${angles.map(a => `<li>${esc(a)}</li>`).join('')}</ul>` : '<p class="muted small">No strong lead signals detected yet.</p>';
-  $('#crm-dossier-body').innerHTML = dossierBody;
+  // ── Dossier grid: key data fields ──
+  const dossierFields = [
+    { label: 'Owner',        value: p.owner_name },
+    { label: 'Owner Phone',  value: p.owner_phone },
+    { label: 'Mgmt Company', value: p.management_company },
+    { label: 'Submarket',    value: p.submarket },
+    { label: 'Vacancy',      value: p.vacancy_pct != null ? parseFloat(p.vacancy_pct).toFixed(1) + '%' : null },
+    { label: 'Avg Asking',   value: p.avg_asking_unit != null ? fmtCurrency(p.avg_asking_unit) + '/unit' : null },
+    { label: 'Lead Score',   value: (() => { const { score } = computeLeadScore(p); return score; })() },
+    { label: 'Units',        value: p.units },
+    { label: 'Year Built',   value: p.year_built },
+    { label: 'Asset Class',  value: p.asset_class },
+  ];
+  $('#crm-dossier-grid').innerHTML = dossierFields.map(f => `
+    <div class="crm-dossier-field">
+      <span class="crm-dossier-label">${esc(f.label)}</span>
+      <span class="crm-dossier-value">${f.value != null ? esc(String(f.value)) : '<span class="muted">—</span>'}</span>
+    </div>`).join('');
 
-  // Drafts
+  // ── Lead signals ──
+  const { breakdown } = computeLeadScore(p);
+  const angles = [];
+  if (p.vacancy_pct && parseFloat(p.vacancy_pct) > 12) angles.push(`📉 Vacancy at ${parseFloat(p.vacancy_pct).toFixed(1)}% — underperforming market`);
+  if (!(p.phone_shops||[]).length) angles.push('📞 No phone shops on record');
+  else if ((p.phone_shops||[]).some(s => { try { return JSON.parse(s.notes)?.connection === 'no_answer'; } catch { return false; } })) angles.push('📞 Phone shop — no answer logged');
+  angles.push(...breakdown.map(b => `📊 ${b}`));
+  $('#crm-dossier-body').innerHTML = angles.length
+    ? `<ul class="crm-dossier-signals">${angles.map(a => `<li>${esc(a)}</li>`).join('')}</ul>`
+    : '<p class="muted small">No strong lead signals detected yet.</p>';
+
+  // ── Drafts ──
   crmRenderDraftList(p.outreach_drafts);
 
-  // Notes
-  $('#crm-notes-display').textContent = p.notes || '(no notes)';
+  // ── Follow-up notes ──
+  $('#crm-outreach-notes').value = p.notes || '';
 }
 
 function crmRenderDraftList(drafts) {
-  $('#crm-draft-list').innerHTML = drafts.length ? drafts.map(d => `
-    <div class="crm-draft-card">
-      <div class="crm-draft-meta">${esc(d.channel||'—')} · <span class="crm-status-badge">${esc(d.status)}</span> · ${fmtDate(d.created_at)}</div>
+  const statusCls = { draft: '', approved: 'crm-badge-approved', sent: 'crm-badge-sent' };
+  $('#crm-draft-list').innerHTML = (drafts||[]).length ? drafts.map(d => {
+    const preview = (d.body || '').slice(0, 140);
+    const truncated = (d.body||'').length > 140;
+    return `<div class="crm-draft-card">
+      <div class="crm-draft-meta">
+        <span class="crm-draft-channel">${esc(d.channel||'—')}</span>
+        <span class="crm-status-badge ${statusCls[d.status]||''}">${esc(d.status||'draft')}</span>
+        <span class="crm-draft-date">${fmtDate(d.created_at)}</span>
+      </div>
       ${d.subject ? `<div class="crm-draft-subject">${esc(d.subject)}</div>` : ''}
-      ${d.body ? `<div class="crm-draft-body-text">${esc(d.body)}</div>` : ''}
-    </div>`).join('') : '<p class="muted small">No drafts yet.</p>';
+      ${preview ? `<div class="crm-draft-body-text">${esc(preview)}${truncated ? '…' : ''}</div>` : ''}
+      ${d.notes ? `<div class="small muted" style="margin-top:4px;">Note: ${esc(d.notes)}</div>` : ''}
+    </div>`;
+  }).join('') : '<p class="muted small">No drafts yet. Click + New Draft to add one.</p>';
 }
 
-$('#crm-draft-add-btn').addEventListener('click', () => $('#crm-draft-form').classList.toggle('hidden'));
-$('#crm-draft-cancel').addEventListener('click', () => $('#crm-draft-form').classList.add('hidden'));
+$('#crm-draft-add-btn').addEventListener('click', () => {
+  const form = $('#crm-draft-form');
+  form.classList.toggle('hidden');
+  if (!form.classList.contains('hidden')) {
+    // Pre-fill agent name from settings
+    const savedName = localStorage.getItem('crm_username') || '';
+    if (savedName && !$('#df-notes').value) $('#df-notes').value = `— ${savedName}`;
+  }
+});
+$('#crm-draft-cancel').addEventListener('click', () => {
+  $('#crm-draft-form').classList.add('hidden');
+  ['#df-channel','#df-subject','#df-body','#df-notes'].forEach(id => $(id).value = '');
+  $('#df-status').value = 'draft';
+});
 $('#crm-draft-save').addEventListener('click', async () => {
   const p = crmState.activeProperty;
   if (!p) return;
   const body = { channel: $('#df-channel').value, status: $('#df-status').value, subject: $('#df-subject').value, body: $('#df-body').value, notes: $('#df-notes').value };
+  if (!body.body.trim()) { showToast('Body is required', 'error'); return; }
   try {
     await crmFetch(`/api/crm/properties/${p.id}/outreach-drafts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
     crmState.activeProperty = updated;
     crmRenderDraftList(updated.outreach_drafts);
     $('#crm-draft-form').classList.add('hidden');
+    ['#df-channel','#df-subject','#df-body','#df-notes'].forEach(id => $(id).value = '');
+    showToast('Draft saved ✅', 'success');
   } catch (err) { showToast(err.message, 'error'); }
+});
+
+$('#crm-notes-save').addEventListener('click', async () => {
+  const p = crmState.activeProperty;
+  if (!p) return;
+  const statusEl = $('#crm-notes-save-status');
+  statusEl.textContent = 'Saving…';
+  try {
+    const result = await crmFetch(`/api/crm/properties/${p.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: $('#crm-outreach-notes').value }),
+    });
+    if (result.error) throw new Error(result.error);
+    crmState.activeProperty.notes = result.notes;
+    statusEl.textContent = '✅ Saved';
+    setTimeout(() => { statusEl.textContent = ''; }, 2000);
+  } catch (err) { statusEl.textContent = '❌ ' + err.message; }
 });
 
 // ── History tab ───────────────────────────────────────────────────────────────
@@ -1589,12 +1651,45 @@ $('#crm-task-type-filter').addEventListener('change', crmLoadTasks);
 async function crmLoadDraftsList() {
   $('#crm-drafts-body').innerHTML = '<p class="muted small">Loading…</p>';
   try {
-    // Pull properties with outreach drafts
-    const data = await crmFetch('/api/crm/properties?limit=500');
-    const props = data.properties || [];
-    // Fetch full details for props that have drafts — use a small subset
-    // (for performance, just show a count and link to property)
-    $('#crm-drafts-body').innerHTML = `<p class="muted small">${props.length} properties loaded. Open a property → Outreach tab to view and edit drafts.</p>`;
+    const data = await crmFetch('/api/crm/outreach-drafts');
+    const groups = data.groups || [];
+    if (!groups.length) {
+      $('#crm-drafts-body').innerHTML = '<div style="text-align:center;padding:40px 20px;"><div style="font-size:2em;margin-bottom:12px;">✉️</div><p class="muted">No pending outreach drafts across all properties.</p></div>';
+      return;
+    }
+    const statusLine = `<p class="small muted" style="margin-bottom:12px;">${data.total} draft(s) across ${groups.length} propert${groups.length === 1 ? 'y' : 'ies'}</p>`;
+    $('#crm-drafts-body').innerHTML = statusLine + groups.map(g => {
+      const assignees = [g.assigned_to, g.dm_assignee].filter(Boolean).join(' / ') || '—';
+      const draftsHtml = g.drafts.map(d => {
+        const preview = (d.body || '').slice(0, 100);
+        const truncated = (d.body||'').length > 100;
+        return `<div class="crm-draft-card" style="margin:0;">
+          <div class="crm-draft-meta">
+            <span class="crm-draft-channel">${esc(d.channel||'—')}</span>
+            <span class="crm-draft-date">${fmtDate(d.created_at)}</span>
+          </div>
+          ${d.subject ? `<div class="crm-draft-subject">${esc(d.subject)}</div>` : ''}
+          ${preview ? `<div class="crm-draft-body-text">${esc(preview)}${truncated ? '…' : ''}</div>` : ''}
+        </div>`;
+      }).join('');
+      return `<div class="crm-global-draft-group">
+        <div class="crm-global-draft-group-header">
+          <div>
+            <div class="crm-global-draft-group-name">${esc(g.property_name)}</div>
+            <div class="crm-global-draft-group-meta">${esc(assignees)} · ${g.drafts.length} draft(s)</div>
+          </div>
+          <button class="btn-sm crm-global-draft-open" data-pid="${esc(g.property_id)}">Open Property →</button>
+        </div>
+        <div class="crm-global-draft-items">${draftsHtml}</div>
+      </div>`;
+    }).join('');
+
+    $$('.crm-global-draft-open').forEach(btn =>
+      btn.addEventListener('click', () => {
+        crmSetView('dashboard');
+        crmOpenModal(btn.dataset.pid);
+      })
+    );
   } catch (err) { $('#crm-drafts-body').innerHTML = `<p class="muted small">Error: ${esc(err.message)}</p>`; }
 }
 $('#crm-drafts-refresh').addEventListener('click', crmLoadDraftsList);
@@ -1616,6 +1711,32 @@ const savedName = localStorage.getItem('crm_username');
 if (savedName) $('#crm-settings-username').value = savedName;
 const savedCos = localStorage.getItem('crm_targeted_cos');
 if (savedCos) $('#crm-targeted-companies').value = savedCos;
+
+// CoStar import
+$('#crm-costar-import').addEventListener('click', async () => {
+  const fileInput = $('#crm-costar-file');
+  const resultEl  = $('#crm-costar-result');
+  if (!fileInput.files.length) { resultEl.innerHTML = '<p class="small muted">Select a .xlsx file first.</p>'; return; }
+  const file = fileInput.files[0];
+  resultEl.innerHTML = '<p class="small muted">Importing… this may take a moment.</p>';
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const r = await fetch('/api/crm/import-costar', { method: 'POST', body: form });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    const { matched, updated, skipped, unmatched } = data.results;
+    resultEl.innerHTML = `
+      <div class="crm-import-result">
+        <div class="crm-import-stat crm-import-ok">✅ Matched: ${matched}</div>
+        <div class="crm-import-stat crm-import-ok">📝 Updated: ${updated}</div>
+        <div class="crm-import-stat">⏭ Skipped (no changes): ${skipped}</div>
+        <div class="crm-import-stat ${unmatched.length ? 'crm-import-warn' : ''}">❓ Unmatched: ${unmatched.length}</div>
+      </div>
+      ${unmatched.length ? `<details style="margin-top:8px;"><summary class="small muted pointer">Show unmatched (${unmatched.length})</summary><ul class="small" style="margin-top:4px;padding-left:18px;">${unmatched.map(n => `<li>${esc(n)}</li>`).join('')}</ul></details>` : ''}`;
+    if (updated > 0) crmLoadProperties();
+  } catch (err) { resultEl.innerHTML = `<p class="small" style="color:red;">❌ ${esc(err.message)}</p>`; }
+});
 
 // ── Filter/search wiring ──────────────────────────────────────────────────────
 $('#crm-refresh-btn').addEventListener('click', () => { crmLoadMeta(); crmLoadProperties(); });

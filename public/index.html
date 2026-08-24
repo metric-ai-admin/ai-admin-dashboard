@@ -406,6 +406,14 @@
           <textarea id="crm-targeted-companies" class="crm-textarea" rows="6" placeholder="One company per line"></textarea>
           <button id="crm-targeted-save" class="btn-sm primary" style="margin-top:8px;">Save</button>
         </div>
+        <div class="card">
+          <h4>Import Market Data</h4>
+          <p class="small muted">Upload a CoStar export (.xlsx) to update vacancy, asking rent, management company, and owner name for matched properties.</p>
+          <p class="small muted" style="margin-top:4px;">Columns recognized: <em>Property Name, Address, Vacancy %, Avg Asking Rent/Unit, Management Company, Owner Name</em></p>
+          <input id="crm-costar-file" type="file" accept=".xlsx,.xls" style="margin-top:10px;display:block;">
+          <button id="crm-costar-import" class="btn-sm primary" style="margin-top:8px;">Import CoStar</button>
+          <div id="crm-costar-result" style="margin-top:12px;"></div>
+        </div>
       </div>
     </div>
 
@@ -824,9 +832,14 @@
             </div>
 
             <!-- AI Dossier -->
-            <div class="crm-dossier" id="crm-dossier">
-              <div class="crm-dossier-kicker">Field Report — Why This Is a Lead</div>
-              <div id="crm-dossier-body" class="crm-dossier-body">Loading…</div>
+            <div class="crm-section">
+              <h4 class="crm-section-title">AI Dossier</h4>
+              <div class="crm-dossier" id="crm-dossier">
+                <div class="crm-dossier-kicker">Key Data for Outreach</div>
+                <div class="crm-dossier-grid" id="crm-dossier-grid"></div>
+                <div class="crm-dossier-kicker" style="margin-top:12px;">Lead Signals</div>
+                <div id="crm-dossier-body" class="crm-dossier-body"></div>
+              </div>
             </div>
 
             <!-- Outreach drafts -->
@@ -837,18 +850,18 @@
               </div>
               <div id="crm-draft-form" class="crm-entry-form hidden">
                 <div class="crm-detail-grid">
-                  <label>Channel<input id="df-channel" class="crm-input" placeholder="Email / LinkedIn / Phone"></label>
+                  <label>Channel<input id="df-channel" class="crm-input" placeholder="Email / LinkedIn DM / Letter"></label>
                   <label>Status
                     <select id="df-status" class="crm-select">
                       <option value="draft">Draft</option>
+                      <option value="approved">Approved</option>
                       <option value="sent">Sent</option>
-                      <option value="replied">Replied</option>
                     </select>
                   </label>
                 </div>
                 <label>Subject<input id="df-subject" class="crm-input" placeholder="Email subject line"></label>
-                <label>Body<textarea id="df-body" class="crm-textarea" rows="6"></textarea></label>
-                <label>Notes<input id="df-notes" class="crm-input" placeholder="Internal notes"></label>
+                <label>Body<textarea id="df-body" class="crm-textarea" rows="6" placeholder="Write your outreach message here…"></textarea></label>
+                <label>Internal Notes<input id="df-notes" class="crm-input" placeholder="e.g. follow up in 2 weeks"></label>
                 <div style="display:flex;gap:8px;margin-top:8px;">
                   <button id="crm-draft-save" class="btn-sm primary">Save Draft</button>
                   <button id="crm-draft-cancel" class="btn-sm">Cancel</button>
@@ -857,10 +870,14 @@
               <div id="crm-draft-list"></div>
             </div>
 
-            <!-- Notes log -->
+            <!-- Follow-up Notes -->
             <div class="crm-section">
-              <h4 class="crm-section-title">Notes</h4>
-              <div id="crm-notes-display" class="small muted" style="white-space:pre-wrap;"></div>
+              <div class="crm-tab-toolbar">
+                <h4 class="crm-section-title">Follow-up Notes</h4>
+                <button id="crm-notes-save" class="btn-sm primary">Save Notes</button>
+              </div>
+              <textarea id="crm-outreach-notes" class="crm-textarea" rows="4" placeholder="General outreach notes, context, next steps…"></textarea>
+              <span id="crm-notes-save-status" class="small muted" style="margin-top:4px;display:block;"></span>
             </div>
           </div>
 

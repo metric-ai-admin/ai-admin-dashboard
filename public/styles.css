@@ -654,6 +654,36 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 .crm-dossier-body { font-size: .87em; line-height: 1.7; }
 .crm-dossier-body ul { margin: 4px 0; padding-left: 18px; }
+.crm-dossier-signals { margin: 4px 0; padding-left: 18px; }
+.crm-dossier-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px 16px; margin-bottom: 4px;
+}
+.crm-dossier-field { display: flex; flex-direction: column; gap: 2px; }
+.crm-dossier-label { font-size: .68em; text-transform: uppercase; letter-spacing: .08em; color: var(--crm-gold); }
+.crm-dossier-value { font-size: .88em; font-weight: 600; }
+.crm-draft-channel { font-weight: 600; font-size: .85em; }
+.crm-draft-date    { font-size: .78em; color: var(--text-muted, #888); margin-left: auto; }
+.crm-draft-meta    { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.crm-badge-approved { background: #16a34a !important; }
+.crm-badge-sent     { background: #2563eb !important; }
+/* Global drafts view cards */
+.crm-global-draft-group { margin-bottom: 18px; }
+.crm-global-draft-group-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px; background: var(--surface2, rgba(0,0,0,.04));
+  border-radius: 6px 6px 0 0; border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.crm-global-draft-group-name { font-weight: 600; font-size: .9em; }
+.crm-global-draft-group-meta { font-size: .78em; color: var(--text-muted, #888); }
+.crm-global-draft-open { }
+.crm-global-draft-items { border: 1px solid var(--border, #e2e8f0); border-top: none; border-radius: 0 0 6px 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+/* CoStar import result */
+.crm-import-result { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.crm-import-stat   { font-size: .84em; padding: 4px 10px; border-radius: 4px; background: var(--surface2, rgba(0,0,0,.04)); }
+.crm-import-ok     { background: rgba(22,163,74,.12); color: #166534; }
+.crm-import-warn   { background: rgba(234,179,8,.15);  color: #854d0e; }
+.pointer           { cursor: pointer; }
 
 /* ── Flag banners ── */
 .crm-flag-banner { border-radius: 7px; padding: 10px 14px; margin-bottom: 14px; font-size: .88em; font-weight: 600; }
