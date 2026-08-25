@@ -1863,7 +1863,7 @@ async function crmRenderHistory(id) {
 // Tasks come from crm-task-engine.js server-side — a port of the original CRM's
 // priority engine. Each carries its own target tab, so no icon-to-tab map here.
 
-const CRM_TYPE_ICON = { ready: '⭐', phone: '📞', online: '💻', dm: '📊', appt_check: '🔥',
+const CRM_TYPE_ICON = { ready: '⭐', phone: '📞', online: '📧', dm: '📈', appt_check: '⏰',
                         owner_response: '🔥', contact_update: '✏️' };
 
 // The 1-10 lead score, not the raw priority — priority runs past 1,000 and only
