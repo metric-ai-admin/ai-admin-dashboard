@@ -2045,6 +2045,14 @@ async function loadMaintenance() {
     $('#maint-appfolio-refresh')?.addEventListener('click',   loadMaintenanceAppFolio);
     $('#maint-eod-refresh')?.addEventListener('click',        loadMaintenanceEodSummary);
     $('#maint-report-refresh')?.addEventListener('click',     loadMaintenanceDailyReport);
+    $('#maint-eod-copy')?.addEventListener('click', () => {
+      if (!lastEodSummary) return toast('Nothing to copy yet', 'error');
+      copyToClipboard(eodSummaryToText(lastEodSummary));
+    });
+    $('#maint-report-copy')?.addEventListener('click', () => {
+      if (!lastDailyReport) return toast('Nothing to copy yet', 'error');
+      copyToClipboard(dailyReportToText(lastDailyReport));
+    });
     $('#maint-sops-refresh')?.addEventListener('click',       loadMaintenanceSops);
     $('#maint-properties-refresh')?.addEventListener('click', async () => { await loadTechnicians(); loadPropertyAssignments(); });
     $('#techRefreshBtn')?.addEventListener('click', loadTechnicians);
@@ -2870,30 +2878,161 @@ function renderMaintenanceKanban() {
   });
 }
 
-// ── 3. Daily Work Report ─────────────────────────────────────────────
-async function loadMaintenanceDailyReport() {
-  const el = $('#maint-report-body');
-  if (!el) return;
-  el.innerHTML = '<p class="small muted">Loading…</p>';
-  try {
-    const data = await api('/api/report');
-    el.innerHTML = `<pre style="white-space:pre-wrap;font-size:0.85rem;line-height:1.6">${esc(typeof data === 'string' ? data : JSON.stringify(data, null, 2))}</pre>`;
-  } catch (err) {
-    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
-  }
+// ── 3 & 4. Daily Work Report + EOD Summary ───────────────────────────
+// Both endpoints return structured JSON, not markdown — these used to dump
+// JSON.stringify into a <pre>. The card layout is ported from
+// metric-dashboard, but mapped onto OUR payload: buildMaintenanceSummary and
+// buildDailyWorkReport have no Asana blocks, so the local renderers would have
+// thrown on s.asana.completedToday.
+
+const cardList = (items, fn, empty = 'None') =>
+  items && items.length ? items.map(fn).join('') : `<li class="summary-empty">${esc(empty)}</li>`;
+
+// h4, not h3 — styles.css styles `.summary-card h4`, matching the EOD tab.
+const summaryCard = (title, inner) =>
+  `<div class="summary-card"><h4>${title}</h4>${inner}</div>`;
+
+let lastEodSummary = null;
+let lastDailyReport = null;
+
+function appfolioCard(af, emptyMsg) {
+  return summaryCard('📄 AppFolio Today', af
+    ? `<ul>
+         <li>Analyzed <b>${af.totalWorkOrders}</b> work orders</li>
+         <li>🔴 Urgent: <b>${af.urgent}</b></li>
+         <li>🟡 Follow-up: <b>${af.followup}</b></li>
+         <li>🟢 Ready for QC: <b>${af.ready}</b></li>
+       </ul>`
+    : `<p class="summary-empty">${esc(emptyMsg)}</p>`);
 }
 
-// ── 4. EOD Summary (Maintenance) ─────────────────────────────────────
+function renderEodSummary(s) {
+  $('#maint-eod-date').textContent =
+    `For ${s.date} · generated ${new Date(s.generatedAt).toLocaleTimeString()}`;
+
+  $('#maint-eod-body').innerHTML =
+    summaryCard('📋 Top Priorities for Tomorrow',
+      (s.topPriorities || []).length
+        ? s.topPriorities.map((p, i) => `
+            <div class="priority-item">
+              <span class="priority-rank">${i + 1}</span>
+              <div><b>${esc(p.label)}</b><br><span class="muted small">${esc(p.source)} · ${esc(p.reason)}</span></div>
+            </div>`).join('')
+        : '<p class="summary-empty">Nothing flagged — all clear! 🎉</p>') +
+
+    summaryCard(`✅ Completed Today (${(s.operational?.completedToday || []).length})`,
+      `<ul>${cardList(s.operational?.completedToday,
+        t => `<li>${esc(t.title)} <span class="muted small">(${esc(t.type)})</span></li>`)}</ul>`) +
+
+    summaryCard(`🗂️ Still Open (${(s.operational?.open || []).length})`,
+      `<ul>${cardList(s.operational?.open,
+        t => `<li>${esc(t.priority)} ${esc(t.title)}</li>`)}</ul>`) +
+
+    appfolioCard(s.appfolio, 'No report analyzed today.');
+}
+
+function renderDailyReport(r) {
+  $('#maint-report-date').textContent =
+    `${esc(r.person || 'Maintenance')} · ${r.date} · generated ${new Date(r.generatedAt).toLocaleTimeString()}`;
+
+  const dailyTotal = (r.dailyTasksDone || []).length + (r.dailyTasksPending || []).length;
+
+  $('#maint-report-body').innerHTML =
+    summaryCard(`🔁 Daily Tasks Done (${(r.dailyTasksDone || []).length}/${dailyTotal})`,
+      `<ul>${cardList(r.dailyTasksDone, t => `<li>${esc(t.title)}</li>`)}</ul>` +
+      ((r.dailyTasksPending || []).length
+        ? `<p class="muted small">Pending: ${r.dailyTasksPending.map(t => esc(t.title)).join(', ')}</p>`
+        : '')) +
+
+    summaryCard(`🗂️ Operational Tasks Completed (${(r.operationalDone || []).length})`,
+      `<ul>${cardList(r.operationalDone, t => `
+        <li>${esc(t.title)} <span class="muted small">(${esc(t.type)})</span>
+          ${(t.noteHistory || []).length ? `
+            <div class="note-history" style="margin-top:4px;max-height:none">
+              ${[...t.noteHistory].reverse().map(n => `
+                <div class="note-entry">
+                  <span class="note-time">${new Date(n.createdAt).toLocaleString()}</span>
+                  <span>${esc(n.text)}</span>
+                </div>`).join('')}
+            </div>` : ''}
+        </li>`)}</ul>`) +
+
+    ((r.notesToday || []).length
+      ? summaryCard(`📝 Notes Added Today (${r.notesToday.length})`,
+          `<ul>${r.notesToday.map(n => `
+            <li><b>${esc(n.taskTitle)}</b>
+              <span class="muted small"> · ${new Date(n.createdAt).toLocaleTimeString()}</span>
+              <br><span style="font-size:12.5px">${esc(n.text)}</span></li>`).join('')}</ul>`)
+      : '') +
+
+    appfolioCard(r.appfolio, 'No report analyzed today.');
+}
+
 async function loadMaintenanceEodSummary() {
   const el = $('#maint-eod-body');
   if (!el) return;
-  el.innerHTML = '<p class="small muted">Loading…</p>';
+  el.innerHTML = '<div class="empty-state">Building summary…</div>';
   try {
-    const data = await api('/api/maintenance/summary');
-    el.innerHTML = `<pre style="white-space:pre-wrap;font-size:0.85rem;line-height:1.6">${esc(typeof data === 'string' ? data : JSON.stringify(data, null, 2))}</pre>`;
+    lastEodSummary = await api('/api/maintenance/summary');
+    renderEodSummary(lastEodSummary);
   } catch (err) {
-    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+    el.innerHTML = `<div class="empty-state">${esc(err.message)}</div>`;
   }
+}
+
+async function loadMaintenanceDailyReport() {
+  const el = $('#maint-report-body');
+  if (!el) return;
+  el.innerHTML = '<div class="empty-state">Generating report…</div>';
+  try {
+    lastDailyReport = await api('/api/report');
+    renderDailyReport(lastDailyReport);
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state">${esc(err.message)}</div>`;
+  }
+}
+
+// Plain-text versions are built here rather than server-side: the original
+// dashboard has /api/summary/export and /api/report/export, which this app
+// never ported.
+function eodSummaryToText(s) {
+  const L = [`END OF DAY — ${s.date}`, ''];
+  L.push('TOP PRIORITIES FOR TOMORROW');
+  L.push(...((s.topPriorities || []).length
+    ? s.topPriorities.map((p, i) => `  ${i + 1}. ${p.label} (${p.source} — ${p.reason})`)
+    : ['  Nothing flagged.']));
+  L.push('', `COMPLETED TODAY (${(s.operational?.completedToday || []).length})`);
+  L.push(...((s.operational?.completedToday || []).map(t => `  - ${t.title} (${t.type})`) || []));
+  L.push('', `STILL OPEN (${(s.operational?.open || []).length})`);
+  L.push(...((s.operational?.open || []).map(t => `  - ${t.priority} ${t.title}`) || []));
+  if (s.appfolio) {
+    L.push('', 'APPFOLIO TODAY',
+      `  ${s.appfolio.totalWorkOrders} work orders — ${s.appfolio.urgent} urgent, ${s.appfolio.followup} follow-up, ${s.appfolio.ready} ready`);
+  }
+  return L.join('\n');
+}
+
+function dailyReportToText(r) {
+  const L = [`DAILY WORK REPORT — ${r.person || 'Maintenance'} — ${r.date}`, ''];
+  L.push(`DAILY TASKS DONE (${(r.dailyTasksDone || []).length}/${(r.dailyTasksDone || []).length + (r.dailyTasksPending || []).length})`);
+  L.push(...((r.dailyTasksDone || []).map(t => `  - ${t.title}`) || []));
+  if ((r.dailyTasksPending || []).length) {
+    L.push('  Pending: ' + r.dailyTasksPending.map(t => t.title).join(', '));
+  }
+  L.push('', `OPERATIONAL TASKS COMPLETED (${(r.operationalDone || []).length})`);
+  for (const t of (r.operationalDone || [])) {
+    L.push(`  - ${t.title} (${t.type})`);
+    for (const n of [...(t.noteHistory || [])].reverse()) L.push(`      · ${n.text}`);
+  }
+  if ((r.notesToday || []).length) {
+    L.push('', `NOTES ADDED TODAY (${r.notesToday.length})`);
+    L.push(...r.notesToday.map(n => `  - [${n.taskTitle}] ${n.text}`));
+  }
+  if (r.appfolio) {
+    L.push('', 'APPFOLIO TODAY',
+      `  ${r.appfolio.totalWorkOrders} work orders — ${r.appfolio.urgent} urgent, ${r.appfolio.followup} follow-up, ${r.appfolio.ready} ready`);
+  }
+  return L.join('\n');
 }
 
 // ── 5. Lyndsay Command Center (readonly) ─────────────────────────────

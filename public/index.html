@@ -970,19 +970,25 @@
     <!-- 4. End of Day -->
     <div id="maint-view-eod" class="maint-view hidden">
       <div class="view-head">
-        <div><h2>End of Day Summary</h2><p class="muted small">Maintenance EOD report</p></div>
-        <div class="view-actions"><button class="btn-sm" id="maint-eod-refresh">🔄 Refresh</button></div>
+        <div><h2>End of Day Summary</h2><p class="muted small" id="maint-eod-date">Maintenance EOD report</p></div>
+        <div class="view-actions">
+          <button class="btn-sm" id="maint-eod-copy">📋 Copy as text</button>
+          <button class="btn-sm" id="maint-eod-refresh">🔄 Refresh</button>
+        </div>
       </div>
-      <div id="maint-eod-body"></div>
+      <div id="maint-eod-body" class="summary-grid"></div>
     </div>
 
     <!-- 5. Daily Work Report -->
     <div id="maint-view-report" class="maint-view hidden">
       <div class="view-head">
-        <div><h2>Daily Work Report</h2><p class="muted small">Erick's generated daily report</p></div>
-        <div class="view-actions"><button class="btn-sm" id="maint-report-refresh">🔄 Refresh</button></div>
+        <div><h2>Daily Work Report</h2><p class="muted small" id="maint-report-date">Work completed today — to share with Lyndsay</p></div>
+        <div class="view-actions">
+          <button class="btn-sm" id="maint-report-copy">📋 Copy as text</button>
+          <button class="btn-sm" id="maint-report-refresh">🔄 Refresh</button>
+        </div>
       </div>
-      <div id="maint-report-body"></div>
+      <div id="maint-report-body" class="summary-grid"></div>
     </div>
 
     <!-- 6. SOPs Library -->
