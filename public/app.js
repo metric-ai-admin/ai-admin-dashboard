@@ -614,17 +614,64 @@ async function deleteSubtask(id, subId) {
 let lyndsayTodayCache = [];
 let lyndsayTomorrowCache = [];
 
+// Returns current time and meeting start both in CT for accurate comparison.
+// Uses toLocaleString trick to get a Date object in CT — avoids browser-local
+// timezone skewing the urgency check (Arturo runs the browser from Venezuela VET).
+function meetingUrgency(isoStart) {
+  if (!isoStart) return { level: null, mins: null };
+  const nowCT  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  const startCT = new Date(new Date(isoStart).toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  const mins = Math.round((startCT - nowCT) / 60000);
+  if (mins > 30 || mins < -5) return { level: null, mins };
+  if (mins <= 5) return { level: 'now', mins };
+  return { level: 'soon', mins };
+}
+
+// Web Audio API beep — no CDN, no files.
+function playAlertSound(level) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const beep = (freq, t, dur) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.connect(g); g.connect(ctx.destination);
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0.15, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.start(t); osc.stop(t + dur);
+    };
+    if (level === 'now') { beep(880, ctx.currentTime, 0.15); beep(880, ctx.currentTime + 0.22, 0.15); }
+    else { beep(440, ctx.currentTime, 0.22); }
+  } catch { /* AudioContext unavailable */ }
+}
+
+function formatCT(isoString) {
+  if (!isoString) return '—';
+  return new Date(isoString).toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true, timeZone: LYNDSAY_TZ
+  }) + ' <span class="tz-label">CT</span>';
+}
+
 function renderMeetings(list, isLyndsay) {
   if (!list || !list.length) return '<p class="muted small">No meetings today (or stub mode).</p>';
   return list.map((m, i) => `
-    <div class="card" style="margin-bottom:8px">
-      <div class="card-title" style="font-size:13.5px">${esc(m.subject)}${m.conflict ? ' <span class="badge badge-red">⚠ CONFLICT</span>' : ''}${m.isCancelled ? ' <span class="badge badge-gray">Cancelled</span>' : ''}</div>
+    <div class="card meeting-card" style="margin-bottom:8px" data-start="${esc(m.start || '')}" data-subject="${esc(m.subject || '')}">
+      <div class="card-title" style="font-size:13.5px">
+        ${esc(m.subject)}
+        ${m.conflict ? ' <span class="badge badge-red">⚠ CONFLICT</span>' : ''}
+        ${m.isCancelled ? ' <span class="badge badge-gray">Cancelled</span>' : ''}
+        <span class="meeting-urgency-badge"></span>
+      </div>
       <div class="card-meta">
-        <span class="mono small">🕐 ${formatDualTime(m.start)}</span>
+        <span class="mono small">🕐 ${formatCT(m.start)}</span>
         <span class="badge badge-blue">${esc(m.platform || '—')}</span>
         ${m.attendees && m.attendees.length ? `<span class="muted small">${m.attendees.length} attendee(s)</span>` : ''}
       </div>
-      ${isLyndsay && !m.isCancelled ? `<div class="card-actions"><button class="btn-sm add-reminder-btn" data-idx="${i}">+ Add Reminder</button></div>` : ''}
+      ${isLyndsay && !m.isCancelled ? `
+        <div class="card-actions">
+          <button class="btn-sm add-reminder-btn" data-idx="${i}">+ Add Reminder</button>
+          <span class="meeting-action-btns"></span>
+        </div>` : ''}
     </div>`).join('');
 }
 
@@ -803,6 +850,73 @@ async function loadInbox(mailboxKey, folder = 'Inbox') {
   }
 }
 
+let lastAlertLevel = null;
+let meetingAlertInterval = null;
+
+function checkMeetingAlerts() {
+  let topLevel = null;
+  let topSubject = '';
+
+  // Patch per-card badges without re-rendering the list
+  $$('#meetings-lyndsay-today .meeting-card').forEach(card => {
+    const { level, mins } = meetingUrgency(card.dataset.start);
+    const subject = card.dataset.subject || '';
+
+    const badge = card.querySelector('.meeting-urgency-badge');
+    if (badge) {
+      if (level === 'now') {
+        badge.innerHTML = ' <span class="badge badge-red meeting-badge-blink">🔴 NOW</span>';
+      } else if (level === 'soon') {
+        badge.innerHTML = ` <span class="badge badge-yellow">⚡ ${mins}m</span>`;
+      } else {
+        badge.innerHTML = '';
+      }
+    }
+
+    // Show/hide action buttons
+    const actionBtns = card.querySelector('.meeting-action-btns');
+    if (actionBtns) {
+      if (level && !actionBtns.querySelector('.alert-sent-btn')) {
+        actionBtns.innerHTML = `
+          <button class="btn-sm alert-sent-btn">✅ Reminder Sent</button>
+          <button class="btn-sm alert-called-btn">📞 Called 3x</button>`;
+        actionBtns.querySelector('.alert-sent-btn').addEventListener('click', () =>
+          toast(`Reminder sent for: ${subject}`, 'success'));
+        actionBtns.querySelector('.alert-called-btn').addEventListener('click', () =>
+          toast(`Logged: Called 3x for ${subject}`, 'success'));
+      } else if (!level) {
+        actionBtns.innerHTML = '';
+      }
+    }
+
+    if (level === 'now' && topLevel !== 'now') { topLevel = 'now'; topSubject = subject; }
+    if (level === 'soon' && !topLevel) { topLevel = 'soon'; topSubject = subject; }
+  });
+
+  // Top banner — injected above #meetings-lyndsay-today if not already there
+  let banner = $('#meeting-time-alert');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'meeting-time-alert';
+    const target = $('#meetings-lyndsay-today');
+    if (target) target.parentNode.insertBefore(banner, target);
+  }
+
+  if (topLevel === 'now') {
+    banner.className = 'meeting-alert-now';
+    banner.innerHTML = `🔴 <b>NOW — ${esc(topSubject)}</b> is starting right now`;
+  } else if (topLevel === 'soon') {
+    banner.className = 'meeting-alert-soon';
+    banner.innerHTML = `⚠ <b>Starting Soon:</b> ${esc(topSubject)}`;
+  } else {
+    banner.className = '';
+    banner.innerHTML = '';
+  }
+
+  if (topLevel && topLevel !== lastAlertLevel) playAlertSound(topLevel);
+  lastAlertLevel = topLevel;
+}
+
 async function loadEmail() {
   const status = await api('/api/email/refresh-status');
   const fmt = ts => ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
@@ -853,6 +967,8 @@ async function loadEmail() {
   $('#meetings-lyndsay-today').innerHTML = renderMeetings(lyndsayTodayCache, true);
   $$('#meetings-lyndsay-today .add-reminder-btn').forEach(btn =>
     btn.addEventListener('click', () => addReminderForMeeting(lyndsayTodayCache[+btn.dataset.idx])));
+  checkMeetingAlerts();
+  if (!meetingAlertInterval) meetingAlertInterval = setInterval(checkMeetingAlerts, 60_000);
 
   $('#tomorrow-section').classList.toggle('hidden', lyndsayTomorrowCache.length === 0);
   $('#meetings-lyndsay-tomorrow').innerHTML = renderMeetings(lyndsayTomorrowCache, true);

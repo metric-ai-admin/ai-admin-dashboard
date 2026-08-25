@@ -145,6 +145,34 @@ code, .mono { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
   50% { box-shadow: 0 0 0 6px var(--accent-glow); }
 }
 
+/* ---------- Meeting time alerts ---------- */
+.badge-yellow { background: #fef3c7; color: #92400e; }
+.tz-label { font-size: 10px; font-weight: 600; opacity: 0.65; letter-spacing: 0.03em; }
+
+#meeting-time-alert {
+  border-radius: 10px; padding: 10px 16px; margin-bottom: 12px;
+  font-size: 13.5px; font-weight: 500; display: block;
+}
+#meeting-time-alert:empty { display: none; }
+
+.meeting-alert-soon {
+  background: #fef9c3; border: 1.5px solid #ca8a04; color: #713f12;
+}
+.meeting-alert-now {
+  background: #fee2e2; border: 1.5px solid var(--critical); color: #991b1b;
+  animation: meeting-blink 1s ease-in-out infinite;
+}
+@keyframes meeting-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.meeting-badge-blink {
+  animation: meeting-blink 1s ease-in-out infinite;
+}
+.alert-sent-btn, .alert-called-btn {
+  font-size: 11.5px; padding: 3px 8px;
+}
+
 .sidebar-foot { padding: 14px 18px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
 .btn-logout { background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); cursor: pointer; font-family: inherit; font-size: 11px; padding: 6px 10px; text-align: left; transition: border-color 0.15s, color 0.15s; }
 .btn-logout:hover { border-color: var(--critical); color: var(--critical); }
