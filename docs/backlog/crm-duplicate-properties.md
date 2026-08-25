@@ -1,8 +1,46 @@
 # BD CRM — duplicate properties
 
-**Status:** open, needs a dedicated session
+**Status: RESOLVED 2026-08-25.** Kept as the record of what was done, what it
+cost, and how the recurrence is now blocked. The plan below is the one that ran.
+
 **Raised:** 2026-08-25, by Lyndsay (502 properties showing where 251 were expected)
-**Do not run a plain `DELETE` on this.** See *Why the obvious fix is unsafe*.
+
+## Outcome
+
+| | Before | After |
+|---|---|---|
+| Rows in `properties` | 502 | **251** |
+| Names with more than one row | 244 | **0** |
+| Tasks returned by `/api/crm/tasks` | 980 | ~490 |
+| Duplicate activity rows | 14 | **0** |
+
+- Four properties had activity split across both copies — Azure, Cannon South,
+  City Scene, River Crossing — and were merged onto the older row before any
+  delete. The older copy won because it carried the Erick→Rhoxie assignee
+  correction; 163 of the 244 pairs differed on an assignee field, so keeping
+  the newer copy would have discarded that correction wholesale.
+- 14 duplicate activity rows were removed after the merge, distinguished from
+  real records by their `created_at` spread: minutes apart meant a repeated
+  import, days apart meant separate events. River Crossing is the example that
+  proves the distinction mattered — one group of its calls was six minutes
+  apart (deleted) and another two days apart (kept).
+- **Cost: 2 `inspections` rows for Cannon South, permanently lost.** See the
+  incident log.
+- Recurrence blocked by a normalized unique index:
+
+```sql
+CREATE UNIQUE INDEX properties_name_normalized_unique
+ON properties (lower(btrim(property_name)));
+```
+
+  Normalized on purpose — a plain index on `property_name` would let
+  `Cannon South `, `cannon south` and `Cannon  South` through, and inconsistent
+  whitespace is already present in this data.
+
+**Still open:** the import script itself is not idempotent. The index now turns
+a second run into a loud failure instead of silent duplication, but the script
+should use `ON CONFLICT DO NOTHING` against this index so it can be re-run
+safely. Worth fixing before the next import.
 
 ## What is wrong
 
