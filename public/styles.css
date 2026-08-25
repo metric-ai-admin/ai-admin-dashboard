@@ -325,6 +325,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .kanban-column.col-followup .kanban-col-count { background: var(--warning-bg); color: var(--warning); }
 .kanban-column.col-inprogress .kanban-col-count { background: var(--success-bg); color: var(--success); }
 .kanban-column.col-done .kanban-col-count { background: var(--bg-surface); color: var(--text-secondary); }
+.kanban-column.col-daily .kanban-col-head { border-top-color: #0ea5e9; }
+.kanban-column.col-daily .kanban-col-count { background: rgba(14,165,233,.15); color: #0ea5e9; }
 .kanban-col-body { display: flex; flex-direction: column; gap: 8px; padding: 10px 8px; min-height: 60px; max-height: calc(100vh - 340px); overflow-y: auto; }
 .kanban-col-empty { text-align: center; color: var(--text-muted); font-size: 12.5px; padding: 24px 8px; font-style: italic; }
 .col-toggle { font-size: 11px; color: var(--text-muted); margin-left: 4px; display: inline-block; transition: transform .2s; }

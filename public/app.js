@@ -103,9 +103,9 @@ function roleLabelFor(role) {
 }
 
 // ---- Tabs -------------------------------------------------------------------
-$$('#tabs button').forEach(btn => {
+$$('#tabs button[data-tab]').forEach(btn => {
   btn.addEventListener('click', () => {
-    $$('#tabs button').forEach(b => b.classList.remove('active'));
+    $$('#tabs button[data-tab]').forEach(b => b.classList.remove('active'));
     $$('.tab').forEach(t => t.classList.remove('active'));
     btn.classList.add('active');
     $(`#tab-${btn.dataset.tab}`).classList.add('active');
@@ -2169,6 +2169,7 @@ async function loadMaintenanceTasks() {
 function renderMaintenanceKanban() {
   const el = $('#maint-tasks-body');
   if (!el) return;
+
   const grouped = {};
   MAINT_COLUMNS.forEach(c => { grouped[c.key] = []; });
   maintTaskCache.forEach(t => {
@@ -2176,31 +2177,46 @@ function renderMaintenanceKanban() {
     if (grouped[col]) grouped[col].push(t);
   });
 
-  let html = '<div class="kanban-board">';
-  MAINT_COLUMNS.forEach(col => {
+  el.className = 'kanban';
+
+  if (!maintTaskCache.length) {
+    el.innerHTML = '<div class="empty-state">No tasks. Add one above ☝</div>';
+    return;
+  }
+
+  el.innerHTML = MAINT_COLUMNS.map(col => {
     const tasks = grouped[col.key] || [];
-    html += `<div class="kanban-col ${col.cls}">
-      <div class="kanban-header">${esc(col.header)} <span class="col-count">${tasks.length}</span></div>
-      <div class="kanban-cards">`;
-    tasks.forEach(t => {
-      const done = !!t.completed_at;
-      html += `<div class="kanban-card${done ? ' done' : ''}" data-id="${esc(t.id)}">
-        <div class="card-title">${esc(t.title)}</div>
-        ${t.source ? `<div class="card-meta small muted">${esc(t.source)}</div>` : ''}
-        ${t.notes ? `<div class="card-meta small muted">${esc(t.notes)}</div>` : ''}
-        <div class="card-actions">
-          ${!done ? `<button class="btn-sm maint-task-done" data-id="${esc(t.id)}">✓ Done</button>` : `<button class="btn-sm maint-task-undone" data-id="${esc(t.id)}">Undo</button>`}
-          <select class="crm-select maint-task-prio" data-id="${esc(t.id)}" style="font-size:0.78rem">
-            ${MAINT_COLUMNS.map(c => `<option${t.priority === c.key ? ' selected' : ''}>${esc(c.key)}</option>`).join('')}
-          </select>
-          <button class="btn-sm maint-task-del" data-id="${esc(t.id)}" style="color:var(--red)">✕</button>
-        </div>
-      </div>`;
+    return `<div class="kanban-column ${col.cls}" data-col-key="${esc(col.key)}">
+      <div class="kanban-col-head">
+        <span>${esc(col.header)}<span class="col-toggle">▾</span></span>
+        <span class="kanban-col-count">${tasks.length}</span>
+      </div>
+      <div class="kanban-col-body">
+        ${tasks.length ? tasks.map(t => {
+          const done = !!t.completed_at;
+          return `<div class="card ${done ? 'completed' : ''}" data-id="${esc(t.id)}">
+            <div class="card-title">${esc(t.title)}</div>
+            ${t.source ? `<div class="card-meta small muted">👤 ${esc(t.source)}</div>` : ''}
+            ${t.notes ? `<div class="card-notes">${esc(t.notes.length > 100 ? t.notes.slice(0,100) + '…' : t.notes)}</div>` : ''}
+            <div class="card-actions">
+              ${!done ? `<button class="btn-sm primary maint-task-done" data-id="${esc(t.id)}">✓ Done</button>` : `<button class="btn-sm maint-task-undone" data-id="${esc(t.id)}">Undo</button>`}
+              <select class="crm-select maint-task-prio" data-id="${esc(t.id)}" style="font-size:0.78rem">
+                ${MAINT_COLUMNS.map(c => `<option${t.priority === c.key ? ' selected' : ''}>${esc(c.key)}</option>`).join('')}
+              </select>
+              <button class="btn-sm btn-danger maint-task-del" data-id="${esc(t.id)}">🗑</button>
+            </div>
+          </div>`;
+        }).join('') : '<p class="kanban-col-empty">No tasks</p>'}
+      </div>
+    </div>`;
+  }).join('');
+
+  el.querySelectorAll('.kanban-col-head').forEach(head => {
+    head.addEventListener('click', e => {
+      if (e.target.closest('button, select')) return;
+      head.closest('.kanban-column').classList.toggle('col-collapsed');
     });
-    html += '</div></div>';
   });
-  html += '</div>';
-  el.innerHTML = html;
 
   el.querySelectorAll('.maint-task-done').forEach(btn => {
     btn.addEventListener('click', async () => {
