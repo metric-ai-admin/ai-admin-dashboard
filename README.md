@@ -69,3 +69,40 @@ Dashboard: http://localhost:3001
   copy-paste text in the `lyndsay-queue` for Arturo to send himself.
 - Email/Calendar module won't hit Microsoft Graph for real until the Azure
   App Registration is set up and credentials are added to `.env`.
+
+## Maintenance tab — roadmap
+
+Known-incomplete areas, deliberately parked. Each is waiting on something
+outside the code.
+
+**SOPs Library** — the view and its search work, but the library is empty.
+Populate it once Lyndsay's SOP Review project (`proj_sop_review`) settles the
+categories and which SOPs are shared with whom.
+
+**Maintenance Efficiency** — 4 of the 9 tracker metrics are exact; 3 are
+approximate and 2 cannot be pulled at all. This is an AppFolio limitation, not
+ours: `work_order.json` silently ignores the `status` filter, so per-status
+counts are derived from work orders that have logged labour and undercount,
+and the Canceled/Waiting billable totals are absent from every report the API
+exposes. The view labels each number with its confidence rather than
+presenting a wrong figure as real. Revisit if AppFolio enables the server-side
+status filter.
+
+**Command Center** — still renders an offline HTML snapshot imported through
+`/api/lyndsay/import`. The plan is a drop zone for the master Excel that the
+AppFolio plugin refreshes daily: six tabs (Work Orders, Billable, Labor,
+Custom Fields, Inventory, Inspections) that generate the Command Center's
+tasks and views. Needs the workbook's real column layout before anything is
+built; `xlsx` is already a dependency.
+
+**Asana Tasks** — shows Erick's board only once `ASANA_TOKEN_ERICK` is set in
+the environment. `ASANA_TOKEN` is Arturo's and cannot see Erick's tasks.
+
+**AppFolio Analyzer** — accepts CSV only. The local metric-dashboard also
+takes PDFs and images via `tesseract.js` + `pdf-parse`; those were left out
+here rather than shipping ~8 MB of OCR training data to Render for occasional
+use.
+
+**Role access** — Erick's role (`maintenance`) currently only reaches the CRM
+tab. Giving him the Maintenance tab is one entry in `TAB_ACCESS` in
+`public/app.js`, pending the decision to move him off MCP-only.

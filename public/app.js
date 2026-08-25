@@ -2090,20 +2090,49 @@ async function loadMaintenance() {
 }
 
 // ── Asana Tasks ──────────────────────────────────────────────────────
+// This view shows ERICK's Asana board, not Arturo's. ASANA_TOKEN belongs to
+// support@livewithmetric.com and can only ever see Arturo's tasks, which is why
+// the tab read "No open Asana tasks" — it was querying the wrong account.
+// ?owner=erick makes the server use ASANA_TOKEN_ERICK instead.
 async function loadMaintenanceAsana() {
   const el = $('#maint-asana-body');
   if (!el) return;
   el.innerHTML = '<p class="small muted">Loading…</p>';
   try {
-    const data = await api('/api/asana/tasks');
+    const data = await api('/api/asana/tasks?owner=erick');
+
+    if (data.notConfigured) {
+      el.innerHTML = `
+        <div class="banner banner-warn">
+          🔌 <b>${esc(data.message || "Connect Erick's Asana token to see his tasks.")}</b>
+          <div class="small" style="margin-top:6px">
+            Add <code>ASANA_TOKEN_ERICK</code> to the Render environment with a personal
+            access token from Erick's Asana account, then redeploy. Until then this view
+            stays empty — it is not querying Arturo's board.
+          </div>
+        </div>`;
+      return;
+    }
+
     const tasks = Array.isArray(data) ? data : (data.tasks || data.data || []);
-    if (!tasks.length) { el.innerHTML = '<p class="small muted">No open Asana tasks.</p>'; return; }
-    el.innerHTML = tasks.map(t => `
-      <div class="card" style="margin-bottom:8px">
-        <div class="card-title">${esc(t.name || t.title || '')}</div>
-        ${t.due_on ? `<div class="card-meta small muted">Due: ${esc(t.due_on)}</div>` : ''}
-        ${t.assignee?.name ? `<div class="card-meta small muted">→ ${esc(t.assignee.name)}</div>` : ''}
-      </div>`).join('');
+    if (!tasks.length) {
+      el.innerHTML = `<p class="small muted">No open Asana tasks for Erick${data.stale ? ' (showing stale data)' : ''}.</p>`;
+      return;
+    }
+
+    el.innerHTML =
+      (data.stale ? '<div class="banner banner-warn">⚠ Asana unreachable — showing the last known list.</div>' : '') +
+      tasks.map(t => `
+        <div class="card" style="margin-bottom:8px">
+          <div class="card-title">${esc(t.name || t.title || '')}</div>
+          <div class="card-meta small muted">
+            ${t.due_on ? `<span>📅 ${esc(t.due_on)}</span>` : ''}
+            ${t.assignee ? `<span>👤 ${esc(t.assignee)}</span>` : ''}
+            ${t.project ? `<span>📁 ${esc(t.project)}</span>` : ''}
+          </div>
+          ${t.notes_preview ? `<div class="card-notes">${esc(t.notes_preview)}</div>` : ''}
+          ${t.permalink_url ? `<a class="btn-sm" href="${esc(t.permalink_url)}" target="_blank" rel="noopener">Open in Asana ↗</a>` : ''}
+        </div>`).join('');
   } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
 }
 

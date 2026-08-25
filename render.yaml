@@ -30,6 +30,12 @@ services:
       # for what each one does.
       - key: ASANA_TOKEN
         sync: false
+      # Erick's personal Asana token. ASANA_TOKEN above is Arturo's and can only
+      # see his own board, so Maintenance ▸ Asana Tasks asks for ?owner=erick and
+      # the server switches to this one. Without it that view says so rather than
+      # showing Arturo's tasks or a bare "no tasks".
+      - key: ASANA_TOKEN_ERICK
+        sync: false
       - key: ASANA_EXTRA_PROJECTS
         sync: false
       - key: GRAPH_TENANT_ID

@@ -60,6 +60,9 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 const ASANA_TOKEN = process.env.ASANA_TOKEN;
+// Erick's personal Asana account. Optional — when unset, the maintenance
+// Asana view reports that it needs connecting instead of showing an empty board.
+const ASANA_TOKEN_ERICK = process.env.ASANA_TOKEN_ERICK;
 const ASANA_PROJECTS = [];
 if (process.env.ASANA_EXTRA_PROJECTS) {
   for (const entry of process.env.ASANA_EXTRA_PROJECTS.split(',')) {
@@ -364,19 +367,27 @@ async function logActivity(entry) {
   }
 }
 
-function asanaHeaders() {
+// Asana is per-person: ASANA_TOKEN is Arturo's (support@livewithmetric.com) and
+// only ever sees his tasks. Erick's board lives under his own account, so the
+// maintenance view asks for ?owner=erick and this picks the matching token.
+// Every helper defaults to ASANA_TOKEN, so existing callers are unaffected.
+function asanaTokenFor(owner) {
+  return owner === 'erick' ? ASANA_TOKEN_ERICK : ASANA_TOKEN;
+}
+
+function asanaHeaders(token = ASANA_TOKEN) {
   return {
-    'Authorization': `Bearer ${ASANA_TOKEN}`,
+    'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json',
     'Accept': 'application/json',
   };
 }
 
-async function asanaRequest(method, endpoint, body) {
-  if (!ASANA_TOKEN) throw new Error('ASANA_TOKEN is not set in .env');
+async function asanaRequest(method, endpoint, body, token = ASANA_TOKEN) {
+  if (!token) throw new Error('ASANA_TOKEN is not set in .env');
   const res = await fetchFn(`${ASANA_BASE}${endpoint}`, {
     method,
-    headers: asanaHeaders(),
+    headers: asanaHeaders(token),
     body: body ? JSON.stringify({ data: body }) : undefined,
   });
   const json = await res.json().catch(() => ({}));
@@ -389,13 +400,13 @@ async function asanaRequest(method, endpoint, body) {
   return json.data;
 }
 
-async function asanaGetAll(endpoint) {
-  if (!ASANA_TOKEN) throw new Error('ASANA_TOKEN is not set in .env');
+async function asanaGetAll(endpoint, token = ASANA_TOKEN) {
+  if (!token) throw new Error('ASANA_TOKEN is not set in .env');
   const sep = endpoint.includes('?') ? '&' : '?';
   let url = `${ASANA_BASE}${endpoint}${sep}limit=100`;
   const out = [];
   while (url) {
-    const res = await fetchFn(url, { headers: asanaHeaders() });
+    const res = await fetchFn(url, { headers: asanaHeaders(token) });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
       const err = new Error(json?.errors?.[0]?.message || `Asana API error ${res.status}`);
@@ -408,18 +419,21 @@ async function asanaGetAll(endpoint) {
   return out;
 }
 
-let _meCache = null;
-async function getMe() {
-  if (_meCache) return _meCache;
-  const me = await asanaRequest('GET', '/users/me?opt_fields=name,email,workspaces.name');
-  _meCache = {
+// Keyed by token — one cache per Asana account, or Erick's identity would be
+// served from Arturo's cached entry.
+const _meCache = new Map();
+async function getMe(token = ASANA_TOKEN) {
+  if (_meCache.has(token)) return _meCache.get(token);
+  const me = await asanaRequest('GET', '/users/me?opt_fields=name,email,workspaces.name', null, token);
+  const shaped = {
     gid: me.gid,
     name: me.name,
     email: me.email,
     workspaceGid: me.workspaces && me.workspaces[0] ? me.workspaces[0].gid : null,
     workspaceName: me.workspaces && me.workspaces[0] ? me.workspaces[0].name : null,
   };
-  return _meCache;
+  _meCache.set(token, shaped);
+  return shaped;
 }
 
 // =====================================================================
@@ -668,38 +682,61 @@ app.get('/api/asana/tasks', async (req, res) => {
   const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
   const completedSince = encodeURIComponent(midnight.toISOString());
 
+  const owner = req.query.owner === 'erick' ? 'erick' : 'default';
+  const token = asanaTokenFor(owner);
+
+  // 200 rather than an error: the view stays usable and simply explains what is
+  // missing, which is what "functional but empty" means here.
+  if (!token) {
+    return res.json({
+      lastUpdated: null, tasks: [], stale: false, owner, notConfigured: true,
+      message: owner === 'erick'
+        ? "Connect Erick's Asana token to see his tasks."
+        : 'ASANA_TOKEN is not set.',
+    });
+  }
+
   try {
     const byGid = new Map();
 
-    for (const project of ASANA_PROJECTS) {
-      const tasks = await asanaGetAll(
-        `/projects/${project.gid}/tasks?opt_fields=${ASANA_OPT_FIELDS}&completed_since=${completedSince}`);
-      for (const t of (tasks || [])) {
-        if (!byGid.has(t.gid)) byGid.set(t.gid, shapeTask(t, project.label));
+    // ASANA_PROJECTS are Arturo's project gids; Erick's account cannot read them
+    // and the pull would 403. His board comes from his own assigned tasks.
+    if (owner !== 'erick') {
+      for (const project of ASANA_PROJECTS) {
+        const tasks = await asanaGetAll(
+          `/projects/${project.gid}/tasks?opt_fields=${ASANA_OPT_FIELDS}&completed_since=${completedSince}`, token);
+        for (const t of (tasks || [])) {
+          if (!byGid.has(t.gid)) byGid.set(t.gid, shapeTask(t, project.label));
+        }
       }
     }
 
     try {
-      const me = await getMe();
+      const me = await getMe(token);
       if (me.gid && me.workspaceGid) {
         const mine = await asanaGetAll(
-          `/tasks?assignee=${me.gid}&workspace=${me.workspaceGid}&opt_fields=${ASANA_OPT_FIELDS}&completed_since=${completedSince}`);
+          `/tasks?assignee=${me.gid}&workspace=${me.workspaceGid}&opt_fields=${ASANA_OPT_FIELDS}&completed_since=${completedSince}`, token);
         for (const t of (mine || [])) {
           if (!byGid.has(t.gid)) byGid.set(t.gid, shapeTask(t, null));
         }
       }
     } catch (meErr) {
-      console.error('[asana/tasks] my-tasks pull failed:', meErr.message);
+      console.error(`[asana/tasks:${owner}] my-tasks pull failed:`, meErr.message);
     }
 
     const allTasks = [...byGid.values()];
-    const payload = { lastUpdated: new Date().toISOString(), tasks: allTasks, stale: false };
-    await writeJSON(ASANA_CACHE_FILE, payload);
+    const payload = { lastUpdated: new Date().toISOString(), tasks: allTasks, stale: false, owner };
+    // The cache file holds Arturo's board — writing Erick's results into it
+    // would poison the Tasks tab and the MCP tools that read it.
+    if (owner !== 'erick') await writeJSON(ASANA_CACHE_FILE, payload);
     res.json(payload);
   } catch (err) {
-    console.error('[asana/tasks]', err.message);
+    console.error(`[asana/tasks:${owner}]`, err.message);
+    if (owner === 'erick') {
+      return res.json({ lastUpdated: null, tasks: [], stale: true, owner, error: err.message });
+    }
     const cache = await readJSON(ASANA_CACHE_FILE, { lastUpdated: null, tasks: [] });
-    res.status(200).json({ ...cache, stale: true, error: err.message });
+    res.status(200).json({ ...cache, stale: true, owner, error: err.message });
   }
 });
 
