@@ -662,8 +662,13 @@ function rowDay(r, keys) {
  * Per-technician view of today's logged labor, plus the two flags Lyndsay
  * asked for: zero-hours techs, and the same unit touched by two techs.
  * @param {string} day — YYYY-MM-DD, defaults to today.
+ * @param {Array<{name: string, aliases: string[]}>} [roster] — who is expected
+ *   to log hours, from the Supabase `technicians` table. Explicit aliases beat
+ *   the fuzzy prefix match, since AppFolio spellings are inconsistent. Falls
+ *   back to ACTIVE_TECHNICIANS when omitted, so this module still works
+ *   standalone (and in the original metric-dashboard) with no database.
  */
-async function techActivityToday(day) {
+async function techActivityToday(day, roster) {
   const labor = await readReportData('work_order_labor_summary');
   if (!labor) return null;
 
@@ -719,8 +724,17 @@ async function techActivityToday(day) {
 
   // Zero-hours alert: roster techs with no logged time today.
   const logged = list.filter(t => t.hours > 0).map(t => t.name);
-  const zeroHours = ACTIVE_TECHNICIANS.filter(
-    roster => !logged.some(appfolio => sameTech(roster, appfolio)));
+  const rosterList = (Array.isArray(roster) && roster.length)
+    ? roster
+    : ACTIVE_TECHNICIANS.map(name => ({ name, aliases: [] }));
+
+  const matchesRoster = (entry, appfolioName) =>
+    (entry.aliases || []).some(a => normName(a) === normName(appfolioName)) ||
+    sameTech(entry.name, appfolioName);
+
+  const zeroHours = rosterList
+    .filter(entry => !logged.some(appfolio => matchesRoster(entry, appfolio)))
+    .map(entry => entry.name);
 
   // Overlap: same unit worked by 2+ different techs today.
   const overlaps = Object.entries(unitTouch)
@@ -736,7 +750,7 @@ async function techActivityToday(day) {
     technicians: list,
     zeroHours,
     overlaps,
-    activeRoster: ACTIVE_TECHNICIANS,
+    activeRoster: rosterList.map(entry => entry.name),
   };
 }
 

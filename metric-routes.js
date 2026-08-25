@@ -535,6 +535,96 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
+  // ── MODULE: Technicians ───────────────────────────────────────────────────
+  // Single source of truth replacing five hardcoded lists (see
+  // supabase/migrations/002_technicians.sql). Guarded like the AppFolio module:
+  // these rows carry employee home ZIPs and skill ratings.
+
+  const TECH_FIELDS = [
+    'full_name', 'active', 'position', 'appfolio_aliases', 'expect_daily_hours',
+    'show_on_map', 'home_zip', 'home_lat', 'home_lng',
+    'shows_in_make_ready', 'make_ready_note', 'properties_label',
+    'cap_ac', 'cap_electrical', 'cap_plumbing', 'cap_pool',
+    'cap_welding', 'cap_painting', 'cap_resurfacing', 'cap_cleaning',
+    'notes', 'sort_order',
+  ];
+
+  const slugify = s => String(s).toLowerCase().normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')          // strip combining accents (Jose)
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+  function techPayload(body) {
+    const out = {};
+    for (const f of TECH_FIELDS) {
+      if (!(f in body)) continue;
+      if (f === 'appfolio_aliases') {
+        out[f] = Array.isArray(body[f])
+          ? body[f]
+          : String(body[f] || '').split(',').map(s => s.trim()).filter(Boolean);
+      } else {
+        out[f] = body[f];
+      }
+    }
+    return out;
+  }
+
+  // The zero-hours roster, formerly ACTIVE_TECHNICIANS in appfolio-reports.js.
+  // Returns null when the table isn't there yet, so techActivityToday falls back
+  // to its own built-in list rather than reporting an empty roster.
+  async function techRoster() {
+    try {
+      const { data, error } = await db.from('technicians')
+        .select('full_name, appfolio_aliases')
+        .eq('active', true).eq('expect_daily_hours', true);
+      if (error || !data) return null;
+      return data.map(t => ({ name: t.full_name, aliases: t.appfolio_aliases || [] }));
+    } catch { return null; }
+  }
+
+  app.get('/api/technicians', requireMetricAccess, async (req, res) => {
+    try {
+      let q = db.from('technicians').select('*').order('sort_order').order('full_name');
+      if (req.query.active !== 'all') q = q.eq('active', true);
+      if (req.query.map === '1')      q = q.eq('show_on_map', true);
+      const { data, error } = await q;
+      if (error) throw error;
+      res.json(data || []);
+    } catch (err) {
+      res.status(500).json({ error: err.message, hint: 'Has supabase/migrations/002_technicians.sql been run?' });
+    }
+  });
+
+  app.post('/api/technicians', requireMetricAccess, async (req, res) => {
+    const name = (req.body.full_name || '').trim();
+    if (!name) return res.status(400).json({ error: 'full_name required' });
+    const row = { id: (req.body.id || slugify(name)), full_name: name, ...techPayload(req.body) };
+    try {
+      const { data, error } = await db.from('technicians').insert(row).select().single();
+      if (error) throw error;
+      res.json(data);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.put('/api/technicians/:id', requireMetricAccess, async (req, res) => {
+    const updates = techPayload(req.body);
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'No editable fields supplied' });
+    try {
+      const { data, error } = await db.from('technicians')
+        .update(updates).eq('id', req.params.id).select().single();
+      if (error) throw error;
+      if (!data) return res.status(404).json({ error: 'Technician not found' });
+      res.json(data);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete('/api/technicians/:id', requireMetricAccess, async (req, res) => {
+    try {
+      const { error } = await db.from('technicians').delete().eq('id', req.params.id);
+      if (error) throw error;
+      res.json({ ok: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
   // ── MODULE: Lyndsay Command Center snapshots ──────────────────────────────
 
   app.post('/api/lyndsay/import', async (req, res) => {
@@ -720,7 +810,9 @@ function registerMetricRoutes(app, db) {
       });
 
     feed('/api/appfolio/feed/efficiency',      ()    => afReports.efficiencyMetrics(),          'Efficiency source reports not synced yet.');
-    feed('/api/appfolio/feed/tech-activity',   req   => afReports.techActivityToday(req.query.date), 'Labor Summary not synced yet.');
+    // Roster comes from the technicians table; techActivityToday falls back to
+    // its own built-in list when that returns null (table not migrated yet).
+    feed('/api/appfolio/feed/tech-activity',   async req => afReports.techActivityToday(req.query.date, await techRoster()), 'Labor Summary not synced yet.');
     feed('/api/appfolio/feed/billable',        ()    => afReports.billableSummary(),            'Billable reports not synced yet.');
     feed('/api/appfolio/feed/urgent-wos',      ()    => afReports.urgentWorkOrders(),           'Work order report not synced yet.');
     feed('/api/appfolio/feed/wo-by-property',  ()    => afReports.woCountsByProperty(),         'Work order report not synced yet.');

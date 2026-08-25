@@ -988,6 +988,46 @@
         <div class="view-actions"><button class="btn-sm" id="maint-properties-refresh">🔄 Refresh</button></div>
       </div>
       <div id="maint-assignments-body"></div>
+
+      <!-- Make Ready roster — from the technicians table -->
+      <div class="view-head" style="margin-top:24px">
+        <div>
+          <h3 style="margin:0">Make Ready Technicians</h3>
+          <p class="muted small">Verify properties before Move In</p>
+        </div>
+      </div>
+      <div class="mr-tech-grid" id="mrTechGrid"></div>
+
+      <!-- Capabilities matrix — from the technicians table -->
+      <div class="view-head" style="margin-top:24px">
+        <div>
+          <h3 style="margin:0">Technician Capabilities</h3>
+          <p class="muted small" id="tcSub">Assign WOs by qualification — edit inline, save per row</p>
+        </div>
+        <div class="view-actions">
+          <label class="small muted" style="display:flex;align-items:center;gap:5px">
+            <input type="checkbox" id="tcShowInactive"> Show inactive
+          </label>
+          <button class="btn-sm" id="techAddBtn">+ Add technician</button>
+          <button class="btn-sm" id="techRefreshBtn">🔄 Refresh</button>
+        </div>
+      </div>
+      <form id="techAddForm" class="quick-add hidden" style="margin-bottom:12px">
+        <input name="full_name" placeholder="Full name" required>
+        <select name="position">
+          <option value="maint_tech">Maint Tech</option>
+          <option value="senior_maint_tech">Senior Maint Tech</option>
+          <option value="field_supervisor">Field Supervisor</option>
+          <option value="make_ready">Make Ready</option>
+          <option value="housekeeper">Housekeeper</option>
+          <option value="grounds">Grounds</option>
+          <option value="other">Other</option>
+        </select>
+        <input name="appfolio_aliases" placeholder="AppFolio name(s), comma-separated">
+        <button type="submit">+ Add</button>
+        <button type="button" id="techAddCancel">Cancel</button>
+      </form>
+      <div id="tcTable"></div>
     </div>
 
     <!-- 8. Coverage Map -->

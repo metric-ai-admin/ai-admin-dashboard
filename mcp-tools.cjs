@@ -576,6 +576,96 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
     } catch { return text('No se pudo conectar al dashboard.'); }
   });
 
+  // ── Technicians ───────────────────────────────────────────────────────────
+  // Backed by the Supabase `technicians` table, the single source of truth that
+  // replaced the five hardcoded lists (supabase/migrations/002_technicians.sql).
+
+  server.registerTool('maintenance_list_technicians', {
+    title: 'Ver técnicos',
+    description: 'Lista los técnicos de mantenimiento con su posición, propiedades asignadas, capacidades (AC, plomería, eléctrico, etc.) y sus nombres en AppFolio. Úsala para decidir a quién asignar un work order según su calificación.',
+    inputSchema: {
+      includeInactive: z.boolean().optional().describe('Incluir técnicos dados de baja (por defecto solo activos)'),
+    },
+  }, async ({ includeInactive }) =>
+    text(await getJSON('/api/technicians?active=' + (includeInactive ? 'all' : '1'))));
+
+  server.registerTool('maintenance_add_technician', {
+    title: 'Agregar técnico',
+    description: 'Registra un técnico nuevo. El id se genera del nombre si no lo especificas. appfolioAliases debe traer el nombre EXACTO como aparece en AppFolio (suele llevar inicial al final, p. ej. "Angel Martinez C"), porque de ahí depende la alerta de cero horas.',
+    inputSchema: {
+      fullName: z.string().describe('Nombre completo (requerido)'),
+      position: z.enum(['field_supervisor', 'senior_maint_tech', 'maint_tech', 'make_ready', 'housekeeper', 'grounds', 'other']).optional(),
+      appfolioAliases: z.array(z.string()).optional().describe('Nombres exactos en AppFolio'),
+      expectDailyHours: z.boolean().optional().describe('Debe registrar horas a diario — activa la alerta de cero horas'),
+      propertiesLabel: z.string().optional(),
+      notes: z.string().optional(),
+    },
+  }, async ({ fullName, position, appfolioAliases, expectDailyHours, propertiesLabel, notes }) => {
+    try {
+      const res = await doFetch(`${BASE}/api/technicians`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full_name: fullName, position, appfolio_aliases: appfolioAliases,
+          expect_daily_hours: expectDailyHours, properties_label: propertiesLabel, notes,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      return text({ ok: true, technician: data });
+    } catch { return text('No se pudo conectar al dashboard.'); }
+  });
+
+  server.registerTool('maintenance_update_technician', {
+    title: 'Actualizar técnico',
+    description: 'Actualiza un técnico existente: posición, capacidades, alias de AppFolio, ubicación en el mapa, o darlo de baja con active:false. Usa maintenance_list_technicians para ver los ids. Las capacidades aceptan: highest, yes, minor, maybe, no, na.',
+    inputSchema: {
+      id: z.string().describe('El id del técnico, p. ej. "angel-martinez"'),
+      fullName: z.string().optional(),
+      active: z.boolean().optional().describe('false para dar de baja sin borrar el historial'),
+      position: z.enum(['field_supervisor', 'senior_maint_tech', 'maint_tech', 'make_ready', 'housekeeper', 'grounds', 'other']).optional(),
+      appfolioAliases: z.array(z.string()).optional(),
+      expectDailyHours: z.boolean().optional(),
+      showOnMap: z.boolean().optional(),
+      homeZip: z.string().optional(),
+      homeLat: z.number().optional(),
+      homeLng: z.number().optional(),
+      showsInMakeReady: z.boolean().optional(),
+      propertiesLabel: z.string().optional(),
+      capAc: z.enum(['highest', 'yes', 'minor', 'maybe', 'no', 'na']).optional(),
+      capElectrical: z.enum(['highest', 'yes', 'minor', 'maybe', 'no', 'na']).optional(),
+      capPlumbing: z.enum(['highest', 'yes', 'minor', 'maybe', 'no', 'na']).optional(),
+      capPool: z.enum(['highest', 'yes', 'minor', 'maybe', 'no', 'na']).optional(),
+      capWelding: z.enum(['highest', 'yes', 'minor', 'maybe', 'no', 'na']).optional(),
+      capPainting: z.enum(['highest', 'yes', 'minor', 'maybe', 'no', 'na']).optional(),
+      capResurfacing: z.enum(['highest', 'yes', 'minor', 'maybe', 'no', 'na']).optional(),
+      capCleaning: z.enum(['highest', 'yes', 'minor', 'maybe', 'no', 'na']).optional(),
+      notes: z.string().optional(),
+    },
+  }, async ({ id, ...rest }) => {
+    const map = {
+      fullName: 'full_name', active: 'active', position: 'position',
+      appfolioAliases: 'appfolio_aliases', expectDailyHours: 'expect_daily_hours',
+      showOnMap: 'show_on_map', homeZip: 'home_zip', homeLat: 'home_lat', homeLng: 'home_lng',
+      showsInMakeReady: 'shows_in_make_ready', propertiesLabel: 'properties_label',
+      capAc: 'cap_ac', capElectrical: 'cap_electrical', capPlumbing: 'cap_plumbing',
+      capPool: 'cap_pool', capWelding: 'cap_welding', capPainting: 'cap_painting',
+      capResurfacing: 'cap_resurfacing', capCleaning: 'cap_cleaning', notes: 'notes',
+    };
+    const body = {};
+    for (const [camel, snake] of Object.entries(map)) {
+      if (rest[camel] !== undefined) body[snake] = rest[camel];
+    }
+    if (!Object.keys(body).length) return text('No se envió ningún campo para actualizar.');
+    try {
+      const res = await doFetch(`${BASE}/api/technicians/${encodeURIComponent(id)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      return text({ ok: true, technician: data });
+    } catch { return text('No se pudo conectar al dashboard.'); }
+  });
+
   server.registerTool('maintenance_get_lyndsay_tasks', {
     title: 'Ver tareas de Lyndsay (mantenimiento)',
     description: 'Devuelve el snapshot más reciente de tareas del Daily Command Center de Lyndsay con su estado de completado.',

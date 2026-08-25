@@ -493,6 +493,38 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .cwo-desc { color: var(--muted); max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cwo-status { font-size: 11px; background: var(--bg-elevated); border-radius: 5px; padding: 2px 7px; white-space: nowrap; }
 .cwo-date { color: var(--muted); white-space: nowrap; font-family: ui-monospace, monospace; font-size: 11.5px; }
+
+/* =====================================================
+   MAINTENANCE — TECHNICIANS
+   Make Ready chips + capabilities matrix, both rendered
+   from the Supabase `technicians` table (Phase 3).
+   ===================================================== */
+.mr-tech-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+.mr-tech-chip { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 20px; padding: 6px 14px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.mr-tech-chip-cleaning { border-color: var(--info); }
+.mr-tech-role { font-size: 11px; font-weight: 500; color: var(--muted); }
+
+.tc-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
+.tc-table { width: 100%; border-collapse: collapse; background: var(--card); font-size: 12.5px; }
+.tc-table th { background: var(--bg-elevated); text-align: left; padding: 9px 10px; font-size: 10.5px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.tc-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.tc-table tr:last-child td { border-bottom: none; }
+.tc-inactive { opacity: .5; }
+.tc-name { font-weight: 650; white-space: nowrap; }
+.tc-note { font-weight: 400; font-size: 10.5px; color: var(--muted); max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-mid { text-align: center; }
+.tc-in { width: 100%; background: var(--bg-surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 12px; font-family: inherit; }
+.tc-in[type=checkbox] { width: auto; }
+.tc-actions { white-space: nowrap; display: flex; gap: 5px; }
+
+/* Capability selects carry their rating's colour so the matrix stays scannable. */
+.tc-cap-select { border: 1px solid var(--border); border-radius: 6px; padding: 3px 5px; font-size: 11px; font-weight: 650; font-family: inherit; background: var(--bg-surface); color: var(--text); cursor: pointer; }
+.tc-cap-select.tc-highest { background: var(--success-bg); color: var(--success); border-color: var(--success); }
+.tc-cap-select.tc-yes     { background: var(--success-bg); color: var(--success); }
+.tc-cap-select.tc-minor   { background: var(--warning-bg); color: var(--warning); }
+.tc-cap-select.tc-maybe   { background: var(--warning-bg); color: var(--warning); }
+.tc-cap-select.tc-no      { background: var(--bg-elevated); color: var(--text-secondary); }
+.tc-cap-select.tc-na      { background: transparent; color: var(--text-muted); }
 .kanban-col-body { display: flex; flex-direction: column; gap: 8px; padding: 10px 8px; min-height: 60px; max-height: calc(100vh - 340px); overflow-y: auto; }
 .kanban-col-empty { text-align: center; color: var(--text-muted); font-size: 12.5px; padding: 24px 8px; font-style: italic; }
 .col-toggle { font-size: 11px; color: var(--text-muted); margin-left: 4px; display: inline-block; transition: transform .2s; }

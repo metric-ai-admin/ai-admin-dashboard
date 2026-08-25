@@ -1996,7 +1996,9 @@ function switchMaintenanceView(view) {
     'eod':            loadMaintenanceEodSummary,
     'report':         loadMaintenanceDailyReport,
     'sops':           loadMaintenanceSops,
-    'properties':     loadPropertyAssignments,
+    // Technicians first: loadPropertyAssignments() builds the tech-name datalist
+    // from techCache, so it needs the roster already in hand.
+    'properties':     async () => { await loadTechnicians(); loadPropertyAssignments(); },
     'coverage':       loadMaintenanceCoverage,
     'efficiency':     loadEfficiency,
     'technician':     loadTechActivity,
@@ -2043,7 +2045,29 @@ async function loadMaintenance() {
     $('#maint-eod-refresh')?.addEventListener('click',        loadMaintenanceEodSummary);
     $('#maint-report-refresh')?.addEventListener('click',     loadMaintenanceDailyReport);
     $('#maint-sops-refresh')?.addEventListener('click',       loadMaintenanceSops);
-    $('#maint-properties-refresh')?.addEventListener('click', loadPropertyAssignments);
+    $('#maint-properties-refresh')?.addEventListener('click', async () => { await loadTechnicians(); loadPropertyAssignments(); });
+    $('#techRefreshBtn')?.addEventListener('click', loadTechnicians);
+    $('#tcShowInactive')?.addEventListener('change', loadTechnicians);
+    $('#techAddBtn')?.addEventListener('click', () => $('#techAddForm')?.classList.toggle('hidden'));
+    $('#techAddCancel')?.addEventListener('click', () => $('#techAddForm')?.classList.add('hidden'));
+    $('#techAddForm')?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        await api('/api/technicians', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            full_name:        fd.get('full_name'),
+            position:         fd.get('position'),
+            appfolio_aliases: fd.get('appfolio_aliases') || '',
+          }),
+        });
+        e.target.reset();
+        e.target.classList.add('hidden');
+        toast('Technician added', 'success');
+        loadTechnicians();
+      } catch (err) { toast(err.message, 'error'); }
+    });
     $('#maint-lyndsay-refresh')?.addEventListener('click',    loadLyndsayCommandCenter);
     $('#maint-sops-search')?.addEventListener('input', e => loadMaintenanceSops(e.target.value));
   }
@@ -2122,14 +2146,42 @@ const MAP_PROPERTIES = [
   { id: 'iconic-downtown', name: 'iConic Downtown',      address: '301 S. Burnet St, Austin, TX 78703',          lat: 30.2549, lng: -97.7673 },
 ];
 
-// lat/lng are ZIP-code centroids — the technician's home AREA, not an address.
-const MAP_TECHS = [
-  { id: 'angel',   name: 'Angel Martinez',  zip: '78754', role: 'Maint Tech',        lat: 30.3420, lng: -97.6590 },
-  { id: 'raul',    name: 'Raúl Martinez',   zip: '78724', role: 'Senior Maint Tech', lat: 30.2835, lng: -97.6545 },
-  { id: 'emerson', name: 'Emerson Garcia',  zip: '78753', role: 'Maint Tech',        lat: 30.3827, lng: -97.6854 },
-  { id: 'carlos',  name: 'Carlos Portilla', zip: '78664', role: 'Maint Tech',        lat: 30.5212, lng: -97.6539 },
-  { id: 'jose',    name: 'José Rentería',   zip: '78723', role: 'Senior Maint Tech', lat: 30.2972, lng: -97.6859 },
-];
+// Technician pins now come from the Supabase `technicians` table (Phase 3) —
+// rows with show_on_map and a home ZIP centroid. Still the home AREA, not an
+// address. Empty until loadMapTechs() runs; the map degrades to properties-only
+// if the table hasn't been migrated yet.
+let MAP_TECHS = [];
+let mapTechsLoaded = false;
+
+const TECH_POSITION_LABEL = {
+  field_supervisor:  'Field Supervisor',
+  senior_maint_tech: 'Senior Maint Tech',
+  maint_tech:        'Maint Tech',
+  make_ready:        'Make Ready',
+  housekeeper:       'Housekeeper',
+  grounds:           'Grounds',
+  other:             'Staff',
+};
+
+async function loadMapTechs() {
+  if (mapTechsLoaded) return;
+  try {
+    const rows = await api('/api/technicians?map=1');
+    MAP_TECHS = (rows || [])
+      .filter(t => t.home_lat != null && t.home_lng != null)
+      .map(t => ({
+        id:   t.id,
+        name: t.full_name,
+        zip:  t.home_zip,
+        role: TECH_POSITION_LABEL[t.position] || t.position,
+        lat:  t.home_lat,
+        lng:  t.home_lng,
+      }));
+    mapTechsLoaded = true;
+  } catch {
+    MAP_TECHS = [];   // table not migrated yet — properties still render
+  }
+}
 
 let coverageMap = null;
 let covPropMarkers = [];
@@ -2322,6 +2374,13 @@ async function loadMaintenanceCoverage() {
     if (status) status.innerHTML = '<p class="small muted">Could not load the map library (unpkg CDN unreachable). Check the connection and switch back to this view to retry.</p>';
     return;
   }
+  // Technician pins must be in hand before initCoverageMap(), which builds the
+  // markers and the tech buttons once and then short-circuits on re-entry.
+  await loadMapTechs();
+  if (status && !MAP_TECHS.length) {
+    status.innerHTML = '<p class="small muted">No technicians are flagged for the map. ' +
+      'Set <b>show_on_map</b> and a home ZIP under Properties ▸ Technician Capabilities.</p>';
+  }
   initCoverageMap();
   // initCoverageMap() builds the markers synchronously, so the open-WO badges
   // can be filled in immediately — no timer, no race with the CDN load.
@@ -2339,7 +2398,15 @@ async function loadPropertyAssignments() {
     if (!rows.length) { el.innerHTML = '<p class="small muted">No assignments found.</p>'; return; }
 
     const headers = ['Property', 'Units', 'Pool', 'Grounds Tech', 'Frequency', 'Maint. Tech', 'Pest Control', 'Landscaping'];
-    let html = `<div style="overflow-x:auto"><table class="crm-table">
+
+    // The tech columns stay free text — vendors and crews appear here too, and a
+    // hard foreign key would reject existing rows. Backing them with a datalist
+    // steers new edits toward the technicians table without discarding anything.
+    const techNames = (techCache.length ? techCache : [])
+      .filter(t => t.active).map(t => t.full_name);
+    const datalist = `<datalist id="tech-names">${techNames.map(n => `<option value="${esc(n)}">`).join('')}</datalist>`;
+
+    let html = `${datalist}<div style="overflow-x:auto"><table class="crm-table">
       <thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}<th></th></tr></thead>
       <tbody>`;
 
@@ -2349,9 +2416,9 @@ async function loadPropertyAssignments() {
         <td class="mono small">${esc(prop)}</td>
         <td><input class="crm-input maint-edit" data-field="units" style="width:60px" value="${esc(r.units ?? '')}"></td>
         <td><input class="crm-input maint-edit" data-field="has_pool" style="width:50px" value="${esc(r.has_pool ?? r.hasPool ?? '')}"></td>
-        <td><input class="crm-input maint-edit" data-field="grounds_tech" value="${esc(r.grounds_tech ?? r.groundsTech ?? '')}"></td>
+        <td><input class="crm-input maint-edit" list="tech-names" data-field="grounds_tech" value="${esc(r.grounds_tech ?? r.groundsTech ?? '')}"></td>
         <td><input class="crm-input maint-edit" data-field="frequency" value="${esc(r.frequency ?? '')}"></td>
-        <td><input class="crm-input maint-edit" data-field="maintenance_tech" value="${esc(r.maintenance_tech ?? r.maintenanceTech ?? '')}"></td>
+        <td><input class="crm-input maint-edit" list="tech-names" data-field="maintenance_tech" value="${esc(r.maintenance_tech ?? r.maintenanceTech ?? '')}"></td>
         <td><input class="crm-input maint-edit" data-field="pest_control" value="${esc(r.pest_control ?? r.pestControl ?? '')}"></td>
         <td><input class="crm-input maint-edit" data-field="landscaping" value="${esc(r.landscaping ?? '')}"></td>
         <td><button class="btn-sm primary maint-save-assignment">Save</button></td>
@@ -2380,6 +2447,149 @@ async function loadPropertyAssignments() {
   } catch (err) {
     el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
   }
+}
+
+// ── Technicians ──────────────────────────────────────────────────────
+// Renders the Make Ready chips and the capabilities matrix from the Supabase
+// `technicians` table, replacing the two hardcoded HTML blocks in the original
+// metric-dashboard. Editable in place so Erick can maintain it without a deploy.
+
+const TECH_CAPS = [
+  { key: 'cap_ac',          label: 'AC' },
+  { key: 'cap_electrical',  label: 'Electrical' },
+  { key: 'cap_plumbing',    label: 'Plumbing' },
+  { key: 'cap_pool',        label: 'Pool' },
+  { key: 'cap_welding',     label: 'Welding' },
+  { key: 'cap_painting',    label: 'Painting' },
+  { key: 'cap_resurfacing', label: 'Resurfacing' },
+  { key: 'cap_cleaning',    label: 'Cleaning' },
+];
+
+const CAP_VALUES = [
+  { v: 'highest', label: 'Highest', cls: 'tc-highest' },
+  { v: 'yes',     label: 'Yes',     cls: 'tc-yes' },
+  { v: 'minor',   label: 'Minor',   cls: 'tc-minor' },
+  { v: 'maybe',   label: 'Maybe',   cls: 'tc-maybe' },
+  { v: 'no',      label: 'No',      cls: 'tc-no' },
+  { v: 'na',      label: '—',       cls: 'tc-na' },
+];
+const CAP_CLASS = Object.fromEntries(CAP_VALUES.map(c => [c.v, c.cls]));
+
+let techCache = [];
+
+async function loadTechnicians() {
+  const table = $('#tcTable');
+  if (!table) return;
+  const showInactive = $('#tcShowInactive')?.checked;
+  table.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    techCache = await api('/api/technicians?active=' + (showInactive ? 'all' : '1'));
+  } catch (err) {
+    table.innerHTML = `<p class="small muted">Could not load technicians: ${esc(err.message)}<br>` +
+      `Run <code>supabase/migrations/002_technicians.sql</code> in the Supabase SQL editor.</p>`;
+    $('#mrTechGrid').innerHTML = '';
+    return;
+  }
+  renderMakeReadyChips();
+  renderTechCapabilities();
+}
+
+function renderMakeReadyChips() {
+  const grid = $('#mrTechGrid');
+  if (!grid) return;
+  const mr = techCache.filter(t => t.shows_in_make_ready);
+  grid.innerHTML = mr.length
+    ? mr.map(t => `<div class="mr-tech-chip${t.make_ready_note ? ' mr-tech-chip-cleaning' : ''}">
+         <span>${esc(t.full_name)}</span>
+         ${t.make_ready_note ? `<span class="mr-tech-role">${esc(t.make_ready_note)}</span>` : ''}
+       </div>`).join('')
+    : '<p class="small muted">No technicians flagged for Make Ready.</p>';
+}
+
+function renderTechCapabilities() {
+  const el = $('#tcTable');
+  if (!el) return;
+  if (!techCache.length) { el.innerHTML = '<p class="small muted">No technicians yet.</p>'; return; }
+
+  $('#tcSub').textContent =
+    `${techCache.length} technicians · ${techCache.filter(t => t.expect_daily_hours).length} on the daily-hours alert · edit inline, save per row`;
+
+  const positions = Object.entries(TECH_POSITION_LABEL);
+  const capSelect = (t, cap) =>
+    `<select class="tc-cap-select ${CAP_CLASS[t[cap.key]] || ''}" data-field="${cap.key}">` +
+    CAP_VALUES.map(c => `<option value="${c.v}"${t[cap.key] === c.v ? ' selected' : ''}>${esc(c.label)}</option>`).join('') +
+    '</select>';
+
+  el.innerHTML = `<div class="tc-table-wrap"><table class="tc-table">
+    <thead><tr>
+      <th>Technician</th><th style="width:150px">Position</th><th style="width:170px">Properties</th>
+      <th style="width:150px">AppFolio name(s)</th>
+      <th title="Expected to log hours daily — drives the zero-hours alert">Daily</th>
+      <th title="Show as a pin on the Coverage Map">Map</th>
+      <th title="Show in the Make Ready roster">MR</th>
+      ${TECH_CAPS.map(c => `<th>${esc(c.label)}</th>`).join('')}
+      <th></th>
+    </tr></thead><tbody>
+    ${techCache.map(t => `<tr data-id="${esc(t.id)}"${t.active ? '' : ' class="tc-inactive"'}>
+      <td class="tc-name">${esc(t.full_name)}${t.notes ? `<div class="tc-note" title="${esc(t.notes)}">${esc(t.notes)}</div>` : ''}</td>
+      <td><select class="tc-in" data-field="position">
+        ${positions.map(([v, label]) => `<option value="${v}"${t.position === v ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+      </select></td>
+      <td><input class="tc-in" data-field="properties_label" value="${esc(t.properties_label ?? '')}"></td>
+      <td><input class="tc-in" data-field="appfolio_aliases" value="${esc((t.appfolio_aliases || []).join(', '))}"></td>
+      <td class="tc-mid"><input type="checkbox" class="tc-in" data-field="expect_daily_hours"${t.expect_daily_hours ? ' checked' : ''}></td>
+      <td class="tc-mid"><input type="checkbox" class="tc-in" data-field="show_on_map"${t.show_on_map ? ' checked' : ''}></td>
+      <td class="tc-mid"><input type="checkbox" class="tc-in" data-field="shows_in_make_ready"${t.shows_in_make_ready ? ' checked' : ''}></td>
+      ${TECH_CAPS.map(c => `<td class="tc-mid">${capSelect(t, c)}</td>`).join('')}
+      <td class="tc-actions">
+        <button class="btn-sm primary tech-save">Save</button>
+        <button class="btn-sm tech-toggle">${t.active ? 'Deactivate' : 'Reactivate'}</button>
+      </td>
+    </tr>`).join('')}
+  </tbody></table></div>`;
+
+  // Recolour a capability cell as soon as it's changed, before saving.
+  el.querySelectorAll('.tc-cap-select').forEach(sel => {
+    sel.addEventListener('change', () => {
+      sel.className = 'tc-cap-select ' + (CAP_CLASS[sel.value] || '');
+    });
+  });
+
+  el.querySelectorAll('.tech-save').forEach(btn => {
+    btn.addEventListener('click', () => saveTechnicianRow(btn.closest('tr')));
+  });
+
+  el.querySelectorAll('.tech-toggle').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const tr = btn.closest('tr');
+      const current = techCache.find(t => t.id === tr.dataset.id);
+      try {
+        await api(`/api/technicians/${encodeURIComponent(tr.dataset.id)}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ active: !current.active }),
+        });
+        toast(current.active ? 'Technician deactivated' : 'Technician reactivated', 'success');
+        mapTechsLoaded = false;   // roster changed — refetch pins next time
+        loadTechnicians();
+      } catch (err) { toast(err.message, 'error'); }
+    });
+  });
+}
+
+async function saveTechnicianRow(tr) {
+  const payload = {};
+  tr.querySelectorAll('[data-field]').forEach(inp => {
+    payload[inp.dataset.field] = inp.type === 'checkbox' ? inp.checked : inp.value;
+  });
+  try {
+    await api(`/api/technicians/${encodeURIComponent(tr.dataset.id)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    toast('Saved', 'success');
+    mapTechsLoaded = false;   // show_on_map / ZIP may have changed
+    loadTechnicians();
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 // ── 2. Operational Tasks Kanban ──────────────────────────────────────
