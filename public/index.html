@@ -54,6 +54,7 @@
       <button data-tab="platform"><span class="nav-dot"></span>Projects</button>
       <button data-tab="email"><span class="nav-dot"></span>Email / Cal<span id="reminder-badge" class="reminder-badge hidden">0</span></button>
       <button data-tab="eod"><span class="nav-dot"></span>End of Day</button>
+      <button data-tab="maintenance"><span class="nav-dot"></span>Maintenance</button>
       <button data-tab="crm"><span class="nav-dot"></span>BD CRM</button>
     </nav>
     <div class="sidebar-foot">
@@ -891,6 +892,85 @@
     </div><!-- /crm-modal -->
 
   </section><!-- /tab-crm -->
+
+  <!-- ============ MAINTENANCE ============ -->
+  <section id="tab-maintenance" class="tab">
+    <div class="view-head">
+      <div>
+        <h2>Maintenance</h2>
+        <p class="muted small">Erick's operational view — tasks, properties, reports</p>
+      </div>
+      <div class="view-actions">
+        <button id="maintenance-refresh">🔄 Refresh All</button>
+      </div>
+    </div>
+
+    <!-- 1. Property Assignments -->
+    <div class="project-card" id="maint-assignments-panel">
+      <div class="project-head" id="maint-assignments-toggle">
+        <div class="project-title">🏠 Property Assignments</div>
+        <span class="project-toggle">▶</span>
+      </div>
+      <div class="project-body hidden">
+        <div id="maint-assignments-body"></div>
+      </div>
+    </div>
+
+    <!-- 2. Operational Tasks (Kanban) -->
+    <div class="project-card" id="maint-tasks-panel">
+      <div class="project-head" id="maint-tasks-toggle">
+        <div class="project-title">✅ Operational Tasks (Erick)</div>
+        <span class="project-toggle">▶</span>
+      </div>
+      <div class="project-body hidden">
+        <form id="maint-task-form" class="quick-add" style="margin-bottom:12px;">
+          <input name="title" placeholder="New task title" required>
+          <select name="priority">
+            <option>🔴 Critical</option>
+            <option selected>🟢 In Progress</option>
+            <option>🟡 Follow-up</option>
+            <option>📅 Daily Task</option>
+          </select>
+          <input name="source" placeholder="Source / person">
+          <button type="submit">+ Add</button>
+        </form>
+        <div id="maint-tasks-body"></div>
+      </div>
+    </div>
+
+    <!-- 3. Daily Work Report -->
+    <div class="project-card" id="maint-report-panel">
+      <div class="project-head" id="maint-report-toggle">
+        <div class="project-title">📋 Daily Work Report</div>
+        <span class="project-toggle">▶</span>
+      </div>
+      <div class="project-body hidden">
+        <div id="maint-report-body"></div>
+      </div>
+    </div>
+
+    <!-- 4. EOD Summary -->
+    <div class="project-card" id="maint-eod-panel">
+      <div class="project-head" id="maint-eod-toggle">
+        <div class="project-title">🌙 End of Day Summary (Maintenance)</div>
+        <span class="project-toggle">▶</span>
+      </div>
+      <div class="project-body hidden">
+        <div id="maint-eod-body"></div>
+      </div>
+    </div>
+
+    <!-- 5. Lyndsay Command Center -->
+    <div class="project-card" id="maint-lyndsay-panel">
+      <div class="project-head" id="maint-lyndsay-toggle">
+        <div class="project-title">👑 Lyndsay Command Center (readonly)</div>
+        <span class="project-toggle">▶</span>
+      </div>
+      <div class="project-body hidden">
+        <div id="maint-lyndsay-body"></div>
+      </div>
+    </div>
+  </section>
 
   <!-- ============ END OF DAY ============ -->
   <section id="tab-eod" class="tab">

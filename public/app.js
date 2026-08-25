@@ -46,7 +46,7 @@ function copyToClipboard(text) {
 
 // ---- Auth / session ---------------------------------------------------------
 const TAB_ACCESS = {
-  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'crm'],
+  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm'],
   ceo:         ['crm', 'platform', 'eod'],
   operations:  ['tasks', 'platform', 'email', 'eod'],
   maintenance: ['crm'],
@@ -119,6 +119,7 @@ function loadTab(tab) {
   if (tab === 'platform') loadPlatform();
   if (tab === 'email') loadEmail();
   if (tab === 'eod') loadEod();
+  if (tab === 'maintenance') loadMaintenance();
   if (tab === 'crm') { crmApplyUserRole(); crmLoadMeta(); crmLoadProperties(); }
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
@@ -1830,6 +1831,254 @@ $('#crm-search').addEventListener('input', e => {
 $('#crm-sort')?.addEventListener('change', e => { crmState.sort = e.target.value; crmLoadProperties(); });
 
 // ── End BD CRM Phase 2 module ─────────────────────────────────────────────────
+
+// =====================================================================
+// MAINTENANCE TAB
+// =====================================================================
+
+// Collapsible panels wired in loadMaintenance() after the section renders
+function wireMaintenanceCollapsible(toggleId, bodySelector) {
+  const toggle = $(`#${toggleId}`);
+  if (!toggle) return;
+  toggle.addEventListener('click', () => {
+    const panel = toggle.closest('.project-card');
+    const body = panel.querySelector('.project-body');
+    const arrow = panel.querySelector('.project-toggle');
+    body.classList.toggle('hidden');
+    if (arrow) arrow.textContent = body.classList.contains('hidden') ? '▶' : '▼';
+  });
+}
+
+let maintTaskCache = [];
+
+async function loadMaintenance() {
+  // Wire collapsibles
+  ['maint-assignments-toggle','maint-tasks-toggle','maint-report-toggle','maint-eod-toggle','maint-lyndsay-toggle']
+    .forEach(id => wireMaintenanceCollapsible(id));
+
+  $('#maintenance-refresh')?.addEventListener('click', () => {
+    loadPropertyAssignments();
+    loadMaintenanceTasks();
+    loadMaintenanceDailyReport();
+    loadMaintenanceEodSummary();
+    loadLyndsayCommandCenter();
+  });
+
+  $('#maint-task-form')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await api('/api/operational', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: fd.get('title'), priority: fd.get('priority'), source: fd.get('source') || '' })
+    });
+    e.target.reset();
+    loadMaintenanceTasks();
+  });
+
+  loadPropertyAssignments();
+  loadMaintenanceTasks();
+  loadMaintenanceDailyReport();
+  loadMaintenanceEodSummary();
+  loadLyndsayCommandCenter();
+}
+
+// ── 1. Property Assignments ──────────────────────────────────────────
+async function loadPropertyAssignments() {
+  const el = $('#maint-assignments-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const rows = await api('/api/assignments');
+    if (!rows.length) { el.innerHTML = '<p class="small muted">No assignments found.</p>'; return; }
+
+    const headers = ['Property', 'Units', 'Pool', 'Grounds Tech', 'Frequency', 'Maint. Tech', 'Pest Control', 'Landscaping'];
+    let html = `<div style="overflow-x:auto"><table class="crm-table">
+      <thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}<th></th></tr></thead>
+      <tbody>`;
+
+    rows.forEach(r => {
+      const prop = r.property_name || r.propertyName || '';
+      html += `<tr data-prop="${esc(prop)}">
+        <td class="mono small">${esc(prop)}</td>
+        <td><input class="crm-input maint-edit" data-field="units" style="width:60px" value="${esc(r.units ?? '')}"></td>
+        <td><input class="crm-input maint-edit" data-field="has_pool" style="width:50px" value="${esc(r.has_pool ?? r.hasPool ?? '')}"></td>
+        <td><input class="crm-input maint-edit" data-field="grounds_tech" value="${esc(r.grounds_tech ?? r.groundsTech ?? '')}"></td>
+        <td><input class="crm-input maint-edit" data-field="frequency" value="${esc(r.frequency ?? '')}"></td>
+        <td><input class="crm-input maint-edit" data-field="maintenance_tech" value="${esc(r.maintenance_tech ?? r.maintenanceTech ?? '')}"></td>
+        <td><input class="crm-input maint-edit" data-field="pest_control" value="${esc(r.pest_control ?? r.pestControl ?? '')}"></td>
+        <td><input class="crm-input maint-edit" data-field="landscaping" value="${esc(r.landscaping ?? '')}"></td>
+        <td><button class="btn-sm primary maint-save-assignment">Save</button></td>
+      </tr>`;
+    });
+
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+
+    el.querySelectorAll('.maint-save-assignment').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const tr = btn.closest('tr');
+        const prop = tr.dataset.prop;
+        const update = {};
+        tr.querySelectorAll('.maint-edit').forEach(inp => { update[inp.dataset.field] = inp.value; });
+        try {
+          await api(`/api/assignments/${encodeURIComponent(prop)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(update)
+          });
+          toast('Saved', 'success');
+        } catch (err) { toast(err.message, 'error'); }
+      });
+    });
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+// ── 2. Operational Tasks Kanban ──────────────────────────────────────
+const MAINT_COLUMNS = [
+  { key: '🔴 Critical',   header: '🔴 Critical',   cls: 'col-critical' },
+  { key: '🟡 Follow-up',  header: '🟡 Follow-up',  cls: 'col-followup' },
+  { key: '🟢 In Progress',header: '🟢 In Progress',cls: 'col-inprogress' },
+  { key: '📅 Daily Task', header: '📅 Daily Task', cls: 'col-daily' },
+  { key: '✅ Done',        header: '✅ Done',        cls: 'col-done' },
+];
+
+async function loadMaintenanceTasks() {
+  const el = $('#maint-tasks-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    maintTaskCache = await api('/api/operational');
+    renderMaintenanceKanban();
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+function renderMaintenanceKanban() {
+  const el = $('#maint-tasks-body');
+  if (!el) return;
+  const grouped = {};
+  MAINT_COLUMNS.forEach(c => { grouped[c.key] = []; });
+  maintTaskCache.forEach(t => {
+    const col = grouped[t.priority] != null ? t.priority : '🟢 In Progress';
+    if (grouped[col]) grouped[col].push(t);
+  });
+
+  let html = '<div class="kanban-board">';
+  MAINT_COLUMNS.forEach(col => {
+    const tasks = grouped[col.key] || [];
+    html += `<div class="kanban-col ${col.cls}">
+      <div class="kanban-header">${esc(col.header)} <span class="col-count">${tasks.length}</span></div>
+      <div class="kanban-cards">`;
+    tasks.forEach(t => {
+      const done = !!t.completed_at;
+      html += `<div class="kanban-card${done ? ' done' : ''}" data-id="${esc(t.id)}">
+        <div class="card-title">${esc(t.title)}</div>
+        ${t.source ? `<div class="card-meta small muted">${esc(t.source)}</div>` : ''}
+        ${t.notes ? `<div class="card-meta small muted">${esc(t.notes)}</div>` : ''}
+        <div class="card-actions">
+          ${!done ? `<button class="btn-sm maint-task-done" data-id="${esc(t.id)}">✓ Done</button>` : `<button class="btn-sm maint-task-undone" data-id="${esc(t.id)}">Undo</button>`}
+          <select class="crm-select maint-task-prio" data-id="${esc(t.id)}" style="font-size:0.78rem">
+            ${MAINT_COLUMNS.map(c => `<option${t.priority === c.key ? ' selected' : ''}>${esc(c.key)}</option>`).join('')}
+          </select>
+          <button class="btn-sm maint-task-del" data-id="${esc(t.id)}" style="color:var(--red)">✕</button>
+        </div>
+      </div>`;
+    });
+    html += '</div></div>';
+  });
+  html += '</div>';
+  el.innerHTML = html;
+
+  el.querySelectorAll('.maint-task-done').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await api(`/api/operational/${btn.dataset.id}/done`, { method: 'POST' });
+      loadMaintenanceTasks();
+    });
+  });
+  el.querySelectorAll('.maint-task-undone').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await api(`/api/operational/${btn.dataset.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ completed_at: null })
+      });
+      loadMaintenanceTasks();
+    });
+  });
+  el.querySelectorAll('.maint-task-prio').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      await api(`/api/operational/${sel.dataset.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority: sel.value })
+      });
+      loadMaintenanceTasks();
+    });
+  });
+  el.querySelectorAll('.maint-task-del').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Delete this task?')) return;
+      await api(`/api/operational/${btn.dataset.id}`, { method: 'DELETE' });
+      loadMaintenanceTasks();
+    });
+  });
+}
+
+// ── 3. Daily Work Report ─────────────────────────────────────────────
+async function loadMaintenanceDailyReport() {
+  const el = $('#maint-report-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const data = await api('/api/report');
+    el.innerHTML = `<pre style="white-space:pre-wrap;font-size:0.85rem;line-height:1.6">${esc(typeof data === 'string' ? data : JSON.stringify(data, null, 2))}</pre>`;
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+// ── 4. EOD Summary (Maintenance) ─────────────────────────────────────
+async function loadMaintenanceEodSummary() {
+  const el = $('#maint-eod-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const data = await api('/api/maintenance/summary');
+    el.innerHTML = `<pre style="white-space:pre-wrap;font-size:0.85rem;line-height:1.6">${esc(typeof data === 'string' ? data : JSON.stringify(data, null, 2))}</pre>`;
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+// ── 5. Lyndsay Command Center (readonly) ─────────────────────────────
+async function loadLyndsayCommandCenter() {
+  const el = $('#maint-lyndsay-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const data = await api('/api/lyndsay/tasks');
+    const tasks = data.tasks || data || [];
+    if (!tasks.length) { el.innerHTML = '<p class="small muted">No tasks in snapshot.</p>'; return; }
+
+    const done = tasks.filter(t => t.completed);
+    const pending = tasks.filter(t => !t.completed);
+    let html = `<p class="small muted">${pending.length} pending · ${done.length} done</p>`;
+
+    html += '<div class="task-list" style="margin-top:8px;">';
+    [...pending, ...done].forEach(t => {
+      html += `<div class="card${t.completed ? ' done' : ''}" style="margin-bottom:6px;padding:10px 14px;">
+        <span>${t.completed ? '✅' : '⬜'} ${esc(t.title || t.task || '')}</span>
+        ${t.category ? `<span class="badge badge-blue" style="margin-left:8px;">${esc(t.category)}</span>` : ''}
+      </div>`;
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
 
 // Boot — verify session, gate tabs, then load initial tab
 initAuth();
