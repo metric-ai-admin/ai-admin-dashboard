@@ -32,10 +32,15 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// ── AppFolio file directories (ephemeral on Render free tier — acceptable for
-//    the analyzer use case: upload → instant analysis → discard) ───────────────
-const REPORTS_DIR = path.join(__dirname, 'data', 'appfolio_reports');
-const SOPS_DIR    = path.join(__dirname, 'data', 'maintenance_sops_files');
+// ── File directories ─────────────────────────────────────────────────────────
+// Must honour DATA_DIR the same way server.js does (server.js:161). render.yaml
+// mounts a persistent disk at /var/data and sets DATA_DIR to it; writing to
+// ./data instead puts these files on Render's ephemeral filesystem, where every
+// deploy or restart wipes them — including the maintenance SOPs, which are
+// uploaded once and expected to stay.
+const DATA_DIR    = process.env.DATA_DIR || path.join(__dirname, 'data');
+const REPORTS_DIR = path.join(DATA_DIR, 'appfolio_reports');
+const SOPS_DIR    = path.join(DATA_DIR, 'maintenance_sops_files');
 
 // ── AppFolio v2 client ────────────────────────────────────────────────────────
 // Only required if the AppFolio Reports module is present.
