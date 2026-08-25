@@ -989,10 +989,28 @@
       <div id="maint-assignments-body"></div>
     </div>
 
-    <!-- 8. Coverage Map (coming soon) -->
+    <!-- 8. Coverage Map -->
     <div id="maint-view-coverage" class="maint-view hidden">
-      <div class="view-head"><div><h2>Coverage Map</h2></div></div>
-      <div class="maint-coming-soon">🗺️ Coverage Map — Coming Soon</div>
+      <div class="view-head">
+        <div>
+          <h2>Coverage Map</h2>
+          <p class="muted small">Properties and technician home zones · Click a technician to sort by proximity</p>
+        </div>
+      </div>
+      <div id="maint-coverage-status"></div>
+      <div class="cov-root">
+        <div class="cov-map-col">
+          <div class="cov-techs" id="covTechs"></div>
+          <div class="cov-map-box" id="covMap"></div>
+        </div>
+        <div class="cov-dist-col">
+          <div class="cov-dist-head">Properties by proximity</div>
+          <div id="covLocSelector"></div>
+          <div class="cov-dist-list" id="covDistList">
+            <p class="muted small" style="padding:12px">Select a technician to see distances</p>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 9. Maintenance Efficiency (coming soon) -->

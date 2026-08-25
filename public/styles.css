@@ -327,6 +327,66 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .kanban-column.col-done .kanban-col-count { background: var(--bg-surface); color: var(--text-secondary); }
 .kanban-column.col-daily .kanban-col-head { border-top-color: #0ea5e9; }
 .kanban-column.col-daily .kanban-col-count { background: rgba(14,165,233,.15); color: #0ea5e9; }
+
+/* =====================================================
+   MAINTENANCE — COVERAGE MAP (Leaflet)
+   Ported from metric-dashboard. That dashboard is light-themed,
+   so panel colours are remapped to this app's dark tokens. The
+   MARKER colours are deliberately left light: they sit on top of
+   OpenStreetMap tiles, which are light regardless of our theme.
+   ===================================================== */
+.cov-root { display: flex; gap: 16px; height: calc(100vh - 230px); min-height: 500px; }
+.cov-map-col { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 10px; }
+.cov-map-box { flex: 1; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
+.cov-techs { display: flex; flex-wrap: wrap; gap: 8px; }
+.cov-tech-btn {
+  padding: 7px 15px; border-radius: 20px; border: 1.5px solid var(--border);
+  background: var(--bg-elevated); color: var(--text); font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all .15s;
+}
+.cov-tech-btn:hover { border-color: var(--accent); color: var(--accent); }
+.cov-tech-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.cov-tech-btn.unavailable { opacity: .55; cursor: default; }
+
+.cov-dist-col { width: 280px; flex-shrink: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--card); }
+.cov-dist-head { padding: 12px 16px; font-weight: 700; font-size: 13px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
+.cov-dist-list { flex: 1; overflow-y: auto; }
+.cov-tech-head-label { padding: 10px 14px 6px; font-size: 12px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--border); }
+.cov-dist-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.cov-rank { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.cov-dist-info { flex: 1; min-width: 0; }
+.cov-dist-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cov-dist-addr { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cov-dist-right { display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0; gap: 1px; }
+.cov-dist-mi { font-size: 13px; font-weight: 700; color: var(--accent); flex-shrink: 0; white-space: nowrap; }
+.cov-dist-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.cov-pending-badge { color: var(--warning); }
+.cov-travel-note { font-size: 10px; color: var(--muted); padding: 5px 14px 8px; margin: 0; line-height: 1.45; border-top: 1px solid var(--border); }
+
+.cov-loc-selector { padding: 10px 14px 11px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
+.cov-loc-label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .4px; }
+.cov-loc-select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; background: var(--bg-surface); color: var(--text); cursor: pointer; }
+
+/* Markers — intentionally light, they render over light map tiles. */
+.cov-marker { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 15px; border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.28); background: #fff; cursor: pointer; }
+.cov-marker-prop { background: #e8f0fe; border-color: #2d6cdf; }
+.cov-marker-pending { border-color: #e67e22 !important; background: #fdf3e3 !important; }
+.cov-marker-tech { background: #e8f5e9; border-color: #2e7d32; }
+.cov-marker-active { background: #1a4aa8; border-color: #0d2f7a; }
+.cov-marker-here { background: #fff3cd !important; border-color: #e67e22 !important; }
+.cov-wo-badge {
+  position: absolute; top: -5px; right: -5px; background: var(--red); color: #fff;
+  border-radius: 10px; min-width: 17px; height: 17px; font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; padding: 0 4px; border: 1.5px solid #fff;
+}
+/* Leaflet popups are white by default; keep their text dark so they stay readable. */
+.cov-map-box .leaflet-popup-content { color: #1a1a24; }
+
+@media (max-width: 900px) {
+  .cov-root { flex-direction: column; height: auto; }
+  .cov-map-box { height: 340px; }
+  .cov-dist-col { width: 100%; max-height: 320px; }
+}
 .kanban-col-body { display: flex; flex-direction: column; gap: 8px; padding: 10px 8px; min-height: 60px; max-height: calc(100vh - 340px); overflow-y: auto; }
 .kanban-col-empty { text-align: center; color: var(--text-muted); font-size: 12.5px; padding: 24px 8px; font-style: italic; }
 .col-toggle { font-size: 11px; color: var(--text-muted); margin-left: 4px; display: inline-block; transition: transform .2s; }

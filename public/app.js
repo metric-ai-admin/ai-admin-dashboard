@@ -1997,6 +1997,7 @@ function switchMaintenanceView(view) {
     'report':         loadMaintenanceDailyReport,
     'sops':           loadMaintenanceSops,
     'properties':     loadPropertyAssignments,
+    'coverage':       loadMaintenanceCoverage,
     'command-center': loadLyndsayCommandCenter,
   };
   loaders[view]?.();
@@ -2090,6 +2091,226 @@ async function loadMaintenanceSops(query = '') {
         ${s.text ? `<div class="card-meta small muted" style="margin-top:6px;white-space:pre-wrap">${esc(s.text.slice(0, 200))}${s.text.length > 200 ? '…' : ''}</div>` : ''}
       </div>`).join('');
   } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
+}
+
+// ── Coverage Map ─────────────────────────────────────────────────────
+// Ported from metric-dashboard/public/app.js (MODULE 9). Coordinates are
+// hardcoded there and copied verbatim here — edit the two arrays below to
+// move a pin. Phase 3 replaces both with a Supabase `technicians` table.
+
+const MAP_PROPERTIES = [
+  { id: 'hyde-park',       name: 'Hyde Park Square',    address: '206 W. 38th St, Austin, TX 78705',           lat: 30.3065, lng: -97.7434 },
+  { id: 'chateau',         name: 'The Chateau',          address: '1211 W. 8th St, Austin, TX 78703',            lat: 30.2699, lng: -97.7608 },
+  { id: 'highlander',      name: 'The Highlander',       address: '803 Tirado St, Austin, TX 78703',             lat: 30.2805, lng: -97.7652 },
+  { id: 'ascent',          name: 'Ascent at Northgate',  address: '9315 Northgate Blvd, Austin, TX 78758',       lat: 30.3927, lng: -97.7077 },
+  { id: 'sidney',          name: 'The Sidney',           address: '4605 Avenue A, Austin, TX 78751',             lat: 30.3125, lng: -97.7245 },
+  { id: 'sunset',          name: 'Sunset Palms',         address: '902 Romeria Drive, Austin, TX 78757',          lat: 30.3620, lng: -97.7355 },
+  { id: 'windy-hill',      name: 'Windy Hill',           address: '1049 Windy Hill Road, Kyle, TX 78640',        lat: 29.9897, lng: -97.8763 },
+  { id: 'iconic-rr',       name: 'iConic Round Rock',    address: '105 Gattis School Rd, Round Rock, TX 78664',  lat: 30.5175, lng: -97.6947 },
+  { id: 'iconic-downtown', name: 'iConic Downtown',      address: '301 S. Burnet St, Austin, TX 78703',          lat: 30.2549, lng: -97.7673 },
+];
+
+// lat/lng are ZIP-code centroids — the technician's home AREA, not an address.
+const MAP_TECHS = [
+  { id: 'angel',   name: 'Angel Martinez',  zip: '78754', role: 'Maint Tech',        lat: 30.3420, lng: -97.6590 },
+  { id: 'raul',    name: 'Raúl Martinez',   zip: '78724', role: 'Senior Maint Tech', lat: 30.2835, lng: -97.6545 },
+  { id: 'emerson', name: 'Emerson Garcia',  zip: '78753', role: 'Maint Tech',        lat: 30.3827, lng: -97.6854 },
+  { id: 'carlos',  name: 'Carlos Portilla', zip: '78664', role: 'Maint Tech',        lat: 30.5212, lng: -97.6539 },
+  { id: 'jose',    name: 'José Rentería',   zip: '78723', role: 'Senior Maint Tech', lat: 30.2972, lng: -97.6859 },
+];
+
+let coverageMap = null;
+let covPropMarkers = [];
+let covTechMarkers = [];
+let covTechCircles = [];
+let leafletPromise = null;
+
+// Leaflet is loaded on demand rather than from a <script> tag in index.html:
+// Maintenance is admin-only, so every other role would pay ~150 KB for a view
+// they can't open — and a CDN hiccup degrades to just this pane instead of
+// blocking page load for everyone.
+function loadLeaflet() {
+  if (window.L) return Promise.resolve();
+  if (leafletPromise) return leafletPromise;
+  leafletPromise = new Promise((resolve, reject) => {
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    document.head.appendChild(css);
+
+    const js = document.createElement('script');
+    js.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    js.onload = () => resolve();
+    js.onerror = () => { leafletPromise = null; reject(new Error('Leaflet CDN unreachable')); };
+    document.head.appendChild(js);
+  });
+  return leafletPromise;
+}
+
+function haversineM(lat1, lng1, lat2, lng2) {
+  const R = 3958.8;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
+// `openWos` renders the red count badge. Phase 1 always passes 0 (no AppFolio
+// backend yet); Phase 2 fills it from /api/appfolio/feed/wo-by-property.
+function covPropIcon(pending, star, openWos = 0) {
+  const badge = openWos > 0 ? `<span class="cov-wo-badge">${openWos}</span>` : '';
+  return L.divIcon({
+    className: '',
+    html: `<div class="cov-marker cov-marker-prop${pending ? ' cov-marker-pending' : ''}" style="position:relative">${star ? '⭐' : '🏢'}${badge}</div>`,
+    iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -18]
+  });
+}
+
+function covTechIcon(active) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="cov-marker cov-marker-tech${active ? ' cov-marker-active' : ''}">🔧</div>`,
+    iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -18]
+  });
+}
+
+function initCoverageMap() {
+  // Re-entering the view: Leaflet mis-measures a container that was display:none
+  // when it initialised, so re-measure instead of rebuilding.
+  if (coverageMap) { coverageMap.invalidateSize(); return; }
+
+  coverageMap = L.map('covMap', { zoomControl: true }).setView([30.30, -97.73], 10);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 18
+  }).addTo(coverageMap);
+
+  MAP_PROPERTIES.forEach(p => {
+    const m = L.marker([p.lat, p.lng], { icon: covPropIcon(p.pending, false, p.openWos || 0) })
+      .addTo(coverageMap)
+      .bindPopup(`<strong>${esc(p.name)}</strong><br><span style="font-size:12px;color:#666">${esc(p.address)}</span>${p.pending ? '<br><em style="color:#e67e22;font-size:11px">⚠ Address pending — approximate location</em>' : ''}`);
+    covPropMarkers.push({ prop: p, marker: m });
+  });
+
+  MAP_TECHS.filter(t => t.lat && t.lng).forEach(t => {
+    const m = L.marker([t.lat, t.lng], { icon: covTechIcon(false) })
+      .addTo(coverageMap)
+      .bindPopup(`<strong>${esc(t.name)}</strong><br><span style="font-size:12px;color:#555">${esc(t.role)} · ZIP ${esc(t.zip)}</span>`);
+    covTechMarkers.push({ tech: t, marker: m });
+  });
+
+  const techsEl = $('#covTechs');
+  if (techsEl) {
+    techsEl.innerHTML = '';
+    MAP_TECHS.forEach(t => {
+      const btn = document.createElement('button');
+      btn.className = 'cov-tech-btn' + (t.lat ? '' : ' unavailable');
+      btn.dataset.techId = t.id;
+      btn.textContent = t.name + (t.lat ? '' : ' (zone N/A)');
+      if (!t.lat) btn.disabled = true;
+      btn.addEventListener('click', () => covSelect(t.id));
+      techsEl.appendChild(btn);
+    });
+  }
+
+  setTimeout(() => coverageMap.invalidateSize(), 150);
+}
+
+function covTravelMin(dist_mi) {
+  return Math.round(dist_mi * 1.3 / 28 * 60);
+}
+
+function covSelect(techId) {
+  const tech = MAP_TECHS.find(t => t.id === techId);
+  if (!tech || !tech.lat) return;
+
+  $$('.cov-tech-btn').forEach(b => b.classList.toggle('active', b.dataset.techId === techId));
+  covTechMarkers.forEach(({ tech: t, marker }) => marker.setIcon(covTechIcon(t.id === techId)));
+
+  $('#covLocSelector').innerHTML = `
+    <div class="cov-loc-selector">
+      <span class="cov-loc-label">Where is ${esc(tech.name)} right now?</span>
+      <select class="cov-loc-select" id="covLocSelect">
+        <option value="home">🏠 Home (default)</option>
+        ${MAP_PROPERTIES.map(p => `<option value="${esc(p.id)}">🏢 ${esc(p.name)}</option>`).join('')}
+      </select>
+    </div>`;
+
+  $('#covLocSelect').addEventListener('change', function () {
+    if (this.value === 'home') {
+      covRenderFrom(tech, tech.lat, tech.lng, null);
+    } else {
+      const prop = MAP_PROPERTIES.find(p => p.id === this.value);
+      covRenderFrom(tech, prop.lat, prop.lng, prop.id);
+    }
+  });
+
+  covRenderFrom(tech, tech.lat, tech.lng, null);
+}
+
+function covRenderFrom(tech, originLat, originLng, originPropId) {
+  covTechCircles.forEach(c => coverageMap.removeLayer(c));
+  covTechCircles = [];
+  // 5 mi and 10 mi rings, in metres.
+  covTechCircles.push(
+    L.circle([originLat, originLng], { radius: 8046.72, color: '#2d6cdf', weight: 1.5, fillOpacity: 0.06, dashArray: '6,5' }).addTo(coverageMap),
+    L.circle([originLat, originLng], { radius: 16093.4, color: '#2d6cdf', weight: 1,   fillOpacity: 0.03, dashArray: '3,7' }).addTo(coverageMap)
+  );
+
+  const propsToRank = originPropId
+    ? MAP_PROPERTIES.filter(p => p.id !== originPropId)
+    : MAP_PROPERTIES;
+
+  const sorted = propsToRank
+    .map(p => ({ ...p, dist: haversineM(originLat, originLng, p.lat, p.lng) }))
+    .sort((a, b) => a.dist - b.dist);
+
+  covPropMarkers.forEach(({ prop, marker }) => {
+    if (prop.id === originPropId) {
+      marker.setIcon(L.divIcon({
+        className: '',
+        html: '<div class="cov-marker cov-marker-here">📍</div>',
+        iconSize: [30, 30], iconAnchor: [15, 15], popupAnchor: [0, -18]
+      }));
+    } else {
+      const rank = sorted.findIndex(s => s.id === prop.id);
+      marker.setIcon(covPropIcon(prop.pending, rank === 0, prop.openWos || 0));
+    }
+  });
+
+  coverageMap.panTo([originLat, originLng]);
+
+  const originLabel = originPropId
+    ? MAP_PROPERTIES.find(p => p.id === originPropId).name
+    : `home zone (ZIP ${tech.zip})`;
+
+  $('#covDistList').innerHTML = `
+    <div class="cov-tech-head-label">📍 From: ${esc(originLabel)}</div>
+    ${sorted.map((p, i) => `
+      <div class="cov-dist-row">
+        <span class="cov-rank">${i + 1}</span>
+        <div class="cov-dist-info">
+          <div class="cov-dist-name">${esc(p.name)}${p.pending ? ' <span class="cov-pending-badge">⚠</span>' : ''}</div>
+          <div class="cov-dist-addr">${esc(p.address)}</div>
+        </div>
+        <div class="cov-dist-right">
+          <span class="cov-dist-mi">${p.dist.toFixed(1)} mi</span>
+          <span class="cov-dist-time">~${covTravelMin(p.dist)} min</span>
+        </div>
+      </div>`).join('')}
+    <p class="cov-travel-note">Estimated drive time — approximate, does not account for real-time traffic</p>`;
+}
+
+async function loadMaintenanceCoverage() {
+  const status = $('#maint-coverage-status');
+  if (status) status.innerHTML = '';
+  try {
+    await loadLeaflet();
+  } catch {
+    if (status) status.innerHTML = '<p class="small muted">Could not load the map library (unpkg CDN unreachable). Check the connection and switch back to this view to retry.</p>';
+    return;
+  }
+  initCoverageMap();
 }
 
 // ── 1. Property Assignments ──────────────────────────────────────────
