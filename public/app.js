@@ -1845,7 +1845,7 @@ async function crmLoadTasks() {
     $('#crm-tasks-status').textContent = `${tasks.length} task(s)`;
     const typeIcon = { phone_shop: '📞', online_shop: '💻', lyndsay_review: '⭐', missed_tour: '🔥' };
     $('#crm-tasks-body').innerHTML = tasks.length ? tasks.map(t => `
-      <div class="crm-task-card">
+      <div class="crm-task-card" data-pid="${esc(t.property_id || '')}">
         <div class="crm-task-type-icon">${typeIcon[t.type] || '📋'}</div>
         <div class="crm-task-body">
           <div class="crm-task-title">${esc(t.property_name||'—')}</div>
@@ -1854,6 +1854,13 @@ async function crmLoadTasks() {
         <div class="crm-task-agent">${esc(t.agent||'—')}</div>
         <div class="crm-task-priority ${t.priority >= 8 ? 'score-high' : t.priority >= 6 ? 'score-med' : 'score-low'}" style="background:${t.priority >= 8 ? '#dc2626' : t.priority >= 6 ? '#ea580c' : '#2563eb'}">${t.priority}</div>
       </div>`).join('') : '<p class="muted small" style="padding:20px;">No tasks match the current filters.</p>';
+
+    // Every task is derived from a property, so clicking one opens that
+    // property — same behaviour as a row in the Properties table.
+    $$('#crm-tasks-body .crm-task-card').forEach(card => {
+      if (!card.dataset.pid) { card.classList.add('crm-task-card-nolink'); return; }
+      card.addEventListener('click', () => crmOpenModal(card.dataset.pid));
+    });
   } catch (err) { $('#crm-tasks-status').textContent = '❌ ' + err.message; }
 }
 

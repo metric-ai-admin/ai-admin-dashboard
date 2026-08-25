@@ -1023,7 +1023,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .crm-task-card {
   display: flex; align-items: center; gap: 12px; background: var(--bg-surface);
   border: 1px solid var(--border); border-radius: 7px; padding: 10px 14px; margin-bottom: 8px;
+  cursor: pointer; transition: border-color .15s, background .15s;
 }
+.crm-task-card:hover { border-color: var(--crm-gold); background: var(--bg-elevated); }
+/* A task with no property_id cannot open anything — don't invite the click. */
+.crm-task-card-nolink { cursor: default; }
+.crm-task-card-nolink:hover { border-color: var(--border); background: var(--bg-surface); }
 .crm-task-type-icon { font-size: 1.2em; flex-shrink: 0; }
 .crm-task-body { flex: 1; min-width: 0; }
 .crm-task-title { font-weight: 600; font-size: .88em; }
