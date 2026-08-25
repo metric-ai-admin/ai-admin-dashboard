@@ -114,6 +114,11 @@ $$('#tabs button').forEach(btn => {
 });
 
 function loadTab(tab) {
+  if (tab !== 'maintenance') {
+    $('#maintenance-subnav')?.classList.add('hidden');
+    const caret = $('#maint-subnav-caret');
+    if (caret) caret.textContent = '›';
+  }
   if (tab === 'tasks') loadTasks();
   if (tab === 'sops') loadSops();
   if (tab === 'platform') loadPlatform();
@@ -1971,54 +1976,120 @@ $('#crm-sort')?.addEventListener('change', e => { crmState.sort = e.target.value
 // ── End BD CRM Phase 2 module ─────────────────────────────────────────────────
 
 // =====================================================================
-// MAINTENANCE TAB
+// MAINTENANCE TAB — sub-navigation
 // =====================================================================
 
-// Collapsible panels wired in loadMaintenance() after the section renders
-function wireMaintenanceCollapsible(toggleId, bodySelector) {
-  const toggle = $(`#${toggleId}`);
-  if (!toggle) return;
-  toggle.addEventListener('click', () => {
-    const panel = toggle.closest('.project-card');
-    const body = panel.querySelector('.project-body');
-    const arrow = panel.querySelector('.project-toggle');
-    body.classList.toggle('hidden');
-    if (arrow) arrow.textContent = body.classList.contains('hidden') ? '▶' : '▼';
-  });
+let maintTaskCache = [];
+let maintNavWired = false;
+let activeMaintenanceView = null;
+
+function switchMaintenanceView(view) {
+  activeMaintenanceView = view;
+  $$('.maint-view').forEach(el => el.classList.add('hidden'));
+  $(`#maint-view-${view}`)?.classList.remove('hidden');
+  $$('#maintenance-subnav [data-maint-view]').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.maintView === view));
+  const loaders = {
+    'asana':          loadMaintenanceAsana,
+    'daily-ops':      loadMaintenanceTasks,
+    'appfolio':       loadMaintenanceAppFolio,
+    'eod':            loadMaintenanceEodSummary,
+    'report':         loadMaintenanceDailyReport,
+    'sops':           loadMaintenanceSops,
+    'properties':     loadPropertyAssignments,
+    'command-center': loadLyndsayCommandCenter,
+  };
+  loaders[view]?.();
 }
 
-let maintTaskCache = [];
-
 async function loadMaintenance() {
-  // Wire collapsibles
-  ['maint-assignments-toggle','maint-tasks-toggle','maint-report-toggle','maint-eod-toggle','maint-lyndsay-toggle']
-    .forEach(id => wireMaintenanceCollapsible(id));
+  const subnav = $('#maintenance-subnav');
+  const caret  = $('#maint-subnav-caret');
+  if (subnav) subnav.classList.remove('hidden');
+  if (caret)  caret.textContent = '▾';
 
-  $('#maintenance-refresh')?.addEventListener('click', () => {
-    loadPropertyAssignments();
-    loadMaintenanceTasks();
-    loadMaintenanceDailyReport();
-    loadMaintenanceEodSummary();
-    loadLyndsayCommandCenter();
-  });
+  if (!maintNavWired) {
+    maintNavWired = true;
+    $$('#maintenance-subnav [data-maint-view]').forEach(btn =>
+      btn.addEventListener('click', () => switchMaintenanceView(btn.dataset.maintView)));
 
-  $('#maint-task-form')?.addEventListener('submit', async e => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    await api('/api/operational', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: fd.get('title'), priority: fd.get('priority'), source: fd.get('source') || '' })
+    $('#maint-task-form')?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      await api('/api/operational', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: fd.get('title'), priority: fd.get('priority'), source: fd.get('source') || '' }),
+      });
+      e.target.reset();
+      loadMaintenanceTasks();
     });
-    e.target.reset();
-    loadMaintenanceTasks();
-  });
 
-  loadPropertyAssignments();
-  loadMaintenanceTasks();
-  loadMaintenanceDailyReport();
-  loadMaintenanceEodSummary();
-  loadLyndsayCommandCenter();
+    $('#maint-asana-refresh')?.addEventListener('click',      loadMaintenanceAsana);
+    $('#maint-tasks-refresh')?.addEventListener('click',      loadMaintenanceTasks);
+    $('#maint-appfolio-refresh')?.addEventListener('click',   loadMaintenanceAppFolio);
+    $('#maint-eod-refresh')?.addEventListener('click',        loadMaintenanceEodSummary);
+    $('#maint-report-refresh')?.addEventListener('click',     loadMaintenanceDailyReport);
+    $('#maint-sops-refresh')?.addEventListener('click',       loadMaintenanceSops);
+    $('#maint-properties-refresh')?.addEventListener('click', loadPropertyAssignments);
+    $('#maint-lyndsay-refresh')?.addEventListener('click',    loadLyndsayCommandCenter);
+    $('#maint-sops-search')?.addEventListener('input', e => loadMaintenanceSops(e.target.value));
+  }
+
+  switchMaintenanceView(activeMaintenanceView || 'daily-ops');
+}
+
+// ── Asana Tasks ──────────────────────────────────────────────────────
+async function loadMaintenanceAsana() {
+  const el = $('#maint-asana-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const data = await api('/api/asana/tasks');
+    const tasks = Array.isArray(data) ? data : (data.tasks || data.data || []);
+    if (!tasks.length) { el.innerHTML = '<p class="small muted">No open Asana tasks.</p>'; return; }
+    el.innerHTML = tasks.map(t => `
+      <div class="card" style="margin-bottom:8px">
+        <div class="card-title">${esc(t.name || t.title || '')}</div>
+        ${t.due_on ? `<div class="card-meta small muted">Due: ${esc(t.due_on)}</div>` : ''}
+        ${t.assignee?.name ? `<div class="card-meta small muted">→ ${esc(t.assignee.name)}</div>` : ''}
+      </div>`).join('');
+  } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
+}
+
+// ── AppFolio Analyzer ─────────────────────────────────────────────────
+async function loadMaintenanceAppFolio() {
+  const el = $('#maint-appfolio-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const data = await api('/api/appfolio/latest');
+    if (!data || data.error || data.message?.toLowerCase().includes('no analysis')) {
+      el.innerHTML = `<p class="small muted">${esc(data?.error || data?.message || 'No analysis available. Upload a CSV via Erick\'s AppFolio export.')}</p>`;
+      return;
+    }
+    el.innerHTML = `<pre style="white-space:pre-wrap;font-size:0.85rem;line-height:1.6">${esc(typeof data === 'string' ? data : JSON.stringify(data, null, 2))}</pre>`;
+  } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
+}
+
+// ── SOPs Library ──────────────────────────────────────────────────────
+async function loadMaintenanceSops(query = '') {
+  const el = $('#maint-sops-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const url = query
+      ? `/api/maintenance/sops/search/${encodeURIComponent(query)}`
+      : '/api/maintenance/sops';
+    const data = await api(url);
+    const sops = Array.isArray(data) ? data : (data.sops || []);
+    if (!sops.length) { el.innerHTML = '<p class="small muted">No SOPs found.</p>'; return; }
+    el.innerHTML = sops.map(s => `
+      <div class="card" style="margin-bottom:8px">
+        <div class="card-title">${esc(s.title || '')}</div>
+        ${s.category ? `<span class="badge badge-blue">${esc(s.category)}</span>` : ''}
+        ${s.text ? `<div class="card-meta small muted" style="margin-top:6px;white-space:pre-wrap">${esc(s.text.slice(0, 200))}${s.text.length > 200 ? '…' : ''}</div>` : ''}
+      </div>`).join('');
+  } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
 }
 
 // ── 1. Property Assignments ──────────────────────────────────────────

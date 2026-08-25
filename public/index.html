@@ -54,7 +54,23 @@
       <button data-tab="platform"><span class="nav-dot"></span>Projects</button>
       <button data-tab="email"><span class="nav-dot"></span>Email / Cal<span id="reminder-badge" class="reminder-badge hidden">0</span></button>
       <button data-tab="eod"><span class="nav-dot"></span>End of Day</button>
-      <button data-tab="maintenance"><span class="nav-dot"></span>Maintenance</button>
+      <div class="subnav-group" id="maintenance-nav-group">
+        <button data-tab="maintenance"><span class="nav-dot"></span>Maintenance <span class="subnav-caret" id="maint-subnav-caret">›</span></button>
+        <div class="subnav hidden" id="maintenance-subnav">
+          <button data-maint-view="asana">Asana Tasks</button>
+          <button data-maint-view="daily-ops">Daily Operations</button>
+          <button data-maint-view="appfolio">AppFolio Analyzer</button>
+          <button data-maint-view="eod">End of Day</button>
+          <button data-maint-view="report">Daily Work Report</button>
+          <button data-maint-view="sops">SOPs Library</button>
+          <button data-maint-view="properties">Properties</button>
+          <button data-maint-view="coverage">Coverage Map</button>
+          <button data-maint-view="efficiency">Maintenance Efficiency</button>
+          <button data-maint-view="technician">Technician Activity</button>
+          <button data-maint-view="reports-sync">Reports Sync</button>
+          <button data-maint-view="command-center">Command Center</button>
+        </div>
+      </div>
       <button data-tab="crm"><span class="nav-dot"></span>BD CRM</button>
     </nav>
     <div class="sidebar-foot">
@@ -895,81 +911,117 @@
 
   <!-- ============ MAINTENANCE ============ -->
   <section id="tab-maintenance" class="tab">
-    <div class="view-head">
-      <div>
-        <h2>Maintenance</h2>
-        <p class="muted small">Erick's operational view — tasks, properties, reports</p>
+
+    <!-- 1. Asana Tasks -->
+    <div id="maint-view-asana" class="maint-view hidden">
+      <div class="view-head">
+        <div><h2>Asana Tasks</h2><p class="muted small">Erick's open Asana tasks</p></div>
+        <div class="view-actions"><button class="btn-sm" id="maint-asana-refresh">🔄 Refresh</button></div>
       </div>
-      <div class="view-actions">
-        <button id="maintenance-refresh">🔄 Refresh All</button>
-      </div>
+      <div id="maint-asana-body"></div>
     </div>
 
-    <!-- 1. Property Assignments -->
-    <div class="project-card" id="maint-assignments-panel">
-      <div class="project-head" id="maint-assignments-toggle">
-        <div class="project-title">🏠 Property Assignments</div>
-        <span class="project-toggle">▶</span>
+    <!-- 2. Daily Operations -->
+    <div id="maint-view-daily-ops" class="maint-view hidden">
+      <div class="view-head">
+        <div><h2>Daily Operations</h2><p class="muted small">Erick's task board — Critical · Follow-up · In Progress · Daily · Done</p></div>
+        <div class="view-actions"><button class="btn-sm" id="maint-tasks-refresh">🔄 Refresh</button></div>
       </div>
-      <div class="project-body hidden">
-        <div id="maint-assignments-body"></div>
-      </div>
+      <form id="maint-task-form" class="quick-add" style="margin-bottom:12px;">
+        <input name="title" placeholder="New task title" required>
+        <select name="priority">
+          <option>🔴 Critical</option>
+          <option selected>🟢 In Progress</option>
+          <option>🟡 Follow-up</option>
+          <option>📅 Daily Task</option>
+        </select>
+        <input name="source" placeholder="Source / person">
+        <button type="submit">+ Add</button>
+      </form>
+      <div id="maint-tasks-body"></div>
     </div>
 
-    <!-- 2. Operational Tasks (Kanban) -->
-    <div class="project-card" id="maint-tasks-panel">
-      <div class="project-head" id="maint-tasks-toggle">
-        <div class="project-title">✅ Operational Tasks (Erick)</div>
-        <span class="project-toggle">▶</span>
+    <!-- 3. AppFolio Analyzer -->
+    <div id="maint-view-appfolio" class="maint-view hidden">
+      <div class="view-head">
+        <div><h2>AppFolio Analyzer</h2><p class="muted small">Latest work order analysis from uploaded CSV</p></div>
+        <div class="view-actions"><button class="btn-sm" id="maint-appfolio-refresh">🔄 Refresh</button></div>
       </div>
-      <div class="project-body hidden">
-        <form id="maint-task-form" class="quick-add" style="margin-bottom:12px;">
-          <input name="title" placeholder="New task title" required>
-          <select name="priority">
-            <option>🔴 Critical</option>
-            <option selected>🟢 In Progress</option>
-            <option>🟡 Follow-up</option>
-            <option>📅 Daily Task</option>
-          </select>
-          <input name="source" placeholder="Source / person">
-          <button type="submit">+ Add</button>
-        </form>
-        <div id="maint-tasks-body"></div>
-      </div>
+      <div id="maint-appfolio-body"></div>
     </div>
 
-    <!-- 3. Daily Work Report -->
-    <div class="project-card" id="maint-report-panel">
-      <div class="project-head" id="maint-report-toggle">
-        <div class="project-title">📋 Daily Work Report</div>
-        <span class="project-toggle">▶</span>
+    <!-- 4. End of Day -->
+    <div id="maint-view-eod" class="maint-view hidden">
+      <div class="view-head">
+        <div><h2>End of Day Summary</h2><p class="muted small">Maintenance EOD report</p></div>
+        <div class="view-actions"><button class="btn-sm" id="maint-eod-refresh">🔄 Refresh</button></div>
       </div>
-      <div class="project-body hidden">
-        <div id="maint-report-body"></div>
-      </div>
+      <div id="maint-eod-body"></div>
     </div>
 
-    <!-- 4. EOD Summary -->
-    <div class="project-card" id="maint-eod-panel">
-      <div class="project-head" id="maint-eod-toggle">
-        <div class="project-title">🌙 End of Day Summary (Maintenance)</div>
-        <span class="project-toggle">▶</span>
+    <!-- 5. Daily Work Report -->
+    <div id="maint-view-report" class="maint-view hidden">
+      <div class="view-head">
+        <div><h2>Daily Work Report</h2><p class="muted small">Erick's generated daily report</p></div>
+        <div class="view-actions"><button class="btn-sm" id="maint-report-refresh">🔄 Refresh</button></div>
       </div>
-      <div class="project-body hidden">
-        <div id="maint-eod-body"></div>
-      </div>
+      <div id="maint-report-body"></div>
     </div>
 
-    <!-- 5. Lyndsay Command Center -->
-    <div class="project-card" id="maint-lyndsay-panel">
-      <div class="project-head" id="maint-lyndsay-toggle">
-        <div class="project-title">👑 Lyndsay Command Center (readonly)</div>
-        <span class="project-toggle">▶</span>
+    <!-- 6. SOPs Library -->
+    <div id="maint-view-sops" class="maint-view hidden">
+      <div class="view-head">
+        <div><h2>SOPs Library</h2><p class="muted small">Maintenance procedures and reference</p></div>
+        <div class="view-actions">
+          <input id="maint-sops-search" placeholder="🔎 Search SOPs…" style="width:180px;">
+          <button class="btn-sm" id="maint-sops-refresh">🔄 Refresh</button>
+        </div>
       </div>
-      <div class="project-body hidden">
-        <div id="maint-lyndsay-body"></div>
-      </div>
+      <div id="maint-sops-body"></div>
     </div>
+
+    <!-- 7. Properties -->
+    <div id="maint-view-properties" class="maint-view hidden">
+      <div class="view-head">
+        <div><h2>Property Assignments</h2><p class="muted small">8 properties — edit inline, save per row</p></div>
+        <div class="view-actions"><button class="btn-sm" id="maint-properties-refresh">🔄 Refresh</button></div>
+      </div>
+      <div id="maint-assignments-body"></div>
+    </div>
+
+    <!-- 8. Coverage Map (coming soon) -->
+    <div id="maint-view-coverage" class="maint-view hidden">
+      <div class="view-head"><div><h2>Coverage Map</h2></div></div>
+      <div class="maint-coming-soon">🗺️ Coverage Map — Coming Soon</div>
+    </div>
+
+    <!-- 9. Maintenance Efficiency (coming soon) -->
+    <div id="maint-view-efficiency" class="maint-view hidden">
+      <div class="view-head"><div><h2>Maintenance Efficiency</h2></div></div>
+      <div class="maint-coming-soon">📊 Maintenance Efficiency Metrics — Coming Soon</div>
+    </div>
+
+    <!-- 10. Technician Activity Today (coming soon) -->
+    <div id="maint-view-technician" class="maint-view hidden">
+      <div class="view-head"><div><h2>Technician Activity Today</h2></div></div>
+      <div class="maint-coming-soon">👷 Technician Activity — Coming Soon</div>
+    </div>
+
+    <!-- 11. Reports Sync (coming soon) -->
+    <div id="maint-view-reports-sync" class="maint-view hidden">
+      <div class="view-head"><div><h2>Reports Sync</h2></div></div>
+      <div class="maint-coming-soon">🔄 Reports Sync — Coming Soon</div>
+    </div>
+
+    <!-- 12. Command Center -->
+    <div id="maint-view-command-center" class="maint-view hidden">
+      <div class="view-head">
+        <div><h2>Command Center</h2><p class="muted small">Lyndsay's task snapshot — readonly</p></div>
+        <div class="view-actions"><button class="btn-sm" id="maint-lyndsay-refresh">🔄 Refresh</button></div>
+      </div>
+      <div id="maint-lyndsay-body"></div>
+    </div>
+
   </section>
 
   <!-- ============ END OF DAY ============ -->
