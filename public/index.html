@@ -944,11 +944,27 @@
     <!-- 3. AppFolio Analyzer -->
     <div id="maint-view-appfolio" class="maint-view hidden">
       <div class="view-head">
-        <div><h2>AppFolio Analyzer</h2><p class="muted small">Latest work order analysis from uploaded CSV</p></div>
-        <div class="view-actions"><button class="btn-sm" id="maint-appfolio-refresh">🔄 Refresh</button></div>
+        <div><h2>AppFolio Report Analyzer</h2><p class="muted small">Drop a Work Orders CSV to generate an action list</p></div>
+        <div class="view-actions">
+          <button class="btn-sm" id="exportAppfolioBtn" disabled>⬇ Export Actions JSON</button>
+          <button class="btn-sm" id="maint-appfolio-refresh">🔄 Refresh</button>
+        </div>
       </div>
+
+      <div id="afDropZone" class="dropzone">
+        <div class="dropzone-inner">
+          <div class="dz-icon">📄</div>
+          <p><strong id="afDropLabel">Drop a Work Orders CSV here</strong> — or click to choose a file</p>
+          <p class="muted small">AppFolio Work Orders export, .csv only. PDF and image OCR run in Erick's local dashboard.</p>
+        </div>
+        <input type="file" id="afCsvInput" accept=".csv" hidden>
+      </div>
+
+      <!-- Live figures from the AppFolio Reports API (Billable Detail + Labor Summary) -->
       <div id="afBillableFeed"></div>
-      <div id="maint-appfolio-body"></div>
+
+      <div id="appfolioSummary" class="stat-row hidden"></div>
+      <div id="appfolioGroups"></div>
     </div>
 
     <!-- 4. End of Day -->

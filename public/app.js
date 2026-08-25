@@ -2039,6 +2039,7 @@ async function loadMaintenance() {
       loadMaintenanceTasks();
     });
 
+    wireAppfolioDropZone();
     $('#maint-asana-refresh')?.addEventListener('click',      loadMaintenanceAsana);
     $('#maint-tasks-refresh')?.addEventListener('click',      loadMaintenanceTasks);
     $('#maint-appfolio-refresh')?.addEventListener('click',   loadMaintenanceAppFolio);
@@ -2099,18 +2100,145 @@ async function loadMaintenanceAsana() {
 }
 
 // ── AppFolio Analyzer ─────────────────────────────────────────────────
+// Ported from metric-dashboard MODULE 8. CSV only here: that dashboard also
+// accepts PDF and images via tesseract.js + pdf-parse, which this repo does not
+// carry, and /api/appfolio/upload reads the file as UTF-8 before CSV-parsing it
+// — so a PDF would be parsed as garbage rather than rejected.
+
+const AF_GROUP_META = {
+  urgent:   { icon: '🔴', label: 'Urgent actions' },
+  followup: { icon: '🟡', label: 'Follow-up needed' },
+  ready:    { icon: '🟢', label: 'Ready for QC / Billing' },
+  none:     { icon: '✅', label: 'No action needed' },
+};
+
+let appfolioData = null;
+
+function renderWoCard(wo) {
+  const pill = a =>
+    `<span class="action-pill ${a.tier === 'urgent' ? 'urgent' : a.tier === 'ready' ? 'ready' : ''}">${esc(a.action)}</span>`;
+
+  const recs = (wo.actions || []).map(a =>
+    `<li class="rec rec-${esc(a.tier)}"><b>${esc(a.action)}</b> — ${esc(a.recommendation || '')}</li>`).join('');
+
+  const fieldRows = wo.fields
+    ? Object.entries(wo.fields).map(([k, v]) =>
+        `<tr><td class="fkey">${esc(k)}</td><td>${esc(v || '—')}</td></tr>`).join('')
+    : '';
+
+  return `
+    <div class="card wo-card">
+      <div class="card-meta" style="justify-content:space-between">
+        <b>WO ${esc(wo.wo)}</b>
+        <span class="badge badge-gray">${esc(wo.status)}</span>
+      </div>
+      <div class="card-title" style="font-size:14px">${esc(wo.property)}${wo.unit ? ' · ' + esc(wo.unit) : ''}</div>
+      <div class="card-meta">
+        <span>👤 ${esc(wo.assignee || 'Unassigned')}</span>
+        ${wo.ageDays != null ? `<span>⏱ ${wo.ageDays} days</span>` : ''}
+        <span>${wo.hasPhotos ? '📷 Has photos' : '🚫 No photos'}</span>
+        ${wo.isSpanish ? '<span>🌐 Spanish</span>' : ''}
+      </div>
+      ${wo.description
+        ? `<div class="card-notes">${esc(wo.description)}</div>`
+        : '<div class="card-notes muted">No description</div>'}
+      <div class="wo-actions-row">${(wo.actions || []).map(pill).join('')}</div>
+      <div class="recs">
+        <div class="recs-title">💡 Recommendations</div>
+        <ul>${recs}</ul>
+      </div>
+      <details class="comments">
+        <summary>🔎 All fields from the CSV row</summary>
+        <table class="field-table">${fieldRows || '<tr><td>—</td></tr>'}</table>
+      </details>
+    </div>`;
+}
+
+function renderAppfolio(data) {
+  const g = data.groups || { urgent: [], followup: [], ready: [], none: [] };
+
+  const summary = $('#appfolioSummary');
+  summary.classList.remove('hidden');
+  summary.innerHTML = `
+    <div class="stat"><div class="stat-num">${data.totalWorkOrders || 0}</div><div class="stat-label">Total WOs</div></div>
+    <div class="stat"><div class="stat-num" style="color:var(--red)">${g.urgent.length}</div><div class="stat-label">Urgent</div></div>
+    <div class="stat"><div class="stat-num" style="color:var(--amber)">${g.followup.length}</div><div class="stat-label">Follow-up</div></div>
+    <div class="stat"><div class="stat-num" style="color:var(--green)">${g.ready.length}</div><div class="stat-label">Ready QC</div></div>
+    ${data.analyzedAt ? `<div class="stat"><div class="stat-num" style="font-size:15px">${esc(new Date(data.analyzedAt).toLocaleString())}</div><div class="stat-label">Analyzed</div></div>` : ''}`;
+
+  $('#appfolioGroups').innerHTML = ['urgent', 'followup', 'ready', 'none'].map(key => {
+    const items = g[key] || [];
+    if (!items.length) return '';
+    const meta = AF_GROUP_META[key];
+    return `
+      <div class="group">
+        <div class="group-head">${meta.icon} ${meta.label} <span class="group-count">${items.length}</span></div>
+        <div class="card-grid">${items.map(renderWoCard).join('')}</div>
+      </div>`;
+  }).join('') || '<div class="empty-state">No work orders parsed from this file.</div>';
+
+  $('#exportAppfolioBtn').disabled = false;
+}
+
 async function loadMaintenanceAppFolio() {
-  const el = $('#maint-appfolio-body');
-  if (!el) return;
-  el.innerHTML = '<p class="small muted">Loading…</p>';
+  const groups = $('#appfolioGroups');
+  if (!groups) return;
   try {
     const data = await api('/api/appfolio/latest');
-    if (!data || data.error || data.message?.toLowerCase().includes('no analysis')) {
-      el.innerHTML = `<p class="small muted">${esc(data?.error || data?.message || 'No analysis available. Upload a CSV via Erick\'s AppFolio export.')}</p>`;
+    if (!data || !data.analyzedAt) {
+      $('#appfolioSummary')?.classList.add('hidden');
+      groups.innerHTML = '<div class="empty-state">No analysis yet — drop a Work Orders CSV above.</div>';
       return;
     }
-    el.innerHTML = `<pre style="white-space:pre-wrap;font-size:0.85rem;line-height:1.6">${esc(typeof data === 'string' ? data : JSON.stringify(data, null, 2))}</pre>`;
-  } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
+    appfolioData = data;
+    renderAppfolio(data);
+  } catch (err) {
+    groups.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+async function uploadAppfolioCsv(file) {
+  if (!/\.csv$/i.test(file.name)) return toast('Upload a .csv file', 'error');
+  const label = $('#afDropLabel');
+  const original = label.textContent;
+  label.textContent = 'Analyzing…';
+  const fd = new FormData();
+  fd.append('csv', file);
+  try {
+    appfolioData = await api('/api/appfolio/upload', { method: 'POST', body: fd });
+    renderAppfolio(appfolioData);
+    toast(`Analyzed ${appfolioData.totalWorkOrders} work orders`, 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    label.textContent = original;
+  }
+}
+
+function wireAppfolioDropZone() {
+  const zone = $('#afDropZone');
+  const input = $('#afCsvInput');
+  if (!zone || !input) return;
+
+  zone.addEventListener('click', () => input.click());
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag');
+    if (e.dataTransfer.files.length) uploadAppfolioCsv(e.dataTransfer.files[0]);
+  });
+  input.addEventListener('change', e => { if (e.target.files.length) uploadAppfolioCsv(e.target.files[0]); });
+
+  $('#exportAppfolioBtn')?.addEventListener('click', () => {
+    if (!appfolioData) return;
+    const blob = new Blob([JSON.stringify(appfolioData, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `appfolio_actions_${todayStr()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
 }
 
 // ── SOPs Library ──────────────────────────────────────────────────────

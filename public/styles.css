@@ -495,6 +495,42 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .cwo-date { color: var(--muted); white-space: nowrap; font-family: ui-monospace, monospace; font-size: 11.5px; }
 
 /* =====================================================
+   MAINTENANCE — APPFOLIO ANALYZER
+   Ported from metric-dashboard MODULE 8, remapped to the dark tokens.
+   ===================================================== */
+.dropzone { border: 2px dashed var(--border-accent); border-radius: 14px; background: var(--bg-elevated); padding: 34px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; margin-bottom: 18px; }
+.dropzone:hover, .dropzone.drag { border-color: var(--accent); background: var(--accent-glow); }
+.dz-icon { font-size: 38px; margin-bottom: 6px; }
+.dropzone p { margin: 2px 0; font-size: 13.5px; }
+
+.stat-row { display: flex; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.stat { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 13px 20px; min-width: 120px; }
+.stat-num { font-size: 26px; font-weight: 700; color: var(--text); line-height: 1.2; }
+.stat-label { color: var(--muted); font-size: 12px; }
+
+.group { margin-bottom: 24px; }
+.group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 15px; font-weight: 650; }
+.group-count { background: var(--bg-elevated); color: var(--muted); border-radius: 20px; padding: 1px 10px; font-size: 13px; }
+
+.wo-actions-row { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.action-pill { font-size: 11px; font-weight: 650; border-radius: 20px; padding: 2px 9px; background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border); }
+.action-pill.urgent { background: var(--critical-bg); color: var(--critical); border-color: var(--critical); }
+.action-pill.ready  { background: var(--success-bg); color: var(--success); border-color: var(--success); }
+
+.recs { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.recs-title { font-size: 11.5px; font-weight: 650; color: var(--muted); margin-bottom: 5px; }
+.recs ul { list-style: none; margin: 0; padding: 0; }
+.rec { font-size: 12px; line-height: 1.5; padding: 3px 0 3px 9px; border-left: 2px solid var(--border); margin-bottom: 3px; }
+.rec-urgent   { border-left-color: var(--critical); }
+.rec-followup { border-left-color: var(--warning); }
+.rec-ready    { border-left-color: var(--success); }
+.rec-none     { border-left-color: var(--text-muted); color: var(--muted); }
+
+.field-table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin-top: 6px; }
+.field-table td { padding: 4px 7px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.field-table .fkey { color: var(--muted); font-weight: 600; white-space: nowrap; width: 40%; }
+
+/* =====================================================
    MAINTENANCE — TECHNICIANS
    Make Ready chips + capabilities matrix, both rendered
    from the Supabase `technicians` table (Phase 3).
