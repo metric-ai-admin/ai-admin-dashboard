@@ -39,10 +39,10 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params),
       });
       const data = await res.json();
-      if (!res.ok) return text(`Error al crear la tarea: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ Tarea creada con id ${data.id}`, task: data });
+      if (!res.ok) return text(`Could not create the task: ${data.error || res.status}`);
+      return text({ ok: true, message: `✅ Task created with id ${data.id}`, task: data });
     } catch {
-      return text('No se pudo conectar al dashboard. ¿Está abierto? Ábrelo con "Iniciar AI Admin Dashboard.bat".');
+      return text('Could not reach the dashboard. Is it running? Start it with "Iniciar AI Admin Dashboard.bat".');
     }
   });
 
@@ -63,10 +63,10 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields),
       });
       const data = await res.json();
-      if (!res.ok) return text(`Error al actualizar la tarea: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ Tarea "${data.title}" actualizada`, task: data });
+      if (!res.ok) return text(`Could not update the task: ${data.error || res.status}`);
+      return text({ ok: true, message: `✅ Task "${data.title}" updated`, task: data });
     } catch {
-      return text('No se pudo conectar al dashboard. ¿Está abierto?');
+      return text('Could not reach the dashboard. Is it running?');
     }
   });
 
@@ -79,9 +79,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const res = await doFetch(`${BASE}/api/tasks/${encodeURIComponent(id)}/done`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ Tarea "${data.title}" marcada como completada`, task: data });
+      return text({ ok: true, message: `✅ Task "${data.title}" marked complete`, task: data });
     } catch {
-      return text('No se pudo conectar al dashboard. ¿Está abierto?');
+      return text('Could not reach the dashboard. Is it running?');
     }
   });
 
@@ -94,9 +94,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const res = await doFetch(`${BASE}/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: '🗑️ Tarea eliminada correctamente' });
+      return text({ ok: true, message: '🗑️ Task deleted' });
     } catch {
-      return text('No se pudo conectar al dashboard. ¿Está abierto?');
+      return text('Could not reach the dashboard. Is it running?');
     }
   });
 
@@ -136,9 +136,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const res = await doFetch(`${BASE}/api/sops`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ SOP "${data.title}" agregado`, sop: data });
+      return text({ ok: true, message: `✅ SOP "${data.title}" added`, sop: data });
     } catch {
-      return text('No se pudo conectar al dashboard. ¿Está abierto?');
+      return text('Could not reach the dashboard. Is it running?');
     }
   });
 
@@ -173,10 +173,10 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectGid }),
       });
       const data = await res.json();
-      if (!res.ok) return text(`Error al importar: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ ${data.imported} tareas nuevas importadas (de ${data.total} abiertas en el proyecto)`, imported: data.imported, total: data.total });
+      if (!res.ok) return text(`Could not import: ${data.error || res.status}`);
+      return text({ ok: true, message: `✅ ${data.imported} new tasks imported (of ${data.total} open in the project)`, imported: data.imported, total: data.total });
     } catch {
-      return text('No se pudo conectar al dashboard. ¿Está abierto?');
+      return text('Could not reach the dashboard. Is it running?');
     }
   });
 
@@ -204,9 +204,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ "${data.module}" actualizado a fase "${data.phase}"`, project: data });
+      return text({ ok: true, message: `✅ "${data.module}" moved to phase "${data.phase}"`, project: data });
     } catch {
-      return text('No se pudo conectar al dashboard. ¿Está abierto?');
+      return text('Could not reach the dashboard. Is it running?');
     }
   });
 
@@ -229,9 +229,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ Proyecto "${data.module}" creado con id "${data.id}"`, project: data });
+      return text({ ok: true, message: `✅ Project "${data.module}" created with id "${data.id}"`, project: data });
     } catch {
-      return text('No se pudo conectar al dashboard.');
+      return text('Could not reach the dashboard.');
     }
   });
 
@@ -252,9 +252,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
       const sub = (data.subtasks || []).slice(-1)[0];
-      return text({ ok: true, message: `✅ Subtask "${sub?.title}" agregado al proyecto "${data.module}"`, subtask: sub });
+      return text({ ok: true, message: `✅ Subtask "${sub?.title}" added to project "${data.module}"`, subtask: sub });
     } catch {
-      return text('No se pudo conectar al dashboard.');
+      return text('Could not reach the dashboard.');
     }
   });
 
@@ -275,9 +275,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
       const sub = (data.subtasks || []).find(s => s.id === subId);
-      return text({ ok: true, message: `✅ Subtask "${sub?.title}" marcado como ${done ? 'done' : 'pendiente'}`, subtask: sub });
+      return text({ ok: true, message: `✅ Subtask "${sub?.title}" marked as ${done ? 'done' : 'pending'}`, subtask: sub });
     } catch {
-      return text('No se pudo conectar al dashboard.');
+      return text('Could not reach the dashboard.');
     }
   });
 
@@ -292,9 +292,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const res = await doFetch(`${BASE}/api/platform-projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ Proyecto "${data.deleted}" eliminado` });
+      return text({ ok: true, message: `✅ Project "${data.deleted}" deleted` });
     } catch {
-      return text('No se pudo conectar al dashboard.');
+      return text('Could not reach the dashboard.');
     }
   });
 
@@ -389,9 +389,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const res = await doFetch(`${BASE}/api/email/${encodeURIComponent(id)}/handled`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: '✅ Marcado como atendido' });
+      return text({ ok: true, message: '✅ Marked as handled' });
     } catch {
-      return text('No se pudo conectar al dashboard. ¿Está abierto?');
+      return text('Could not reach the dashboard. Is it running?');
     }
   });
 
@@ -446,9 +446,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const res = await doFetch(`${BASE}/api/lyndsay-queue`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: '✅ Mensaje agregado a la cola', item: data });
+      return text({ ok: true, message: '✅ Message added to the queue', item: data });
     } catch {
-      return text('No se pudo conectar al dashboard. ¿Está abierto?');
+      return text('Could not reach the dashboard. Is it running?');
     }
   });
 
@@ -463,9 +463,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const res = await doFetch(`${BASE}/api/lyndsay-queue/${encodeURIComponent(id)}/sent`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: '✅ Mensaje marcado como enviado' });
+      return text({ ok: true, message: '✅ Message marked as sent' });
     } catch {
-      return text('No se pudo conectar al dashboard. ¿Está abierto?');
+      return text('Could not reach the dashboard. Is it running?');
     }
   });
 
@@ -508,8 +508,8 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const res = await doFetch(`${BASE}/api/operational`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ Tarea creada (${data.id})`, task: data });
-    } catch { return text('No se pudo conectar al dashboard.'); }
+      return text({ ok: true, message: `✅ Task created (${data.id})`, task: data });
+    } catch { return text('Could not reach the dashboard.'); }
   });
 
   server.registerTool('maintenance_update_task', {
@@ -530,7 +530,7 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
       return text({ ok: true, task: data });
-    } catch { return text('No se pudo conectar al dashboard.'); }
+    } catch { return text('Could not reach the dashboard.'); }
   });
 
   server.registerTool('maintenance_complete_task', {
@@ -544,8 +544,8 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const res = await doFetch(`${BASE}/api/operational/${encodeURIComponent(id)}/done`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ Tarea completada`, task: data });
-    } catch { return text('No se pudo conectar al dashboard.'); }
+      return text({ ok: true, message: `✅ Task completed`, task: data });
+    } catch { return text('Could not reach the dashboard.'); }
   });
 
   server.registerTool('maintenance_get_property_assignments', {
@@ -573,7 +573,7 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
       return text({ ok: true, assignment: data });
-    } catch { return text('No se pudo conectar al dashboard.'); }
+    } catch { return text('Could not reach the dashboard.'); }
   });
 
   // ── Technicians ───────────────────────────────────────────────────────────
@@ -612,7 +612,7 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
       return text({ ok: true, technician: data });
-    } catch { return text('No se pudo conectar al dashboard.'); }
+    } catch { return text('Could not reach the dashboard.'); }
   });
 
   server.registerTool('maintenance_update_technician', {
@@ -663,7 +663,7 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
       return text({ ok: true, technician: data });
-    } catch { return text('No se pudo conectar al dashboard.'); }
+    } catch { return text('Could not reach the dashboard.'); }
   });
 
   server.registerTool('maintenance_get_lyndsay_tasks', {
@@ -683,8 +683,8 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       const res = await doFetch(`${BASE}/api/lyndsay/tasks/${encodeURIComponent(id)}/done`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const data = await res.json();
       if (!res.ok) return text(`Error: ${data.error || res.status}`);
-      return text({ ok: true, message: `✅ Tarea marcada como hecha`, id });
-    } catch { return text('No se pudo conectar al dashboard.'); }
+      return text({ ok: true, message: `✅ Task marked done`, id });
+    } catch { return text('Could not reach the dashboard.'); }
   });
 
   server.registerTool('maintenance_get_appfolio_analysis', {

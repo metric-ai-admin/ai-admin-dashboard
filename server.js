@@ -664,7 +664,7 @@ const ASANA_OPT_FIELDS = 'name,assignee.name,due_on,due_at,completed,completed_a
 
 function shapeTask(t, projectLabel) {
   const label = projectLabel
-    || (t.projects && t.projects[0] ? t.projects[0].name : 'Mis tareas');
+    || (t.projects && t.projects[0] ? t.projects[0].name : 'My tasks');
   return {
     gid: t.gid,
     name: t.name,
@@ -2558,11 +2558,11 @@ async function mcpGetJSON(pathname, timeoutMs = 30_000) {
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
     const res = await fetchFn(`${MCP_BASE}${pathname}`, { signal: ac.signal, headers: mcpMetricKeyHeaders() });
-    if (!res.ok) return { _error: `El dashboard respondió ${res.status} en ${pathname}` };
+    if (!res.ok) return { _error: `The dashboard returned ${res.status} for ${pathname}` };
     return await res.json();
   } catch (err) {
-    if (err.name === 'AbortError') return { _error: `El dashboard tardó demasiado en responder (${timeoutMs / 1000}s).` };
-    return { _error: `No se pudo conectar al dashboard en ${MCP_BASE}.` };
+    if (err.name === 'AbortError') return { _error: `The dashboard took too long to respond (${timeoutMs / 1000}s).` };
+    return { _error: `Could not reach the dashboard at ${MCP_BASE}.` };
   } finally {
     clearTimeout(timer);
   }

@@ -179,15 +179,15 @@ function analyzeWorkOrders(rows) {
     const isWorkDone = /work\s*done|completed work/.test(rec.statusLower);
     const isNew = /new|open|received|submitted/.test(rec.statusLower);
     const isClosed = /closed|complete|cancel/.test(rec.statusLower);
-    if (rec.isSpanish) acts.push({ action: 'Translate to English', tier: 'followup', recommendation: 'Descripción en español. Tradúcela antes de asignar.' });
-    if (isNew && !rec.assignee) acts.push({ action: 'Assign technician', tier: 'urgent', recommendation: 'Orden nueva sin técnico. Asigna uno cuanto antes.' });
-    if (isWorkDone && !rec.hasPhotos) acts.push({ action: 'Request photos', tier: 'followup', recommendation: 'Work Done sin fotos. Solicita fotos al técnico.' });
-    if (rec.ageDays !== null && rec.ageDays > 30 && !isClosed) acts.push({ action: 'Escalate', tier: 'urgent', recommendation: `${rec.ageDays} días abierta. Escala de inmediato.` });
-    else if (rec.updatedDays !== null && rec.updatedDays > 7 && !isClosed && !isWorkDone) acts.push({ action: 'Follow up with tech', tier: 'followup', recommendation: `Sin actualización en ${rec.updatedDays} días.` });
-    if (isWorkDone && !rec.isSpanish && rec.hasPhotos) acts.push({ action: 'QC Ready', tier: 'ready', recommendation: 'Lista para QC / facturación.' });
+    if (rec.isSpanish) acts.push({ action: 'Translate to English', tier: 'followup', recommendation: 'Description is in Spanish. Translate it before assigning.' });
+    if (isNew && !rec.assignee) acts.push({ action: 'Assign technician', tier: 'urgent', recommendation: 'New work order with no technician. Assign one as soon as possible.' });
+    if (isWorkDone && !rec.hasPhotos) acts.push({ action: 'Request photos', tier: 'followup', recommendation: 'Marked Work Done with no photos. Request photos from the technician.' });
+    if (rec.ageDays !== null && rec.ageDays > 30 && !isClosed) acts.push({ action: 'Escalate', tier: 'urgent', recommendation: `Open for ${rec.ageDays} days. Escalate immediately.` });
+    else if (rec.updatedDays !== null && rec.updatedDays > 7 && !isClosed && !isWorkDone) acts.push({ action: 'Follow up with tech', tier: 'followup', recommendation: `No update in ${rec.updatedDays} days.` });
+    if (isWorkDone && !rec.isSpanish && rec.hasPhotos) acts.push({ action: 'QC Ready', tier: 'ready', recommendation: 'Ready for QC / billing.' });
     const key = `${rec.property}||${rec.unit}`.toLowerCase();
-    if (rec.unit && openByUnit[key] && openByUnit[key].length > 1) acts.push({ action: 'Possible duplicate', tier: 'followup', recommendation: `${openByUnit[key].length} órdenes abiertas en la misma unidad.` });
-    if (!acts.length) acts.push({ action: 'No action needed', tier: 'none', recommendation: 'Sin acción por ahora.' });
+    if (rec.unit && openByUnit[key] && openByUnit[key].length > 1) acts.push({ action: 'Possible duplicate', tier: 'followup', recommendation: `${openByUnit[key].length} open work orders on the same unit.` });
+    if (!acts.length) acts.push({ action: 'No action needed', tier: 'none', recommendation: 'No action needed right now.' });
     const topTier = acts.reduce((best, a) => order[a.tier] < order[best] ? a.tier : best, 'none');
     return { wo: rec.wo, property: rec.property, unit: rec.unit, status: rec.status || '—',
       assignee: rec.assignee || null, ageDays: rec.ageDays, isSpanish: rec.isSpanish, hasPhotos: rec.hasPhotos,

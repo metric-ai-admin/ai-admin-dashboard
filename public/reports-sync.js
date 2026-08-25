@@ -121,7 +121,7 @@ function renderReportCards() {
         truncatedBox +
         errorBox +
         '<div class="rs-actions">' +
-          '<button class="btn btn-sm btn-primary rs-sync-one" data-report="' + esc(r.id) + '">⟳ Actualizar ahora</button>' +
+          '<button class="btn btn-sm btn-primary rs-sync-one" data-report="' + esc(r.id) + '">⟳ Sync now</button>' +
           viewBtn +
         '</div>' +
       '</div>';

@@ -32,11 +32,11 @@ async function getJSON(pathname, timeoutMs = 30_000) {
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
     const res = await fetch(`${BASE}${pathname}`, { signal: ac.signal, headers: metricKeyHeaders() });
-    if (!res.ok) return { _error: `El dashboard respondió ${res.status} en ${pathname}` };
+    if (!res.ok) return { _error: `The dashboard returned ${res.status} for ${pathname}` };
     return await res.json();
   } catch (err) {
-    if (err.name === 'AbortError') return { _error: `El dashboard tardó demasiado en responder (${timeoutMs / 1000}s). ¿Está sobrecargado o cerrado?` };
-    return { _error: `No se pudo conectar al dashboard en ${BASE}. ¿Está abierto? Ábrelo con "Iniciar AI Admin Dashboard.bat".` };
+    if (err.name === 'AbortError') return { _error: `The dashboard took too long to respond (${timeoutMs / 1000}s). Is it overloaded or closed?` };
+    return { _error: `Could not reach the dashboard at ${BASE}. Is it running? Start it with "Iniciar AI Admin Dashboard.bat".` };
   } finally {
     clearTimeout(timer);
   }
