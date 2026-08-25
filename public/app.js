@@ -2415,16 +2415,20 @@ async function loadPropertyAssignments() {
       <thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}<th></th></tr></thead>
       <tbody>`;
 
+    // GET /api/assignments runs rows through assignmentToCamel, so every field
+    // is camelCase — including the name, which is `property`. The PUT handler
+    // keys its fieldMap on those same camelCase names, so the data-field values
+    // below must match them exactly or the update is silently dropped.
     rows.forEach(r => {
-      const prop = r.property_name || r.propertyName || '';
+      const prop = r.property || '';
       html += `<tr data-prop="${esc(prop)}">
         <td class="mono small">${esc(prop)}</td>
-        <td><input class="crm-input maint-edit" data-field="units" style="width:60px" value="${esc(r.units ?? '')}"></td>
-        <td><input class="crm-input maint-edit" data-field="has_pool" style="width:50px" value="${esc(r.has_pool ?? r.hasPool ?? '')}"></td>
-        <td><input class="crm-input maint-edit" list="tech-names" data-field="grounds_tech" value="${esc(r.grounds_tech ?? r.groundsTech ?? '')}"></td>
-        <td><input class="crm-input maint-edit" data-field="frequency" value="${esc(r.frequency ?? '')}"></td>
-        <td><input class="crm-input maint-edit" list="tech-names" data-field="maintenance_tech" value="${esc(r.maintenance_tech ?? r.maintenanceTech ?? '')}"></td>
-        <td><input class="crm-input maint-edit" data-field="pest_control" value="${esc(r.pest_control ?? r.pestControl ?? '')}"></td>
+        <td><input class="crm-input maint-edit" data-field="units" type="number" min="0" style="width:70px" value="${esc(r.units ?? '')}"></td>
+        <td class="mid"><input class="maint-edit" data-field="hasPool" type="checkbox"${r.hasPool ? ' checked' : ''}></td>
+        <td><input class="crm-input maint-edit" list="tech-names" data-field="groundsTech" value="${esc(r.groundsTech ?? '')}"></td>
+        <td><input class="crm-input maint-edit" data-field="groundsFrequency" value="${esc(r.groundsFrequency ?? '')}"></td>
+        <td><input class="crm-input maint-edit" list="tech-names" data-field="maintenanceTech" value="${esc(r.maintenanceTech ?? '')}"></td>
+        <td><input class="crm-input maint-edit" data-field="pestControl" value="${esc(r.pestControl ?? '')}"></td>
         <td><input class="crm-input maint-edit" data-field="landscaping" value="${esc(r.landscaping ?? '')}"></td>
         <td><button class="btn-sm primary maint-save-assignment">Save</button></td>
       </tr>`;
@@ -2437,16 +2441,36 @@ async function loadPropertyAssignments() {
       btn.addEventListener('click', async () => {
         const tr = btn.closest('tr');
         const prop = tr.dataset.prop;
+        if (!prop) return toast('This row has no property name — reload and try again', 'error');
+
         const update = {};
-        tr.querySelectorAll('.maint-edit').forEach(inp => { update[inp.dataset.field] = inp.value; });
+        tr.querySelectorAll('.maint-edit').forEach(inp => {
+          const f = inp.dataset.field;
+          if (inp.type === 'checkbox') { update[f] = inp.checked; return; }
+          const v = inp.value.trim();
+          // units is an INTEGER column: '' would be rejected outright.
+          update[f] = (f === 'units') ? (v === '' ? null : Number(v)) : v;
+        });
+        if (update.units !== null && update.units !== undefined && Number.isNaN(update.units)) {
+          return toast('Units must be a number', 'error');
+        }
+
+        const original = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Saving…';
         try {
           await api(`/api/assignments/${encodeURIComponent(prop)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(update)
           });
-          toast('Saved', 'success');
-        } catch (err) { toast(err.message, 'error'); }
+          toast(`Saved — ${prop}`, 'success');
+        } catch (err) {
+          toast(err.message, 'error');
+        } finally {
+          btn.disabled = false;
+          btn.textContent = original;
+        }
       });
     });
   } catch (err) {

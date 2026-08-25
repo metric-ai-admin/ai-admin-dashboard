@@ -720,6 +720,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   letter-spacing: .04em; text-transform: uppercase;
 }
 .crm-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.crm-table td.mid { text-align: center; }
 .crm-row { cursor: pointer; transition: background .15s; }
 .crm-row:hover { background: var(--crm-gold-dim); }
 .crm-prop-name { font-weight: 600; color: var(--text); }
