@@ -1263,6 +1263,7 @@ function crmSetView(view) {
   $$('.crm-nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.crmView === view));
   if (view === 'tasks') crmLoadTasks();
   if (view === 'drafts') crmLoadDraftsList();
+  if (view === 'settings') crmLoadTargeted();
 }
 
 $$('.crm-nav-btn').forEach(btn =>
@@ -1388,12 +1389,12 @@ async function crmOpenModal(id, tab = 'overview') {
 
   try {
     const p = await crmFetch(`/api/crm/properties/${id}`);
-    if (p.error) { showToast('Error: ' + p.error, 'error'); crmCloseModal(); return; }
+    if (p.error) { toast('Error: ' + p.error, 'error'); crmCloseModal(); return; }
     crmState.activeProperty = p;
     crmRenderModalHeader(p);
     crmSwitchModalTab(tab);
   } catch (err) {
-    showToast('Failed to load property: ' + err.message, 'error');
+    toast('Failed to load property: ' + err.message, 'error');
     crmCloseModal();
   }
 }
@@ -1543,7 +1544,7 @@ $('#crm-phone-save').addEventListener('click', async () => {
     crmState.activeProperty = updated;
     crmRenderPhoneList(updated.phone_shops);
     $('#crm-phone-form').classList.add('hidden');
-  } catch (err) { showToast(err.message, 'error'); }
+  } catch (err) { toast(err.message, 'error'); }
 });
 
 // ── Online shop tab ───────────────────────────────────────────────────────────
@@ -1571,7 +1572,7 @@ $('#crm-online-save').addEventListener('click', async () => {
     crmState.activeProperty = updated;
     crmRenderOnlineList(updated.online_shops);
     $('#crm-online-form').classList.add('hidden');
-  } catch (err) { showToast(err.message, 'error'); }
+  } catch (err) { toast(err.message, 'error'); }
 });
 
 // ── Appointments tab ──────────────────────────────────────────────────────────
@@ -1600,7 +1601,7 @@ $('#crm-appt-save').addEventListener('click', async () => {
     crmState.activeProperty = updated;
     crmRenderApptList(updated.appointments);
     $('#crm-appt-form').classList.add('hidden');
-  } catch (err) { showToast(err.message, 'error'); }
+  } catch (err) { toast(err.message, 'error'); }
 });
 
 // ── Follow-ups tab ────────────────────────────────────────────────────────────
@@ -1629,7 +1630,7 @@ $('#crm-fu-save').addEventListener('click', async () => {
     crmState.activeProperty = updated;
     crmRenderFUList(updated.follow_ups);
     $('#crm-fu-form').classList.add('hidden');
-  } catch (err) { showToast(err.message, 'error'); }
+  } catch (err) { toast(err.message, 'error'); }
 });
 
 // ── Inspection tab ────────────────────────────────────────────────────────────
@@ -1661,7 +1662,7 @@ $('#crm-insp-save').addEventListener('click', async () => {
     crmState.activeProperty = updated;
     crmRenderInspList(updated.inspections);
     $('#crm-insp-form').classList.add('hidden');
-  } catch (err) { showToast(err.message, 'error'); }
+  } catch (err) { toast(err.message, 'error'); }
 });
 
 // ── DM Review tab ─────────────────────────────────────────────────────────────
@@ -1734,8 +1735,8 @@ $('#crm-dm-save-btn').addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...crmState.dmScores, audit_notes: $('#crm-dm-audit-notes').value }),
     });
-    showToast('DM Review saved ✅', 'success');
-  } catch (err) { showToast(err.message, 'error'); }
+    toast('DM Review saved ✅', 'success');
+  } catch (err) { toast(err.message, 'error'); }
 });
 
 // ── Outreach tab ──────────────────────────────────────────────────────────────
@@ -1813,7 +1814,7 @@ $('#crm-draft-save').addEventListener('click', async () => {
   const p = crmState.activeProperty;
   if (!p) return;
   const body = { channel: $('#df-channel').value, status: $('#df-status').value, subject: $('#df-subject').value, body: $('#df-body').value, notes: $('#df-notes').value };
-  if (!body.body.trim()) { showToast('Body is required', 'error'); return; }
+  if (!body.body.trim()) { toast('Body is required', 'error'); return; }
   try {
     await crmFetch(`/api/crm/properties/${p.id}/outreach-drafts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
@@ -1821,8 +1822,8 @@ $('#crm-draft-save').addEventListener('click', async () => {
     crmRenderDraftList(updated.outreach_drafts);
     $('#crm-draft-form').classList.add('hidden');
     ['#df-channel','#df-subject','#df-body','#df-notes'].forEach(id => $(id).value = '');
-    showToast('Draft saved ✅', 'success');
-  } catch (err) { showToast(err.message, 'error'); }
+    toast('Draft saved ✅', 'success');
+  } catch (err) { toast(err.message, 'error'); }
 });
 
 $('#crm-notes-save').addEventListener('click', async () => {
@@ -1993,19 +1994,66 @@ $('#crm-drafts-refresh').addEventListener('click', crmLoadDraftsList);
 $('#crm-settings-save').addEventListener('click', () => {
   const name = $('#crm-settings-username').value.trim();
   if (name) localStorage.setItem('crm_username', name);
-  showToast('Settings saved', 'success');
+  toast('Settings saved', 'success');
 });
-$('#crm-targeted-save').addEventListener('click', () => {
-  const list = $('#crm-targeted-companies').value;
-  localStorage.setItem('crm_targeted_cos', list);
-  showToast('Targeted companies saved', 'success');
+// Targeted companies live in Supabase now, not localStorage. They were
+// per-browser before, so each person saw a different list and the task engine
+// — which awards +150 for a targeted company — could not see any of them.
+const CRM_TARGETED_LS_KEY = 'crm_targeted_cos';
+
+async function crmLoadTargeted() {
+  const box = $('#crm-targeted-companies');
+  if (!box) return;
+  try {
+    const data = await crmFetch('/api/crm/targeted-companies');
+    if (data.error) throw new Error(data.error);
+    box.value = (data.companies || []).join('\n');
+    crmOfferTargetedImport((data.companies || []).length === 0);
+  } catch (err) {
+    box.placeholder = 'Could not load: ' + err.message;
+  }
+}
+
+/**
+ * One-time bridge: the old list may still be sitting in this browser. Offered
+ * as a button rather than merged silently — the local copy could be a stale
+ * experiment, and overwriting a shared list from one person's browser without
+ * asking is exactly the kind of surprise worth avoiding.
+ */
+function crmOfferTargetedImport(serverListEmpty) {
+  const host = $('#crm-targeted-import-host');
+  if (!host) return;
+  const local = (localStorage.getItem(CRM_TARGETED_LS_KEY) || '')
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  if (!serverListEmpty || !local.length) { host.innerHTML = ''; return; }
+  host.innerHTML =
+    `<button class="btn-sm" id="crm-targeted-import">📥 Import ${local.length} compan${local.length === 1 ? 'y' : 'ies'} saved in this browser</button>`;
+  $('#crm-targeted-import').addEventListener('click', () => {
+    $('#crm-targeted-companies').value = local.join('\n');
+    toast('Loaded from this browser — review, then press Save', 'success');
+    host.innerHTML = '';
+  });
+}
+
+$('#crm-targeted-save').addEventListener('click', async () => {
+  const companies = $('#crm-targeted-companies').value
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  try {
+    const data = await crmFetch('/api/crm/targeted-companies', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ companies }),
+    });
+    if (data.error) throw new Error(data.error);
+    $('#crm-targeted-companies').value = (data.companies || []).join('\n');
+    toast(`${data.count} targeted compan${data.count === 1 ? 'y' : 'ies'} saved — shared with the team`, 'success');
+    crmOfferTargetedImport(false);
+  } catch (err) { toast(err.message, 'error'); }
 });
 
-// Restore settings from localStorage
+// Restore the working-user name — still per-person, so localStorage is right.
 const savedName = localStorage.getItem('crm_username');
 if (savedName) $('#crm-settings-username').value = savedName;
-const savedCos = localStorage.getItem('crm_targeted_cos');
-if (savedCos) $('#crm-targeted-companies').value = savedCos;
 
 // CoStar import
 $('#crm-costar-import').addEventListener('click', async () => {

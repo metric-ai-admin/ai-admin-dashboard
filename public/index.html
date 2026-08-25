@@ -424,8 +424,9 @@
         </div>
         <div class="card">
           <h4>Targeted Management Companies</h4>
-          <p class="small muted">Companies Metric is actively pursuing. Shown with 🎯 in the property list.</p>
+          <p class="small muted">Companies Metric is actively pursuing. Their properties gain <b>+150 priority</b> in the task queue. Shared with the whole team.</p>
           <textarea id="crm-targeted-companies" class="crm-textarea" rows="6" placeholder="One company per line"></textarea>
+          <div id="crm-targeted-import-host" style="margin-top:8px;"></div>
           <button id="crm-targeted-save" class="btn-sm primary" style="margin-top:8px;">Save</button>
         </div>
         <div class="card">
@@ -584,6 +585,29 @@
                   <label class="crm-checkbox-label">
                     <input type="checkbox" id="crm-lyndsay-reviewed" data-field="lyndsay_reviewed">
                     Outreach handled by Lyndsay
+                  </label>
+                </div>
+
+                <!-- Owner Response — the task engine's strongest signal (+1000) -->
+                <div class="card">
+                  <h4>🔥 Owner Response</h4>
+                  <p class="small muted">Logging a date raises the highest-priority task in the queue, assigned to Lyndsay.</p>
+                  <label class="small muted" style="display:block;margin-top:8px;">
+                    Date the owner responded
+                    <input type="date" class="crm-input crm-editable" data-field="owner_response_at">
+                  </label>
+                  <label class="crm-checkbox-label" style="margin-top:8px;">
+                    <input type="checkbox" class="crm-editable" data-field="owner_response_handled">
+                    Handled — clears the task, keeps the date
+                  </label>
+                </div>
+
+                <!-- Contact hold -->
+                <div class="card">
+                  <h4>Contact Details</h4>
+                  <label class="crm-checkbox-label">
+                    <input type="checkbox" class="crm-editable" data-field="needs_contact_update">
+                    Needs contact update (suppresses phone, online &amp; DM tasks until fixed)
                   </label>
                 </div>
 

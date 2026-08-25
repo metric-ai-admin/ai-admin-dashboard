@@ -2745,6 +2745,8 @@ app.patch('/api/crm/properties/:id', requireCRM, async (req, res) => {
       'owner_name','owner_contact_name','owner_phone','owner_email','owner_address',
       'assigned_to','phone_assignee','phone_assignee3','online_dm_assignee',
       'rop_status','lead_score_override','lyndsay_reviewed','notes',
+      // Phase B — feed the task engine's owner-response and contact-hold rules.
+      'owner_response_at','owner_response_handled','needs_contact_update',
     ];
     const updates = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No valid fields to update' });
@@ -3070,13 +3072,14 @@ app.get('/api/crm/tasks', requireCRM, async (req, res) => {
     // Hydrate every property with its activity, then let crm-task-engine decide.
     // Six bulk reads rather than six per property: with ~250 properties the
     // per-property version would be 1,500 round trips.
-    const [phones, onlines, follows, appts, insps, dms] = await Promise.all([
+    const [phones, onlines, follows, appts, insps, dms, targeted] = await Promise.all([
       db.from('phone_shops').select('*'),
       db.from('online_shops').select('*'),
       db.from('follow_ups').select('*'),
       db.from('appointments').select('*'),
       db.from('inspections').select('*'),
       db.from('dm_reviews').select('*'),
+      db.from('targeted_companies').select('company_name'),
     ]);
 
     const groupBy = rows => {
@@ -3102,7 +3105,9 @@ app.get('/api/crm/tasks', requireCRM, async (req, res) => {
       dm_review:    byDm[p.id]     || null,
     }));
 
-    let tasks = crmEngine.computeTasks(hydrated);
+    let tasks = crmEngine.computeTasks(hydrated, {
+      targetedCompanies: (targeted.data || []).map(r => r.company_name),
+    });
 
     // Agent filter stays a substring match, as before — the UI sends a name.
     if (agent) {
@@ -3117,6 +3122,53 @@ app.get('/api/crm/tasks', requireCRM, async (req, res) => {
       summary: crmEngine.agentSummary(tasks),
       tasks,
     });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- Targeted management companies ---------------------------------------------
+// Worth +150 in the task engine. This list previously lived in each person's
+// browser localStorage, so it was per-user and the server could never see it.
+
+app.get('/api/crm/targeted-companies', requireCRM, async (req, res) => {
+  try {
+    const { data, error } = await (supabaseAdmin || supabasePublic)
+      .from('targeted_companies').select('*').order('company_name');
+    if (error) throw error;
+    res.json({ companies: (data || []).map(r => r.company_name) });
+  } catch (err) {
+    res.status(500).json({ error: err.message, hint: 'Has supabase/migrations/003_crm_phase_b.sql been run?' });
+  }
+});
+
+// Replace the whole list — matches how the textarea behaves. Deleting first
+// means a name removed from the box actually disappears.
+app.put('/api/crm/targeted-companies', requireCRM, async (req, res) => {
+  const names = Array.isArray(req.body.companies)
+    ? req.body.companies
+    : String(req.body.companies || '').split('\n');
+
+  // Dedupe on the same normalized form the unique index uses, so a list with
+  // "Greystar" and "greystar " is not rejected outright by the insert.
+  const seen = new Set();
+  const clean = [];
+  for (const raw of names) {
+    const name = String(raw || '').trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    clean.push({ company_name: name });
+  }
+
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { error: delErr } = await db.from('targeted_companies').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    if (delErr) throw delErr;
+    if (clean.length) {
+      const { error: insErr } = await db.from('targeted_companies').insert(clean);
+      if (insErr) throw insErr;
+    }
+    res.json({ ok: true, count: clean.length, companies: clean.map(c => c.company_name) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

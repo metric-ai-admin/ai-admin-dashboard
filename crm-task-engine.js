@@ -9,15 +9,15 @@
  * exercised against fixed input — which matters, because these numbers decide
  * what the team works on.
  *
- * PHASE A. Five of the original's seven task types are implemented. The gaps
- * are data, not logic, and each is marked TODO(phase-b) below:
- *   - owner_response  — needs properties.owner_response {date, handled}
- *   - contact_update  — needs properties.needs_contact_update
- *   - G&B weekly call rotation — phase C
+ * PHASE B. All seven of the original's task types are live. The G&B weekly
+ * call rotation remains phase C.
  *
- * Four scoring terms are intentionally inert rather than guessed. Approved by
- * Arturo 2026-08-25: a wrong mapping is worse than a missing one, because a
- * wrong one is invisible.
+ * Two scoring terms are still intentionally inert rather than guessed, each
+ * marked TODO below. Approved by Arturo 2026-08-25: a wrong mapping is worse
+ * than a missing one, because a wrong one is invisible.
+ *   - open code violations (+1.5 score) — no column, needs Lyndsay's input
+ *   - Repeat Offender flag (+1 score)   — rop_status carries different values
+ *                                         here than the original expects
  */
 
 'use strict';
@@ -45,6 +45,33 @@ function daysSince(dateStr) {
 }
 
 const dateOf = v => (v ? String(v).slice(0, 10) : null);
+
+/**
+ * Ported verbatim. Strips the filler words that make the same company look
+ * like two ("Oak Ridge Apartments" vs "Oak Ridge"), so targeting matches the
+ * way a person would read it.
+ */
+function normName(s) {
+  return (s || '').toLowerCase()
+    .replace(/[’']/g, '')
+    .replace(/\bapartments?\b|\bapartment homes\b|\bcommunity\b|\bresidences?\b|\bhomes\b/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Targeted-company match, ported: containment either way, so a list entry of
+ * "Greystar" hits "Greystar Real Estate Partners" and vice versa.
+ * `targeted` is passed in rather than read from a global — the engine stays pure.
+ */
+function isTargeted(p, targeted) {
+  const n = normName(p.management_company || '');
+  if (!n) return false;
+  return (targeted || []).some(t => {
+    const tn = normName(t);
+    return tn && (n.includes(tn) || tn.includes(n));
+  });
+}
 
 /**
  * phone_shops.notes holds a JSON string — {"connection":…,"appointment_set":…}.
@@ -243,11 +270,14 @@ function readyChecklist(p) {
 
 const isActive = p => p.management_type !== 'owner-managed';
 
-function propertyPriority(p) {
+/** An owner reply nobody has dealt with yet — the strongest signal there is. */
+const hasOpenOwnerResponse = p => !!p.owner_response_at && !p.owner_response_handled;
+
+function propertyPriority(p, targeted) {
   let pr = 0;
   const reasons = [];
 
-  // TODO(phase-b): +1000 "Owner responded" needs properties.owner_response.
+  if (hasOpenOwnerResponse(p)) { pr += 1000; reasons.push('🔥 Owner responded'); }
 
   if (missedTour(p)) { pr += 300; reasons.push('Missed tour, no follow-up'); }
 
@@ -258,10 +288,7 @@ function propertyPriority(p) {
     pr += 150; reasons.push('Repeated unanswered calls');
   }
 
-  // TODO(phase-b): +150 "🎯 Targeted company" needs the targeted-companies list,
-  // which lived in the original's local settings and has no home in Supabase
-  // yet. This is the second-strongest term, so ordering will not match the
-  // original until it exists.
+  if (isTargeted(p, targeted)) { pr += 150; reasons.push('🎯 Targeted company'); }
 
   if (shops.length || (p.online_shops || []).length) { pr += 100; reasons.push('Contact started'); }
 
@@ -275,14 +302,15 @@ function propertyPriority(p) {
 
 const TASK_TARGET_MINUTES = { phone: 5, online: 2, dm: 12, contact_update: 4, appt_check: 3, owner_response: 10, ready: 10 };
 
-function computeTasks(properties) {
+function computeTasks(properties, options = {}) {
+  const targeted = options.targetedCompanies || [];
   const tasks = [];
   const today = todayISO();
 
   for (const p of (properties || [])) {
     if (!isActive(p)) continue;
 
-    const pri = propertyPriority(p);
+    const pri = propertyPriority(p, targeted);
     const rc = readyChecklist(p);
     const base = {
       property_id: p.id,
@@ -291,7 +319,11 @@ function computeTasks(properties) {
       lead_score: pri.leadScore,
     };
 
-    // TODO(phase-b): owner_response task (+500) goes here.
+    if (hasOpenOwnerResponse(p)) {
+      tasks.push({ ...base, type: 'owner_response', label: 'Owner responded — follow up now',
+        agent: 'Lyndsay', tab: 'outreach', minutes: TASK_TARGET_MINUTES.owner_response,
+        due: dateOf(p.owner_response_at), priority: pri.priority + 500 });
+    }
 
     if (rc.ready && !p.lyndsay_reviewed) {
       tasks.push({ ...base, type: 'ready', label: '⭐ Ready for Lyndsay — review & draft outreach',
@@ -301,10 +333,12 @@ function computeTasks(properties) {
     const shops = connectedShops(p);
     const success = shops.some(s => isSuccess(s.conn));
 
-    // TODO(phase-b): holdShops — the original suppresses shops while contact
-    // details are stale (needs_contact_update). Without that column nothing is
-    // held back.
-    if (!success && shops.length < 3) {
+    // You cannot shop a property you cannot reach: while the contact details
+    // are flagged stale, the phone / online / DM tasks are withheld and only
+    // the contact_update task stands. Ported as `holdShops`.
+    const holdShops = !!p.needs_contact_update;
+
+    if (!holdShops && !success && shops.length < 3) {
       const n = shops.length + 1;
       const agent = n === 3 ? (p.phone_assignee3 || 'Katie') : (p.phone_assignee || 'Erick');
       const lastDate = shops.map(s => s.date).filter(Boolean).sort().pop();
@@ -322,23 +356,27 @@ function computeTasks(properties) {
     }
 
     const os = p.online_shops || [];
-    if (os.length === 0) {
+    if (!holdShops && os.length === 0) {
       tasks.push({ ...base, type: 'online', label: 'Online shop',
         agent: p.online_dm_assignee || 'Erick', tab: 'online', minutes: TASK_TARGET_MINUTES.online,
         due: today, priority: pri.priority });
-    } else if (os.length === 1 && (p.follow_ups || []).length === 0) {
+    } else if (!holdShops && os.length === 1 && (p.follow_ups || []).length === 0) {
       tasks.push({ ...base, type: 'online', label: 'Online shop — 2nd attempt (no response after a week)',
         agent: p.online_dm_assignee || 'Erick', tab: 'online', minutes: TASK_TARGET_MINUTES.online,
         due: addDays(dateOf(os[0].shop_date), 7), priority: pri.priority });
     }
 
-    if (!rc.dmDone) {
+    if (!holdShops && !rc.dmDone) {
       tasks.push({ ...base, type: 'dm', label: 'Digital marketing review',
         agent: p.online_dm_assignee || 'Erick', tab: 'dm', minutes: TASK_TARGET_MINUTES.dm,
         due: today, priority: pri.priority });
     }
 
-    // TODO(phase-b): contact_update task (+180) goes here.
+    if (holdShops) {
+      tasks.push({ ...base, type: 'contact_update', label: 'Update contact according to management company website',
+        agent: p.online_dm_assignee || 'Erick', tab: 'overview', minutes: TASK_TARGET_MINUTES.contact_update,
+        due: today, priority: pri.priority + 180 });
+    }
   }
 
   tasks.sort((a, b) => (b.priority - a.priority) || String(a.due || '').localeCompare(String(b.due || '')));
