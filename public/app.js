@@ -1374,7 +1374,10 @@ async function crmLoadMeta() {
 }
 
 // ── Property modal ────────────────────────────────────────────────────────────
-async function crmOpenModal(id) {
+// `tab` lets a caller land the user where the work is. Task Queue passes the
+// tab matching the task type, so clicking "2/3 calls logged" opens on Phone
+// Shop instead of Overview — which read as "the calls are missing".
+async function crmOpenModal(id, tab = 'overview') {
   const modal = $('#crm-modal');
   modal.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
@@ -1388,7 +1391,7 @@ async function crmOpenModal(id) {
     if (p.error) { showToast('Error: ' + p.error, 'error'); crmCloseModal(); return; }
     crmState.activeProperty = p;
     crmRenderModalHeader(p);
-    crmSwitchModalTab('overview');
+    crmSwitchModalTab(tab);
   } catch (err) {
     showToast('Failed to load property: ' + err.message, 'error');
     crmCloseModal();
@@ -1484,19 +1487,41 @@ async function crmSaveOverview(id) {
 }
 
 // ── Phone shop tab ────────────────────────────────────────────────────────────
+// phone_shops.notes is stored as a JSON string — {"connection":…,"text":…} —
+// while online_shops.notes is plain text. Reading .connection straight off the
+// string silently yielded undefined, so every call rendered as "—" in the
+// no-answer style even when it had been answered, and the raw JSON was printed
+// as the note body. Accept a string, an object, or JSON either way.
+function parseNotes(n) {
+  if (!n) return {};
+  if (typeof n === 'object') return n;
+  try {
+    const parsed = JSON.parse(n);
+    return (parsed && typeof parsed === 'object') ? parsed : { text: String(parsed) };
+  } catch {
+    return { text: n };
+  }
+}
+
 function crmRenderPhoneList(shops) {
   const connLabel = { answered_agent: 'Answered', answered_ai: 'AI/Service', voicemail: 'Voicemail', no_answer: 'No Answer', wrong_number: 'Wrong #' };
   const connCls   = { answered_agent: 'conn-answered', answered_ai: 'conn-answered', voicemail: 'conn-voicemail', no_answer: 'conn-noanswer', wrong_number: 'conn-noanswer' };
   $('#crm-phone-count').textContent = `${shops.length} call(s) logged`;
-  $('#crm-phone-list').innerHTML = shops.length ? shops.map(s => `
+  $('#crm-phone-list').innerHTML = shops.length ? shops.map(s => {
+    const nt = parseNotes(s.notes);
+    return `
     <div class="crm-entry-card">
       <div class="crm-entry-card-head">
         <span class="crm-entry-meta">${fmtDate(s.shop_date)} · ${esc(s.agent_name||'—')}</span>
-        <span class="crm-connection-badge ${connCls[s.notes?.connection] || 'conn-noanswer'}">${esc(s.notes?.connection ? connLabel[s.notes.connection] : '—')}</span>
+        <span class="crm-connection-badge ${connCls[nt.connection] || 'conn-noanswer'}">${esc(nt.connection ? (connLabel[nt.connection] || nt.connection) : '—')}</span>
       </div>
-      ${s.score != null ? `<span class="crm-entry-meta">Score: ${s.score}</span>` : ''}
-      ${s.notes ? `<p class="small" style="margin-top:4px;">${esc(s.notes)}</p>` : ''}
-    </div>`).join('') : '<p class="muted small">No calls logged yet.</p>';
+      <div class="crm-entry-card-head" style="margin-top:2px">
+        ${s.score != null ? `<span class="crm-entry-meta">Score: ${s.score}</span>` : '<span></span>'}
+        ${nt.appointment_set === 'yes' ? '<span class="crm-entry-meta">📅 Appointment set</span>' : ''}
+      </div>
+      ${nt.text ? `<p class="small" style="margin-top:4px;">${esc(nt.text)}</p>` : ''}
+    </div>`;
+  }).join('') : '<p class="muted small">No calls logged yet.</p>';
 }
 
 $('#crm-phone-add-btn').addEventListener('click', () => {
@@ -1530,7 +1555,7 @@ function crmRenderOnlineList(shops) {
         ${s.score != null ? `<span class="crm-entry-meta">Score: ${s.score}</span>` : ''}
       </div>
       ${s.platform ? `<div class="small">${esc(s.platform)}</div>` : ''}
-      ${s.notes ? `<p class="small" style="margin-top:4px;">${esc(s.notes)}</p>` : ''}
+      ${parseNotes(s.notes).text ? `<p class="small" style="margin-top:4px;">${esc(parseNotes(s.notes).text)}</p>` : ''}
     </div>`).join('') : '<p class="muted small">No online shops yet.</p>';
 }
 
@@ -1739,7 +1764,7 @@ function crmRenderOutreach(p) {
   const angles = [];
   if (p.vacancy_pct && parseFloat(p.vacancy_pct) > 12) angles.push(`📉 Vacancy at ${parseFloat(p.vacancy_pct).toFixed(1)}% — underperforming market`);
   if (!(p.phone_shops||[]).length) angles.push('📞 No phone shops on record');
-  else if ((p.phone_shops||[]).some(s => { try { return JSON.parse(s.notes)?.connection === 'no_answer'; } catch { return false; } })) angles.push('📞 Phone shop — no answer logged');
+  else if ((p.phone_shops||[]).some(s => parseNotes(s.notes).connection === 'no_answer')) angles.push('📞 Phone shop — no answer logged');
   angles.push(...breakdown.map(b => `📊 ${b}`));
   $('#crm-dossier-body').innerHTML = angles.length
     ? `<ul class="crm-dossier-signals">${angles.map(a => `<li>${esc(a)}</li>`).join('')}</ul>`
@@ -1835,6 +1860,16 @@ async function crmRenderHistory(id) {
 }
 
 // ── Task Queue view ───────────────────────────────────────────────────────────
+
+// Which modal tab a task's work actually lives on. Anything unmapped falls
+// back to Overview.
+const CRM_TASK_TAB = {
+  phone_shop:     'phone',
+  online_shop:    'online',
+  missed_tour:    'appointments',
+  lyndsay_review: 'overview',
+};
+
 async function crmLoadTasks() {
   $('#crm-tasks-status').textContent = 'Loading…';
   const agentFilter = $('#crm-task-agent-filter').value;
@@ -1845,7 +1880,7 @@ async function crmLoadTasks() {
     $('#crm-tasks-status').textContent = `${tasks.length} task(s)`;
     const typeIcon = { phone_shop: '📞', online_shop: '💻', lyndsay_review: '⭐', missed_tour: '🔥' };
     $('#crm-tasks-body').innerHTML = tasks.length ? tasks.map(t => `
-      <div class="crm-task-card" data-pid="${esc(t.property_id || '')}">
+      <div class="crm-task-card" data-pid="${esc(t.property_id || '')}" data-type="${esc(t.type || '')}">
         <div class="crm-task-type-icon">${typeIcon[t.type] || '📋'}</div>
         <div class="crm-task-body">
           <div class="crm-task-title">${esc(t.property_name||'—')}</div>
@@ -1856,10 +1891,11 @@ async function crmLoadTasks() {
       </div>`).join('') : '<p class="muted small" style="padding:20px;">No tasks match the current filters.</p>';
 
     // Every task is derived from a property, so clicking one opens that
-    // property — same behaviour as a row in the Properties table.
+    // property — and lands on the tab the task is actually about.
     $$('#crm-tasks-body .crm-task-card').forEach(card => {
       if (!card.dataset.pid) { card.classList.add('crm-task-card-nolink'); return; }
-      card.addEventListener('click', () => crmOpenModal(card.dataset.pid));
+      card.addEventListener('click', () =>
+        crmOpenModal(card.dataset.pid, CRM_TASK_TAB[card.dataset.type] || 'overview'));
     });
   } catch (err) { $('#crm-tasks-status').textContent = '❌ ' + err.message; }
 }

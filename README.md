@@ -70,6 +70,16 @@ Dashboard: http://localhost:3001
 - Email/Calendar module won't hit Microsoft Graph for real until the Azure
   App Registration is set up and credentials are added to `.env`.
 
+## BD CRM — open issues
+
+**Duplicate properties.** Every property exists twice (~502 rows for ~251
+properties), so the Task Queue lists everything twice and returns 980 tasks.
+A plain dedup `DELETE` would error on the UUID primary key and, worse, cascade
+into the activity tables — two sampled pairs have call logs and follow-ups
+split across *both* copies. Full analysis, census query and a guarded migration
+plan: [docs/backlog/crm-duplicate-properties.md](docs/backlog/crm-duplicate-properties.md).
+Needs a dedicated session; nothing has been deleted.
+
 ## Maintenance tab — roadmap
 
 Known-incomplete areas, deliberately parked. Each is waiting on something
