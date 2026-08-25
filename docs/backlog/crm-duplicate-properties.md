@@ -115,8 +115,29 @@ CREATE TABLE outreach_drafts_backup_20260825 AS SELECT * FROM outreach_drafts;
 ### 3. Merge the split pairs
 
 Repoint child rows from the doomed copy onto the survivor, then the delete has
-nothing left to cascade. Survivor = **most recent** `created_at`, per Arturo's
-call, since the newer import carries the fresher field data.
+nothing left to cascade.
+
+**Survivor = the OLDEST copy — the 2026-08-21 import.** This was initially
+written the other way round and it was wrong. An Erick→Rhoxie assignee
+correction was applied on 2026-08-24 to the rows that existed at the time (the
+first import); the re-import later that day created fresh rows carrying the
+stale Erick values. So the older row holds the corrected data and the newer one
+does not.
+
+Measured, not assumed: **163 of the 244 pairs differ on `phone_assignee`,
+`online_dm_assignee` or `assigned_to`.** Keeping the newer copy would have
+silently discarded the correction on all 163.
+
+Both imports have uniform timestamps, which makes the rule unambiguous:
+
+| Import | `created_at` | Keep? |
+|---|---|---|
+| First | `2026-08-21 20:15:06.269551+00` | **yes** |
+| Second | `2026-08-24 16:38:21.242402+00` | no |
+
+The six activity tables — note `inspections` and `appointments`, which are easy
+to miss and are not in `001_bd_crm.sql`; Cannon South has 2 inspections on each
+copy:
 
 ```sql
 -- Per pair. :keep = survivor id, :drop = the other.
@@ -143,9 +164,11 @@ should keep any `assigned_to`, `rop_status`, `lead_score_override`,
 ```sql
 BEGIN;
 
+-- ORDER BY created_at ASC — keep the OLDEST. See step 3: the older import
+-- carries the assignee corrections, the newer one is stale.
 WITH ranked AS (
   SELECT id, ROW_NUMBER() OVER (
-           PARTITION BY property_name ORDER BY created_at DESC, id) AS rn
+           PARTITION BY property_name ORDER BY created_at ASC, id) AS rn
   FROM properties
 )
 DELETE FROM properties WHERE id IN (
