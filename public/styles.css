@@ -1036,6 +1036,22 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .crm-task-agent { font-size: .78em; color: var(--crm-gold); font-weight: 600; }
 .crm-task-priority { width: 36px; height: 36px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-weight: 800; color: #fff; font-size: .85em; flex-shrink: 0; }
 
+/* Reasons come from the priority engine — they explain why a task ranks where
+   it does, so the ordering is auditable instead of magic. */
+.crm-task-reasons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.crm-reason { font-size: .68em; background: var(--bg-elevated); border: 1px solid var(--border); color: var(--muted); border-radius: 20px; padding: 1px 7px; white-space: nowrap; }
+.crm-task-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; font-size: .72em; }
+.crm-task-mins { color: var(--muted); font-weight: 600; }
+.crm-task-due { color: var(--text-muted); font-family: ui-monospace, monospace; }
+.crm-task-overdue { color: var(--critical); font-weight: 700; }
+
+.crm-task-kpis { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.crm-kpi { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; font-size: .78em; font-weight: 600; display: flex; flex-direction: column; gap: 1px; min-width: 96px; }
+.crm-kpi b { font-size: 1.7em; font-weight: 800; line-height: 1.1; }
+.crm-kpi .muted { font-weight: 500; font-size: .85em; }
+.crm-kpi-hot { border-color: var(--crm-gold); }
+.crm-kpi-hot b { color: var(--crm-gold); }
+
 /* ── Settings ── */
 .crm-settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
 

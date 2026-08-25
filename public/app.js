@@ -1860,47 +1860,85 @@ async function crmRenderHistory(id) {
 }
 
 // ── Task Queue view ───────────────────────────────────────────────────────────
+// Tasks come from crm-task-engine.js server-side — a port of the original CRM's
+// priority engine. Each carries its own target tab, so no icon-to-tab map here.
 
-// Which modal tab a task's work actually lives on. Anything unmapped falls
-// back to Overview.
-const CRM_TASK_TAB = {
-  phone_shop:     'phone',
-  online_shop:    'online',
-  missed_tour:    'appointments',
-  lyndsay_review: 'overview',
-};
+const CRM_TYPE_ICON = { ready: '⭐', phone: '📞', online: '💻', dm: '📊', appt_check: '🔥',
+                        owner_response: '🔥', contact_update: '✏️' };
+
+// The 1-10 lead score, not the raw priority — priority runs past 1,000 and only
+// matters for ordering, while the score is the number the team reasons about.
+const crmScoreClass = s =>
+  s >= 8 ? { cls: 'score-high', bg: '#dc2626' }
+  : s >= 6 ? { cls: 'score-med',  bg: '#ea580c' }
+  : { cls: 'score-low', bg: '#2563eb' };
 
 async function crmLoadTasks() {
   $('#crm-tasks-status').textContent = 'Loading…';
-  const agentFilter = $('#crm-task-agent-filter').value;
-  const typeFilter  = $('#crm-task-type-filter').value;
+  const agentFilter  = $('#crm-task-agent-filter').value;
+  const typeFilter   = $('#crm-task-type-filter').value;
+  const overdueOnly  = $('#crm-task-overdue-only')?.checked;
+  const today = todayStr();
+
   try {
     const data = await crmFetch(`/api/crm/tasks${agentFilter ? '?agent=' + encodeURIComponent(agentFilter) : ''}`);
-    const tasks = (data.tasks || []).filter(t => !typeFilter || t.type === typeFilter);
-    $('#crm-tasks-status').textContent = `${tasks.length} task(s)`;
-    const typeIcon = { phone_shop: '📞', online_shop: '💻', lyndsay_review: '⭐', missed_tour: '🔥' };
-    $('#crm-tasks-body').innerHTML = tasks.length ? tasks.map(t => `
-      <div class="crm-task-card" data-pid="${esc(t.property_id || '')}" data-type="${esc(t.type || '')}">
-        <div class="crm-task-type-icon">${typeIcon[t.type] || '📋'}</div>
+    let tasks = data.tasks || [];
+    if (typeFilter)  tasks = tasks.filter(t => t.type === typeFilter);
+    if (overdueOnly) tasks = tasks.filter(t => t.due && t.due < today);
+
+    const mins = tasks.reduce((s, t) => s + (t.minutes || 0), 0);
+    const overdue = tasks.filter(t => t.due && t.due < today).length;
+    const hot = new Set(tasks.filter(t => (t.lead_score || 0) >= 7).map(t => t.property_id)).size;
+    $('#crm-tasks-status').textContent =
+      `${tasks.length} task(s) · ${Math.round(mins / 60 * 10) / 10} h estimated` +
+      (overdue ? ` · ${overdue} overdue` : '');
+
+    // Per-agent workload + hot leads, from the engine's own rollup.
+    const kpis = $('#crm-task-kpis');
+    if (kpis) {
+      const perAgent = (data.summary || []).filter(a => !agentFilter || a.agent.toLowerCase().includes(agentFilter.toLowerCase()));
+      kpis.innerHTML =
+        `<div class="crm-kpi crm-kpi-hot"><b>${hot}</b>HOT LEADS <span class="muted">(score 7+)</span></div>` +
+        perAgent.map(a => `
+          <div class="crm-kpi">
+            <b>${a.tasks}</b>${esc(a.agent)}
+            <span class="muted">${Math.round(a.minutes / 60 * 10) / 10} h${a.overdue ? ` · ${a.overdue} overdue` : ''}</span>
+          </div>`).join('');
+    }
+
+    $('#crm-tasks-body').innerHTML = tasks.length ? tasks.map(t => {
+      const sc = crmScoreClass(t.lead_score || 0);
+      const isOverdue = t.due && t.due < today;
+      return `
+      <div class="crm-task-card" data-pid="${esc(t.property_id || '')}" data-tab="${esc(t.tab || 'overview')}">
+        <div class="crm-task-type-icon">${CRM_TYPE_ICON[t.type] || '📋'}</div>
         <div class="crm-task-body">
-          <div class="crm-task-title">${esc(t.property_name||'—')}</div>
-          <div class="crm-task-detail">${esc(t.detail||'')}</div>
+          <div class="crm-task-title">${esc(t.property_name || '—')}</div>
+          <div class="crm-task-detail">${esc(t.label || '')}</div>
+          ${(t.reasons || []).length
+            ? `<div class="crm-task-reasons">${t.reasons.map(r => `<span class="crm-reason">${esc(r)}</span>`).join('')}</div>`
+            : ''}
         </div>
-        <div class="crm-task-agent">${esc(t.agent||'—')}</div>
-        <div class="crm-task-priority ${t.priority >= 8 ? 'score-high' : t.priority >= 6 ? 'score-med' : 'score-low'}" style="background:${t.priority >= 8 ? '#dc2626' : t.priority >= 6 ? '#ea580c' : '#2563eb'}">${t.priority}</div>
-      </div>`).join('') : '<p class="muted small" style="padding:20px;">No tasks match the current filters.</p>';
+        <div class="crm-task-meta">
+          <span class="crm-task-mins">${t.minutes}m</span>
+          <span class="crm-task-due${isOverdue ? ' crm-task-overdue' : ''}">${isOverdue ? '⚠ ' : ''}${esc(t.due || '—')}</span>
+        </div>
+        <div class="crm-task-agent">${esc(t.agent || '—')}</div>
+        <div class="crm-task-priority ${sc.cls}" style="background:${sc.bg}" title="Lead score ${t.lead_score} · priority ${t.priority}">${t.lead_score ?? '—'}</div>
+      </div>`;
+    }).join('') : '<p class="muted small" style="padding:20px;">No tasks match the current filters.</p>';
 
     // Every task is derived from a property, so clicking one opens that
-    // property — and lands on the tab the task is actually about.
+    // property — on the tab the engine says the work lives on.
     $$('#crm-tasks-body .crm-task-card').forEach(card => {
       if (!card.dataset.pid) { card.classList.add('crm-task-card-nolink'); return; }
-      card.addEventListener('click', () =>
-        crmOpenModal(card.dataset.pid, CRM_TASK_TAB[card.dataset.type] || 'overview'));
+      card.addEventListener('click', () => crmOpenModal(card.dataset.pid, card.dataset.tab || 'overview'));
     });
   } catch (err) { $('#crm-tasks-status').textContent = '❌ ' + err.message; }
 }
 
 $('#crm-tasks-refresh').addEventListener('click', crmLoadTasks);
+$('#crm-task-overdue-only')?.addEventListener('change', crmLoadTasks);
 $('#crm-task-agent-filter').addEventListener('change', crmLoadTasks);
 $('#crm-task-type-filter').addEventListener('change', crmLoadTasks);
 

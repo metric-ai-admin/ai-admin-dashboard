@@ -377,14 +377,19 @@
           </select>
           <select id="crm-task-type-filter" class="crm-select">
             <option value="">All Types</option>
-            <option value="phone_shop">Phone Shops</option>
-            <option value="online_shop">Online Shops</option>
-            <option value="lyndsay_review">Ready for Lyndsay</option>
-            <option value="missed_tour">Missed Tour Follow-up</option>
+            <option value="ready">⭐ Ready for Lyndsay</option>
+            <option value="phone">📞 Phone Shops</option>
+            <option value="online">💻 Online Shops</option>
+            <option value="dm">📊 Digital Marketing</option>
+            <option value="appt_check">🔥 Missed Tour Follow-up</option>
           </select>
+          <label class="small muted" style="display:flex;align-items:center;gap:5px">
+            <input type="checkbox" id="crm-task-overdue-only"> Overdue only
+          </label>
           <button id="crm-tasks-refresh" class="btn-sm">🔄</button>
         </div>
       </div>
+      <div id="crm-task-kpis" class="crm-task-kpis"></div>
       <div id="crm-tasks-body"></div>
     </div>
 

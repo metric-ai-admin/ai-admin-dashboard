@@ -30,6 +30,7 @@ const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/ser
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
 const { registerMetricRoutes } = require('./metric-routes.js');
+const crmEngine = require('./crm-task-engine.js');
 const XLSX        = require('xlsx');
 const multer      = require('multer');
 const jwt         = require('jsonwebtoken');
@@ -3058,67 +3059,64 @@ app.get('/api/crm/tasks', requireCRM, async (req, res) => {
     const db = supabaseAdmin || supabasePublic;
     const { agent } = req.query; // optional filter by assigned_to
 
-    const query = db.from('properties').select(
-      'id,property_name,management_company,management_type,assigned_to,' +
-      'phone_assignee,online_dm_assignee,rop_status,vacancy_pct,lead_score_override,' +
-      'lyndsay_reviewed,notes,updated_at'
-    );
+    // select('*') on purpose: the engine reads year_built, asset_class and
+    // phone_assignee3, which the old column list did not include.
+    const query = db.from('properties').select('*');
     const { data, error } = await query;
     if (error) return res.status(500).json({ error: error.message });
 
     const properties = data || [];
 
-    // Pull latest activity counts per property
-    const ids = properties.map(p => p.id);
-    const [phones, follows, appts] = ids.length ? await Promise.all([
-      db.from('phone_shops').select('property_id').in('property_id', ids),
-      db.from('follow_ups').select('property_id,completed').in('property_id', ids),
-      db.from('appointments').select('property_id,status').in('property_id', ids),
-    ]) : [{ data: [] }, { data: [] }, { data: [] }];
+    // Hydrate every property with its activity, then let crm-task-engine decide.
+    // Six bulk reads rather than six per property: with ~250 properties the
+    // per-property version would be 1,500 round trips.
+    const [phones, onlines, follows, appts, insps, dms] = await Promise.all([
+      db.from('phone_shops').select('*'),
+      db.from('online_shops').select('*'),
+      db.from('follow_ups').select('*'),
+      db.from('appointments').select('*'),
+      db.from('inspections').select('*'),
+      db.from('dm_reviews').select('*'),
+    ]);
 
-    const phoneCount   = {};
-    const followCount  = {};
-    const missedTours  = {};
-    (phones.data  || []).forEach(r => { phoneCount[r.property_id]  = (phoneCount[r.property_id]  || 0) + 1; });
-    (follows.data || []).forEach(r => { if (!r.completed) followCount[r.property_id] = (followCount[r.property_id] || 0) + 1; });
-    (appts.data   || []).forEach(r => { if (r.status === 'no_show' || r.status === 'missed_follow_up') missedTours[r.property_id] = true; });
+    const groupBy = rows => {
+      const out = {};
+      (rows || []).forEach(r => { (out[r.property_id] = out[r.property_id] || []).push(r); });
+      return out;
+    };
+    const byPhone   = groupBy(phones.data);
+    const byOnline  = groupBy(onlines.data);
+    const byFollow  = groupBy(follows.data);
+    const byAppt    = groupBy(appts.data);
+    const byInsp    = groupBy(insps.data);
+    const byDm      = {};
+    (dms.data || []).forEach(r => { byDm[r.property_id] = r; });
 
-    const tasks = [];
-    for (const p of properties) {
-      if (!p.assigned_to && !p.phone_assignee && !p.online_dm_assignee) continue;
+    const hydrated = properties.map(p => ({
+      ...p,
+      phone_shops:  byPhone[p.id]  || [],
+      online_shops: byOnline[p.id] || [],
+      follow_ups:   byFollow[p.id] || [],
+      appointments: byAppt[p.id]   || [],
+      inspections:  byInsp[p.id]   || [],
+      dm_review:    byDm[p.id]     || null,
+    }));
 
-      // Skip if filtered by agent
-      const relevantAgents = [p.assigned_to, p.phone_assignee, p.online_dm_assignee].filter(Boolean);
-      if (agent && !relevantAgents.some(a => a.toLowerCase().includes(agent.toLowerCase()))) continue;
+    let tasks = crmEngine.computeTasks(hydrated);
 
-      // Phone shop task
-      if (p.phone_assignee && (phoneCount[p.id] || 0) < 3) {
-        tasks.push({ type: 'phone_shop', property_id: p.id, property_name: p.property_name,
-          agent: p.phone_assignee, management_company: p.management_company, units: null,
-          detail: `${phoneCount[p.id] || 0}/3 calls logged`, priority: p.lead_score_override || 5 });
-      }
-      // Online shop task
-      if (p.online_dm_assignee) {
-        tasks.push({ type: 'online_shop', property_id: p.id, property_name: p.property_name,
-          agent: p.online_dm_assignee, management_company: p.management_company, units: null,
-          detail: 'DM audit pending', priority: p.lead_score_override || 4 });
-      }
-      // Ready for Lyndsay
-      if (p.lyndsay_reviewed === false && (phoneCount[p.id] || 0) >= 1) {
-        tasks.push({ type: 'lyndsay_review', property_id: p.id, property_name: p.property_name,
-          agent: 'Lyndsay', management_company: p.management_company, units: null,
-          detail: 'Ready for review', priority: (p.lead_score_override || 5) + 2 });
-      }
-      // Missed tour follow-up
-      if (missedTours[p.id]) {
-        tasks.push({ type: 'missed_tour', property_id: p.id, property_name: p.property_name,
-          agent: p.phone_assignee || p.assigned_to, management_company: p.management_company, units: null,
-          detail: 'Tour was a no-show — follow up', priority: 9 });
-      }
+    // Agent filter stays a substring match, as before — the UI sends a name.
+    if (agent) {
+      const q = agent.toLowerCase();
+      tasks = tasks.filter(t => String(t.agent || '').toLowerCase().includes(q));
     }
 
-    tasks.sort((a, b) => b.priority - a.priority);
-    res.json({ ok: true, total: tasks.length, tasks });
+    res.json({
+      ok: true,
+      total: tasks.length,
+      totalMinutes: tasks.reduce((s, t) => s + (t.minutes || 0), 0),
+      summary: crmEngine.agentSummary(tasks),
+      tasks,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
