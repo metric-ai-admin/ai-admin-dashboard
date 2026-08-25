@@ -515,6 +515,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .tc-mid { text-align: center; }
 .tc-in { width: 100%; background: var(--bg-surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; font-size: 12px; font-family: inherit; }
 .tc-in[type=checkbox] { width: auto; }
+/* ZIP + lat/lng share one cell so the matrix doesn't grow three more columns.
+   Kept inline-block rather than flex: a flex <td> stops behaving as a table
+   cell and throws off the column widths. */
+.tc-home { white-space: nowrap; }
+.tc-home .tc-zip   { width: 58px; display: inline-block; }
+.tc-home .tc-coord { width: 62px; display: inline-block; font-family: ui-monospace, monospace; font-size: 11px; }
 .tc-actions { white-space: nowrap; display: flex; gap: 5px; }
 
 /* Capability selects carry their rating's colour so the matrix stays scannable. */

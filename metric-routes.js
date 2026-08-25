@@ -553,19 +553,43 @@ function registerMetricRoutes(app, db) {
     .replace(/[̀-ͯ]/g, '')          // strip combining accents (Jose)
     .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
+  // home_lat/home_lng are DOUBLE PRECISION and sort_order is INTEGER. A cleared
+  // form field arrives as '', which Postgres rejects outright, so blank means
+  // NULL here. A non-numeric value is reported rather than silently nulled —
+  // quietly dropping a mistyped coordinate would move a map pin with no warning.
+  const TECH_NUMERIC = new Set(['home_lat', 'home_lng', 'sort_order']);
+  const TECH_RANGE = { home_lat: [-90, 90], home_lng: [-180, 180] };
+
   function techPayload(body) {
-    const out = {};
+    const values = {};
+    const errors = [];
     for (const f of TECH_FIELDS) {
       if (!(f in body)) continue;
+      const raw = body[f];
+
       if (f === 'appfolio_aliases') {
-        out[f] = Array.isArray(body[f])
-          ? body[f]
-          : String(body[f] || '').split(',').map(s => s.trim()).filter(Boolean);
-      } else {
-        out[f] = body[f];
+        values[f] = Array.isArray(raw)
+          ? raw.map(s => String(s).trim()).filter(Boolean)
+          : String(raw || '').split(',').map(s => s.trim()).filter(Boolean);
+        continue;
       }
+
+      if (TECH_NUMERIC.has(f)) {
+        if (raw === '' || raw === null || raw === undefined) { values[f] = null; continue; }
+        const n = Number(raw);
+        if (!Number.isFinite(n)) { errors.push(`${f} must be a number (got "${raw}")`); continue; }
+        const range = TECH_RANGE[f];
+        if (range && (n < range[0] || n > range[1])) {
+          errors.push(`${f} must be between ${range[0]} and ${range[1]} (got ${n})`);
+          continue;
+        }
+        values[f] = n;
+        continue;
+      }
+
+      values[f] = raw;
     }
-    return out;
+    return { values, errors };
   }
 
   // The zero-hours roster, formerly ACTIVE_TECHNICIANS in appfolio-reports.js.
@@ -597,7 +621,9 @@ function registerMetricRoutes(app, db) {
   app.post('/api/technicians', requireMetricAccess, async (req, res) => {
     const name = (req.body.full_name || '').trim();
     if (!name) return res.status(400).json({ error: 'full_name required' });
-    const row = { id: (req.body.id || slugify(name)), full_name: name, ...techPayload(req.body) };
+    const { values, errors } = techPayload(req.body);
+    if (errors.length) return res.status(400).json({ error: errors.join('; ') });
+    const row = { ...values, id: (req.body.id || slugify(name)), full_name: name };
     try {
       const { data, error } = await db.from('technicians').insert(row).select().single();
       if (error) throw error;
@@ -606,7 +632,8 @@ function registerMetricRoutes(app, db) {
   });
 
   app.put('/api/technicians/:id', requireMetricAccess, async (req, res) => {
-    const updates = techPayload(req.body);
+    const { values: updates, errors } = techPayload(req.body);
+    if (errors.length) return res.status(400).json({ error: errors.join('; ') });
     if (!Object.keys(updates).length) return res.status(400).json({ error: 'No editable fields supplied' });
     try {
       const { data, error } = await db.from('technicians')

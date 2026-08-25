@@ -2060,6 +2060,11 @@ async function loadMaintenance() {
             full_name:        fd.get('full_name'),
             position:         fd.get('position'),
             appfolio_aliases: fd.get('appfolio_aliases') || '',
+            // Sent as-is; the server turns '' into NULL and rejects non-numbers.
+            home_zip:         fd.get('home_zip') || null,
+            home_lat:         fd.get('home_lat') || '',
+            home_lng:         fd.get('home_lng') || '',
+            show_on_map:      fd.get('show_on_map') === 'on',
           }),
         });
         e.target.reset();
@@ -2526,6 +2531,7 @@ function renderTechCapabilities() {
       <th style="width:150px">AppFolio name(s)</th>
       <th title="Expected to log hours daily — drives the zero-hours alert">Daily</th>
       <th title="Show as a pin on the Coverage Map">Map</th>
+      <th style="width:190px" title="ZIP centroid used for the map pin — home area, not a street address">Home ZIP / lat / lng</th>
       <th title="Show in the Make Ready roster">MR</th>
       ${TECH_CAPS.map(c => `<th>${esc(c.label)}</th>`).join('')}
       <th></th>
@@ -2539,6 +2545,11 @@ function renderTechCapabilities() {
       <td><input class="tc-in" data-field="appfolio_aliases" value="${esc((t.appfolio_aliases || []).join(', '))}"></td>
       <td class="tc-mid"><input type="checkbox" class="tc-in" data-field="expect_daily_hours"${t.expect_daily_hours ? ' checked' : ''}></td>
       <td class="tc-mid"><input type="checkbox" class="tc-in" data-field="show_on_map"${t.show_on_map ? ' checked' : ''}></td>
+      <td class="tc-home">
+        <input class="tc-in tc-zip" data-field="home_zip" value="${esc(t.home_zip ?? '')}" placeholder="ZIP">
+        <input class="tc-in tc-coord" data-field="home_lat" value="${esc(t.home_lat ?? '')}" placeholder="lat" inputmode="decimal">
+        <input class="tc-in tc-coord" data-field="home_lng" value="${esc(t.home_lng ?? '')}" placeholder="lng" inputmode="decimal">
+      </td>
       <td class="tc-mid"><input type="checkbox" class="tc-in" data-field="shows_in_make_ready"${t.shows_in_make_ready ? ' checked' : ''}></td>
       ${TECH_CAPS.map(c => `<td class="tc-mid">${capSelect(t, c)}</td>`).join('')}
       <td class="tc-actions">
@@ -2579,15 +2590,24 @@ function renderTechCapabilities() {
 async function saveTechnicianRow(tr) {
   const payload = {};
   tr.querySelectorAll('[data-field]').forEach(inp => {
-    payload[inp.dataset.field] = inp.type === 'checkbox' ? inp.checked : inp.value;
+    payload[inp.dataset.field] = inp.type === 'checkbox' ? inp.checked : inp.value.trim();
   });
+
+  // Blank coordinates are valid (the pin is simply skipped), but pairing them
+  // with "Map" checked is the silent failure this column exists to prevent:
+  // the row saves, the map stays unchanged, and nothing says why.
+  const missingCoords = payload.show_on_map &&
+    (payload.home_lat === '' || payload.home_lng === '');
+
   try {
     await api(`/api/technicians/${encodeURIComponent(tr.dataset.id)}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    toast('Saved', 'success');
-    mapTechsLoaded = false;   // show_on_map / ZIP may have changed
+    toast(missingCoords
+      ? 'Saved — but no map pin: add a home lat and lng'
+      : 'Saved', missingCoords ? 'error' : 'success');
+    mapTechsLoaded = false;   // show_on_map or the coordinates may have changed
     loadTechnicians();
   } catch (err) { toast(err.message, 'error'); }
 }
