@@ -1998,9 +1998,21 @@ function switchMaintenanceView(view) {
     'sops':           loadMaintenanceSops,
     'properties':     loadPropertyAssignments,
     'coverage':       loadMaintenanceCoverage,
+    'efficiency':     loadEfficiency,
+    'technician':     loadTechActivity,
+    'reports-sync':   loadReportsSync,
     'command-center': loadLyndsayCommandCenter,
   };
   loaders[view]?.();
+
+  // AppFolio-backed extras layered onto views that have their own loader.
+  // Defined in reports-sync.js / appfolio-views.js, which load after app.js.
+  // The Coverage Map's WO badges are NOT triggered here — they need the Leaflet
+  // markers to exist, so loadMaintenanceCoverage() fires them once the map is
+  // actually built. A timer here raced the first-time CDN load and lost.
+  if (view === 'coverage')       loadOpenWoTable();
+  if (view === 'appfolio')       loadBillableFeed();
+  if (view === 'command-center') loadUrgentFeed();
 }
 
 async function loadMaintenance() {
@@ -2311,6 +2323,10 @@ async function loadMaintenanceCoverage() {
     return;
   }
   initCoverageMap();
+  // initCoverageMap() builds the markers synchronously, so the open-WO badges
+  // can be filled in immediately — no timer, no race with the CDN load.
+  // Defined in reports-sync.js, which loads after this file.
+  if (typeof loadCoverageWoCounts === 'function') loadCoverageWoCounts();
 }
 
 // ── 1. Property Assignments ──────────────────────────────────────────

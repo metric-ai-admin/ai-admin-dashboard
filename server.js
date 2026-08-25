@@ -2498,11 +2498,17 @@ cron.schedule('0 8 * * *', async () => {
 
 const MCP_BASE = `http://localhost:${PORT}`;
 
+// Routes behind requireMetricAccess (metric-routes.js) take either the session
+// cookie or this header. These loopback calls carry no cookie, so they send the
+// header. Read from the environment — never hardcode the key.
+const mcpMetricKeyHeaders = () =>
+  process.env.METRIC_API_KEY ? { 'x-metric-key': process.env.METRIC_API_KEY } : {};
+
 async function mcpGetJSON(pathname, timeoutMs = 30_000) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const res = await fetchFn(`${MCP_BASE}${pathname}`, { signal: ac.signal });
+    const res = await fetchFn(`${MCP_BASE}${pathname}`, { signal: ac.signal, headers: mcpMetricKeyHeaders() });
     if (!res.ok) return { _error: `El dashboard respondió ${res.status} en ${pathname}` };
     return await res.json();
   } catch (err) {
@@ -2519,7 +2525,11 @@ async function mcpDoFetch(url, options = {}, timeoutMs = 30_000) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    return await fetchFn(url, { ...options, signal: ac.signal });
+    return await fetchFn(url, {
+      ...options,
+      headers: { ...(options.headers || {}), ...mcpMetricKeyHeaders() },
+      signal: ac.signal,
+    });
   } catch (err) {
     if (err.name === 'AbortError') throw new Error(`Request to ${url} timed out after ${timeoutMs / 1000}s`);
     throw err;

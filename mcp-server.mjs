@@ -21,11 +21,17 @@ import { registerAllTools } from './mcp-tools.cjs';
 
 const BASE = process.env.DASHBOARD_URL || 'http://localhost:3001';
 
+// Routes guarded by requireMetricAccess (metric-routes.js) accept either the
+// dashboard's session cookie or this header. MCP has no cookie, so it sends the
+// header. Read from the environment — never hardcode the key.
+const metricKeyHeaders = () =>
+  process.env.METRIC_API_KEY ? { 'x-metric-key': process.env.METRIC_API_KEY } : {};
+
 async function getJSON(pathname, timeoutMs = 30_000) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const res = await fetch(`${BASE}${pathname}`, { signal: ac.signal });
+    const res = await fetch(`${BASE}${pathname}`, { signal: ac.signal, headers: metricKeyHeaders() });
     if (!res.ok) return { _error: `El dashboard respondió ${res.status} en ${pathname}` };
     return await res.json();
   } catch (err) {
@@ -42,7 +48,11 @@ async function doFetch(url, options = {}, timeoutMs = 30_000) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: ac.signal });
+    return await fetch(url, {
+      ...options,
+      headers: { ...(options.headers || {}), ...metricKeyHeaders() },
+      signal: ac.signal,
+    });
   } catch (err) {
     if (err.name === 'AbortError') throw new Error(`Request to ${url} timed out after ${timeoutMs / 1000}s`);
     throw err;

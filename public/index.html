@@ -947,6 +947,7 @@
         <div><h2>AppFolio Analyzer</h2><p class="muted small">Latest work order analysis from uploaded CSV</p></div>
         <div class="view-actions"><button class="btn-sm" id="maint-appfolio-refresh">🔄 Refresh</button></div>
       </div>
+      <div id="afBillableFeed"></div>
       <div id="maint-appfolio-body"></div>
     </div>
 
@@ -1011,24 +1012,77 @@
           </div>
         </div>
       </div>
+
+      <!-- Open work orders behind the red pin badges -->
+      <div class="cwo-section">
+        <div class="view-head" style="margin-top:18px">
+          <div>
+            <h3 style="margin:0">Open Work Orders by Property</h3>
+            <p class="muted small" id="cwoSub">not synced</p>
+          </div>
+          <div class="view-actions">
+            <select id="cwoProperty" style="max-width:220px"><option value="">All properties</option></select>
+            <select id="cwoSort">
+              <option value="property">Sort: property</option>
+              <option value="oldest">Sort: oldest first</option>
+              <option value="number">Sort: WO number</option>
+            </select>
+            <button class="btn-sm" id="cwoSyncBtn">⟳ Sync</button>
+          </div>
+        </div>
+        <div id="cwoTable"></div>
+      </div>
     </div>
 
-    <!-- 9. Maintenance Efficiency (coming soon) -->
+    <!-- 9. Maintenance Efficiency -->
     <div id="maint-view-efficiency" class="maint-view hidden">
-      <div class="view-head"><div><h2>Maintenance Efficiency</h2></div></div>
-      <div class="maint-coming-soon">📊 Maintenance Efficiency Metrics — Coming Soon</div>
+      <div class="view-head">
+        <div>
+          <h2>Maintenance Efficiency</h2>
+          <p class="muted small" id="meStamp">The 9 numbers for Lyndsay's tracker</p>
+        </div>
+        <div class="view-actions">
+          <button class="btn-sm" id="meSyncBtn">⟳ Sync sources &amp; recalculate</button>
+          <button class="btn-sm" id="meCopyBtn">📋 Copy 9 values</button>
+          <button class="btn-sm" id="meRefreshBtn">🔄 Refresh</button>
+        </div>
+      </div>
+      <div id="meWarn" class="banner banner-warn hidden"></div>
+      <div id="meTable"></div>
     </div>
 
-    <!-- 10. Technician Activity Today (coming soon) -->
+    <!-- 10. Technician Activity Today -->
     <div id="maint-view-technician" class="maint-view hidden">
-      <div class="view-head"><div><h2>Technician Activity Today</h2></div></div>
-      <div class="maint-coming-soon">👷 Technician Activity — Coming Soon</div>
+      <div class="view-head">
+        <div>
+          <h2>Technician Activity Today</h2>
+          <p class="muted small">Logged labor hours · zero-hour and unit-overlap alerts</p>
+        </div>
+        <div class="view-actions">
+          <input type="date" id="taDate" style="width:150px">
+          <button class="btn-sm" id="taSyncBtn">⟳ Sync</button>
+          <button class="btn-sm" id="taRefreshBtn">🔄 Refresh</button>
+        </div>
+      </div>
+      <div id="taAlerts"></div>
+      <div class="af-feed-stats" id="taStats"></div>
+      <div id="taList"></div>
     </div>
 
-    <!-- 11. Reports Sync (coming soon) -->
+    <!-- 11. Reports Sync -->
     <div id="maint-view-reports-sync" class="maint-view hidden">
-      <div class="view-head"><div><h2>Reports Sync</h2></div></div>
-      <div class="maint-coming-soon">🔄 Reports Sync — Coming Soon</div>
+      <div class="view-head">
+        <div>
+          <h2>Reports Sync</h2>
+          <p class="muted small" id="rsGlobalMsg">AppFolio Reports API v2 — read-only</p>
+        </div>
+        <div class="view-actions">
+          <button class="btn-sm btn-primary" id="rsSyncAllBtn">⟳ Sync all reports</button>
+          <button class="btn-sm" id="rsRefreshBtn">🔄 Refresh</button>
+        </div>
+      </div>
+      <div id="rsConfigBanner" class="banner banner-warn hidden"></div>
+      <div id="rsCards" class="rs-grid"></div>
     </div>
 
     <!-- 12. Command Center -->
@@ -1037,6 +1091,7 @@
         <div><h2>Command Center</h2><p class="muted small">Lyndsay's task snapshot — readonly</p></div>
         <div class="view-actions"><button class="btn-sm" id="maint-lyndsay-refresh">🔄 Refresh</button></div>
       </div>
+      <div id="afUrgentFeed"></div>
       <div id="maint-lyndsay-body"></div>
     </div>
 
@@ -1061,5 +1116,9 @@
 
 <div id="toast" class="toast hidden"></div>
 <script src="app.js"></script>
+<!-- AppFolio module. Order matters: reports-sync.js defines rsAgo(), which
+     appfolio-views.js uses; both rely on $ / esc / api / toast from app.js. -->
+<script src="reports-sync.js"></script>
+<script src="appfolio-views.js"></script>
 </body>
 </html>

@@ -60,3 +60,17 @@ services:
         sync: false
       - key: LYNDSAY_TIMEZONE
         sync: false
+      # Shared secret guarding /api/appfolio/* (billable amounts, technician
+      # labour hours). The dashboard UI passes its session cookie instead; MCP
+      # clients send it as the x-metric-key header. If this is unset the module
+      # logs a warning and stays publicly readable.
+      - key: METRIC_API_KEY
+        sync: false
+      # AppFolio Reports API v2 (read-only). Without all three, the Reports
+      # Sync / Efficiency / Technician Activity views report "not configured".
+      - key: APPFOLIO_CLIENT_ID
+        sync: false
+      - key: APPFOLIO_CLIENT_SECRET
+        sync: false
+      - key: APPFOLIO_SUBDOMAIN
+        sync: false

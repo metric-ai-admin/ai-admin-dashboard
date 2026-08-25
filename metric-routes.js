@@ -19,10 +19,12 @@
 
 'use strict';
 
-const fs   = require('fs');
-const fsp  = require('fs/promises');
-const path = require('path');
+const fs     = require('fs');
+const fsp    = require('fs/promises');
+const path   = require('path');
+const crypto = require('crypto');
 const multer = require('multer');
+const jwt    = require('jsonwebtoken');
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -46,6 +48,44 @@ const SOPS_DIR    = path.join(DATA_DIR, 'maintenance_sops_files');
 // Only required if the AppFolio Reports module is present.
 let afReports = null;
 try { afReports = require('./appfolio-reports'); } catch { /* not available */ }
+
+// ── Shared-secret guard for the AppFolio module ──────────────────────────────
+// These routes expose billable dollar amounts, per-technician labour hours and
+// per-property work orders. server.js has no global auth gate (requireAuth is
+// opt-in per route) and CORS is `Access-Control-Allow-Origin: *`, so without
+// this the whole module would be world-readable.
+//
+// Two callers must both keep working:
+//   • the dashboard UI  — authenticated by the dashboardToken JWT cookie
+//   • Erick's MCP tools — no cookie, so they send the x-metric-key header
+//
+// Fails OPEN (with the startup warning below) when METRIC_API_KEY is unset.
+// This mirrors how server.js treats a missing JWT_SECRET, and avoids a deploy
+// that lands before the variable is configured taking down both the dashboard
+// and every MCP tool at once.
+
+function timingSafeEq(a, b) {
+  const ba = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+function hasValidSession(req) {
+  const token  = req.cookies?.dashboardToken;
+  const secret = process.env.JWT_SECRET;
+  if (!token || !secret) return false;
+  try { jwt.verify(token, secret); return true; } catch { return false; }
+}
+
+function requireMetricAccess(req, res, next) {
+  const key = process.env.METRIC_API_KEY;
+  if (!key) return next();                       // not configured — warned at startup
+  const provided = req.get('x-metric-key');
+  if (provided && timingSafeEq(provided, key)) return next();
+  if (hasValidSession(req)) return next();
+  return res.status(401).json({ error: 'Unauthorized — missing or invalid x-metric-key' });
+}
 
 // ── CSV parser (minimal, handles quotes/commas) ───────────────────────────────
 function parseCSV(text) {
@@ -349,6 +389,11 @@ function registerMetricRoutes(app, db) {
   }
   if (!fs.existsSync(MAINT_SOPS_INDEX)) fs.writeFileSync(MAINT_SOPS_INDEX, '[]');
 
+  if (afReports && !process.env.METRIC_API_KEY) {
+    console.warn('[WARN] METRIC_API_KEY not set — /api/appfolio/* is publicly readable. ' +
+                 'Set it in the Render dashboard and in Erick\'s MCP config.');
+  }
+
   // ── MODULE: Operational Tasks (Erick's maintenance board) ─────────────────
 
   app.get('/api/operational', async (req, res) => {
@@ -545,7 +590,7 @@ function registerMetricRoutes(app, db) {
 
   // ── MODULE: AppFolio WO Analyzer ──────────────────────────────────────────
 
-  app.post('/api/appfolio/upload', afUpload.single('csv'), async (req, res) => {
+  app.post('/api/appfolio/upload', requireMetricAccess, afUpload.single('csv'), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
       const text = await fsp.readFile(req.file.path, 'utf8');
@@ -560,34 +605,128 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.get('/api/appfolio/latest', async (req, res) => {
+  app.get('/api/appfolio/latest', requireMetricAccess, async (req, res) => {
     const data = await latestAppfolioAnalysis();
     res.json(data || { totalWorkOrders: 0, groups: { urgent: [], followup: [], ready: [], none: [] }, analyzedAt: null });
   });
 
-  // AppFolio v2 Reports API (proxied from metric-dashboard) — only if module present
+  // AppFolio v2 Reports API (ported from metric-dashboard) — only if module present
   if (afReports) {
-    app.get('/api/appfolio/reports', async (req, res) => {
+    const safeFilename = id => String(id).replace(/[^a-z0-9_\-]/gi, '_');
+
+    // ── Background "sync all" ───────────────────────────────────────────────
+    // Eight reports, paced by a 7-request/15-second limiter, take 30-60s end to
+    // end. The local dashboard awaits that inside the request; behind Render's
+    // proxy it would risk a gateway timeout and leave the UI with no idea
+    // whether the sync survived. So the POST starts the job and returns 202,
+    // and the UI polls the status route for progress.
+    const syncAllJob = {
+      running: false, startedAt: null, finishedAt: null,
+      total: 0, done: 0, current: null, results: [], error: null,
+    };
+    const jobSnapshot = () => ({ ...syncAllJob, results: [...syncAllJob.results] });
+
+    async function runSyncAll() {
+      const ordered = [...afReports.REPORTS].sort((a, b) => a.priority - b.priority);
+      Object.assign(syncAllJob, {
+        running: true, startedAt: new Date().toISOString(), finishedAt: null,
+        total: ordered.length, done: 0, current: null, results: [], error: null,
+      });
+      try {
+        for (const def of ordered) {
+          syncAllJob.current = def.id;
+          // syncReport never throws — it records failures in its status file.
+          syncAllJob.results.push(await afReports.syncReport(def.id));
+          syncAllJob.done++;
+        }
+      } catch (err) {
+        syncAllJob.error = err.message;
+      } finally {
+        syncAllJob.running = false;
+        syncAllJob.current = null;
+        syncAllJob.finishedAt = new Date().toISOString();
+      }
+    }
+
+    // ── Registry + status ───────────────────────────────────────────────────
+    app.get('/api/appfolio/reports', requireMetricAccess, async (req, res) => {
       try { res.json(await afReports.overview()); } catch (err) { res.status(500).json({ error: err.message }); }
     });
-    app.post('/api/appfolio/reports/:id/sync', async (req, res) => {
+
+    app.post('/api/appfolio/reports/sync-all', requireMetricAccess, (req, res) => {
+      if (syncAllJob.running) {
+        return res.status(409).json({ error: 'A sync is already running', job: jobSnapshot() });
+      }
+      runSyncAll().catch(() => {});   // deliberately not awaited
+      res.status(202).json({ ok: true, started: true, job: jobSnapshot() });
+    });
+
+    app.get('/api/appfolio/reports/sync-all/status', requireMetricAccess, (req, res) => {
+      res.json(jobSnapshot());
+    });
+
+    app.post('/api/appfolio/reports/:id/sync', requireMetricAccess, async (req, res) => {
       const result = await afReports.syncReport(req.params.id);
       res.status(result.ok ? 200 : 502).json(result);
     });
-    app.get('/api/appfolio/reports/:id/data', async (req, res) => {
+
+    app.get('/api/appfolio/reports/:id/data', requireMetricAccess, async (req, res) => {
       const data = await afReports.readReportData(req.params.id);
-      if (!data) return res.status(404).json({ error: 'No synced data yet.' });
+      if (!data) return res.status(404).json({ error: 'No synced data yet for this report.' });
       const limit = Math.min(parseInt(req.query.limit, 10) || 100, 1000);
-      res.json({ ...data, rows: data.rows.slice(0, limit) });
+      res.json({ ...data, rows: data.rows.slice(0, limit), returned: Math.min(limit, data.rows.length) });
     });
-    app.get('/api/appfolio/feed/efficiency', async (req, res) => {
-      try { res.json(await afReports.efficiencyMetrics()); } catch (err) { res.status(500).json({ error: err.message }); }
+
+    // ── Local CSV / PDF exports ─────────────────────────────────────────────
+    // The Reports API only returns JSON; these are built here from synced rows.
+    app.get('/api/appfolio/reports/:id/export.csv', requireMetricAccess, async (req, res) => {
+      const data = await afReports.readReportData(req.params.id);
+      if (!data) return res.status(404).json({ error: 'No synced data yet for this report.' });
+      const name = `${safeFilename(req.params.id)}_${todayStr()}.csv`;
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+      res.send(afReports.toCSV(data.rows || []));
     });
-    app.get('/api/appfolio/feed/urgent-wos', async (req, res) => {
-      const data = await afReports.urgentWorkOrders();
-      if (!data) return res.status(404).json({ error: 'Not synced yet.' });
-      res.json(data);
+
+    app.get('/api/appfolio/reports/:id/export.pdf', requireMetricAccess, async (req, res) => {
+      const data = await afReports.readReportData(req.params.id);
+      if (!data) return res.status(404).json({ error: 'No synced data yet for this report.' });
+      const def  = afReports.byId(req.params.id);
+      const rows = data.rows || [];
+      const name = `${safeFilename(req.params.id)}_${todayStr()}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+      try {
+        require('./appfolio-pdf').streamTablePDF(res, {
+          title: def?.label || req.params.id,
+          subtitle: `AppFolio report: ${data.resource || req.params.id}.json`,
+          fetchedAt: data.fetchedAt,
+          params: data.params,
+        }, afReports.collectHeaders(rows), rows);
+      } catch (err) {
+        if (!res.headersSent) res.status(500).json({ error: 'PDF generation failed: ' + err.message });
+        else res.end();
+      }
     });
+
+    // ── Derived feeds ───────────────────────────────────────────────────────
+    const feed = (route, fn, notSynced) =>
+      app.get(route, requireMetricAccess, async (req, res) => {
+        try {
+          const data = await fn(req);
+          if (!data) return res.status(404).json({ error: notSynced });
+          res.json(data);
+        } catch (err) { res.status(500).json({ error: err.message }); }
+      });
+
+    feed('/api/appfolio/feed/efficiency',      ()    => afReports.efficiencyMetrics(),          'Efficiency source reports not synced yet.');
+    feed('/api/appfolio/feed/tech-activity',   req   => afReports.techActivityToday(req.query.date), 'Labor Summary not synced yet.');
+    feed('/api/appfolio/feed/billable',        ()    => afReports.billableSummary(),            'Billable reports not synced yet.');
+    feed('/api/appfolio/feed/urgent-wos',      ()    => afReports.urgentWorkOrders(),           'Work order report not synced yet.');
+    feed('/api/appfolio/feed/wo-by-property',  ()    => afReports.woCountsByProperty(),         'Work order report not synced yet.');
+    feed('/api/appfolio/feed/open-wos',        ()    => afReports.openWorkOrders(),             'Work order report (wo_all) not synced yet.');
+    feed('/api/appfolio/feed/activities',      ()    => afReports.activitiesSummary(),          'Activities Summary not synced yet.');
+    feed('/api/appfolio/feed/inventory',       ()    => afReports.inventorySnapshot(),          'Inventory reports not synced yet.');
   }
 
   // ── MODULE: Erick's EOD Summary (prefixed — avoids /api/summary collision) ─
