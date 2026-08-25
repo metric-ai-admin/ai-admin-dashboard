@@ -210,6 +210,94 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
     }
   });
 
+  server.registerTool('add_platform_project', {
+    title: 'Crear un nuevo proyecto en el Platform Projects Tracker',
+    description: 'Crea un nuevo módulo/proyecto en el Unified Operations Platform build tracker. Útil para registrar nuevos proyectos sin necesitar el web UI.',
+    inputSchema: {
+      id: z.string().optional().describe('ID personalizado, p. ej. "proj_maintenance_dashboard". Si se omite se genera automáticamente.'),
+      module: z.string().describe('Nombre del módulo o proyecto'),
+      phase: z.enum(['Not started', 'Discovery', 'In Development', 'Testing', 'Live']).optional(),
+      order: z.number().optional().describe('Posición en la lista (número entero)'),
+      nextAction: z.string().optional(),
+      blockers: z.string().optional(),
+    },
+  }, async ({ id, module, phase, order, nextAction, blockers }) => {
+    try {
+      const res = await doFetch(`${BASE}/api/platform-projects`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, module, phase, order, nextAction, blockers }),
+      });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      return text({ ok: true, message: `✅ Proyecto "${data.module}" creado con id "${data.id}"`, project: data });
+    } catch {
+      return text('No se pudo conectar al dashboard.');
+    }
+  });
+
+  server.registerTool('add_platform_project_subtask', {
+    title: 'Agregar un subtask a un proyecto de la plataforma',
+    description: 'Agrega un subtask a un proyecto existente en el Platform Projects Tracker. Usa get_platform_projects para obtener el id del proyecto.',
+    inputSchema: {
+      projectId: z.string().describe('El id del proyecto, p. ej. "proj_bd_crm"'),
+      title: z.string().describe('Título del subtask'),
+      done: z.boolean().optional().describe('Si el subtask ya está completado (default: false)'),
+    },
+  }, async ({ projectId, title, done }) => {
+    try {
+      const res = await doFetch(`${BASE}/api/platform-projects/${encodeURIComponent(projectId)}/subtasks`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, done: done === true }),
+      });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      const sub = (data.subtasks || []).slice(-1)[0];
+      return text({ ok: true, message: `✅ Subtask "${sub?.title}" agregado al proyecto "${data.module}"`, subtask: sub });
+    } catch {
+      return text('No se pudo conectar al dashboard.');
+    }
+  });
+
+  server.registerTool('complete_platform_project_subtask', {
+    title: 'Marcar un subtask como done/undone',
+    description: 'Cambia el estado done/undone de un subtask. Usa get_platform_projects para obtener el projectId y subId.',
+    inputSchema: {
+      projectId: z.string().describe('El id del proyecto'),
+      subId: z.string().describe('El id del subtask, p. ej. "sub_1787589937376_3761"'),
+      done: z.boolean().describe('true = completado, false = pendiente'),
+    },
+  }, async ({ projectId, subId, done }) => {
+    try {
+      const res = await doFetch(`${BASE}/api/platform-projects/${encodeURIComponent(projectId)}/subtasks/${encodeURIComponent(subId)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ done }),
+      });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      const sub = (data.subtasks || []).find(s => s.id === subId);
+      return text({ ok: true, message: `✅ Subtask "${sub?.title}" marcado como ${done ? 'done' : 'pendiente'}`, subtask: sub });
+    } catch {
+      return text('No se pudo conectar al dashboard.');
+    }
+  });
+
+  server.registerTool('delete_platform_project', {
+    title: 'Eliminar un proyecto del Platform Projects Tracker',
+    description: 'Elimina permanentemente un proyecto del tracker. Usa get_platform_projects para confirmar el id antes de borrar.',
+    inputSchema: {
+      id: z.string().describe('El id del proyecto a eliminar'),
+    },
+  }, async ({ id }) => {
+    try {
+      const res = await doFetch(`${BASE}/api/platform-projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) return text(`Error: ${data.error || res.status}`);
+      return text({ ok: true, message: `✅ Proyecto "${data.deleted}" eliminado` });
+    } catch {
+      return text('No se pudo conectar al dashboard.');
+    }
+  });
+
   // ── Email / Calendar (stub until Graph API credentials are set) ──────────
 
   server.registerTool('get_email_triage_status', {

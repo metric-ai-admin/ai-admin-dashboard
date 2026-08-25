@@ -758,17 +758,17 @@ app.get('/api/platform-projects', async (req, res) => {
 });
 
 app.post('/api/platform-projects', async (req, res) => {
-  const { module, phase, blockers, nextAction } = req.body;
+  const { id, module, phase, blockers, nextAction, order } = req.body;
   if (!module || !module.trim()) return res.status(400).json({ error: 'Module name required' });
   const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
   const entry = {
-    id: `proj_${Date.now()}`,
+    id: id || `proj_${Date.now()}`,
     module: module.trim(),
     phase: PROJECT_PHASES.includes(phase) ? phase : 'Not started',
     blockers: blockers || '',
     lastUpdate: new Date().toISOString(),
     nextAction: nextAction || '',
-    order: projects.length + 1,
+    order: order ?? (projects.length + 1),
   };
   projects.push(entry);
   await writeJSON(PLATFORM_PROJECTS_FILE, projects);
@@ -812,13 +812,13 @@ app.put('/api/platform-projects/:id', async (req, res) => {
 // ── Subtasks ──────────────────────────────────────────────────────────────
 
 app.post('/api/platform-projects/:id/subtasks', async (req, res) => {
-  const { title } = req.body;
+  const { title, done } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: 'Subtask title required' });
   const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
   const idx = projects.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Project not found' });
   if (!Array.isArray(projects[idx].subtasks)) projects[idx].subtasks = [];
-  const subtask = { id: `sub_${Date.now()}_${Math.floor(Math.random() * 1e4)}`, title: title.trim(), done: false };
+  const subtask = { id: `sub_${Date.now()}_${Math.floor(Math.random() * 1e4)}`, title: title.trim(), done: done === true || done === 'true' };
   projects[idx].subtasks.push(subtask);
   projects[idx].lastUpdate = new Date().toISOString();
   await writeJSON(PLATFORM_PROJECTS_FILE, projects);
@@ -849,6 +849,15 @@ app.delete('/api/platform-projects/:id/subtasks/:subId', async (req, res) => {
   projects[idx].lastUpdate = new Date().toISOString();
   await writeJSON(PLATFORM_PROJECTS_FILE, projects);
   res.json(projects[idx]);
+});
+
+app.delete('/api/platform-projects/:id', async (req, res) => {
+  const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
+  const idx = projects.findIndex(p => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Project not found' });
+  const [removed] = projects.splice(idx, 1);
+  await writeJSON(PLATFORM_PROJECTS_FILE, projects);
+  res.json({ deleted: removed.id });
 });
 
 // =====================================================================
