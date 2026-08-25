@@ -660,6 +660,7 @@ function renderMeetings(list, isLyndsay) {
         ${esc(m.subject)}
         ${m.conflict ? ' <span class="badge badge-red">⚠ CONFLICT</span>' : ''}
         ${m.isCancelled ? ' <span class="badge badge-gray">Cancelled</span>' : ''}
+        ${m._crossCal ? ' <span class="badge badge-amber" title="From support@ calendar">📧 support@</span>' : ''}
         <span class="meeting-urgency-badge"></span>
       </div>
       <div class="card-meta">
@@ -963,6 +964,21 @@ async function loadEmail() {
   const lyndsayAll = cal.lyndsay || [];
   lyndsayTodayCache = lyndsayAll.filter(m => m.day !== 'tomorrow');
   lyndsayTomorrowCache = lyndsayAll.filter(m => m.day === 'tomorrow');
+
+  // Pull meetings from support@ calendar where Lyndsay is an attendee.
+  // Three-variant matching because Graph API attendee shape varies by endpoint.
+  const isLyndsayAttendee = a => {
+    const email = (a.email || a.emailAddress?.address || '').toLowerCase();
+    const name  = (a.name  || a.emailAddress?.name  || '').toLowerCase();
+    return email === 'lyndsay@metricpropertymanagement.com' || name.includes('lyndsay');
+  };
+  const existingKeys = new Set(lyndsayTodayCache.map(m => m.start + m.subject));
+  arturoToday.forEach(m => {
+    if ((m.attendees || []).some(isLyndsayAttendee) && !existingKeys.has(m.start + m.subject)) {
+      lyndsayTodayCache.push({ ...m, _crossCal: true });
+      existingKeys.add(m.start + m.subject);
+    }
+  });
 
   $('#meetings-lyndsay-today').innerHTML = renderMeetings(lyndsayTodayCache, true);
   $$('#meetings-lyndsay-today .add-reminder-btn').forEach(btn =>
