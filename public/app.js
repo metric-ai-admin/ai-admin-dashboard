@@ -968,9 +968,15 @@ async function loadEmail() {
   // Pull meetings from support@ calendar where Lyndsay is an attendee.
   // Three-variant matching because Graph API attendee shape varies by endpoint.
   const isLyndsayAttendee = a => {
+    if (typeof a === 'string') {
+      const s = a.toLowerCase();
+      return s.includes('lyndsay') || s === 'all metric';
+    }
     const email = (a.email || a.emailAddress?.address || '').toLowerCase();
     const name  = (a.name  || a.emailAddress?.name  || '').toLowerCase();
-    return email === 'lyndsay@metricpropertymanagement.com' || name.includes('lyndsay');
+    return email === 'lyndsay@metricpropertymanagement.com' ||
+           name.includes('lyndsay') ||
+           name === 'all metric';
   };
   const existingKeys = new Set(lyndsayTodayCache.map(m => m.start + m.subject));
   arturoToday.forEach(m => {
