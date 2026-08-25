@@ -104,12 +104,18 @@ mechanical.
 
 ### 2. Back up first — non-negotiable
 
+Back up **every table the merge touches** — all six, not four. Missing
+`inspections` here on 2026-08-25 cost two rows permanently; see the incident
+log below.
+
 ```sql
-CREATE TABLE properties_backup_20260825    AS SELECT * FROM properties;
-CREATE TABLE phone_shops_backup_20260825   AS SELECT * FROM phone_shops;
-CREATE TABLE online_shops_backup_20260825  AS SELECT * FROM online_shops;
-CREATE TABLE follow_ups_backup_20260825    AS SELECT * FROM follow_ups;
+CREATE TABLE properties_backup_20260825      AS SELECT * FROM properties;
+CREATE TABLE phone_shops_backup_20260825     AS SELECT * FROM phone_shops;
+CREATE TABLE online_shops_backup_20260825    AS SELECT * FROM online_shops;
+CREATE TABLE follow_ups_backup_20260825      AS SELECT * FROM follow_ups;
 CREATE TABLE outreach_drafts_backup_20260825 AS SELECT * FROM outreach_drafts;
+CREATE TABLE inspections_backup_20260825     AS SELECT * FROM inspections;
+CREATE TABLE appointments_backup_20260825    AS SELECT * FROM appointments;
 ```
 
 ### 3. Merge the split pairs
@@ -199,6 +205,51 @@ CREATE UNIQUE INDEX properties_name_unique ON properties (lower(property_name));
 ```
 
 If they can, the key should be name + address or name + submarket.
+
+## Incident log — 2026-08-25 execution
+
+The migration ran and the property dedup succeeded (502 → 251, no duplicate
+names). Two things went wrong along the way; both are recorded here so the
+next person does not repeat them.
+
+### The Supabase SQL editor does not hold a transaction across statements
+
+The plan assumed `BEGIN` … verify … `COMMIT`. The editor executed each
+statement independently, so the `BEGIN` was meaningless: the six merge
+`UPDATE`s did not persist, while the property `DELETE` did. The guarded
+`DELETE` then removed the four loser properties **with their activity still
+attached**, and `ON DELETE CASCADE` took the child rows with them.
+
+The `NOT EXISTS` guards did not help — they were evaluated against a state
+where the merge appeared to have happened.
+
+**Do not rely on transactions in the SQL editor.** Run destructive work one
+statement at a time, verifying between each, or use a real `psql` session.
+
+### Recovered, except two rows
+
+Restored from the backups with `INSERT … SELECT`, repointing `property_id` to
+the winner — effectively the merge, done after the fact:
+
+| Table | Rows restored |
+|---|---|
+| `phone_shops` | 4 (River Crossing 2, Cannon South 2) |
+| `online_shops` | 4 (City Scene 2, Cannon South 2) |
+| `follow_ups` | 2 (Cannon South) |
+
+**Permanently lost: 2 `inspections` rows belonging to Cannon South's discarded
+copy (`f8eed5ac`).** `inspections` cascaded like the rest but was never backed
+up — the backup list in this document originally covered five tables, and
+`inspections` and `appointments` were added to the merge step later without
+being added to the backup step. That gap is fixed above; the rows are not
+recoverable.
+
+### Lesson for the remaining cleanup
+
+The activity tables carry sparse data — most columns are null, so "identical
+content" does not prove "duplicate record". Check the `created_at` spread
+within each group: seconds or minutes apart means an import ran twice; hours or
+days apart means separate real events that merely look alike.
 
 ## Verification once done
 
