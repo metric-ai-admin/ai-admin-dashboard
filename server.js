@@ -200,6 +200,18 @@ app.use(cookieParser());
 app.use(express.json({ limit: '5mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ---- Health check ----------------------------------------------------------
+// Deliberately unauthenticated and dependency-free: an uptime monitor needs to
+// know the process is serving HTTP, and checking Supabase or Graph here would
+// report the dashboard as down whenever a third party has a bad minute.
+//
+// `uptime` is seconds since this process started. A value that keeps resetting
+// means the instance is restarting — which is also what drops in-memory MCP
+// sessions, so it is the number to look at if those start failing repeatedly.
+app.get('/ping', (req, res) => {
+  res.json({ ok: true, ts: Date.now(), uptime: Math.round(process.uptime()) });
+});
+
 // ---- Auth helpers ----------------------------------------------------------
 function requireAuth(req, res, next) {
   const token = req.cookies?.dashboardToken;
