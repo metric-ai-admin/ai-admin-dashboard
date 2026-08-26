@@ -2269,8 +2269,29 @@ async function loadMaintenanceAsana() {
     }
 
     const tasks = Array.isArray(data) ? data : (data.tasks || data.data || []);
+
+    // An empty list has two very different causes and they used to render the
+    // same. Erick reading "no tasks" when the token is actually broken means the
+    // tab quietly lies for as long as nobody checks the Render logs.
+    if (!tasks.length && data.error) {
+      el.innerHTML = `
+        <div class="banner banner-warn">
+          ⚠ <b>Could not connect to Asana — check token.</b>
+          <div class="small" style="margin-top:6px">
+            This is not an empty board: the request failed, so nothing could be loaded.
+            Verify <code>ASANA_TOKEN_ERICK</code> in the Render environment.
+            <div style="margin-top:4px">Asana said: <code>${esc(data.error)}</code></div>
+          </div>
+        </div>`;
+      return;
+    }
+
     if (!tasks.length) {
-      el.innerHTML = `<p class="small muted">No open Asana tasks for Erick${data.stale ? ' (showing stale data)' : ''}.</p>`;
+      el.innerHTML = `
+        <div class="empty-state">
+          <div>No open Asana tasks assigned to Erick right now.</div>
+          <div class="small muted" style="margin-top:6px">Tasks will appear here automatically when assigned.</div>
+        </div>`;
       return;
     }
 

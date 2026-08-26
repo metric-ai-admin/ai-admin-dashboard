@@ -724,6 +724,11 @@ app.get('/api/asana/tasks', async (req, res) => {
       }
     }
 
+    // Kept so a failing my-tasks pull cannot cost us the project tasks already
+    // gathered above, but no longer discarded: swallowing it entirely made a bad
+    // token indistinguishable from an empty board, since both reached the client
+    // as tasks: [] with nothing else to go on.
+    let pullError = null;
     try {
       const me = await getMe(token);
       if (me.gid && me.workspaceGid) {
@@ -732,13 +737,20 @@ app.get('/api/asana/tasks', async (req, res) => {
         for (const t of (mine || [])) {
           if (!byGid.has(t.gid)) byGid.set(t.gid, shapeTask(t, null));
         }
+      } else {
+        pullError = 'Asana did not return a user or workspace for this token.';
+        console.error(`[asana/tasks:${owner}] my-tasks pull skipped:`, pullError);
       }
     } catch (meErr) {
+      pullError = meErr.message;
       console.error(`[asana/tasks:${owner}] my-tasks pull failed:`, meErr.message);
     }
 
     const allTasks = [...byGid.values()];
     const payload = { lastUpdated: new Date().toISOString(), tasks: allTasks, stale: false, owner };
+    // Only when the failure actually cost us the whole list. A partial pull that
+    // still returned project tasks is worth showing without an alarm on it.
+    if (pullError && !allTasks.length) { payload.error = pullError; payload.stale = true; }
     // The cache file holds Arturo's board — writing Erick's results into it
     // would poison the Tasks tab and the MCP tools that read it.
     if (owner !== 'erick') await writeJSON(ASANA_CACHE_FILE, payload);
