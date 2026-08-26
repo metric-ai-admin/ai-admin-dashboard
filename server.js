@@ -199,6 +199,48 @@ app.use((req, res, next) => {
 });
 app.use(cookieParser());
 app.use(express.json({ limit: '5mb' }));
+// ---- Cache-busted index.html ----------------------------------------------
+// index.html referenced app.js and the rest by bare filename, so a browser kept
+// running the copy it already had after a deploy. Every front-end fix then
+// depended on each person hard-reloading before it reached them — which is how
+// a shipped fix came to look like a failed deploy.
+//
+// The stamp is appended at request time rather than written into the file, so
+// the repo copy stays a normal static page and nothing has to run at build time.
+// Read once and held in memory: it changes only when the process restarts, which
+// on Render is exactly when a deploy happens.
+//
+// RENDER_GIT_COMMIT is set by Render; Date.now() covers local runs, where it
+// also gives every restart a fresh stamp, which is what you want while editing.
+const BUILD_HASH = (process.env.RENDER_GIT_COMMIT || '').trim().slice(0, 7) || String(Date.now());
+const INDEX_FILE = path.join(__dirname, 'public', 'index.html');
+const STAMPED = /\b(src|href)="((?:app|reports-sync|appfolio-views)\.js|styles\.css)"/g;
+let indexHtml = null;
+
+function renderIndex() {
+  // Stamps the stylesheet and the other two scripts too. Versioning only app.js
+  // would leave a deploy that changed styles.css or appfolio-views.js with the
+  // same problem this exists to fix.
+  if (!indexHtml) {
+    indexHtml = fs.readFileSync(INDEX_FILE, 'utf8')
+      .replace(STAMPED, (_m, attr, file) => `${attr}="${file}?v=${BUILD_HASH}"`);
+  }
+  return indexHtml;
+}
+
+// Ahead of express.static, which would otherwise serve the unstamped file for
+// "/" and "/index.html". no-store on the HTML itself: it is the document that
+// carries the new stamps, so caching it would pin browsers to the old ones.
+app.get(['/', '/index.html'], (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.type('html').send(renderIndex());
+  } catch (err) {
+    console.error('[index] could not render:', err.message);
+    res.sendFile(INDEX_FILE);
+  }
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---- Health check ----------------------------------------------------------
