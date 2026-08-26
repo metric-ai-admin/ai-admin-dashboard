@@ -2281,17 +2281,25 @@ const ASANA_COLUMNS = [
   { key: 'done',     header: '✅ Done',         cls: 'col-done' },
 ];
 
-// Asana's Priority custom field wins wherever it exists. It usually does not:
-// Priority is defined per project, so anything sitting in "My tasks" — 21 of
-// Erick's 27 — belongs to no project and can carry no such field. The due date
-// stands in for those, which is the only signal every task actually has.
+// Overdue outranks everything. A task explicitly marked LOW that is now past due
+// would otherwise sit in In Progress, where the column gives no hint that it has
+// slipped — the red badge on the card was the only signal, and only to whoever
+// scrolled to it. Someone's estimate of a task's importance ages; the fact that
+// the date has passed does not.
+//
+// After that, Asana's Priority custom field decides. It usually cannot: Priority
+// is defined per project, so anything sitting in "My tasks" — 21 of Erick's 27 —
+// belongs to no project and can carry no such field. Only 10 of the 210 tasks
+// across both boards have one. The due date stands in for the rest, which is the
+// only signal every task actually has.
 function asanaColumn(t) {
   if (t.completed) return 'done';
+  if (t.due_on && t.due_on < todayStr()) return 'critical';
   if (t.priority === 'HIGH')   return 'critical';
   if (t.priority === 'MEDIUM') return 'followup';
   if (t.priority === 'LOW')    return 'progress';
   if (!t.due_on) return 'progress';
-  if (t.due_on < todayStr()) return 'critical';
+  // Anything still here is due today or later — the overdue case returned above.
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
   return t.due_on <= localDateStr(tomorrow) ? 'followup' : 'progress';
 }
