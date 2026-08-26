@@ -1066,3 +1066,32 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   .crm-kpi-bar { gap: 8px; }
   .crm-search-input, .crm-select { width: 100%; }
 }
+
+/* ── Row read / edit mode ───────────────────────────────────────────
+   Property Assignments and Technician Capabilities start locked. Both
+   .crm-input and .tc-in set an explicit background and border, so a
+   disabled field would otherwise look exactly like an editable one and
+   the read mode would be invisible. Locked fields render as plain text.
+   The capability selects keep their colour: that coding is the point of
+   the matrix and is worth just as much when you are only reading it. */
+.crm-table input[data-field]:not([type="checkbox"]):disabled,
+.crm-table select[data-field]:disabled,
+.tc-table  input[data-field]:not([type="checkbox"]):disabled,
+.tc-table  select[data-field]:disabled:not(.tc-cap-select) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-primary);
+  opacity: 1;
+  cursor: default;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.tc-table select.tc-cap-select:disabled { opacity: 1; cursor: default; }
+/* Checkboxes cannot be flattened without hiding the value, so they only lose
+   the pointer affordance. */
+.crm-table input[type="checkbox"]:disabled,
+.tc-table  input[type="checkbox"]:disabled { opacity: .75; cursor: default; }
+
+tr.row-editing { background: var(--accent-glow); }
+tr.row-editing input[data-field]:not([type="checkbox"]),
+tr.row-editing select[data-field] { border-color: var(--border-accent); }

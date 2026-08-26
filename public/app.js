@@ -2733,6 +2733,57 @@ async function loadMaintenanceCoverage() {
   if (typeof loadCoverageWoCounts === 'function') loadCoverageWoCounts();
 }
 
+// ── Row-level read / edit mode ───────────────────────────────────────
+// Property Assignments and Technician Capabilities both rendered every field as
+// a live input with a Save button always showing, so a table you had opened only
+// to read was one stray keystroke and one click from being written. Rows now
+// start locked; Edit opens one row, Cancel puts back what was there.
+// Both tables mark their editable fields with data-field, so this is shared.
+const rowFields = tr => [...tr.querySelectorAll('[data-field]')];
+const rowSnapshot = tr => rowFields(tr).map(i => i.type === 'checkbox' ? i.checked : i.value);
+
+function setRowLocked(tr, locked) {
+  rowFields(tr).forEach(i => { i.disabled = locked; });
+  tr.classList.toggle('row-editing', !locked);
+  tr.querySelector('.row-edit')?.classList.toggle('hidden', !locked);
+  tr.querySelector('.row-save')?.classList.toggle('hidden', locked);
+  tr.querySelector('.row-cancel')?.classList.toggle('hidden', locked);
+}
+
+function rowRestore(tr, snap) {
+  rowFields(tr).forEach((i, n) => {
+    if (i.type === 'checkbox') i.checked = snap[n]; else i.value = snap[n];
+    // The capability selects colour themselves on change; undoing the value has
+    // to undo the colour too or a cancelled edit still looks changed.
+    if (i.classList.contains('tc-cap-select')) i.className = 'tc-cap-select ' + (CAP_CLASS[i.value] || '');
+  });
+}
+
+// onSave returns false to keep the row open — a validation error the user still
+// has to fix. Anything else counts as done and re-locks the row.
+function wireRowEditing(tr, onSave) {
+  let snap = null;
+  setRowLocked(tr, true);
+  tr.querySelector('.row-edit')?.addEventListener('click', () => {
+    snap = rowSnapshot(tr);
+    setRowLocked(tr, false);
+    rowFields(tr)[0]?.focus();
+  });
+  tr.querySelector('.row-cancel')?.addEventListener('click', () => {
+    if (snap) rowRestore(tr, snap);
+    setRowLocked(tr, true);
+  });
+  tr.querySelector('.row-save')?.addEventListener('click', async ev => {
+    if (await onSave(tr, ev.currentTarget) === false) return;
+    setRowLocked(tr, true);
+  });
+}
+
+const ROW_EDIT_BUTTONS = `
+  <button class="btn-sm row-edit">Edit</button>
+  <button class="btn-sm primary row-save hidden">Save</button>
+  <button class="btn-sm row-cancel hidden">Cancel</button>`;
+
 // ── 1. Property Assignments ──────────────────────────────────────────
 async function loadPropertyAssignments() {
   const el = $('#maint-assignments-body');
@@ -2770,51 +2821,53 @@ async function loadPropertyAssignments() {
         <td><input class="crm-input maint-edit" list="tech-names" data-field="maintenanceTech" value="${esc(r.maintenanceTech ?? '')}"></td>
         <td><input class="crm-input maint-edit" data-field="pestControl" value="${esc(r.pestControl ?? '')}"></td>
         <td><input class="crm-input maint-edit" data-field="landscaping" value="${esc(r.landscaping ?? '')}"></td>
-        <td><button class="btn-sm primary maint-save-assignment">Save</button></td>
+        <td class="row-actions">${ROW_EDIT_BUTTONS}</td>
       </tr>`;
     });
 
     html += '</tbody></table></div>';
     el.innerHTML = html;
 
-    el.querySelectorAll('.maint-save-assignment').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const tr = btn.closest('tr');
-        const prop = tr.dataset.prop;
-        if (!prop) return toast('This row has no property name — reload and try again', 'error');
-
-        const update = {};
-        tr.querySelectorAll('.maint-edit').forEach(inp => {
-          const f = inp.dataset.field;
-          if (inp.type === 'checkbox') { update[f] = inp.checked; return; }
-          const v = inp.value.trim();
-          // units is an INTEGER column: '' would be rejected outright.
-          update[f] = (f === 'units') ? (v === '' ? null : Number(v)) : v;
-        });
-        if (update.units !== null && update.units !== undefined && Number.isNaN(update.units)) {
-          return toast('Units must be a number', 'error');
-        }
-
-        const original = btn.textContent;
-        btn.disabled = true;
-        btn.textContent = 'Saving…';
-        try {
-          await api(`/api/assignments/${encodeURIComponent(prop)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(update)
-          });
-          toast(`Saved — ${prop}`, 'success');
-        } catch (err) {
-          toast(err.message, 'error');
-        } finally {
-          btn.disabled = false;
-          btn.textContent = original;
-        }
-      });
-    });
+    el.querySelectorAll('tbody tr').forEach(tr => wireRowEditing(tr, saveAssignmentRow));
   } catch (err) {
     el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+async function saveAssignmentRow(tr, btn) {
+  const prop = tr.dataset.prop;
+  if (!prop) { toast('This row has no property name — reload and try again', 'error'); return false; }
+
+  const update = {};
+  tr.querySelectorAll('.maint-edit').forEach(inp => {
+    const f = inp.dataset.field;
+    if (inp.type === 'checkbox') { update[f] = inp.checked; return; }
+    const v = inp.value.trim();
+    // units is an INTEGER column: '' would be rejected outright.
+    update[f] = (f === 'units') ? (v === '' ? null : Number(v)) : v;
+  });
+  if (update.units !== null && update.units !== undefined && Number.isNaN(update.units)) {
+    toast('Units must be a number', 'error');
+    return false;   // keep the row open — there is something to correct
+  }
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    await api(`/api/assignments/${encodeURIComponent(prop)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update)
+    });
+    toast(`Saved — ${prop}`, 'success');
+    return true;
+  } catch (err) {
+    toast(err.message, 'error');
+    return false;   // the edit is not saved; closing the row would imply it was
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
   }
 }
 
@@ -2881,7 +2934,7 @@ function renderTechCapabilities() {
   if (!techCache.length) { el.innerHTML = '<p class="small muted">No technicians yet.</p>'; return; }
 
   $('#tcSub').textContent =
-    `${techCache.length} technicians · ${techCache.filter(t => t.expect_daily_hours).length} on the daily-hours alert · edit inline, save per row`;
+    `${techCache.length} technicians · ${techCache.filter(t => t.expect_daily_hours).length} on the daily-hours alert · press Edit on a row to change it`;
 
   const positions = Object.entries(TECH_POSITION_LABEL);
   const capSelect = (t, cap) =>
@@ -2917,7 +2970,7 @@ function renderTechCapabilities() {
       <td class="tc-mid"><input type="checkbox" class="tc-in" data-field="shows_in_make_ready"${t.shows_in_make_ready ? ' checked' : ''}></td>
       ${TECH_CAPS.map(c => `<td class="tc-mid">${capSelect(t, c)}</td>`).join('')}
       <td class="tc-actions">
-        <button class="btn-sm primary tech-save">Save</button>
+        ${ROW_EDIT_BUTTONS}
         <button class="btn-sm tech-toggle">${t.active ? 'Deactivate' : 'Reactivate'}</button>
       </td>
     </tr>`).join('')}
@@ -2930,9 +2983,7 @@ function renderTechCapabilities() {
     });
   });
 
-  el.querySelectorAll('.tech-save').forEach(btn => {
-    btn.addEventListener('click', () => saveTechnicianRow(btn.closest('tr')));
-  });
+  el.querySelectorAll('tbody tr').forEach(tr => wireRowEditing(tr, saveTechnicianRow));
 
   el.querySelectorAll('.tech-toggle').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -2972,8 +3023,9 @@ async function saveTechnicianRow(tr) {
       ? 'Saved — but no map pin: add a home lat and lng'
       : 'Saved', missingCoords ? 'error' : 'success');
     mapTechsLoaded = false;   // show_on_map or the coordinates may have changed
-    loadTechnicians();
-  } catch (err) { toast(err.message, 'error'); }
+    loadTechnicians();        // re-renders the table, so every row comes back locked
+    return true;
+  } catch (err) { toast(err.message, 'error'); return false; }
 }
 
 // ── 2. Operational Tasks Kanban ──────────────────────────────────────

@@ -691,6 +691,49 @@ app.get('/api/asana/me', async (req, res) => {
   }
 });
 
+// Answers what the empty Asana tab cannot: which identity each token actually
+// belongs to, every workspace it can see rather than just workspaces[0], what
+// projects live in each, and how many tasks the current query really returns.
+// Read-only, and it returns names, gids and counts — the tokens stay here.
+// Admin-gated because it maps out the organisation's Asana structure.
+app.get('/api/asana/diagnostic', requireAuth, requireRole('admin'), async (req, res) => {
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const completedSince = encodeURIComponent(midnight.toISOString());
+
+  const out = [];
+  for (const o of [{ owner: 'default', who: 'arturo', token: ASANA_TOKEN },
+                   { owner: 'erick',   who: 'erick',  token: ASANA_TOKEN_ERICK }]) {
+    const entry = { owner: o.owner, who: o.who, configured: !!o.token };
+    if (!o.token) { out.push(entry); continue; }
+    try {
+      const me = await asanaRequest('GET', '/users/me?opt_fields=name,email,workspaces.name', null, o.token);
+      entry.identity = { gid: me.gid, name: me.name, email: me.email };
+      const workspaces = me.workspaces || [];
+      entry.workspaceCount = workspaces.length;
+      entry.workspaces = [];
+      for (const ws of workspaces) {
+        // getMe picks workspaces[0] blind, so flag which one that is: if the
+        // tasks turn out to live anywhere else, that choice is the bug.
+        const w = { gid: ws.gid, name: ws.name, pickedByGetMe: ws.gid === workspaces[0].gid };
+        try {
+          const projects = await asanaGetAll(`/workspaces/${ws.gid}/projects?opt_fields=name,archived`, o.token);
+          w.projects = projects.map(p => ({ gid: p.gid, name: p.name, archived: !!p.archived }));
+        } catch (e) { w.projectsError = e.message; }
+        try {
+          const tasks = await asanaGetAll(
+            `/tasks?assignee=${me.gid}&workspace=${ws.gid}&opt_fields=name,completed&completed_since=${completedSince}`, o.token);
+          w.tasksReturned = tasks.length;
+          w.openTasks = tasks.filter(t => !t.completed).length;
+        } catch (e) { w.tasksError = e.message; }
+        entry.workspaces.push(w);
+      }
+    } catch (err) { entry.error = err.message; }
+    out.push(entry);
+  }
+
+  res.json({ configuredProjects: ASANA_PROJECTS, extraProjectsEnvSet: !!process.env.ASANA_EXTRA_PROJECTS, owners: out });
+});
+
 app.get('/api/asana/tasks', async (req, res) => {
   const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
   const completedSince = encodeURIComponent(midnight.toISOString());
