@@ -435,15 +435,37 @@ async function asanaGetAll(endpoint, token = ASANA_TOKEN) {
 // Keyed by token — one cache per Asana account, or Erick's identity would be
 // served from Arturo's cached entry.
 const _meCache = new Map();
+// Both accounts belong to two workspaces, and workspaces[0] is the personal
+// "livewithmetric.com" one — empty, no projects, no tasks. Picking it blind is
+// why every Asana pull returned nothing: Erick's 27 open tasks were in "Metric
+// Property Management" the whole time, a workspace the query never asked about.
+// Matched by gid first so a rename cannot break it, then by name.
+const ASANA_WORKSPACE = process.env.ASANA_WORKSPACE || 'Metric Property Management';
+
+function pickWorkspace(workspaces = []) {
+  if (!workspaces.length) return { ws: null, matched: false };
+  const want = ASANA_WORKSPACE.trim().toLowerCase();
+  const ws = workspaces.find(w => w.gid === ASANA_WORKSPACE.trim())
+          || workspaces.find(w => (w.name || '').trim().toLowerCase() === want);
+  // Falling back keeps a misconfigured name from taking Asana down entirely,
+  // but it is the failure that hid this bug, so it does not happen quietly.
+  return ws ? { ws, matched: true } : { ws: workspaces[0], matched: false };
+}
+
 async function getMe(token = ASANA_TOKEN) {
   if (_meCache.has(token)) return _meCache.get(token);
   const me = await asanaRequest('GET', '/users/me?opt_fields=name,email,workspaces.name', null, token);
+  const { ws, matched } = pickWorkspace(me.workspaces);
+  if (!matched && ws) {
+    console.warn(`[asana] no workspace named "${ASANA_WORKSPACE}" for ${me.email || me.gid} — falling back to "${ws.name}". Tasks may be missing.`);
+  }
   const shaped = {
     gid: me.gid,
     name: me.name,
     email: me.email,
-    workspaceGid: me.workspaces && me.workspaces[0] ? me.workspaces[0].gid : null,
-    workspaceName: me.workspaces && me.workspaces[0] ? me.workspaces[0].name : null,
+    workspaceGid: ws ? ws.gid : null,
+    workspaceName: ws ? ws.name : null,
+    workspaceMatched: matched,
   };
   _meCache.set(token, shaped);
   return shaped;
@@ -710,11 +732,13 @@ app.get('/api/asana/diagnostic', requireAuth, requireRole('admin'), async (req, 
       entry.identity = { gid: me.gid, name: me.name, email: me.email };
       const workspaces = me.workspaces || [];
       entry.workspaceCount = workspaces.length;
+      const picked = pickWorkspace(workspaces);
+      entry.workspaceMatchedByName = picked.matched;
       entry.workspaces = [];
       for (const ws of workspaces) {
-        // getMe picks workspaces[0] blind, so flag which one that is: if the
-        // tasks turn out to live anywhere else, that choice is the bug.
-        const w = { gid: ws.gid, name: ws.name, pickedByGetMe: ws.gid === workspaces[0].gid };
+        // Flags the one getMe actually queries, so this stays a straight answer
+        // to "are we asking the workspace the tasks are in?".
+        const w = { gid: ws.gid, name: ws.name, pickedByGetMe: !!picked.ws && ws.gid === picked.ws.gid };
         try {
           const projects = await asanaGetAll(`/workspaces/${ws.gid}/projects?opt_fields=name,archived`, o.token);
           w.projects = projects.map(p => ({ gid: p.gid, name: p.name, archived: !!p.archived }));
