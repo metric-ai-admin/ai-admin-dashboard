@@ -2328,6 +2328,12 @@ function asanaInRange(t, filter) {
 // the DOM so switching a pill — which rebuilds the board from cache — cannot
 // silently discard something you typed but had not pushed yet.
 const asanaPending = new Map();   // `${owner}:${gid}` → { due_on?, notes? }
+// Comments are fetched per card on demand — one extra request per task would be
+// 183 of them on Arturo's board before a single card is read.
+const asanaComments = new Map();  // `${owner}:${gid}` → { open, loading, items, error, posting }
+// A failed update belongs on the card that failed, not only in a toast that is
+// gone in three seconds while the amber border stays with no explanation.
+const asanaCardError = new Map(); // `${owner}:${gid}` → message
 const pendKey = (owner, gid) => `${owner}:${gid}`;
 
 // The staged value where one exists, otherwise what Asana last told us.
@@ -2338,6 +2344,36 @@ function asanaEffective(t, owner) {
     notes: 'notes' in p ? p.notes : (t.notes || ''),
     dirty: Object.keys(p).length > 0,
   };
+}
+
+// Collapsed until asked for. The count only appears once the comments have been
+// fetched, since claiming a number before knowing it would be a guess.
+function asanaCommentsBlock(t, owner) {
+  const c = asanaComments.get(pendKey(owner, t.gid)) || {};
+  const toggle = c.open
+    ? '💬 Hide comments'
+    : `💬 Show comments${Array.isArray(c.items) ? ` (${c.items.length})` : ''}`;
+  if (!c.open) {
+    return `<div class="asana-comments"><button class="btn-sm" data-act="toggle-comments">${toggle}</button></div>`;
+  }
+  const body = c.loading ? '<p class="small muted">Loading…</p>'
+    : c.error ? `<p class="small muted">⚠ ${esc(c.error)}</p>`
+    : (c.items || []).length
+      ? c.items.map(x => `
+          <div class="note-entry">
+            <span class="note-time">${esc(x.author)}${x.created_at ? ` · ${new Date(x.created_at).toLocaleString()}` : ''}</span>
+            <span>${esc(x.text)}</span>
+          </div>`).join('')
+      : '<span class="muted small">No comments yet.</span>';
+  return `
+    <div class="asana-comments">
+      <button class="btn-sm" data-act="toggle-comments">${toggle}</button>
+      <div class="note-history asana-comment-list">${body}</div>
+      <textarea class="crm-textarea asana-comment-input" rows="2" placeholder="Write a comment…"></textarea>
+      <div class="asana-actions">
+        <button class="btn-sm primary" data-act="add-comment"${c.posting ? ' disabled' : ''}>${c.posting ? 'Posting…' : 'Add Comment'}</button>
+      </div>
+    </div>`;
 }
 
 function asanaCard(t, today, owner) {
@@ -2357,6 +2393,9 @@ function asanaCard(t, today, owner) {
       <div class="card-notes asana-notes" data-act="edit-notes" title="Click to edit the description">
         ${preview ? esc(preview) : '<i class="muted">no description</i>'}
       </div>
+      ${asanaCommentsBlock(t, owner)}
+      ${asanaCardError.has(pendKey(owner, t.gid))
+        ? `<div class="asana-card-error small">⚠ ${esc(asanaCardError.get(pendKey(owner, t.gid)))}</div>` : ''}
       ${dirty ? `
         <div class="asana-actions">
           <button class="btn-sm primary" data-act="update">⬆ Update Asana</button>
@@ -2421,6 +2460,20 @@ function asanaBoardRender(owner) {
   if (!b) return;
   const { tasks, filter, stale } = b.get();
   renderAsanaKanban($(b.sel), tasks, filter, stale, owner);
+}
+
+async function asanaLoadComments(owner, gid) {
+  const key = pendKey(owner, gid);
+  asanaComments.set(key, { ...(asanaComments.get(key) || {}), open: true, loading: true, error: null });
+  asanaBoardRender(owner);
+  try {
+    const q = owner === 'erick' ? '?owner=erick' : '';
+    const data = await api(`/api/asana/tasks/${encodeURIComponent(gid)}/comments${q}`);
+    asanaComments.set(key, { ...asanaComments.get(key), loading: false, items: data.comments || [] });
+  } catch (err) {
+    asanaComments.set(key, { ...asanaComments.get(key), loading: false, error: err.message });
+  }
+  asanaBoardRender(owner);
 }
 
 // Delegated, and bound once to containers that outlive every re-render — the
@@ -2488,7 +2541,49 @@ function wireAsanaEditing(owner) {
 
     if (act === 'notes-cancel') { asanaBoardRender(owner); return; }
 
-    if (act === 'discard') { asanaPending.delete(key); asanaBoardRender(owner); return; }
+    if (act === 'discard') {
+      asanaPending.delete(key); asanaCardError.delete(key); asanaBoardRender(owner); return;
+    }
+
+    if (act === 'toggle-comments') {
+      const c = asanaComments.get(key) || {};
+      if (c.open) { asanaComments.set(key, { ...c, open: false }); asanaBoardRender(owner); return; }
+      // Re-open without refetching if we already have them; the Update handler
+      // is what refreshes, since that is when they can actually have changed.
+      if (Array.isArray(c.items)) { asanaComments.set(key, { ...c, open: true }); asanaBoardRender(owner); return; }
+      await asanaLoadComments(owner, gid);
+      return;
+    }
+
+    if (act === 'add-comment') {
+      const ta = card.querySelector('.asana-comment-input');
+      const text = (ta?.value || '').trim();
+      if (!text) return toast('Write a comment first', 'error');
+      const c = asanaComments.get(key) || {};
+      asanaComments.set(key, { ...c, posting: true, error: null });
+      asanaBoardRender(owner);
+      let posted = null;
+      try {
+        const q = owner === 'erick' ? '?owner=erick' : '';
+        posted = await api(`/api/asana/tasks/${encodeURIComponent(gid)}/comments${q}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        const cur = asanaComments.get(key) || {};
+        asanaComments.set(key, { ...cur, posting: false, items: [...(cur.items || []), posted] });
+        toast('Comment added', 'success');
+      } catch (err) {
+        asanaComments.set(key, { ...asanaComments.get(key), posting: false, error: err.message });
+        toast(err.message, 'error');
+      }
+      asanaBoardRender(owner);
+      // Re-rendering empties the textarea. That is what we want once the comment
+      // is posted; when it failed, the text goes back so it is not lost with the
+      // error message.
+      const box = root.querySelector(`.card[data-gid="${CSS.escape(gid)}"] .asana-comment-input`);
+      if (box && !posted) { box.value = text; box.focus(); }
+      return;
+    }
 
     if (act === 'update') {
       const patch = asanaPending.get(key);
@@ -2507,13 +2602,21 @@ function wireAsanaEditing(owner) {
         const i = list.findIndex(t => t.gid === gid);
         if (i >= 0) list[i] = updated;
         asanaPending.delete(key);
+        asanaCardError.delete(key);
         toast('Updated in Asana', 'success');
         asanaBoardRender(owner);
+        // Editing a task adds a story to its stream, so an open comment list is
+        // out of date the moment the update lands. Only refetched when it is
+        // actually on screen.
+        if (asanaComments.get(key)?.open) await asanaLoadComments(owner, gid);
       } catch (err) {
         // The staged edit stays put — it was not written, and dropping it here
-        // would lose whatever the user typed along with the error.
-        btn.disabled = false; btn.textContent = '⬆ Update Asana';
+        // would lose whatever the user typed along with the error. The message
+        // goes on the card too: a toast disappears while the amber border does
+        // not, leaving no sign of why it is still there.
+        asanaCardError.set(key, err.message);
         toast(err.message, 'error');
+        asanaBoardRender(owner);
       }
     }
   });

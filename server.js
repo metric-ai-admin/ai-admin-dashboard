@@ -812,8 +812,9 @@ app.get('/api/asana/tasks', async (req, res) => {
     // token indistinguishable from an empty board, since both reached the client
     // as tasks: [] with nothing else to go on.
     let pullError = null;
+    let me = null;
     try {
-      const me = await getMe(token);
+      me = await getMe(token);
       if (me.gid && me.workspaceGid) {
         const mine = await asanaGetAll(
           `/tasks?assignee=${me.gid}&workspace=${me.workspaceGid}&opt_fields=${ASANA_OPT_FIELDS}&completed_since=${completedSince}`, token);
@@ -829,7 +830,26 @@ app.get('/api/asana/tasks', async (req, res) => {
       console.error(`[asana/tasks:${owner}] my-tasks pull failed:`, meErr.message);
     }
 
-    const allTasks = [...byGid.values()];
+    let allTasks = [...byGid.values()];
+
+    // Erick's board needs no filter — his token only ever returns his own
+    // assigned tasks. Arturo's is different: it is built from whole project
+    // boards, so it arrives carrying the entire team's work. Filtered to the
+    // token's own identity rather than a literal gid, so it stays correct if the
+    // account behind ASANA_TOKEN ever changes. Unassigned tasks drop out, since
+    // "assigned to me" is what the board is for.
+    if (owner !== 'erick') {
+      if (me?.gid) {
+        allTasks = allTasks.filter(t => t.assignee_gid === me.gid);
+      } else {
+        // Without an identity there is nothing to filter against, and serving
+        // the unfiltered team board would be worse than saying so — including
+        // when getMe already failed for its own reasons.
+        allTasks = [];
+        if (!pullError) pullError = 'Could not identify the Asana account, so tasks could not be filtered by assignee.';
+      }
+    }
+
     const payload = { lastUpdated: new Date().toISOString(), tasks: allTasks, stale: false, owner };
     // Only when the failure actually cost us the whole list. A partial pull that
     // still returned project tasks is worth showing without an alarm on it.
@@ -879,6 +899,56 @@ app.patch('/api/asana/tasks/:gid', requireAuth, async (req, res) => {
     res.json(shapeTask(updated, null));
   } catch (err) {
     console.error(`[asana/patch:${owner}] ${gid}:`, err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Comments live in Asana's story stream, which also carries every automated
+// event — assignments, due-date changes, section moves. Only actual comments
+// are of interest here, so the rest is filtered out rather than shown as noise.
+function asanaComment(s) {
+  return {
+    gid: s.gid,
+    text: s.text || '',
+    author: s.created_by ? s.created_by.name : 'Unknown',
+    created_at: s.created_at || null,
+  };
+}
+const isComment = s => s.type === 'comment' || s.resource_subtype === 'comment_added';
+const STORY_FIELDS = 'text,type,resource_subtype,created_at,created_by.name';
+
+function asanaTokenForReq(req) {
+  const owner = req.query.owner === 'erick' ? 'erick' : 'default';
+  return { owner, token: asanaTokenFor(owner) };
+}
+const validGid = g => /^\d+$/.test(String(g || '').trim());
+
+app.get('/api/asana/tasks/:gid/comments', requireAuth, async (req, res) => {
+  const { owner, token } = asanaTokenForReq(req);
+  if (!token) return res.status(400).json({ error: `No Asana token configured for ${owner}.` });
+  if (!validGid(req.params.gid)) return res.status(400).json({ error: 'Invalid task gid' });
+  try {
+    const stories = await asanaGetAll(`/tasks/${req.params.gid}/stories?opt_fields=${STORY_FIELDS}`, token);
+    res.json({ comments: (stories || []).filter(isComment).map(asanaComment) });
+  } catch (err) {
+    console.error(`[asana/comments:${owner}] ${req.params.gid}:`, err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.post('/api/asana/tasks/:gid/comments', requireAuth, async (req, res) => {
+  const { owner, token } = asanaTokenForReq(req);
+  if (!token) return res.status(400).json({ error: `No Asana token configured for ${owner}.` });
+  if (!validGid(req.params.gid)) return res.status(400).json({ error: 'Invalid task gid' });
+  const text = String(req.body.text ?? '').trim();
+  // Asana accepts an empty story and it renders as a blank comment nobody can
+  // remove from here, so it is refused rather than posted.
+  if (!text) return res.status(400).json({ error: 'Comment text required' });
+  try {
+    const story = await asanaRequest('POST', `/tasks/${req.params.gid}/stories?opt_fields=${STORY_FIELDS}`, { text }, token);
+    res.json(asanaComment(story));
+  } catch (err) {
+    console.error(`[asana/comment-post:${owner}] ${req.params.gid}:`, err.message);
     res.status(err.status || 500).json({ error: err.message });
   }
 });

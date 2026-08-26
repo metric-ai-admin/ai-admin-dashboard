@@ -1112,3 +1112,10 @@ tr.row-editing select[data-field] { border-color: var(--border-accent); }
    otherwise a change you forgot to push is indistinguishable from one that
    landed. Cleared by Update Asana or by Discard. */
 .card.asana-dirty { border-color: var(--warning); box-shadow: 0 0 0 1px var(--warning) inset; }
+
+/* Asana card comments + per-card error */
+.asana-comments { margin: 6px 0; }
+.asana-comment-list { max-height: 180px; overflow-y: auto; margin: 6px 0; }
+.asana-comment-input { margin-bottom: 6px; }
+.asana-card-error { color: var(--critical); background: var(--critical-bg, rgba(239,68,68,.12));
+  border-radius: 4px; padding: 4px 6px; margin: 6px 0; }
