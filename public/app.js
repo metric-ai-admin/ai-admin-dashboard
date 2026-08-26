@@ -2124,6 +2124,10 @@ $('#crm-sort')?.addEventListener('change', e => { crmState.sort = e.target.value
 // =====================================================================
 
 let maintTaskCache = [];
+// 'all' rather than the Task Manager's 'today'. Erick's board is a curated
+// working set of a few dozen items, not a stream: defaulting to today would hide
+// every follow-up carried over from earlier in the week.
+let maintTimeFilter = 'all';
 let maintNavWired = false;
 let activeMaintenanceView = null;
 
@@ -2186,6 +2190,12 @@ async function loadMaintenance() {
     wireAppfolioDropZone();
     $('#maint-asana-refresh')?.addEventListener('click',      loadMaintenanceAsana);
     $('#maint-tasks-refresh')?.addEventListener('click',      loadMaintenanceTasks);
+    // Re-render only — the filter is applied to maintTaskCache, so switching
+    // ranges does not need another round trip.
+    $$('#maint-time-pills .pill').forEach(p => p.addEventListener('click', () => {
+      maintTimeFilter = p.dataset.time;
+      renderMaintenanceKanban();
+    }));
     $('#maint-appfolio-refresh')?.addEventListener('click',   loadMaintenanceAppFolio);
     $('#maint-eod-refresh')?.addEventListener('click',        loadMaintenanceEodSummary);
     $('#maint-report-refresh')?.addEventListener('click',     loadMaintenanceDailyReport);
@@ -2983,9 +2993,30 @@ function maintPriorityOptions(priority) {
   return opts.join('');
 }
 
+// Two priorities ignore the date window entirely. A critical item stays on the
+// board until it is dealt with, however long that takes — ageing out of "Today"
+// is the opposite of what it needs. And a Daily Task is today's work by
+// definition: resetDailyTasks clears its completed_at each morning but never
+// touches created_at, so filtering on the creation date would quietly drop
+// Erick's whole routine the day after it was set up.
+function maintInRange(t) {
+  if (maintTimeFilter === 'all') return true;
+  if (t.priority === '🔴 Critical' || t.priority === '🔁 Daily Task') return true;
+  let cutoff = todayStr();
+  if (maintTimeFilter === 'week') {
+    const d = new Date(); d.setDate(d.getDate() - 7);
+    cutoff = localDateStr(d);
+  }
+  if (t.completed_at) return localDateStr(t.completed_at) >= cutoff;
+  return localDateStr(t.created_at) >= cutoff;
+}
+
 function renderMaintenanceKanban() {
   const el = $('#maint-tasks-body');
   if (!el) return;
+
+  const baseList = maintTaskCache.filter(maintInRange);
+  $$('#maint-time-pills .pill').forEach(p => p.classList.toggle('active', p.dataset.time === maintTimeFilter));
 
   const grouped = {};
   MAINT_COLUMNS.forEach(c => { grouped[c.key] = []; });
@@ -2993,7 +3024,7 @@ function renderMaintenanceKanban() {
   // do it silently: a mismatch between this list and the server's is exactly the
   // bug above, and it is invisible until someone notices the counts are wrong.
   const orphans = new Set();
-  maintTaskCache.forEach(t => {
+  baseList.forEach(t => {
     let col = t.priority;
     if (grouped[col] == null) { orphans.add(t.priority); col = '🟢 In Progress'; }
     grouped[col].push(t);
@@ -3002,8 +3033,10 @@ function renderMaintenanceKanban() {
 
   el.className = 'kanban';
 
-  if (!maintTaskCache.length) {
-    el.innerHTML = '<div class="empty-state">No tasks. Add one above ☝</div>';
+  if (!baseList.length) {
+    el.innerHTML = maintTaskCache.length
+      ? '<div class="empty-state">Nothing in this range. Try “All”.</div>'
+      : '<div class="empty-state">No tasks. Add one above ☝</div>';
     return;
   }
 
@@ -3021,6 +3054,22 @@ function renderMaintenanceKanban() {
             <div class="card-title">${esc(t.title)}</div>
             ${t.source ? `<div class="card-meta small muted">👤 ${esc(t.source)}</div>` : ''}
             ${t.notes ? `<div class="card-notes">${esc(t.notes.length > 100 ? t.notes.slice(0,100) + '…' : t.notes)}</div>` : ''}
+            <details class="comments">
+              <summary>📝 Notes <span class="note-count">(${(t.noteHistory || []).length})</span></summary>
+              <div class="note-history">
+                ${(t.noteHistory || []).length
+                  ? [...t.noteHistory].reverse().map(n => `
+                    <div class="note-entry">
+                      <span class="note-time">${new Date(n.createdAt).toLocaleString()}</span>
+                      <span>${esc(n.text)}</span>
+                    </div>`).join('')
+                  : '<span class="muted small">No notes yet.</span>'}
+              </div>
+              <div class="note-add">
+                <input type="text" placeholder="Add note..." data-note-input>
+                <button class="btn-sm maint-task-note" data-id="${esc(t.id)}">+ Add</button>
+              </div>
+            </details>
             <div class="card-actions">
               ${!done ? `<button class="btn-sm primary maint-task-done" data-id="${esc(t.id)}">✓ Done</button>` : `<button class="btn-sm maint-task-undone" data-id="${esc(t.id)}">Undo</button>`}
               <select class="crm-select maint-task-prio" data-id="${esc(t.id)}" style="font-size:0.78rem">
@@ -3070,6 +3119,21 @@ function renderMaintenanceKanban() {
       if (!confirm('Delete this task?')) return;
       await api(`/api/operational/${btn.dataset.id}`, { method: 'DELETE' });
       loadMaintenanceTasks();
+    });
+  });
+  el.querySelectorAll('.maint-task-note').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const input = btn.closest('.note-add').querySelector('[data-note-input]');
+      const text = input.value.trim();
+      if (!text) return toast('Write a note first', 'error');
+      try {
+        await api(`/api/operational/${btn.dataset.id}/notes`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+        toast('Note added', 'success');
+        loadMaintenanceTasks();
+      } catch (err) { toast(err.message, 'error'); }
     });
   });
 }
