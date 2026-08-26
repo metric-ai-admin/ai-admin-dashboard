@@ -64,13 +64,6 @@ const ASANA_TOKEN = process.env.ASANA_TOKEN;
 // Erick's personal Asana account. Optional — when unset, the maintenance
 // Asana view reports that it needs connecting instead of showing an empty board.
 const ASANA_TOKEN_ERICK = process.env.ASANA_TOKEN_ERICK;
-// Set this once Arturo's real Asana account gid is known and the board narrows
-// to his own tasks. Until then it stays unset and the board shows the project
-// boards whole, minus Erick's.
-const ASANA_ARTURO_GID = (process.env.ASANA_ARTURO_GID || '').trim() || null;
-// Erick has a board of his own, so his tasks are subtracted from Arturo's rather
-// than shown twice. Overridable, but defaulted so this needs no configuration.
-const ASANA_ERICK_GID = (process.env.ASANA_ERICK_GID || '1215723446605918').trim();
 const ASANA_PROJECTS = [];
 if (process.env.ASANA_EXTRA_PROJECTS) {
   for (const entry of process.env.ASANA_EXTRA_PROJECTS.split(',')) {
@@ -802,57 +795,46 @@ app.get('/api/asana/tasks', async (req, res) => {
   try {
     const byGid = new Map();
 
-    // ASANA_PROJECTS are Arturo's project gids; Erick's account cannot read them
-    // and the pull would 403. His board comes from his own assigned tasks.
-    if (owner !== 'erick') {
-      for (const project of ASANA_PROJECTS) {
-        const tasks = await asanaGetAll(
-          `/projects/${project.gid}/tasks?opt_fields=${ASANA_OPT_FIELDS}&completed_since=${completedSince}`, token);
-        for (const t of (tasks || [])) {
-          if (!byGid.has(t.gid)) byGid.set(t.gid, shapeTask(t, project.label));
-        }
-      }
-    }
-
-    // Kept so a failing my-tasks pull cannot cost us the project tasks already
-    // gathered above, but no longer discarded: swallowing it entirely made a bad
-    // token indistinguishable from an empty board, since both reached the client
-    // as tasks: [] with nothing else to go on.
+    // Arturo's board is now his Asana "My Tasks" list rather than whole project
+    // boards, so it holds his own work instead of the team's. ASANA_EXTRA_PROJECTS
+    // is still parsed and still available, just no longer the source for it.
+    //
+    // The documented route is two calls: the user task list has its own gid and
+    // has to be looked up per workspace. There is no /user_task_lists/me, and
+    // assignee/workspace are parameters of GET /tasks, not of this endpoint —
+    // passing them here does nothing.
     let pullError = null;
     try {
       const me = await getMe(token);
-      if (me.gid && me.workspaceGid) {
+      if (!me.gid || !me.workspaceGid) {
+        pullError = 'Asana did not return a user or workspace for this token.';
+        console.error(`[asana/tasks:${owner}] pull skipped:`, pullError);
+      } else if (owner === 'erick') {
+        // Unchanged: his assigned tasks, which is what his board has always been.
         const mine = await asanaGetAll(
           `/tasks?assignee=${me.gid}&workspace=${me.workspaceGid}&opt_fields=${ASANA_OPT_FIELDS}&completed_since=${completedSince}`, token);
         for (const t of (mine || [])) {
           if (!byGid.has(t.gid)) byGid.set(t.gid, shapeTask(t, null));
         }
       } else {
-        pullError = 'Asana did not return a user or workspace for this token.';
-        console.error(`[asana/tasks:${owner}] my-tasks pull skipped:`, pullError);
+        const list = await asanaRequest('GET',
+          `/users/me/user_task_list?workspace=${me.workspaceGid}&opt_fields=gid`, null, token);
+        if (!list?.gid) throw new Error('Asana returned no user task list for this account.');
+        const mine = await asanaGetAll(
+          `/user_task_lists/${list.gid}/tasks?opt_fields=${ASANA_OPT_FIELDS}&completed_since=${completedSince}`, token);
+        for (const t of (mine || [])) {
+          if (!byGid.has(t.gid)) byGid.set(t.gid, shapeTask(t, null));
+        }
       }
     } catch (meErr) {
       pullError = meErr.message;
       console.error(`[asana/tasks:${owner}] my-tasks pull failed:`, meErr.message);
     }
 
-    let allTasks = [...byGid.values()];
-
-    // Erick's board needs no filter — his token only ever returns his own
-    // assigned tasks. Arturo's is built from whole project boards, so it arrives
-    // carrying the team's work.
-    //
-    // Filtering it by the token's own identity left one task: ASANA_TOKEN
-    // authenticates as arturo@livewithmetric.com, and Arturo's real work is
-    // assigned to a different Asana account. So unless that account's gid is
-    // known, the board shows the project boards whole and only subtracts what
-    // belongs to Erick, who has a board of his own. Unassigned tasks stay —
-    // unowned work on a shared board is still worth seeing.
-    if (owner !== 'erick') {
-      allTasks = ASANA_ARTURO_GID
-        ? allTasks.filter(t => t.assignee_gid === ASANA_ARTURO_GID)
-        : allTasks.filter(t => t.assignee_gid !== ASANA_ERICK_GID);
-    }
+    // No assignee filter on either board any more. Both are now built from a
+    // list that is already one person's — Erick's assigned tasks, Arturo's My
+    // Tasks — rather than from project boards carrying the whole team.
+    const allTasks = [...byGid.values()];
 
     const payload = { lastUpdated: new Date().toISOString(), tasks: allTasks, stale: false, owner };
     // Only when the failure actually cost us the whole list. A partial pull that
