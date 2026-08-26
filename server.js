@@ -683,7 +683,22 @@ app.get('/api/sops/search/:q', async (req, res) => {
 // MODULE 3 — ASANA INTEGRATION (read/import — no auto-editing)
 // =====================================================================
 
-const ASANA_OPT_FIELDS = 'name,assignee.name,due_on,due_at,completed,completed_at,notes,permalink_url,modified_at,projects.name,followers.gid';
+// custom_fields carries Priority. Asana has no native priority field — it is a
+// per-project custom field, so it arrives only when asked for by name, and a
+// task that belongs to no project cannot have one at all. Most of Erick's sit
+// in "My tasks", which is why the client falls back to the due date.
+const ASANA_OPT_FIELDS = 'name,assignee.name,due_on,due_at,completed,completed_at,notes,permalink_url,modified_at,projects.name,followers.gid,custom_fields.name,custom_fields.display_value,custom_fields.enum_value.name';
+
+// display_value covers every field type Asana renders as text; enum_value.name
+// is the fallback for enum fields where it comes back empty. Anything that is
+// not one of the three known levels is treated as absent rather than guessed at.
+const ASANA_PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'];
+function asanaPriority(t) {
+  const f = (t.custom_fields || []).find(c => (c.name || '').trim().toLowerCase() === 'priority');
+  if (!f) return null;
+  const raw = String(f.display_value ?? f.enum_value?.name ?? '').trim().toUpperCase();
+  return ASANA_PRIORITIES.includes(raw) ? raw : null;
+}
 
 function shapeTask(t, projectLabel) {
   const label = projectLabel
@@ -695,6 +710,7 @@ function shapeTask(t, projectLabel) {
     assignee_gid: t.assignee ? t.assignee.gid : null,
     follower_gids: (t.followers || []).map(f => f.gid),
     due_on: t.due_on || (t.due_at ? localDateStr(t.due_at) : null),
+    priority: asanaPriority(t),   // null when the task has no Priority field
     completed: !!t.completed,
     completed_at: t.completed_at || null,
     notes: t.notes || '',

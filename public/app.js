@@ -358,6 +358,22 @@ $('#task-form').addEventListener('submit', async e => {
 $('#refresh-tasks').addEventListener('click', loadTasks);
 $('#task-type-filter').addEventListener('change', renderTasks);
 $$('#task-time-pills .pill').forEach(p => p.addEventListener('click', () => { taskTimeFilter = p.dataset.time; renderTasks(); }));
+
+// Task Manager ▸ Asana Tasks. Fetched on first switch rather than on page load:
+// it is 183 tasks over the network and most visits to this tab never open it.
+$$('#tasks-panel-switch .pill').forEach(p => p.addEventListener('click', () => {
+  const panel = p.dataset.panel;
+  $$('#tasks-panel-switch .pill').forEach(q => q.classList.toggle('active', q === p));
+  $('#tasks-panel-own')?.classList.toggle('hidden', panel !== 'own');
+  $('#tasks-panel-asana')?.classList.toggle('hidden', panel !== 'asana');
+  if (panel === 'asana' && !asanaPanelLoaded) { asanaPanelLoaded = true; loadAsanaPanel(); }
+}));
+$('#asana-panel-refresh')?.addEventListener('click', loadAsanaPanel);
+$$('#asana-panel-pills .pill').forEach(p => p.addEventListener('click', () => {
+  asanaPanelFilter = p.dataset.time;
+  $$('#asana-panel-pills .pill').forEach(q => q.classList.toggle('active', q === p));
+  renderAsanaKanban($('#asana-panel-body'), asanaPanelCache, asanaPanelFilter, asanaPanelStale);
+}));
 $$('#task-status-pills .pill').forEach(p => p.addEventListener('click', () => { taskStatusFilter = p.dataset.status; renderTasks(); }));
 
 // =====================================================================
@@ -2189,6 +2205,11 @@ async function loadMaintenance() {
 
     wireAppfolioDropZone();
     $('#maint-asana-refresh')?.addEventListener('click',      loadMaintenanceAsana);
+    $$('#maint-asana-pills .pill').forEach(p => p.addEventListener('click', () => {
+      maintAsanaFilter = p.dataset.time;
+      $$('#maint-asana-pills .pill').forEach(q => q.classList.toggle('active', q === p));
+      renderAsanaKanban($('#maint-asana-body'), maintAsanaCache, maintAsanaFilter, maintAsanaStale);
+    }));
     $('#maint-tasks-refresh')?.addEventListener('click',      loadMaintenanceTasks);
     // Re-render only — the filter is applied to maintTaskCache, so switching
     // ranges does not need another round trip.
@@ -2243,6 +2264,111 @@ async function loadMaintenance() {
   switchMaintenanceView(activeMaintenanceView || 'daily-ops');
 }
 
+// ── Shared Asana Kanban ──────────────────────────────────────────────
+// One renderer for both boards — Arturo's under the Task Manager and Erick's
+// under Maintenance — so the two cannot drift apart the way MAINT_COLUMNS drifted
+// from OPS_PRIORITIES. Four columns: nothing in Asana maps to a Daily Task.
+// Cached per board so the pills re-render without another round trip — Arturo's
+// board is 183 tasks and refetching on every pill click would be wasteful.
+let maintAsanaCache = [], maintAsanaStale = false, maintAsanaFilter = 'all';
+let asanaPanelCache = [], asanaPanelStale = false, asanaPanelFilter = 'all';
+let asanaPanelLoaded = false;
+
+const ASANA_COLUMNS = [
+  { key: 'critical', header: '🔴 Critical',    cls: 'col-critical' },
+  { key: 'followup', header: '🟡 Follow-up',   cls: 'col-followup' },
+  { key: 'progress', header: '🟢 In Progress', cls: 'col-inprogress' },
+  { key: 'done',     header: '✅ Done',         cls: 'col-done' },
+];
+
+// Asana's Priority custom field wins wherever it exists. It usually does not:
+// Priority is defined per project, so anything sitting in "My tasks" — 21 of
+// Erick's 27 — belongs to no project and can carry no such field. The due date
+// stands in for those, which is the only signal every task actually has.
+function asanaColumn(t) {
+  if (t.completed) return 'done';
+  if (t.priority === 'HIGH')   return 'critical';
+  if (t.priority === 'MEDIUM') return 'followup';
+  if (t.priority === 'LOW')    return 'progress';
+  if (!t.due_on) return 'progress';
+  if (t.due_on < todayStr()) return 'critical';
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+  return t.due_on <= localDateStr(tomorrow) ? 'followup' : 'progress';
+}
+
+// Daily Operations filters on when a row was created, looking backwards. Due
+// dates point the other way, so the same arithmetic runs forward: Today means
+// due by end of today, This Week due within seven days. Two things are never
+// filtered out — overdue work, which is the Critical column and the whole point
+// of looking, and tasks with no due date, which cannot be placed on a timeline
+// at all. Completed tasks keep the backward-looking rule, on completed_at.
+function asanaInRange(t, filter) {
+  if (filter === 'all') return true;
+  if (t.completed) {
+    if (!t.completed_at) return true;
+    const back = new Date(); back.setDate(back.getDate() - (filter === 'week' ? 7 : 0));
+    return localDateStr(t.completed_at) >= localDateStr(back);
+  }
+  if (!t.due_on) return true;
+  if (t.due_on < todayStr()) return true;
+  const horizon = new Date(); horizon.setDate(horizon.getDate() + (filter === 'week' ? 7 : 0));
+  return t.due_on <= localDateStr(horizon);
+}
+
+function asanaCard(t, today) {
+  const overdue = t.due_on && t.due_on < today && !t.completed;
+  return `
+    <div class="card${t.completed ? ' completed' : ''}">
+      <div class="card-title">${esc(t.name || t.title || '')}</div>
+      <div class="card-meta small muted">
+        ${t.due_on ? `<span class="${overdue ? 'badge badge-red' : ''}">${overdue ? '⚠ ' : '📅 '}${esc(t.due_on)}</span>` : ''}
+        ${t.assignee ? `<span>👤 ${esc(t.assignee)}</span>` : ''}
+        ${t.project ? `<span>📁 ${esc(t.project)}</span>` : ''}
+      </div>
+      ${t.notes_preview ? `<div class="card-notes">${esc(t.notes_preview)}</div>` : ''}
+      ${t.permalink_url ? `<a class="btn-sm" href="${esc(t.permalink_url)}" target="_blank" rel="noopener">Open in Asana ↗</a>` : ''}
+    </div>`;
+}
+
+function renderAsanaKanban(el, tasks, filter, stale) {
+  if (!el) return;
+  const banner = stale
+    ? '<div class="banner banner-warn">⚠ Asana unreachable — showing the last known list.</div>' : '';
+  const list = tasks.filter(t => asanaInRange(t, filter));
+
+  if (!list.length) {
+    el.innerHTML = banner + (tasks.length
+      ? '<div class="empty-state">Nothing due in this range. Try “All”.</div>'
+      : '<div class="empty-state">No Asana tasks.</div>');
+    return;
+  }
+
+  const grouped = {};
+  ASANA_COLUMNS.forEach(c => { grouped[c.key] = []; });
+  list.forEach(t => grouped[asanaColumn(t)].push(t));
+
+  const today = todayStr();
+  el.innerHTML = banner + '<div class="kanban">' + ASANA_COLUMNS.map(col => {
+    const items = grouped[col.key];
+    return `<div class="kanban-column ${col.cls}">
+      <div class="kanban-col-head">
+        <span>${col.header}<span class="col-toggle">▾</span></span>
+        <span class="kanban-col-count">${items.length}</span>
+      </div>
+      <div class="kanban-col-body">
+        ${items.length ? items.map(t => asanaCard(t, today)).join('') : '<p class="kanban-col-empty">No tasks</p>'}
+      </div>
+    </div>`;
+  }).join('') + '</div>';
+
+  el.querySelectorAll('.kanban-col-head').forEach(head => {
+    head.addEventListener('click', e => {
+      if (e.target.closest('a, button')) return;
+      head.closest('.kanban-column').classList.toggle('col-collapsed');
+    });
+  });
+}
+
 // ── Asana Tasks ──────────────────────────────────────────────────────
 // This view shows ERICK's Asana board, not Arturo's. ASANA_TOKEN belongs to
 // support@livewithmetric.com and can only ever see Arturo's tasks, which is why
@@ -2295,19 +2421,39 @@ async function loadMaintenanceAsana() {
       return;
     }
 
-    el.innerHTML =
-      (data.stale ? '<div class="banner banner-warn">⚠ Asana unreachable — showing the last known list.</div>' : '') +
-      tasks.map(t => `
-        <div class="card" style="margin-bottom:8px">
-          <div class="card-title">${esc(t.name || t.title || '')}</div>
-          <div class="card-meta small muted">
-            ${t.due_on ? `<span>📅 ${esc(t.due_on)}</span>` : ''}
-            ${t.assignee ? `<span>👤 ${esc(t.assignee)}</span>` : ''}
-            ${t.project ? `<span>📁 ${esc(t.project)}</span>` : ''}
+    maintAsanaCache = tasks;
+    maintAsanaStale = !!data.stale;
+    renderAsanaKanban(el, tasks, maintAsanaFilter, maintAsanaStale);
+  } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
+}
+
+// ── Arturo's Asana board, inside the Task Manager tab ────────────────
+// Same renderer as Erick's, different endpoint: no owner param means the default
+// token. His tasks come from the project boards in ASANA_EXTRA_PROJECTS rather
+// than from anything assigned to him directly.
+async function loadAsanaPanel() {
+  const el = $('#asana-panel-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const data = await api('/api/asana/tasks');
+    const tasks = Array.isArray(data) ? data : (data.tasks || data.data || []);
+
+    if (!tasks.length && data.error) {
+      el.innerHTML = `
+        <div class="banner banner-warn">
+          ⚠ <b>Could not connect to Asana — check token.</b>
+          <div class="small" style="margin-top:6px">
+            This is not an empty board: the request failed, so nothing could be loaded.
+            <div style="margin-top:4px">Asana said: <code>${esc(data.error)}</code></div>
           </div>
-          ${t.notes_preview ? `<div class="card-notes">${esc(t.notes_preview)}</div>` : ''}
-          ${t.permalink_url ? `<a class="btn-sm" href="${esc(t.permalink_url)}" target="_blank" rel="noopener">Open in Asana ↗</a>` : ''}
-        </div>`).join('');
+        </div>`;
+      return;
+    }
+
+    asanaPanelCache = tasks;
+    asanaPanelStale = !!data.stale;
+    renderAsanaKanban(el, tasks, asanaPanelFilter, asanaPanelStale);
   } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
 }
 

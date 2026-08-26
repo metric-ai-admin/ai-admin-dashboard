@@ -95,6 +95,12 @@
       </div>
     </div>
 
+    <div class="filter-pills" id="tasks-panel-switch">
+      <button class="pill active" data-panel="own">📋 Task Manager</button>
+      <button class="pill" data-panel="asana">🅰️ Asana Tasks</button>
+    </div>
+
+    <div id="tasks-panel-own">
     <form id="task-form" class="quick-add">
       <input name="title" placeholder="Task title" required>
       <select name="type">
@@ -136,6 +142,20 @@
     </div>
 
     <div id="task-list"></div>
+    </div><!-- /tasks-panel-own -->
+
+    <div id="tasks-panel-asana" class="hidden">
+      <div class="view-head">
+        <div><h3 style="margin:0">Asana Tasks</h3><p class="muted small">Arturo's Asana board — read-only</p></div>
+        <div class="view-actions"><button class="btn-sm" id="asana-panel-refresh">🔄 Refresh</button></div>
+      </div>
+      <div class="filter-pills" id="asana-panel-pills">
+        <button class="pill" data-time="today">📅 Today</button>
+        <button class="pill" data-time="week">📆 This Week</button>
+        <button class="pill active" data-time="all">📋 All</button>
+      </div>
+      <div id="asana-panel-body"></div>
+    </div>
   </section>
 
   <!-- ============ SOPs ============ -->
@@ -946,6 +966,11 @@
       <div class="view-head">
         <div><h2>Asana Tasks</h2><p class="muted small">Erick's open Asana tasks</p></div>
         <div class="view-actions"><button class="btn-sm" id="maint-asana-refresh">🔄 Refresh</button></div>
+      </div>
+      <div class="filter-pills" id="maint-asana-pills">
+        <button class="pill" data-time="today">📅 Today</button>
+        <button class="pill" data-time="week">📆 This Week</button>
+        <button class="pill active" data-time="all">📋 All</button>
       </div>
       <div id="maint-asana-body"></div>
     </div>
