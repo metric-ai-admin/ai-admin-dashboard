@@ -64,6 +64,13 @@ const ASANA_TOKEN = process.env.ASANA_TOKEN;
 // Erick's personal Asana account. Optional — when unset, the maintenance
 // Asana view reports that it needs connecting instead of showing an empty board.
 const ASANA_TOKEN_ERICK = process.env.ASANA_TOKEN_ERICK;
+// Set this once Arturo's real Asana account gid is known and the board narrows
+// to his own tasks. Until then it stays unset and the board shows the project
+// boards whole, minus Erick's.
+const ASANA_ARTURO_GID = (process.env.ASANA_ARTURO_GID || '').trim() || null;
+// Erick has a board of his own, so his tasks are subtracted from Arturo's rather
+// than shown twice. Overridable, but defaulted so this needs no configuration.
+const ASANA_ERICK_GID = (process.env.ASANA_ERICK_GID || '1215723446605918').trim();
 const ASANA_PROJECTS = [];
 if (process.env.ASANA_EXTRA_PROJECTS) {
   for (const entry of process.env.ASANA_EXTRA_PROJECTS.split(',')) {
@@ -812,9 +819,8 @@ app.get('/api/asana/tasks', async (req, res) => {
     // token indistinguishable from an empty board, since both reached the client
     // as tasks: [] with nothing else to go on.
     let pullError = null;
-    let me = null;
     try {
-      me = await getMe(token);
+      const me = await getMe(token);
       if (me.gid && me.workspaceGid) {
         const mine = await asanaGetAll(
           `/tasks?assignee=${me.gid}&workspace=${me.workspaceGid}&opt_fields=${ASANA_OPT_FIELDS}&completed_since=${completedSince}`, token);
@@ -833,21 +839,19 @@ app.get('/api/asana/tasks', async (req, res) => {
     let allTasks = [...byGid.values()];
 
     // Erick's board needs no filter — his token only ever returns his own
-    // assigned tasks. Arturo's is different: it is built from whole project
-    // boards, so it arrives carrying the entire team's work. Filtered to the
-    // token's own identity rather than a literal gid, so it stays correct if the
-    // account behind ASANA_TOKEN ever changes. Unassigned tasks drop out, since
-    // "assigned to me" is what the board is for.
+    // assigned tasks. Arturo's is built from whole project boards, so it arrives
+    // carrying the team's work.
+    //
+    // Filtering it by the token's own identity left one task: ASANA_TOKEN
+    // authenticates as arturo@livewithmetric.com, and Arturo's real work is
+    // assigned to a different Asana account. So unless that account's gid is
+    // known, the board shows the project boards whole and only subtracts what
+    // belongs to Erick, who has a board of his own. Unassigned tasks stay —
+    // unowned work on a shared board is still worth seeing.
     if (owner !== 'erick') {
-      if (me?.gid) {
-        allTasks = allTasks.filter(t => t.assignee_gid === me.gid);
-      } else {
-        // Without an identity there is nothing to filter against, and serving
-        // the unfiltered team board would be worse than saying so — including
-        // when getMe already failed for its own reasons.
-        allTasks = [];
-        if (!pullError) pullError = 'Could not identify the Asana account, so tasks could not be filtered by assignee.';
-      }
+      allTasks = ASANA_ARTURO_GID
+        ? allTasks.filter(t => t.assignee_gid === ASANA_ARTURO_GID)
+        : allTasks.filter(t => t.assignee_gid !== ASANA_ERICK_GID);
     }
 
     const payload = { lastUpdated: new Date().toISOString(), tasks: allTasks, stale: false, owner };
