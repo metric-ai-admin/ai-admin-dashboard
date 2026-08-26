@@ -372,7 +372,7 @@ $('#asana-panel-refresh')?.addEventListener('click', loadAsanaPanel);
 $$('#asana-panel-pills .pill').forEach(p => p.addEventListener('click', () => {
   asanaPanelFilter = p.dataset.time;
   $$('#asana-panel-pills .pill').forEach(q => q.classList.toggle('active', q === p));
-  renderAsanaKanban($('#asana-panel-body'), asanaPanelCache, asanaPanelFilter, asanaPanelStale);
+  asanaBoardRender('default');
 }));
 $$('#task-status-pills .pill').forEach(p => p.addEventListener('click', () => { taskStatusFilter = p.dataset.status; renderTasks(); }));
 
@@ -2208,7 +2208,7 @@ async function loadMaintenance() {
     $$('#maint-asana-pills .pill').forEach(p => p.addEventListener('click', () => {
       maintAsanaFilter = p.dataset.time;
       $$('#maint-asana-pills .pill').forEach(q => q.classList.toggle('active', q === p));
-      renderAsanaKanban($('#maint-asana-body'), maintAsanaCache, maintAsanaFilter, maintAsanaStale);
+      asanaBoardRender('erick');
     }));
     $('#maint-tasks-refresh')?.addEventListener('click',      loadMaintenanceTasks);
     // Re-render only — the filter is applied to maintTaskCache, so switching
@@ -2323,22 +2323,50 @@ function asanaInRange(t, filter) {
   return t.due_on <= localDateStr(horizon);
 }
 
-function asanaCard(t, today) {
-  const overdue = t.due_on && t.due_on < today && !t.completed;
+// Edits are staged here, not sent as you type: picking a date or saving a note
+// records the change and "Update Asana" is what actually writes it. Held outside
+// the DOM so switching a pill — which rebuilds the board from cache — cannot
+// silently discard something you typed but had not pushed yet.
+const asanaPending = new Map();   // `${owner}:${gid}` → { due_on?, notes? }
+const pendKey = (owner, gid) => `${owner}:${gid}`;
+
+// The staged value where one exists, otherwise what Asana last told us.
+function asanaEffective(t, owner) {
+  const p = asanaPending.get(pendKey(owner, t.gid)) || {};
+  return {
+    due_on: 'due_on' in p ? p.due_on : t.due_on,
+    notes: 'notes' in p ? p.notes : (t.notes || ''),
+    dirty: Object.keys(p).length > 0,
+  };
+}
+
+function asanaCard(t, today, owner) {
+  const { due_on, notes, dirty } = asanaEffective(t, owner);
+  const overdue = due_on && due_on < today && !t.completed;
+  const preview = notes.length > 100 ? notes.slice(0, 100) + '…' : notes;
   return `
-    <div class="card${t.completed ? ' completed' : ''}">
+    <div class="card${t.completed ? ' completed' : ''}${dirty ? ' asana-dirty' : ''}" data-gid="${esc(t.gid)}">
       <div class="card-title">${esc(t.name || t.title || '')}</div>
       <div class="card-meta small muted">
-        ${t.due_on ? `<span class="${overdue ? 'badge badge-red' : ''}">${overdue ? '⚠ ' : '📅 '}${esc(t.due_on)}</span>` : ''}
+        <span class="asana-due ${overdue ? 'badge badge-red' : ''}" data-act="edit-due" title="Click to change the due date">
+          ${due_on ? `${overdue ? '⚠ ' : '📅 '}${esc(due_on)}` : '📅 <i>no due date</i>'}
+        </span>
         ${t.assignee ? `<span>👤 ${esc(t.assignee)}</span>` : ''}
         ${t.project ? `<span>📁 ${esc(t.project)}</span>` : ''}
       </div>
-      ${t.notes_preview ? `<div class="card-notes">${esc(t.notes_preview)}</div>` : ''}
+      <div class="card-notes asana-notes" data-act="edit-notes" title="Click to edit the description">
+        ${preview ? esc(preview) : '<i class="muted">no description</i>'}
+      </div>
+      ${dirty ? `
+        <div class="asana-actions">
+          <button class="btn-sm primary" data-act="update">⬆ Update Asana</button>
+          <button class="btn-sm" data-act="discard">Discard</button>
+        </div>` : ''}
       ${t.permalink_url ? `<a class="btn-sm" href="${esc(t.permalink_url)}" target="_blank" rel="noopener">Open in Asana ↗</a>` : ''}
     </div>`;
 }
 
-function renderAsanaKanban(el, tasks, filter, stale) {
+function renderAsanaKanban(el, tasks, filter, stale, owner) {
   if (!el) return;
   const banner = stale
     ? '<div class="banner banner-warn">⚠ Asana unreachable — showing the last known list.</div>' : '';
@@ -2364,7 +2392,7 @@ function renderAsanaKanban(el, tasks, filter, stale) {
         <span class="kanban-col-count">${items.length}</span>
       </div>
       <div class="kanban-col-body">
-        ${items.length ? items.map(t => asanaCard(t, today)).join('') : '<p class="kanban-col-empty">No tasks</p>'}
+        ${items.length ? items.map(t => asanaCard(t, today, owner)).join('') : '<p class="kanban-col-empty">No tasks</p>'}
       </div>
     </div>`;
   }).join('') + '</div>';
@@ -2376,6 +2404,126 @@ function renderAsanaKanban(el, tasks, filter, stale) {
     });
   });
 }
+
+// The two boards differ only in where their state lives, so everything below
+// works from this table instead of branching on owner in five places.
+const ASANA_BOARDS = {
+  erick:   { sel: '#maint-asana-body',
+             get: () => ({ tasks: maintAsanaCache, filter: maintAsanaFilter, stale: maintAsanaStale }),
+             reload: () => loadMaintenanceAsana() },
+  default: { sel: '#asana-panel-body',
+             get: () => ({ tasks: asanaPanelCache, filter: asanaPanelFilter, stale: asanaPanelStale }),
+             reload: () => loadAsanaPanel() },
+};
+
+function asanaBoardRender(owner) {
+  const b = ASANA_BOARDS[owner];
+  if (!b) return;
+  const { tasks, filter, stale } = b.get();
+  renderAsanaKanban($(b.sel), tasks, filter, stale, owner);
+}
+
+// Delegated, and bound once to containers that outlive every re-render — the
+// board rebuilds its innerHTML on each pill click, so per-card listeners would
+// pile up and leak.
+function wireAsanaEditing(owner) {
+  const b = ASANA_BOARDS[owner];
+  const root = $(b.sel);
+  if (!root) return;
+
+  root.addEventListener('click', async ev => {
+    const card = ev.target.closest('.card[data-gid]');
+    if (!card) return;
+    const act = ev.target.closest('[data-act]')?.dataset.act;
+    if (!act) return;
+    const gid = card.dataset.gid;
+    const key = pendKey(owner, gid);
+    const task = b.get().tasks.find(t => t.gid === gid);
+    if (!task) return;
+    const eff = asanaEffective(task, owner);
+
+    if (act === 'edit-due') {
+      const span = ev.target.closest('.asana-due');
+      if (!span || span.querySelector('input')) return;
+      span.className = 'asana-due';
+      span.innerHTML = `<input type="date" class="asana-due-input" value="${esc(eff.due_on || '')}">`;
+      const inp = span.querySelector('input');
+      inp.focus();
+      if (inp.showPicker) { try { inp.showPicker(); } catch { /* not every browser allows it */ } }
+      // Staged, not sent: "Update Asana" is what writes. Clearing the field
+      // stages null, which is how a due date gets removed in Asana.
+      const commit = () => {
+        const v = inp.value || null;
+        const p = asanaPending.get(key) || {};
+        if (v === task.due_on) delete p.due_on; else p.due_on = v;
+        Object.keys(p).length ? asanaPending.set(key, p) : asanaPending.delete(key);
+        asanaBoardRender(owner);
+      };
+      inp.addEventListener('change', commit);
+      inp.addEventListener('blur', commit);
+      return;
+    }
+
+    if (act === 'edit-notes') {
+      const box = ev.target.closest('.asana-notes');
+      if (!box || box.querySelector('textarea')) return;
+      box.innerHTML =
+        `<textarea class="crm-textarea asana-notes-input" rows="5">${esc(eff.notes)}</textarea>
+         <div class="asana-actions">
+           <button class="btn-sm primary" data-act="notes-save">Save</button>
+           <button class="btn-sm" data-act="notes-cancel">Cancel</button>
+         </div>`;
+      box.querySelector('textarea').focus();
+      return;
+    }
+
+    if (act === 'notes-save') {
+      const ta = card.querySelector('.asana-notes-input');
+      const p = asanaPending.get(key) || {};
+      if (ta.value === (task.notes || '')) delete p.notes; else p.notes = ta.value;
+      Object.keys(p).length ? asanaPending.set(key, p) : asanaPending.delete(key);
+      asanaBoardRender(owner);
+      return;
+    }
+
+    if (act === 'notes-cancel') { asanaBoardRender(owner); return; }
+
+    if (act === 'discard') { asanaPending.delete(key); asanaBoardRender(owner); return; }
+
+    if (act === 'update') {
+      const patch = asanaPending.get(key);
+      if (!patch || !Object.keys(patch).length) return;
+      const btn = ev.target.closest('button');
+      btn.disabled = true; btn.textContent = 'Updating…';
+      try {
+        const q = owner === 'erick' ? '?owner=erick' : '';
+        const updated = await api(`/api/asana/tasks/${encodeURIComponent(gid)}${q}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        });
+        // Patch the cache in place rather than refetching: Arturo's board is 183
+        // tasks and the response already carries the updated one, fully shaped.
+        const list = b.get().tasks;
+        const i = list.findIndex(t => t.gid === gid);
+        if (i >= 0) list[i] = updated;
+        asanaPending.delete(key);
+        toast('Updated in Asana', 'success');
+        asanaBoardRender(owner);
+      } catch (err) {
+        // The staged edit stays put — it was not written, and dropping it here
+        // would lose whatever the user typed along with the error.
+        btn.disabled = false; btn.textContent = '⬆ Update Asana';
+        toast(err.message, 'error');
+      }
+    }
+  });
+}
+
+// Bound once each, to the containers rather than the cards inside them. Called
+// here rather than up with the other wiring: ASANA_BOARDS is a const declared
+// above this line, and reaching it from there would hit the temporal dead zone.
+wireAsanaEditing('default');
+wireAsanaEditing('erick');
 
 // ── Asana Tasks ──────────────────────────────────────────────────────
 // This view shows ERICK's Asana board, not Arturo's. ASANA_TOKEN belongs to
@@ -2431,7 +2579,7 @@ async function loadMaintenanceAsana() {
 
     maintAsanaCache = tasks;
     maintAsanaStale = !!data.stale;
-    renderAsanaKanban(el, tasks, maintAsanaFilter, maintAsanaStale);
+    asanaBoardRender('erick');
   } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
 }
 
@@ -2461,7 +2609,7 @@ async function loadAsanaPanel() {
 
     asanaPanelCache = tasks;
     asanaPanelStale = !!data.stale;
-    renderAsanaKanban(el, tasks, asanaPanelFilter, asanaPanelStale);
+    asanaBoardRender('default');
   } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
 }
 

@@ -848,6 +848,41 @@ app.get('/api/asana/tasks', async (req, res) => {
   }
 });
 
+// The only write path into Asana. requireAuth unlike the read routes beside it:
+// this edits records in a system outside our own, and an open endpoint would let
+// anyone who knows a task gid rewrite its due date and description.
+app.patch('/api/asana/tasks/:gid', requireAuth, async (req, res) => {
+  const owner = req.query.owner === 'erick' ? 'erick' : 'default';
+  const token = asanaTokenFor(owner);
+  if (!token) return res.status(400).json({ error: `No Asana token configured for ${owner}.` });
+
+  const gid = String(req.params.gid || '').trim();
+  if (!/^\d+$/.test(gid)) return res.status(400).json({ error: 'Invalid task gid' });
+
+  // Only these two. Whitelisting rather than forwarding the body keeps a typo or
+  // a stray field from overwriting something in Asana we never meant to touch.
+  const body = {};
+  if ('due_on' in req.body) {
+    const d = req.body.due_on;
+    // null clears the date in Asana; '' would be rejected outright.
+    if (d === null || d === '') body.due_on = null;
+    else if (/^\d{4}-\d{2}-\d{2}$/.test(d)) body.due_on = d;
+    else return res.status(400).json({ error: 'due_on must be YYYY-MM-DD or null' });
+  }
+  if ('notes' in req.body) body.notes = String(req.body.notes ?? '');
+  if (!Object.keys(body).length) return res.status(400).json({ error: 'Nothing to update' });
+
+  try {
+    const updated = await asanaRequest('PUT', `/tasks/${gid}?opt_fields=${ASANA_OPT_FIELDS}`, body, token);
+    // Shaped like every task from the read route, so the client can drop it
+    // straight into the board without a second mapping that could drift.
+    res.json(shapeTask(updated, null));
+  } catch (err) {
+    console.error(`[asana/patch:${owner}] ${gid}:`, err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
 // Import tasks from a given Asana project's live list into the Task Manager,
 // so they show up alongside everything else in one place. Skips tasks
 // already imported (matched by asanaGid).

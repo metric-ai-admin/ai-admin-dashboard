@@ -1095,3 +1095,20 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 tr.row-editing { background: var(--accent-glow); }
 tr.row-editing input[data-field]:not([type="checkbox"]),
 tr.row-editing select[data-field] { border-color: var(--border-accent); }
+
+/* ── Asana card inline editing ──────────────────────────────────────
+   The due date and description are click-to-edit. Without an affordance
+   they read as plain text and nobody discovers they can be changed, so
+   both get a pointer and a hover tint rather than sitting inert. */
+.asana-due, .asana-notes { cursor: pointer; border-radius: 4px; }
+.asana-due:hover, .asana-notes:hover { background: var(--bg-elevated); outline: 1px dashed var(--border-accent); }
+.asana-notes { min-height: 1.2em; padding: 2px 4px; }
+.asana-due-input { background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-accent);
+  border-radius: 4px; padding: 1px 4px; font-size: 11px; font-family: inherit; }
+.asana-notes-input { margin-bottom: 6px; }
+.asana-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+/* An edit that has been staged but not pushed. The board is a read model of
+   Asana, so anything not yet written has to look unlike everything that is —
+   otherwise a change you forgot to push is indistinguishable from one that
+   landed. Cleared by Update Asana or by Discard. */
+.card.asana-dirty { border-color: var(--warning); box-shadow: 0 0 0 1px var(--warning) inset; }
