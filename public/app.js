@@ -2336,6 +2336,17 @@ const asanaComments = new Map();  // `${owner}:${gid}` → { open, loading, item
 const asanaCardError = new Map(); // `${owner}:${gid}` → message
 const pendKey = (owner, gid) => `${owner}:${gid}`;
 
+// What the pending map should look like once a value is committed. A pure
+// decision, kept out of the event wiring so it can be reasoned about — and
+// tested — without a DOM, which is where the date bug hid. Setting a field back
+// to what Asana already has is not a change to push, so it drops out, and a card
+// with nothing left staged drops out with it.
+function asanaStage(key, field, value, original) {
+  const p = { ...(asanaPending.get(key) || {}) };
+  if (value === original) delete p[field]; else p[field] = value;
+  Object.keys(p).length ? asanaPending.set(key, p) : asanaPending.delete(key);
+}
+
 // The staged value where one exists, otherwise what Asana last told us.
 function asanaEffective(t, owner) {
   const p = asanaPending.get(pendKey(owner, t.gid)) || {};
@@ -2501,19 +2512,20 @@ function wireAsanaEditing(owner) {
       span.className = 'asana-due';
       span.innerHTML = `<input type="date" class="asana-due-input" value="${esc(eff.due_on || '')}">`;
       const inp = span.querySelector('input');
+      // Commit on change only. This also listened on blur, to catch a typed date
+      // the user clicked away from — but showPicker() hands focus to the
+      // calendar, so blur fired the instant the picker opened. It staged the
+      // still-empty value and re-rendered the card, destroying the input while
+      // the picker was open, so whatever date you then chose landed on a
+      // detached element. Selecting a date appeared to do nothing at all.
+      inp.addEventListener('change', () => {
+        // Staged, not sent: "Update Asana" is what writes. Clearing the field
+        // stages null, which is how a due date gets removed in Asana.
+        asanaStage(key, 'due_on', inp.value || null, task.due_on || null);
+        asanaBoardRender(owner);
+      });
       inp.focus();
       if (inp.showPicker) { try { inp.showPicker(); } catch { /* not every browser allows it */ } }
-      // Staged, not sent: "Update Asana" is what writes. Clearing the field
-      // stages null, which is how a due date gets removed in Asana.
-      const commit = () => {
-        const v = inp.value || null;
-        const p = asanaPending.get(key) || {};
-        if (v === task.due_on) delete p.due_on; else p.due_on = v;
-        Object.keys(p).length ? asanaPending.set(key, p) : asanaPending.delete(key);
-        asanaBoardRender(owner);
-      };
-      inp.addEventListener('change', commit);
-      inp.addEventListener('blur', commit);
       return;
     }
 
@@ -2532,9 +2544,8 @@ function wireAsanaEditing(owner) {
 
     if (act === 'notes-save') {
       const ta = card.querySelector('.asana-notes-input');
-      const p = asanaPending.get(key) || {};
-      if (ta.value === (task.notes || '')) delete p.notes; else p.notes = ta.value;
-      Object.keys(p).length ? asanaPending.set(key, p) : asanaPending.delete(key);
+      if (!ta) return;
+      asanaStage(key, 'notes', ta.value, task.notes || '');
       asanaBoardRender(owner);
       return;
     }
