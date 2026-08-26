@@ -2950,7 +2950,10 @@ const MAINT_COLUMNS = [
   { key: '🔴 Critical',   header: '🔴 Critical',   cls: 'col-critical' },
   { key: '🟡 Follow-up',  header: '🟡 Follow-up',  cls: 'col-followup' },
   { key: '🟢 In Progress',header: '🟢 In Progress',cls: 'col-inprogress' },
-  { key: '📅 Daily Task', header: '📅 Daily Task', cls: 'col-daily' },
+  // 🔁, not 📅 — this must match OPS_PRIORITIES / DAILY_STATUS in metric-routes.js.
+  // It did not, so every Daily Task was grouped into In Progress and its select
+  // fell through to the first option and read "Critical".
+  { key: '🔁 Daily Task', header: '🔁 Daily Task', cls: 'col-daily' },
   { key: '✅ Done',        header: '✅ Done',        cls: 'col-done' },
 ];
 
@@ -2966,16 +2969,36 @@ async function loadMaintenanceTasks() {
   }
 }
 
+// The dropdown must never misreport a task's priority. With no matching option a
+// browser selects the first one, so an unrecognised value silently displayed as
+// "🔴 Critical" — and picking anything from that lying select wrote a real change,
+// which for a Daily Task means losing the 🔁 that resetDailyTasks keys on. An
+// unknown value is now shown as itself.
+function maintPriorityOptions(priority) {
+  const opts = MAINT_COLUMNS.map(c =>
+    `<option value="${esc(c.key)}"${c.key === priority ? ' selected' : ''}>${esc(c.key)}</option>`);
+  if (priority && !MAINT_COLUMNS.some(c => c.key === priority)) {
+    opts.unshift(`<option value="${esc(priority)}" selected>${esc(priority)}</option>`);
+  }
+  return opts.join('');
+}
+
 function renderMaintenanceKanban() {
   const el = $('#maint-tasks-body');
   if (!el) return;
 
   const grouped = {};
   MAINT_COLUMNS.forEach(c => { grouped[c.key] = []; });
+  // Unknown values still land somewhere rather than vanishing, but they no longer
+  // do it silently: a mismatch between this list and the server's is exactly the
+  // bug above, and it is invisible until someone notices the counts are wrong.
+  const orphans = new Set();
   maintTaskCache.forEach(t => {
-    const col = grouped[t.priority] != null ? t.priority : '🟢 In Progress';
-    if (grouped[col]) grouped[col].push(t);
+    let col = t.priority;
+    if (grouped[col] == null) { orphans.add(t.priority); col = '🟢 In Progress'; }
+    grouped[col].push(t);
   });
+  if (orphans.size) console.warn('[maint-kanban] priority with no column:', [...orphans]);
 
   el.className = 'kanban';
 
@@ -3001,7 +3024,7 @@ function renderMaintenanceKanban() {
             <div class="card-actions">
               ${!done ? `<button class="btn-sm primary maint-task-done" data-id="${esc(t.id)}">✓ Done</button>` : `<button class="btn-sm maint-task-undone" data-id="${esc(t.id)}">Undo</button>`}
               <select class="crm-select maint-task-prio" data-id="${esc(t.id)}" style="font-size:0.78rem">
-                ${MAINT_COLUMNS.map(c => `<option${t.priority === c.key ? ' selected' : ''}>${esc(c.key)}</option>`).join('')}
+                ${maintPriorityOptions(t.priority)}
               </select>
               <button class="btn-sm btn-danger maint-task-del" data-id="${esc(t.id)}">🗑</button>
             </div>
