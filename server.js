@@ -2652,6 +2652,24 @@ function requireCRM(req, res, next) {
   next();
 }
 
+// A bd_agent or maintenance user only ever sees properties they personally
+// shop. Deliberately NOT assigned_to: that field is the primary BD rep, and
+// being the rep is not the same as doing the shopping.
+//
+// Returns the agent name to filter by, or null when the caller sees everything.
+// /api/crm/properties applies it as a database predicate and /api/crm/tasks in
+// memory — different mechanics, one rule, so the two cannot drift apart.
+const CRM_RESTRICTED_ROLES = ['bd_agent', 'maintenance'];
+
+function crmRestrictToAgent(req) {
+  const role = req.user?.role;
+  const agent = req.user?.agentName;
+  return (CRM_RESTRICTED_ROLES.includes(role) && agent) ? agent : null;
+}
+
+const crmAgentShops = (p, agent) =>
+  p.phone_assignee === agent || p.phone_assignee3 === agent || p.online_dm_assignee === agent;
+
 // ---- GET /api/crm/status -------------------------------------------------------
 app.get('/api/crm/status', (req, res) => {
   res.json({ configured: CRM_CONFIGURED, hasAdmin: !!supabaseAdmin });
@@ -2673,11 +2691,10 @@ app.get('/api/crm/properties', requireCRM, requireAuth, async (req, res) => {
       .order('property_name', { ascending: true })
       .range(from, from + limit - 1);
 
-    // Role-based property filter: bd_agent and maintenance only see their assigned properties
-    const restrictedRoles = ['bd_agent', 'maintenance'];
-    const callerRole = req.user?.role;
-    const callerAgent = req.user?.agentName;
-    if (restrictedRoles.includes(callerRole) && callerAgent) {
+    // Role-based property filter — see crmRestrictToAgent above. Applied in the
+    // query here rather than in JS, so the rows never leave the database.
+    const callerAgent = crmRestrictToAgent(req);
+    if (callerAgent) {
       query = query.or(`phone_assignee.eq.${callerAgent},phone_assignee3.eq.${callerAgent},online_dm_assignee.eq.${callerAgent}`);
     }
 
@@ -3056,10 +3073,13 @@ app.post('/api/crm/import-costar', requireCRM, multerMemory.single('file'), asyn
 
 // ---- GET /api/crm/tasks --------------------------------------------------------
 // Derives tasks from properties in Supabase — no separate tasks table.
-app.get('/api/crm/tasks', requireCRM, async (req, res) => {
+// requireAuth is not optional here: tasks expose every property's activity and
+// assignments, and without a session there is no role to restrict by. Verified
+// no MCP tool calls this route, so adding it breaks nothing.
+app.get('/api/crm/tasks', requireCRM, requireAuth, async (req, res) => {
   try {
     const db = supabaseAdmin || supabasePublic;
-    const { agent } = req.query; // optional filter by assigned_to
+    const { agent } = req.query; // optional narrowing by the UI's agent dropdown
 
     // select('*') on purpose: the engine reads year_built, asset_class and
     // phone_assignee3, which the old column list did not include.
@@ -3095,7 +3115,15 @@ app.get('/api/crm/tasks', requireCRM, async (req, res) => {
     const byDm      = {};
     (dms.data || []).forEach(r => { byDm[r.property_id] = r; });
 
-    const hydrated = properties.map(p => ({
+    // Same restriction as /api/crm/properties, applied before the engine runs so
+    // a restricted caller cannot see tasks for properties they do not shop. The
+    // ?agent= dropdown then narrows further within whatever remains.
+    const restrictAgent = crmRestrictToAgent(req);
+    const visible = restrictAgent
+      ? properties.filter(p => crmAgentShops(p, restrictAgent))
+      : properties;
+
+    const hydrated = visible.map(p => ({
       ...p,
       phone_shops:  byPhone[p.id]  || [],
       online_shops: byOnline[p.id] || [],

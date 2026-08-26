@@ -45,11 +45,15 @@ function copyToClipboard(text) {
 }
 
 // ---- Auth / session ---------------------------------------------------------
+// This gate is convenience, not security — it hides tabs the role cannot use.
+// The data itself is protected server-side (requireAuth + the agent filter on
+// the CRM routes), so a hidden tab is never the only thing standing in the way.
 const TAB_ACCESS = {
   admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm'],
   ceo:         ['crm', 'platform', 'eod'],
   operations:  ['tasks', 'platform', 'email', 'eod'],
-  maintenance: ['crm'],
+  // Erick: the Maintenance tab and its twelve sub-views, nothing else.
+  maintenance: ['maintenance'],
   bd_agent:    ['crm'],
 };
 
@@ -1273,13 +1277,24 @@ $$('.crm-nav-btn').forEach(btn =>
 $('#crm-agent-select').addEventListener('change', e => { crmState.agent = e.target.value; });
 
 function crmApplyUserRole() {
-  const sel = $('#crm-agent-select');
-  if (!sel || !currentUser) return;
+  if (!currentUser) return;
   const lockedRoles = ['bd_agent', 'maintenance'];
-  if (lockedRoles.includes(currentUser.role) && currentUser.agentName) {
-    sel.value = currentUser.agentName;
-    crmState.agent = currentUser.agentName;
-    sel.disabled = true;
+  if (!lockedRoles.includes(currentUser.role) || !currentUser.agentName) return;
+  const me = currentUser.agentName;
+
+  const sel = $('#crm-agent-select');
+  if (sel) { sel.value = me; sel.disabled = true; }
+  crmState.agent = me;
+
+  // The Task Queue has its own agent dropdown. The server already restricts
+  // these roles to properties they shop, so leaving it open is not a data leak
+  // — but offering colleagues' names that can only ever return an empty queue
+  // reads as a bug. Pin it to the one name that means anything here.
+  const taskSel = $('#crm-task-agent-filter');
+  if (taskSel) {
+    taskSel.innerHTML = `<option value="${esc(me)}">${esc(me)}</option>`;
+    taskSel.value = me;
+    taskSel.disabled = true;
   }
 }
 
