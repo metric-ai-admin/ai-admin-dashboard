@@ -49,10 +49,11 @@ function copyToClipboard(text) {
 // The data itself is protected server-side (requireAuth + the agent filter on
 // the CRM routes), so a hidden tab is never the only thing standing in the way.
 const TAB_ACCESS = {
-  // 'reports' is the Unified Daily Operations Report. Given to the three roles
-  // whose people are named on it; Bekah, Kara and Rocío need their roles checked
-  // against dashboard_users, because if they are not 'operations' the tab —
-  // and their sign-off row — will not appear for them.
+  // 'reports' is the Unified Daily Operations Report: admin gets the whole thing
+  // including the confidential panels, operations gets the report and its own
+  // sign-off row. Deliberately not given to maintenance or bd_agent.
+  // Bekah, Kara and Rocío are named on the report but have no account yet, so
+  // there is no role to grant — revisit when Jay confirms theirs.
   admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
   operations:  ['tasks', 'platform', 'email', 'eod', 'reports'],

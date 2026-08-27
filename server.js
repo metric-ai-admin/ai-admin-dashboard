@@ -3564,28 +3564,34 @@ app.post('/api/crm/bulk-import', async (req, res) => {
 
 // Stored into the report's jsonb at generate time rather than read from here at
 // render time, so changing this constant later cannot rewrite the history of
-// reports already signed. The owners are a first pass from the org roles — Jay
-// operations, Erick maintenance, Rocío collections and leasing — and are meant
-// to be confirmed, not assumed correct.
+// reports already signed. Owners are as confirmed by Jay. Three of them —
+// Rocío on leasing and collections, Bekah on pending items — have no dashboard
+// account yet; they own the section regardless, and the placeholder names them
+// so it is clear whose input is missing rather than just that something is.
 const REPORT_SECTIONS = [
-  { key: 'urgent',      icon: '🚨', title: 'Urgent / Needs Attention', owner: 'Jay' },
+  { key: 'urgent',      icon: '🚨', title: 'Urgent / Needs Attention', owner: 'Jay Manuel' },
   { key: 'leasing',     icon: '🏠', title: 'Leasing & Applications',   owner: 'Rocío' },
-  { key: 'maintenance', icon: '🔧', title: 'Maintenance',              owner: 'Erick' },
+  { key: 'maintenance', icon: '🔧', title: 'Maintenance',              owner: 'Erick Frey' },
   { key: 'collections', icon: '💰', title: 'Collections',              owner: 'Rocío' },
-  { key: 'kpi',         icon: '📊', title: 'KPI Results',              owner: 'Jay' },
+  { key: 'kpi',         icon: '📊', title: 'KPI Results',              owner: 'Jay Manuel' },
   { key: 'pending',     icon: '⏳', title: 'Pending Items',            owner: 'Bekah' },
-  { key: 'other',       icon: '📝', title: 'Other',                    owner: 'the team' },
+  { key: 'other',       icon: '📝', title: 'Other',                    owner: 'Team' },
 ];
 
-// Who is expected to sign. Kept as first names because that is how the report
-// was specified; a row is matched to an account by comparing against the signed
-// in user's name, so someone whose dashboard_users.name does not start with
-// their first name will not be offered a row. Worth checking against the real
-// records before this goes live.
-const REPORT_SIGNERS = ['Jay', 'Bekah', 'Kara', 'Rocío'];
+// Who is expected to sign, as their dashboard_users.name reads exactly — a row is
+// matched to an account by comparing against the signed-in user's name, so the
+// two have to agree.
+//
+// Only the three who have accounts. Bekah (Rebekah Tuckner), Kara (Kara Garst)
+// and Rocío (Rocío Hunsberger) are named on the report but have no login yet,
+// pending Jay confirming their roles. Listing them here would put permanently
+// unsignable rows on every report and make the sign-off look incomplete when it
+// is not. Add them when their accounts exist.
+const REPORT_SIGNERS = ['Jay Manuel', 'Lyndsay Hanes', 'Arturo Mendoza'];
 
-// Lyndsay's role is 'ceo', not 'admin'. Gating the confidential views on admin
-// alone would lock her out of a feature that is hers.
+// Lyndsay is 'admin' in dashboard_users — there is no 'ceo' row today. Kept in
+// the list anyway because TAB_ACCESS already carries a ceo entry, so if that role
+// is ever created it should reach this panel rather than silently not.
 const REPORT_ADMIN_ROLES = ['admin', 'ceo'];
 const isReportAdmin = req => REPORT_ADMIN_ROLES.includes(req.user?.role);
 
