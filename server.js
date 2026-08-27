@@ -3451,8 +3451,10 @@ app.get('/api/crm/meta', requireCRM, async (req, res) => {
 });
 
 // ---- BD Agents (roster) --------------------------------------------------------
-// requireAuth on the read as well: this table carries staff emails and phone
-// numbers, which the property list does not. Writes are admin-only on top.
+// The read is restricted to admin and operations, not just any signed-in user:
+// this table carries internal staff emails and phone numbers, which the property
+// list does not, and a bd_agent has no reason to hold the team's contact
+// details. Writes are admin-only on top of that.
 const BD_AGENT_FIELDS = ['name', 'email', 'role', 'phone', 'status', 'crm_alias', 'notes'];
 const BD_AGENT_STATUSES = ['active', 'inactive', 'unknown'];
 
@@ -3484,7 +3486,7 @@ function bdAgentError(error) {
   return error.message;
 }
 
-app.get('/api/crm/bd-agents', requireCRM, requireAuth, async (req, res) => {
+app.get('/api/crm/bd-agents', requireCRM, requireAuth, requireRole('admin', 'operations'), async (req, res) => {
   try {
     const client = supabaseAdmin || supabasePublic;
     const { data, error } = await client.from('bd_agents').select('*').order('name');
