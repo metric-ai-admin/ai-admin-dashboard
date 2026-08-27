@@ -402,6 +402,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 
 .banner { padding: 11px 14px; border-radius: 10px; font-size: 13px; line-height: 1.55; margin-bottom: 14px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); }
 .banner-warn { border-color: var(--warning); background: var(--warning-bg); }
+/* The family only had a warn variant. Added for the Command Center's restore
+   notice, which is reassurance rather than a warning. */
+.banner-ok { border-color: var(--success); background: var(--success-bg); }
 .banner code { background: var(--bg-base); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 
 @keyframes rs-spin-kf { to { transform: rotate(360deg); } }

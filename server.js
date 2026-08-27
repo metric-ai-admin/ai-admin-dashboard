@@ -4022,6 +4022,66 @@ app.get('/api/reports/daily/views/:report_id', requireAuth, requireRole(...REPOR
 
 // ── End Daily Operations Report ─────────────────────────────────────────────
 
+// =====================================================================
+// MODULE — COMMAND CENTER DAILY STATE
+// =====================================================================
+// Registered here rather than in metric-routes.js, which owns the rest of
+// /api/maintenance/*, because requireAuth lives in this file and is the guard
+// this needs. requireMetricAccess over there also accepts the shared key, which
+// is right for Erick's MCP tools but wider than a browser-only feature wants.
+//
+// Keyed by date, not by user: Erick is the only person who works this board, and
+// two browsers open on the same day should converge rather than fork.
+
+const CC_STATE_RETENTION_DAYS = 7;
+
+app.get('/api/maintenance/command-center/state', requireAuth, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('cc_daily_state')
+      .select('*').eq('state_date', reportDateStr()).maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    // null, not 404: "no state yet today" is the normal first call each morning,
+    // and the client should not have to tell that apart from a failure.
+    res.json({ state: data || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/maintenance/command-center/state', requireAuth, async (req, res) => {
+  const body = req.body || {};
+  const tasks = Array.isArray(body.tasks) ? body.tasks : [];
+  const checks = (body.checks && typeof body.checks === 'object' && !Array.isArray(body.checks)) ? body.checks : {};
+  const state_date = reportDateStr();
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    // Counts are recomputed here rather than trusted from the client, so the
+    // stored row cannot disagree with the payload it was built from.
+    const completed = tasks.filter(t => t && checks[t.id]).length;
+    const row = {
+      state_date, tasks, checks,
+      total_tasks: tasks.length,
+      completed_tasks: completed,
+      generated_at: body.generated_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const { data, error } = await client.from('cc_daily_state')
+      .upsert(row, { onConflict: 'state_date' }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Pruned on write instead of on a schedule — this table is touched often
+    // enough that a cron would be a second thing to maintain for no gain.
+    // Failing to prune must not fail the save.
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - CC_STATE_RETENTION_DAYS);
+    client.from('cc_daily_state').delete().lt('state_date', localDateStr(cutoff))
+      .then(({ error: de }) => { if (de) console.error('[cc-state] prune failed:', de.message); });
+
+    res.json({ ok: true, state: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── End Command Center daily state ──────────────────────────────────────────
+
 // ── Maintenance routes (Erick's board, property assignments, Lyndsay snapshots,
 //    AppFolio analyzer) — registered on the same app instance using Supabase db ──
 registerMetricRoutes(app, supabaseAdmin || supabasePublic);

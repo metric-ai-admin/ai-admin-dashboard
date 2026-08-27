@@ -557,6 +557,8 @@ function ccGenerate() {
   CC_TASKS = list;
   ccRenderTasks();
   ccRenderTotals();
+  ccGeneratedAt = new Date().toISOString();
+  ccSaveState();
   ccPushToDailyReport();
   toast(list.length ? `${list.length} tasks generated` : 'Nothing flagged', list.length ? 'success' : 'info');
 }
@@ -697,12 +699,13 @@ function ccRenderTasks() {
   const host = $('#cc-tasks'), sum = $('#cc-summary');
   if (!host) return;
   host.innerHTML = ''; if (sum) sum.innerHTML = '';
-  if (!Object.keys(ccReports).length) {
-    host.innerHTML = '<div class="empty-state">Load the Master Data File above, then press Generate today\'s tasks.</div>';
-    return ccUpdateProgress();
-  }
+  // Tasks first: after a reload the workbook is gone but the tasks come back
+  // from the server, and testing for reports first would have told Erick to load
+  // a file he had already loaded — hiding the very state that was just restored.
   if (!CC_TASKS.length) {
-    host.innerHTML = '<div class="empty-state">Nothing flagged 🎉 — no tasks generated from the loaded reports.</div>';
+    host.innerHTML = Object.keys(ccReports).length
+      ? '<div class="empty-state">Nothing flagged 🎉 — no tasks generated from the loaded reports.</div>'
+      : '<div class="empty-state">Load the Master Data File above, then press Generate today\'s tasks.</div>';
     return ccUpdateProgress();
   }
 
@@ -791,6 +794,7 @@ function ccTaskRow(t) {
   d.querySelector('.cc-tck').addEventListener('change', e => {
     if (e.target.checked) ccChecks[t.id] = 1; else delete ccChecks[t.id];
     ccSaveChecks();
+    ccScheduleSave();
     d.classList.toggle('done', e.target.checked);
     ccRefreshCounts();
   });
@@ -901,11 +905,69 @@ function ccBuildRoutine() {
     el.querySelector('input').addEventListener('change', e => {
       if (e.target.checked) ccChecks[cid] = 1; else delete ccChecks[cid];
       ccSaveChecks();
+      ccScheduleSave();
       el.classList.toggle('done', e.target.checked);
       ccUpdateProgress();
     });
     host.appendChild(el);
   });
+}
+
+/* ---------------- daily state ---------------- */
+/* The board used to live entirely in browser memory: a reload, or a laptop
+   sleeping through lunch, lost the morning with nothing to recover from.
+   State is keyed by date on the server, so tomorrow starts empty on its own --
+   the daily reset needs no clearing step and cannot be forgotten. */
+const CC_STATE_URL = '/api/maintenance/command-center/state';
+let ccSaveTimer = null;
+let ccGeneratedAt = null;
+
+async function ccSaveState() {
+  clearTimeout(ccSaveTimer); ccSaveTimer = null;
+  try {
+    await fetch(CC_STATE_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tasks: CC_TASKS, checks: ccChecks, generated_at: ccGeneratedAt }),
+    });
+  } catch { /* offline or logged out -- localStorage still holds the ticks */ }
+}
+
+/* Ticking through a category fires this on every box. Debounced so a run of
+   twenty ticks is one write, and the trailing edge is what matters -- the last
+   state is the one worth keeping. */
+function ccScheduleSave() {
+  clearTimeout(ccSaveTimer);
+  ccSaveTimer = setTimeout(ccSaveState, 2000);
+}
+
+async function ccRestoreState() {
+  let state = null;
+  try {
+    const res = await fetch(CC_STATE_URL);
+    if (!res.ok) return;                       // not signed in, or nothing to restore
+    state = (await res.json()).state;
+  } catch { return; }
+  if (!state || !Array.isArray(state.tasks) || !state.tasks.length) return;
+
+  CC_TASKS = state.tasks;
+  ccGeneratedAt = state.generated_at || null;
+  /* The server copy wins rather than merging with localStorage. It was written
+     from this same browser and is at most one debounce behind; a union would
+     make an untick impossible to persist, since the local copy would keep
+     putting the tick back. */
+  ccChecks = (state.checks && typeof state.checks === 'object') ? state.checks : {};
+  ccSaveChecks();
+
+  ccBuildRoutine();
+  ccRenderTasks();
+
+  const banner = $('#cc-restored');
+  if (banner) {
+    const when = state.updated_at ? new Date(state.updated_at).toLocaleTimeString() : 'earlier today';
+    banner.innerHTML = `↻ <b>Restored from today's session</b> — last saved ${esc(when)}.
+      <span class="muted small">Totals need the workbook loaded again.</span>`;
+    banner.classList.remove('hidden');
+  }
 }
 
 /* ---------------- export / import ---------------- */
@@ -929,6 +991,7 @@ function ccImportActivity(file) {
       ccBuildRoutine();
       if (CC_TASKS.length) ccRenderTasks(); else ccUpdateProgress();
       ccRefreshCounts();
+      ccSaveState();
       toast('Prior activity imported', 'success');
     } catch (err) { toast('Could not read that activity file: ' + err.message, 'error'); }
   };
@@ -947,6 +1010,7 @@ function ccInit() {
   ccBuildRoutine();
   ccRenderSlots();
   ccUpdateProgress();
+  ccRestoreState();
 
   const drop = $('#cc-drop'), input = $('#cc-file');
   input?.addEventListener('change', e => { if (e.target.files[0]) ccLoadFile(e.target.files[0]); e.target.value = ''; });
@@ -960,7 +1024,9 @@ function ccInit() {
     for (const k in ccReports) delete ccReports[k];
     CC_TASKS = [];
     const st = $('#cc-status'); if (st) st.innerHTML = '';
+    $('#cc-restored')?.classList.add('hidden');
     ccRenderSlots(); ccRenderTasks(); ccRenderTotals();
+    ccSaveState();   // clearing is a state change too, or a reload brings it back
     toast('Loaded data cleared');
   });
   $('#cc-export')?.addEventListener('click', ccExportActivity);
