@@ -1247,9 +1247,19 @@ const crmState = {
   dmScores: { website: {}, floorplan: {}, gbp: {}, facebook: {}, ils: {} },
 };
 
+// Returned the parsed body whatever the status, so a failed request arrived as
+// { error: '…' } and read like data. Callers went on to their success path: the
+// online shop form closed and re-rendered as if the row had been written, when
+// the insert had in fact been rejected and every shop logged through it was
+// lost. Errors now throw, which is what the catch around every call site was
+// already written for.
 async function crmFetch(path, opts) {
   const r = await fetch(path, opts);
-  return r.json();
+  // Parsed first: the error message is in the body, and a 500 from a proxy may
+  // not carry JSON at all, in which case the status is all there is to report.
+  const data = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(data?.error || r.statusText || `Request failed (${r.status})`);
+  return data;
 }
 
 function crmBuildQuery() {
