@@ -4082,6 +4082,140 @@ app.post('/api/maintenance/command-center/state', requireAuth, async (req, res) 
 
 // ── End Command Center daily state ──────────────────────────────────────────
 
+// =====================================================================
+// MODULE — DAILY 6 PM REPORT
+// =====================================================================
+// Lyndsay's end-of-day roll-up, spec confirmed 2026-08-17: the day's meetings in
+// three categories, action items from their transcripts, and her inbox at the
+// moment it runs. WhatsApp delivery is a later step.
+//
+// Two of those inputs are not reachable from this server yet, and the report is
+// built so a reader can tell "nothing happened" from "we could not look":
+//
+//   Transcripts need OnlineMeetingTranscript.Read.All as an APPLICATION
+//   permission with admin consent, plus a Teams application access policy
+//   (New-CsApplicationAccessPolicy) scoping this app to Lyndsay's meetings.
+//   GRAPH_SCOPES holds only Mail and Calendars today.
+//
+//   Action-item extraction needs an Anthropic key the server can call out with.
+//   COPILOT_API_KEY is an inbound key guarding a route for external callers, not
+//   that. Nothing here calls a model.
+//
+// The meeting list and the inbox snapshot are real and work now. Both gaps drop
+// into the stored shape without a schema change or a rewrite here.
+//
+// Note also that meeting-transcript:///events/{token} named in the brief is an
+// MCP resource. MCP servers are attached to a Claude client, not to this
+// process, so a cron running inside Express cannot reach it — the transcript
+// route has to be Graph.
+
+const SIXPM_CATEGORIES = ['KPI Meetings', 'Client calls', 'Operations'];
+const sixPmNorm = s => String(s || '').trim().toLowerCase();
+
+async function sixPmMeetings() {
+  const out = { meetings: [], matched: 0, otherToday: 0, error: null };
+  try {
+    const token = await graphAccessToken();
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    const end = new Date(); end.setHours(23, 59, 59, 999);
+    // categories is what the three buckets are read from — Outlook categories,
+    // which only exist if someone tags the meeting. The existing calendar read
+    // does not request the field, so this query is its own.
+    const url = `https://graph.microsoft.com/v1.0/users/${MAILBOX_LYNDSAY}/calendarView`
+      + `?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
+      + '&$select=subject,start,end,attendees,organizer,onlineMeeting,categories,bodyPreview,isAllDay'
+      + '&$orderby=start/dateTime&$top=100';
+    const res = await fetchFn(url, { headers: { Authorization: `Bearer ${token}`, Prefer: 'outlook.timezone="America/Chicago"' } });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error?.message || `Graph returned ${res.status}`);
+
+    const wanted = SIXPM_CATEGORIES.map(sixPmNorm);
+    for (const e of (json.value || [])) {
+      if (e.isAllDay) continue;
+      const cats = Array.isArray(e.categories) ? e.categories : [];
+      const hit = cats.find(c => wanted.includes(sixPmNorm(c)));
+      if (!hit) { out.otherToday++; continue; }
+      out.matched++;
+      out.meetings.push({
+        subject: e.subject || '(no subject)',
+        category: SIXPM_CATEGORIES.find(c => sixPmNorm(c) === sixPmNorm(hit)) || hit,
+        start: e.start?.dateTime || null,
+        end: e.end?.dateTime || null,
+        organizer: e.organizer?.emailAddress?.name || null,
+        attendees: (e.attendees || []).map(a => a.emailAddress?.name).filter(Boolean).slice(0, 12),
+        joinUrl: e.onlineMeeting?.joinUrl || null,
+        preview: (e.bodyPreview || '').slice(0, 300),
+        // Filled in once transcripts are reachable; null means not looked at,
+        // which is not the same as a meeting with nothing said in it.
+        transcript: null,
+      });
+    }
+  } catch (err) {
+    out.error = err.message;
+    console.error('[6pm] calendar read failed:', err.message);
+  }
+  return out;
+}
+
+async function sixPmBuild() {
+  const cal = await sixPmMeetings();
+  const inbox = refreshState.inboxCounts || null;
+  return {
+    report_date: reportDateStr(),
+    meetings: cal.meetings,
+    action_items: [],
+    inbox_snapshot: inbox ? { lyndsay: inbox.lyndsay ?? null, lastChecked: inbox.lastChecked ?? null } : {},
+    sources: {
+      meetings: cal.error ? 'error' : 'ok',
+      meetings_error: cal.error || null,
+      meetings_matched: cal.matched,
+      meetings_other_today: cal.otherToday,
+      categories: SIXPM_CATEGORIES,
+      // Stated rather than left to be inferred from an empty array.
+      transcripts: 'unavailable',
+      transcripts_reason: 'Needs OnlineMeetingTranscript.Read.All (application) with admin consent and a Teams application access policy for Lyndsay.',
+      action_items: 'unavailable',
+      action_items_reason: 'Needs an Anthropic API key the server can call out with. COPILOT_API_KEY is an inbound guard, not that.',
+      inbox: inbox ? 'ok' : 'unavailable',
+    },
+    generated_at: new Date().toISOString(),
+  };
+}
+
+async function sixPmGenerate() {
+  const client = supabaseAdmin || supabasePublic;
+  const row = await sixPmBuild();
+  const { data, error } = await client.from('daily_6pm_reports')
+    .upsert(row, { onConflict: 'report_date' }).select().single();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+app.post('/api/reports/daily-6pm/generate', requireAuth, requireRole('admin', 'operations'), async (req, res) => {
+  try { res.json({ ok: true, report: await sixPmGenerate() }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/reports/daily-6pm/latest', requireAuth, requireRole('admin', 'operations'), async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('daily_6pm_reports')
+      .select('*').order('generated_at', { ascending: false }).limit(1).maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ report: data || null, categories: SIXPM_CATEGORIES });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 6 PM Central, stated explicitly: Render runs UTC, so an unqualified "18 * * *"
+// would fire at noon or 1 PM in Austin depending on the season.
+cron.schedule('0 18 * * *', () => {
+  sixPmGenerate()
+    .then(r => logLine(`[6pm] report generated for ${r.report_date}`))
+    .catch(err => console.error('[6pm] scheduled run failed:', err.message));
+}, { timezone: 'America/Chicago' });
+
+// ── End Daily 6 PM Report ───────────────────────────────────────────────────
+
 // ── Maintenance routes (Erick's board, property assignments, Lyndsay snapshots,
 //    AppFolio analyzer) — registered on the same app instance using Supabase db ──
 registerMetricRoutes(app, supabaseAdmin || supabasePublic);

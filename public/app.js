@@ -54,9 +54,9 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports'],
+  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
-  operations:  ['tasks', 'platform', 'email', 'eod', 'reports'],
+  operations:  ['tasks', 'platform', 'email', 'eod', 'reports', 'sixpm'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
   maintenance: ['maintenance'],
   bd_agent:    ['crm'],
@@ -162,6 +162,7 @@ function loadTab(tab) {
   if (tab === 'maintenance') loadMaintenance();
   if (tab === 'crm') { crmApplyUserRole(); crmLoadMeta(); crmLoadProperties(); if (crmCanSeeRoster()) crmLoadRoster(); }
   if (tab === 'reports') reportLoad();
+  if (tab === 'sixpm') sixpmLoad();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -4358,6 +4359,135 @@ $('#report-generate')?.addEventListener('click', async () => {
     reportLoad();
   } catch (err) { toast(err.message, 'error'); }
   finally { btn.disabled = false; }
+});
+
+
+// ============================================================================
+// DAILY 6 PM REPORT
+// ============================================================================
+// Two of the three inputs are not reachable from the server yet — Teams
+// transcripts need a Graph application permission and a Teams access policy,
+// and action-item extraction needs a model key the server does not have. The
+// panel says so per source rather than showing an empty list, because "no
+// action items today" and "nobody looked" are different reports and only one of
+// them is safe to act on.
+
+let sixpmReport = null;
+
+const SIXPM_SOURCE_LABEL = {
+  meetings: "Today's meetings",
+  transcripts: 'Meeting transcripts',
+  action_items: 'Action items',
+  inbox: "Lyndsay's inbox",
+};
+
+async function sixpmLoad() {
+  const el = $('#sixpm-meetings');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const data = await api('/api/reports/daily-6pm/latest');
+    sixpmReport = data.report;
+    sixpmRender();
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+    $('#sixpm-meta').textContent = 'Could not load the report';
+  }
+}
+
+function sixpmRender() {
+  const r = sixpmReport;
+  if (!r) {
+    $('#sixpm-meta').textContent = 'No report generated yet — it runs automatically at 6 PM Central.';
+    $('#sixpm-sources').innerHTML = '';
+    $('#sixpm-meetings').innerHTML = '<div class="empty-state">Nothing yet. Press Generate Now to build one for today.</div>';
+    $('#sixpm-actions').innerHTML = '';
+    $('#sixpm-inbox').innerHTML = '';
+    return;
+  }
+  const s = r.sources || {};
+  $('#sixpm-meta').textContent =
+    `${r.report_date} · generated ${new Date(r.generated_at).toLocaleString()}`;
+
+  // What the run could and could not see. Ordered so the unavailable ones are
+  // not buried under the ones that worked.
+  const rows = ['meetings', 'transcripts', 'action_items', 'inbox'].map(k => {
+    const ok = s[k] === 'ok';
+    const reason = s[k + '_reason'] || s[k + '_error'] || '';
+    return `<div class="sixpm-src${ok ? '' : ' pending'}">
+      <span class="badge ${ok ? 'badge-green' : 'badge-amber'}">${ok ? 'ok' : (s[k] || 'unknown')}</span>
+      <b>${esc(SIXPM_SOURCE_LABEL[k] || k)}</b>
+      ${reason ? `<span class="muted small">${esc(reason)}</span>` : ''}
+    </div>`;
+  }).join('');
+  $('#sixpm-sources').innerHTML = `<div class="sixpm-sources">${rows}</div>`;
+
+  // Meetings
+  const meetings = r.meetings || [];
+  $('#sixpm-meetings-note').textContent = s.categories
+    ? `Categories: ${s.categories.join(' · ')}${s.meetings_other_today ? ` — ${s.meetings_other_today} other meeting${s.meetings_other_today === 1 ? '' : 's'} today carried none of them` : ''}`
+    : '';
+  $('#sixpm-meetings').innerHTML = meetings.length
+    ? meetings.map(m => `
+        <div class="card" style="margin-bottom:10px">
+          <div class="card-meta" style="justify-content:space-between">
+            <span class="badge badge-gray">${esc(m.category)}</span>
+            <span class="muted small">${m.start ? new Date(m.start).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) : ''}</span>
+          </div>
+          <div class="card-title">${esc(m.subject)}</div>
+          <div class="card-meta small muted">
+            ${m.organizer ? `<span>👤 ${esc(m.organizer)}</span>` : ''}
+            ${m.attendees?.length ? `<span>${m.attendees.length} attendee${m.attendees.length === 1 ? '' : 's'}</span>` : ''}
+            ${m.joinUrl ? `<a href="${esc(m.joinUrl)}" target="_blank" rel="noopener">Open in Teams ↗</a>` : ''}
+          </div>
+          ${m.transcript
+            ? `<div class="card-notes">${esc(m.transcript)}</div>`
+            : '<div class="card-notes muted small"><i>No transcript — see the source list above.</i></div>'}
+        </div>`).join('')
+    : `<div class="empty-state">${s.meetings === 'error'
+        ? 'The calendar could not be read: ' + esc(s.meetings_error || '')
+        : 'No meetings today carried one of the three report categories.'}</div>`;
+
+  // Action items
+  const actions = r.action_items || [];
+  $('#sixpm-actions').innerHTML = actions.length
+    ? `<div style="overflow-x:auto"><table class="crm-table">
+        <thead><tr><th>Action</th><th>Owner</th><th>Due</th><th>From</th></tr></thead><tbody>
+        ${actions.map(a => `<tr>
+          <td>${esc(a.action || '')}</td>
+          <td>${a.owner ? esc(a.owner) : '<span class="muted small">unassigned</span>'}</td>
+          <td class="small muted">${esc(a.due || '—')}</td>
+          <td class="small muted">${esc(a.meeting || '')}</td>
+        </tr>`).join('')}
+      </tbody></table></div>`
+    : `<div class="empty-state">${s.action_items === 'ok'
+        ? 'No action items came out of today\'s meetings.'
+        : 'Not extracted — ' + esc(s.action_items_reason || 'source unavailable') }</div>`;
+
+  // Inbox snapshot
+  const ib = r.inbox_snapshot || {};
+  const ly = ib.lyndsay;
+  $('#sixpm-inbox').innerHTML = ly
+    ? `<div class="card"><div class="card-meta">
+         <span class="badge badge-amber">${ly.unread ?? '—'} unread</span>
+         <span class="badge badge-gray">${ly.total ?? '—'} total</span>
+         ${ib.lastChecked ? `<span class="muted small">as of ${new Date(ib.lastChecked).toLocaleTimeString()}</span>` : ''}
+       </div>
+       <p class="muted small" style="margin-bottom:0">Counts only. Her messages are deliberately not in this report.</p></div>`
+    : '<div class="empty-state">No inbox snapshot on this run.</div>';
+}
+
+$('#sixpm-refresh')?.addEventListener('click', sixpmLoad);
+$('#sixpm-generate')?.addEventListener('click', async () => {
+  const btn = $('#sixpm-generate');
+  btn.disabled = true; btn.textContent = 'Generating…';
+  try {
+    const r = await api('/api/reports/daily-6pm/generate', { method: 'POST' });
+    sixpmReport = r.report;
+    sixpmRender();
+    toast('Report generated', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = 'Generate Now'; }
 });
 
 // Boot — verify session, gate tabs, then load initial tab

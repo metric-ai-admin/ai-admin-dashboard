@@ -54,6 +54,7 @@
       <button data-tab="platform"><span class="nav-dot"></span>Projects</button>
       <button data-tab="email"><span class="nav-dot"></span>Email / Cal<span id="reminder-badge" class="reminder-badge hidden">0</span></button>
       <button data-tab="eod"><span class="nav-dot"></span>End of Day</button>
+      <button data-tab="sixpm"><span class="nav-dot"></span>6PM Report</button>
       <div class="subnav-group" id="maintenance-nav-group">
         <button data-tab="maintenance"><span class="nav-dot"></span>Maintenance <span class="subnav-caret" id="maint-subnav-caret">›</span></button>
         <div class="subnav hidden" id="maintenance-subnav">
@@ -157,6 +158,33 @@
       </div>
       <div id="asana-panel-body"></div>
     </div>
+  </section>
+
+  <!-- ============ DAILY 6 PM REPORT ============ -->
+  <section id="tab-sixpm" class="tab">
+    <div class="view-head">
+      <div>
+        <h2>Daily 6 PM Report</h2>
+        <p class="muted small" id="sixpm-meta">Loading&hellip;</p>
+      </div>
+      <div class="view-actions">
+        <button class="btn-sm primary" id="sixpm-generate">Generate Now</button>
+        <button class="btn-sm" id="sixpm-refresh">&#128260; Refresh</button>
+      </div>
+    </div>
+    <div id="sixpm-sources"></div>
+    <div class="view-head" style="margin-top:18px">
+      <div><h3 style="margin:0">Meetings</h3><p class="muted small" id="sixpm-meetings-note"></p></div>
+    </div>
+    <div id="sixpm-meetings"></div>
+    <div class="view-head" style="margin-top:18px">
+      <div><h3 style="margin:0">Action items</h3><p class="muted small">Assigned where the transcript makes it clear; otherwise listed for the group.</p></div>
+    </div>
+    <div id="sixpm-actions"></div>
+    <div class="view-head" style="margin-top:18px">
+      <div><h3 style="margin:0">Lyndsay&rsquo;s inbox at 6 PM</h3></div>
+    </div>
+    <div id="sixpm-inbox"></div>
   </section>
 
   <!-- ============ UNIFIED DAILY OPERATIONS REPORT ============ -->
