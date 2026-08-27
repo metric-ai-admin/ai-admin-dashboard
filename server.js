@@ -3743,13 +3743,58 @@ function reportDateStr() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+// Maintenance is the first section to carry real data: Erick's board already
+// holds it, so asking him to retype it into a report would be transcription, not
+// reporting. The other six stay placeholders until their owners confirm what
+// they report.
+//
+// The priority strings must match OPS_PRIORITIES in metric-routes.js exactly —
+// a mismatched emoji there once put every Daily Task in the wrong column, and
+// here it would silently report zero critical items on a board that had six.
+const OPS_CRITICAL = '🔴 Critical';
+const OPS_FOLLOWUP = '🟡 Follow-up';
+
+async function reportMaintenanceSection(client) {
+  const { data, error } = await client.from('operational_tasks').select('title, priority, completed_at');
+  if (error) throw new Error(error.message);
+  const rows = data || [];
+  const open = rows.filter(t => !t.completed_at);
+  const today = reportDateStr();
+  return {
+    key: 'maintenance', icon: '🔧', title: 'Maintenance', owner: 'Erick Frey',
+    status: 'auto',
+    content: {
+      critical: open.filter(t => t.priority === OPS_CRITICAL).map(t => t.title),
+      followup: open.filter(t => t.priority === OPS_FOLLOWUP).map(t => t.title),
+      // localDateStr, not completed_at.slice(0,10): that gives the UTC date and
+      // would roll over to "tomorrow" a few hours before local midnight.
+      completed_today: rows.filter(t => t.completed_at && localDateStr(t.completed_at) === today).length,
+      total_open: open.length,
+    },
+    last_updated: new Date().toISOString(),
+  };
+}
+
+// Builds the day's sections, filling in the ones that have a live source. A
+// failure to reach the board leaves that section as its placeholder rather than
+// failing the whole report — a report with six sections is still worth having.
+async function reportBuildSections(client) {
+  const sections = REPORT_SECTIONS.map(s => ({ ...s, status: 'pending', content: null }));
+  const i = sections.findIndex(s => s.key === 'maintenance');
+  if (i >= 0) {
+    try { sections[i] = await reportMaintenanceSection(client); }
+    catch (err) { console.error('[reports] maintenance section unavailable:', err.message); }
+  }
+  return sections;
+}
+
 // Generating twice in one day returns the existing report rather than a second
 // one. Sign-offs hang off a report id, so two reports for the same date would
 // split the team across two documents with no sign that it had happened.
 app.post('/api/reports/daily/generate', requireAuth, async (req, res) => {
   const client = supabaseAdmin || supabasePublic;
   const report_date = reportDateStr();
-  const sections = REPORT_SECTIONS.map(s => ({ ...s, status: 'pending', content: null }));
+  const sections = await reportBuildSections(client);
   try {
     const { data: existing } = await client.from('daily_reports').select('*').eq('report_date', report_date).maybeSingle();
     if (existing) return res.json({ ...existing, created: false });
@@ -3764,6 +3809,34 @@ app.post('/api/reports/daily/generate', requireAuth, async (req, res) => {
     }
     if (error) return res.status(500).json({ error: error.message });
     res.json({ ...data, created: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Re-reads a live section against its source. Only maintenance has one today, so
+// an unknown key is refused rather than silently doing nothing — a Refresh that
+// reports success without refreshing is worse than one that says it cannot.
+// requireAuth without a role check: anyone who can read the report can refresh
+// it, and this writes nothing but a section's own data.
+app.patch('/api/reports/daily/:id/section', requireAuth, async (req, res) => {
+  const key = String(req.body?.key || 'maintenance').trim();
+  if (key !== 'maintenance') return res.status(400).json({ error: `Section "${key}" has no live source.` });
+  const client = supabaseAdmin || supabasePublic;
+  try {
+    const { data: report, error: fe } = await client.from('daily_reports')
+      .select('id, sections').eq('id', req.params.id).single();
+    if (fe || !report) return res.status(404).json({ error: 'Report not found' });
+
+    const fresh = await reportMaintenanceSection(client);
+    // Rebuilt from the stored array rather than from REPORT_SECTIONS, so a
+    // section added to the constant later cannot appear retroactively on a
+    // report that was generated and signed before it existed.
+    const sections = (report.sections || []).map(s => (s.key === key ? fresh : s));
+    if (!sections.some(s => s.key === key)) sections.push(fresh);
+
+    const { data, error } = await client.from('daily_reports')
+      .update({ sections }).eq('id', report.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

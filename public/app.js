@@ -4215,14 +4215,44 @@ function reportRenderSections() {
     <details class="report-card" open>
       <summary class="report-card-head">
         <span class="report-card-title">${esc(s.icon || '')} ${esc(s.title || s.key)}</span>
-        ${REPORT_STATUS_BADGE[s.status] || REPORT_STATUS_BADGE.pending}
+        ${s.status === 'auto' ? '<span class="badge badge-gray">Auto-updated</span>' : ''}
+        ${reportSectionBadge(s)}
       </summary>
-      <div class="report-card-body">
-        ${s.content
-          ? esc(s.content)
-          : `<span class="muted small">Pending data from ${esc(s.owner || 'the team')}</span>`}
-      </div>
+      <div class="report-card-body">${reportSectionBody(s)}</div>
     </details>`).join('');
+}
+
+// An auto section's colour is read off its own numbers. 'auto' says where the
+// data came from, not how bad it is, and a section holding six critical items
+// should not sit under the same grey chip as one holding none.
+function reportSectionBadge(s) {
+  if (s.status !== 'auto') return REPORT_STATUS_BADGE[s.status] || REPORT_STATUS_BADGE.pending;
+  const c = s.content || {};
+  if ((c.critical || []).length) return REPORT_STATUS_BADGE.urgent;
+  if ((c.followup || []).length) return REPORT_STATUS_BADGE.attention;
+  return REPORT_STATUS_BADGE.ok;
+}
+
+function reportSectionBody(s) {
+  if (s.status !== 'auto') {
+    // A section whose owner typed something keeps showing it; the rest say who
+    // it is waiting on rather than just that it is empty.
+    return typeof s.content === 'string' && s.content
+      ? esc(s.content)
+      : `<span class="muted small">Pending data from ${esc(s.owner || 'the team')}</span>`;
+  }
+  const c = s.content || {};
+  const crit = c.critical || [], fu = c.followup || [];
+  const list = items => `<ul class="report-list">${items.map(t => `<li>${esc(t)}</li>`).join('')}</ul>`;
+  return `
+    ${crit.length ? `<div class="report-group"><b>🔴 Critical (${crit.length}):</b>${list(crit)}</div>` : ''}
+    ${fu.length ? `<div class="report-group"><b>🟡 Follow-up (${fu.length}):</b>${list(fu)}</div>` : ''}
+    ${!crit.length && !fu.length ? '<p class="report-group">✅ No critical or follow-up items today</p>' : ''}
+    <div class="report-counts small muted">
+      <span>✅ Completed today: <b>${c.completed_today ?? 0}</b></span>
+      <span>📋 Total open: <b>${c.total_open ?? 0}</b></span>
+      ${s.last_updated ? `<span>Updated ${new Date(s.last_updated).toLocaleTimeString()}</span>` : ''}
+    </div>`;
 }
 
 async function reportLoadSignoffs() {
@@ -4296,7 +4326,19 @@ async function reportLoadViews() {
   }
 }
 
-$('#report-refresh')?.addEventListener('click', reportLoad);
+$('#report-refresh')?.addEventListener('click', async () => {
+  // Refresh re-reads the live section against Erick's board first, so the button
+  // updates the data rather than just re-fetching the same stored copy.
+  if (reportState.report) {
+    try {
+      await api(`/api/reports/daily/${encodeURIComponent(reportState.report.id)}/section`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'maintenance' }),
+      });
+    } catch (err) { toast(err.message, 'error'); }
+  }
+  reportLoad();
+});
 $('#report-generate')?.addEventListener('click', async () => {
   const btn = $('#report-generate');
   btn.disabled = true;
