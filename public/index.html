@@ -338,6 +338,10 @@
       <div class="crm-agent-selector">
         <label class="crm-agent-label">Working as</label>
         <select id="crm-agent-select" class="crm-select">
+          <!-- Blank and selected: activity is attributed to whoever is chosen here,
+               so it has to be a deliberate choice rather than whoever happened
+               to be first in the list. -->
+          <option value="" selected>— Select agent —</option>
           <option value="Lyndsay">Lyndsay</option>
           <option value="Rhoxie">Rhoxie</option>
           <option value="Katie">Katie</option>
@@ -731,6 +735,7 @@
               <div class="crm-detail-grid">
                 <label>Shopped By
                   <select id="pf-agent" class="crm-select">
+                    <option value="" selected>— Select —</option>
                     <option>Erick</option><option>Katie</option><option>Rhoxie</option>
                     <option>Katrina</option><option>Oscar</option><option>Lyndsay</option>
                   </select>
@@ -765,6 +770,7 @@
               <div class="crm-detail-grid">
                 <label>Shopped By
                   <select id="of-agent" class="crm-select">
+                    <option value="" selected>— Select —</option>
                     <option>Katie</option><option>Rhoxie</option><option>Katrina</option>
                     <option>Erick</option><option>Oscar</option><option>Lyndsay</option>
                   </select>

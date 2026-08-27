@@ -1239,7 +1239,10 @@ const crmState = {
   mgmt_type: '', sort: 'score',
   // Active view & modal
   view: 'dashboard',
-  agent: 'Lyndsay',
+  // Blank until chosen. It used to default to 'Lyndsay', which quietly credited
+  // her with whatever anyone else logged — and Team Performance reads exactly
+  // this field.
+  agent: '',
   // Active property in modal
   activeProperty: null,
   activeModalTab: 'overview',
@@ -1341,6 +1344,19 @@ $('#crm-agent-select').addEventListener('change', e => { crmState.agent = e.targ
 // until someone remembers to add it here.
 const CRM_ROSTER_ROLES = ['admin', 'operations'];
 const crmCanSeeRoster = () => CRM_ROSTER_ROLES.includes(currentUser?.role);
+
+// Resolves who to attribute an activity row to: the form's own selector where it
+// has one, otherwise the "Working as" choice. Returns null and says so rather
+// than writing a row nobody can be credited with — an unattributed row is
+// invisible to Team Performance and cannot be fixed afterwards from the UI.
+function crmResolveAgent(explicit) {
+  const agent = String(explicit || crmState.agent || '').trim();
+  if (!agent) {
+    toast('Please select an agent before logging activity.', 'error');
+    return null;
+  }
+  return agent;
+}
 
 function crmApplyUserRole() {
   if (!currentUser) return;
@@ -1875,9 +1891,11 @@ $('#crm-phone-cancel').addEventListener('click', () => $('#crm-phone-form').clas
 $('#crm-phone-save').addEventListener('click', async () => {
   const p = crmState.activeProperty;
   if (!p) return;
+  const agent = crmResolveAgent($('#pf-agent').value);
+  if (!agent) return;
   const body = {
     shop_date: $('#pf-date').value || new Date().toISOString().slice(0,10),
-    agent_name: $('#pf-agent').value,
+    agent_name: agent,
     score: parseFloat($('#pf-score').value) || null,
     notes: JSON.stringify({ connection: $('#pf-connection').value, text: $('#pf-notes').value }),
   };
@@ -1908,7 +1926,9 @@ $('#crm-online-cancel').addEventListener('click', () => $('#crm-online-form').cl
 $('#crm-online-save').addEventListener('click', async () => {
   const p = crmState.activeProperty;
   if (!p) return;
-  const body = { shop_date: $('#of-date').value || new Date().toISOString().slice(0,10), agent_name: $('#of-agent').value || crmState.agent || null, platform: $('#of-platform').value, score: parseFloat($('#of-score').value) || null, notes: $('#of-notes').value };
+  const agent = crmResolveAgent($('#of-agent').value);
+  if (!agent) return;
+  const body = { shop_date: $('#of-date').value || new Date().toISOString().slice(0,10), agent_name: agent, platform: $('#of-platform').value, score: parseFloat($('#of-score').value) || null, notes: $('#of-notes').value };
   try {
     await crmFetch(`/api/crm/properties/${p.id}/online-shops`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
@@ -1968,7 +1988,9 @@ $('#crm-fu-save').addEventListener('click', async () => {
   if (!p) return;
   // Attribution for Team Performance. crmState.agent is the "Working as"
   // selector, which is already how the CRM knows who is at the keyboard.
-  const body = { method: $('#ff-method').value, follow_up_date: $('#ff-date').value || new Date().toISOString().slice(0,10), completed: $('#ff-completed').value === 'true', outcome: $('#ff-outcome').value, next_action: $('#ff-next').value, agent_name: crmState.agent || null };
+  const agent = crmResolveAgent();
+  if (!agent) return;
+  const body = { method: $('#ff-method').value, follow_up_date: $('#ff-date').value || new Date().toISOString().slice(0,10), completed: $('#ff-completed').value === 'true', outcome: $('#ff-outcome').value, next_action: $('#ff-next').value, agent_name: agent };
   try {
     await crmFetch(`/api/crm/properties/${p.id}/follow-ups`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
@@ -2074,11 +2096,13 @@ function crmUpdateDMOverall() {
 $('#crm-dm-save-btn').addEventListener('click', async () => {
   const p = crmState.activeProperty;
   if (!p) return;
+  const agent = crmResolveAgent();
+  if (!agent) return;
   try {
     await crmFetch(`/api/crm/properties/${p.id}/dm-review`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...crmState.dmScores, audit_notes: $('#crm-dm-audit-notes').value, agent_name: crmState.agent || null }),
+      body: JSON.stringify({ ...crmState.dmScores, audit_notes: $('#crm-dm-audit-notes').value, agent_name: agent }),
     });
     toast('DM Review saved ✅', 'success');
   } catch (err) { toast(err.message, 'error'); }
