@@ -1,0 +1,989 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maintenance Coordinator — Daily Command Center · Metric</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --navy:#1F2D4E; --navy2:#2E4372; --gold:#B0892F; --gold-soft:#F4ECD6;
+  --ink:#22262B; --grey:#5B6672; --line:#E4E0D6; --paper:#F6F3EC; --card:#FFFFFF;
+  --red:#B23A33; --red-soft:#FBE9E7; --teal:#2C7A75; --teal-soft:#E3F1EF;
+  --blue:#345C8C; --blue-soft:#E7EEF6; --purple:#6B4E8A; --purple-soft:#EFE9F5;
+  --green:#3F7A4E; --green-soft:#E6F1E8;
+  --shadow:0 1px 2px rgba(31,45,78,.06),0 8px 24px rgba(31,45,78,.06);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{font-family:'Archivo',system-ui,sans-serif;color:var(--ink);background:var(--paper);line-height:1.5;-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+h1,h2,h3{font-family:'Fraunces',Georgia,serif;margin:0;color:var(--navy);font-weight:600;letter-spacing:.2px}
+
+/* Top bar */
+.topbar{background:var(--navy);color:#fff;padding:18px 26px;display:flex;align-items:center;gap:22px;flex-wrap:wrap;border-bottom:3px solid var(--gold)}
+.brand{display:flex;flex-direction:column;gap:2px;flex:1;min-width:220px}
+.brand .eyebrow{font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--gold);font-weight:700}
+.brand h1{color:#fff;font-size:25px;line-height:1.1}
+.brand .sub{font-size:12.5px;color:#c4ccdb}
+.daystamp{font-size:12.5px;color:#c4ccdb;text-align:right}
+.daystamp b{color:#fff;font-size:15px;display:block;font-family:'Fraunces',serif}
+.ring{display:flex;align-items:center;gap:12px}
+.ring svg{transform:rotate(-90deg)}
+.ring .pct{font-family:'Fraunces',serif;font-size:22px;font-weight:700;color:#fff}
+.ring .lbl{font-size:11px;color:#c4ccdb;letter-spacing:.04em}
+
+main{max-width:1080px;margin:0 auto;padding:26px 22px 80px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:22px;margin-bottom:22px}
+.panel h2{font-size:19px;margin-bottom:4px}
+.panel .lead{color:var(--grey);font-size:13.5px;margin:0 0 16px}
+.section-eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--gold);font-weight:700;margin-bottom:6px}
+
+/* Intake */
+.reportlinks{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 18px}
+.reportlinks a{font-size:12px;background:var(--gold-soft);color:var(--navy);border:1px solid #e7d9b0;padding:5px 11px;border-radius:999px;font-weight:600}
+.reportlinks a:hover{background:#efe2bf;text-decoration:none}
+.rl-note{font-weight:500;opacity:.7}
+.how{margin:10px 0 0;padding-left:20px;font-size:13.5px;color:var(--ink);line-height:1.7}
+.how li{margin:2px 0}
+.workbook-drop{display:flex;align-items:center;gap:12px;margin:14px 0 4px;padding:16px 18px;border:2px dashed var(--gold);border-radius:12px;background:var(--gold-soft);cursor:pointer;color:var(--navy);font-size:14px;transition:background .15s,border-color .15s}
+.workbook-drop:hover,.workbook-drop.drag{background:#efe2bf;border-color:var(--navy)}
+.workbook-drop .wb-icon{font-size:22px;line-height:1}
+.dl-row{margin:12px 0 2px}
+.wb-status{font-size:13px;color:var(--navy);margin:8px 0 0;min-height:18px}
+.wb-status b{color:var(--gold)}
+.slots{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+.slot{border:1.5px dashed #cfcabb;border-radius:12px;padding:14px;background:#fcfbf7;transition:.15s;position:relative}
+.slot.drag{border-color:var(--gold);background:var(--gold-soft)}
+.slot.ok{border-style:solid;border-color:var(--green);background:var(--green-soft)}
+.slot h3{font-size:13.5px;font-family:'Archivo';font-weight:700;color:var(--navy);margin-bottom:3px}
+.slot p{font-size:11.5px;color:var(--grey);margin:0 0 9px;min-height:30px}
+.slot label{display:inline-block;font-size:12px;font-weight:600;color:#fff;background:var(--navy);padding:6px 12px;border-radius:8px;cursor:pointer}
+.slot label:hover{background:var(--navy2)}
+.slot input[type=file]{display:none}
+.slot .status{font-size:11.5px;margin-top:9px;font-weight:600;color:var(--green)}
+.slot .cols{font-size:10.5px;color:var(--grey);margin-top:4px;line-height:1.4;max-height:0;overflow:hidden;transition:.2s}
+.slot.ok .cols{max-height:120px;margin-top:6px}
+
+.config{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+.config .fld{display:flex;flex-direction:column;gap:4px}
+.config label{font-size:11px;letter-spacing:.04em;color:var(--grey);font-weight:600;text-transform:uppercase}
+.config input[type=text]{font-family:'Archivo';font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;width:340px;max-width:70vw}
+.btn{font-family:'Archivo';font-size:14px;font-weight:700;color:#fff;background:var(--gold);border:none;padding:11px 20px;border-radius:10px;cursor:pointer;box-shadow:var(--shadow)}
+.btn:hover{background:#9c781f}
+.btn.ghost{background:transparent;color:var(--navy);border:1px solid var(--line);box-shadow:none;font-weight:600}
+.btn.ghost:hover{background:#f3f0e8}
+
+/* Routine checklist */
+.routine .items{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px}
+.check{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fcfbf7}
+.check input{margin-top:3px;width:17px;height:17px;accent-color:var(--gold);cursor:pointer;flex:none}
+.check .ct{font-size:13px}
+.check .ct b{display:block;color:var(--navy);font-weight:700;margin-bottom:1px}
+.check .ct span{color:var(--grey);font-size:12px}
+.check.done{opacity:.55}
+.check.done .ct b{text-decoration:line-through}
+
+/* Task categories */
+/* 7-day alert banner */
+.alert{border:2px solid var(--red);background:linear-gradient(180deg,#fff,var(--red-soft));border-radius:14px;padding:16px 18px;margin-bottom:18px;box-shadow:var(--shadow)}
+.alert .ah{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+.alert .ah h3{color:var(--red);font-size:18px}
+.alert .ah .count{font-size:12px;font-weight:700;color:#fff;background:var(--red);border-radius:999px;padding:3px 11px;margin-left:auto}
+.alert .sub{font-size:12.5px;color:var(--red);margin:0 0 8px;font-weight:600}
+.alert .task .ttl{color:var(--red)}
+.alert .task .instr{border-left-color:var(--red);background:#fff}
+
+.summary{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}
+.totals-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.ttbl h4{font-family:'Fraunces',serif;color:var(--navy);font-size:14px;margin:0 0 6px;font-weight:600}
+.ttbl table{width:100%;border-collapse:collapse;font-size:12.5px}
+.ttbl td{padding:4px 6px;border-bottom:1px solid var(--line)}
+.ttbl td:last-child{text-align:right;font-weight:600;color:var(--navy);white-space:nowrap}
+.ttbl td:first-child{color:var(--ink)}
+.pill{font-size:12px;font-weight:600;background:#fff;border:1px solid var(--line);border-radius:999px;padding:5px 12px;color:var(--navy);cursor:pointer}
+.pill b{color:var(--gold)}
+.cat{margin-bottom:18px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--card);box-shadow:var(--shadow)}
+.cat-head{display:flex;align-items:center;gap:12px;padding:14px 18px;cursor:pointer;border-left:5px solid var(--navy)}
+.cat-head .acc{width:9px;height:9px;border-radius:50%;background:var(--navy);flex:none}
+.cat-head h3{font-size:16px;flex:1;font-family:'Fraunces'}
+.cat-head .count{font-size:12px;font-weight:700;color:#fff;background:var(--navy);border-radius:999px;padding:3px 10px}
+.cat-head .chev{color:var(--grey);font-size:13px;transition:.2s}
+.cat.collapsed .chev{transform:rotate(-90deg)}
+.cat.collapsed .cat-body{display:none}
+.cat-desc{font-size:12.5px;color:var(--grey);padding:0 18px 4px 35px;margin-top:-6px}
+.cat-body{padding:6px 18px 16px}
+
+.task{display:flex;gap:12px;padding:13px 0;border-top:1px dashed var(--line)}
+.task:first-child{border-top:none}
+.task input.tck{margin-top:3px;width:18px;height:18px;accent-color:var(--gold);cursor:pointer;flex:none}
+.task .body{flex:1;min-width:0}
+.task .ttl{font-weight:700;color:var(--navy);font-size:14px;margin-bottom:3px}
+.task .meta{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 7px}
+.chip{font-size:11px;background:#f1efe8;border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:var(--grey);font-weight:600}
+.chip.kpi{background:var(--gold-soft);border-color:#e7d9b0;color:var(--navy)}
+.task .instr{font-size:12.5px;color:var(--ink);background:#faf8f2;border-left:3px solid var(--gold);padding:8px 11px;border-radius:0 8px 8px 0}
+.task .remind{font-size:11.5px;color:var(--grey);margin-top:6px;font-style:italic}
+.task .open{font-size:12.5px;font-weight:700;white-space:nowrap;align-self:flex-start}
+.task .detail{font-size:12px;color:var(--grey);margin-top:5px;background:#faf8f2;border-radius:6px;padding:6px 9px}
+.dups{margin-top:7px;display:flex;flex-direction:column;gap:3px}
+.dup{font-size:12px;color:var(--navy)}
+.dup span{color:var(--grey)}
+.task.done{opacity:.5}
+.task.done .ttl{text-decoration:line-through}
+
+.empty{padding:34px;text-align:center;color:var(--grey);font-size:13.5px}
+.empty b{display:block;color:var(--navy);font-family:'Fraunces';font-size:16px;margin-bottom:6px}
+.note{font-size:11.5px;color:var(--grey);background:var(--gold-soft);border:1px solid #e7d9b0;border-radius:8px;padding:8px 11px;margin-top:10px}
+footer{max-width:1080px;margin:0 auto;padding:0 22px 40px;color:var(--grey);font-size:11.5px;border-top:1px solid var(--line);padding-top:18px}
+.rates{font-size:12px;color:var(--navy);display:inline-flex;gap:10px;flex-wrap:wrap}
+.rates b{color:var(--gold)}
+@media(max-width:560px){.brand h1{font-size:21px}.config input[type=text]{width:100%}}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="eyebrow">Metric Property Management</span>
+    <h1>Maintenance Coordinator — Daily Command Center</h1>
+    <span class="sub">Pull the reports, generate today's tasks, work the list to zero. AppFolio is always the source of truth.</span>
+  </div>
+  <div class="ring">
+    <svg width="62" height="62" viewBox="0 0 62 62">
+      <circle cx="31" cy="31" r="26" fill="none" stroke="#39466b" stroke-width="7"></circle>
+      <circle id="ringfg" cx="31" cy="31" r="26" fill="none" stroke="#B0892F" stroke-width="7" stroke-linecap="round" stroke-dasharray="163.4" stroke-dashoffset="163.4"></circle>
+    </svg>
+    <div><div class="pct" id="pct">0%</div><div class="lbl">done today</div></div>
+  </div>
+  <div class="daystamp"><b id="today">—</b><span id="counts">no tasks generated yet</span></div>
+</header>
+
+<main>
+  <!-- INTAKE -->
+  <section class="panel">
+    <div class="section-eyebrow">Step 1 · Load your Master Data File</div>
+    <h2>Master Data File</h2>
+    <p class="lead">Everything runs off one Excel workbook. Download the template, refresh every tab with AppFolio <b>Excel Connect</b>, save, and load it back here.</p>
+    <ol class="how">
+      <li>Download the <b>Master Data File template</b> below.</li>
+      <li>Open it in Excel and use the AppFolio <b>Excel Connect</b> add-in to refresh <b>every tab</b> (All Work Orders, Work Order Billable, Labor Summary, Custom Fields, Inventory Usage, Inspection Detail, Realm-X Workflows) for the <b>last 90 days</b>.</li>
+      <li>Save the file, then load it below — every tab is detected and routed automatically.</li>
+    </ol>
+    <div class="dl-row"><a id="tmplDl" class="btn ghost" download="Maintenance_Master_Data_Template.xlsx">⬇ Download the Master Data File template</a></div>
+    <label class="workbook-drop">
+      <input type="file" id="wbInput" accept=".xlsx,.xls" hidden>
+      <span class="wb-icon">⬆</span>
+      <span><b>Load the Master Data File here in XLS format</b> — drop your .xlsx (all tabs at once)</span>
+    </label>
+    <div class="wb-status" id="wbStatus"></div>
+    <div class="config">
+      <button class="btn" id="gen">Generate today's tasks</button>
+      <button class="btn ghost" id="clear">Clear loaded data</button>
+    </div>
+    <div class="config" style="margin-top:6px">
+      <button class="btn ghost" id="exportAct">⬇ Export activity</button>
+      <label class="btn ghost" style="cursor:pointer;margin:0">⬆ Import prior activity<input type="file" id="importAct" accept=".json" hidden></label>
+      <button class="btn ghost" id="exportDash" title="Export tasks + completion state for the Metric Dashboard MCP">📤 Export to Dashboard</button>
+      <button class="btn ghost" id="loadDash" title="Trae el estado actual del servidor — tareas y checks de rutina (localhost:3000)">🔄 Refresh</button>
+    </div>
+    <div class="note">Export your activity to save your checked-off progress; import it later (or on another device) to pick up where you left off.</div>
+  </section>
+
+  <!-- ROUTINE -->
+  <section class="panel routine">
+    <div class="section-eyebrow">Always-on · The daily rhythm</div>
+    <h2>Standing daily routine</h2>
+    <p class="lead">Do these every day regardless of the reports. Resets each morning.</p>
+    <div class="items" id="routine"></div>
+  </section>
+
+  <!-- TOTALS -->
+  <section class="panel" id="totalspanel" style="display:none">
+    <div class="section-eyebrow">Reporting · Billed + unbilled</div>
+    <h2>Running totals</h2>
+    <p class="lead">Hours from the Billable Detail report; inventory (billed at sale price) from the KPI Inventory Usage report. Week-to-date and month-to-date.</p>
+    <div id="totals" class="totals-grid"></div>
+  </section>
+
+  <!-- TASKS -->
+  <section>
+    <div class="summary" id="summary"></div>
+    <div id="tasks">
+      <div class="panel"><div class="empty"><b>No tasks yet</b>Load at least the Work Order report above, then press <em>Generate today's tasks</em>.</div></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  Metric Property Management of Texas, LLC · Internal tool · Maintenance Coordinator. Standard after-hours labor override:
+  <span class="rates"><span>most techs <b>$34/hr</b></span><span>Josue <b>$42/hr</b></span><span>Raul <b>$50/hr</b></span></span>
+</footer>
+
+<script>
+/* ---------------- config ---------------- */
+const TODAY = new Date();
+const REPORT_NAMES={bill:'Work Order Billable',labor:'Labor Summary',cf:'Custom Fields',wo:'All Work Orders',inv:'Inventory Usage',insp:'Inspection Detail',realmx:'Realm-X Workflows',audit:'Audit (unbilled)'};
+const TEMPLATE_B64="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";
+const TODAY_KEY = TODAY.toISOString().slice(0,10);
+const TRANSLATION_CUTOFF = new Date('2026-06-10T00:00:00');
+const INSPECTION_CUTOFF = new Date('2026-06-23T00:00:00');
+const COORD_NAME = 'Arturo';
+const LOW_HOURS = 6;
+const AFTER_HOURS = "after 6 PM or before 8 AM";
+const LABOR_RATES = "Standard override: $34/hr for most techs; Josue $42/hr; Raul $50/hr.";
+const STD_REMINDER = "Then remind the tech about any policy violation and update the work-order notes.";
+const BASE='https://metricpropertymanagement.appfolio.com';
+const DASHBOARD='http://localhost:3000';
+const EMERGENCY_KW=['no ac','no a/c','no air','not cooling','no cooling','no heat','not heating','flood','flooding',' gas ','gas leak',' leak','burst','fire','smoke','injury','blood',' secure','break in','broken door','broken window','no hot water','sewage','sewer','overflow','backed up','backup','outage','electrical hazard','spark','lockout','exposed wire','carbon monoxide','co detector','refrigerator not','fridge not','freezer not','will not lock','won\'t lock'];
+const STOP=new Set('the a an is in to of and for on at please need needs not no it with this that my our your has have been was were are am be do does did will would should can could i we you they he she him her them as by or but if so then there here out up down off over under'.split(' '));
+const PEST = ['bug','bugs','roach','cockroach','rodent','rat','rats','mice','mouse','pest','pests','ants','ant','termite','termites','spider','spiders','infestation','infested','exterminat','flea','fleas','wasp','wasps','bees','bee','silverfish','gnats'];
+const PEST_RE = new RegExp('\\b(' + PEST.join('|') + ')\\b','i');
+const SPANISH_HINTS = ['á','é','í','ó','ú','ñ','¿','¡','ü'];
+const SPANISH_WORDS = [' se ','reemplaz','fuga','funciona','correctamente','instal','repar','apret','gabinete','puerta','ningun','llave','baño','cocina','revis','cambi','limpi',' está',' una ',' el ',' la ',' los ',' las ',' agua'];
+const ENGLISH_WORDS = [' the ',' and ',' was ',' were ',' replaced',' tested',' leak',' fixed',' installed',' repaired',' working',' found',' checked',' adjusted',' completed',' done',' unit ',' with ',' for ',' there ',' been ',' needs ',' new '];
+
+/* slot defs */
+const SLOTS = [
+  {key:'bill',name:'Work Order Billable Detail', hint:'Primary source: status, property, unit, tech, vendor, issue, type, hours, after-hours, unbilled, inventory. Line-level — aggregated by WO.'},
+  {key:'labor',name:'Work Order Labor Summary', hint:'Timer start/end times — powers the after-hours check and hours audit.'},
+  {key:'insp',name:'Inspection Detail', hint:'Inspections by status & who completed them — drives the inspection review/reminder tasks.'},
+  {key:'inv', name:'KPI Inventory Usage', hint:'Item-level inventory by property/unit — powers the inventory totals and suppresses false part-needed flags.'},
+  {key:'cf',  name:'Work Order Custom Fields', hint:'Flags: code violation, life safety, parts needed/ordered, estimated completion — by WO ID.'},
+  {key:'audit',name:'Audit: Open WO Labor Not Billed', hint:'Open work orders with labor not billed (for the 30-day check).'},
+  {key:'wo',  name:'Work Order report (open/status list)', hint:'Optional — for unassigned/new orders and priority that don\'t have labor lines yet.'}
+];
+
+/* column candidates (normalized) */
+const COLS = {
+  woId:['workorderid'],
+  woNum:['workordernumber','workorder#','workorder'],
+  workflowName:['workflowname','workflow','flowname'],
+  dueDate:['duedate','dueon','targetdate','scheduleddate','due'],
+  srId:['servicerequestid'],
+  link:['url','link','workorderurl','workorderlink'],
+  status:['workorderstatus','status','wostatus'],
+  property:['property','propertyname'],
+  unit:['unit','unitname'],
+  tech:['assigneduser','assignee','assignedto','technician','maintenancetech','assigned'],
+  vendor:['vendor','assignedvendor','vendorname'],
+  issue:['workorderissue','workorderissues','category','problemcategory'],
+  wotype:['workordertype'],
+  priority:['priority','urgency'],
+  created:['createddate','created','createdat','datecreated','createdon'],
+  completedOn:['workcompletedon','workcompleted','completedon','datecompleted'],
+  startTime:['starttime','timerstart','startedat','timestarted','laborstart','startdatetime','clockin'],
+  endTime:['endtime','timerstop','endedat','timeended','laborend','stoptime','enddatetime','clockout'],
+  laborDate:['labordate'],
+  laborTech:['maintenancetech','maintenancetechnician'],
+  amount:['amount'],
+  invAddedOn:['inventoryaddedon'],
+  cost:['cost'],
+  salePrice:['saleprice'],
+  itemName:['itemname'],
+  category:['category'],
+  completedBy:['completedby','doneby','markedcompletedby','submittedby','inspectedby','markeddoneby','completeduser'],
+  inspector:['inspector','assignedtechnician'],
+  template:['inspectiontemplate','template','inspectionname','inspectiontype'],
+  inspId:['inspectionid','inspectionnumber'],
+  hours:['workedhours','billablehours','hours','laborhours','totalhours'],
+  afterhours:['markedafterhours','afterhours'],
+  codeviolation:['codeviolation'],
+  lifesafety:['lifesafetyissue','lifesafety'],
+  parts:['partsneededorderedtracking','partsneeded','partsstatus','partstatus'],
+  estcompletion:['estimatedcompletiontime','estcompletiontime'],
+  billtype:['billabletype'],
+  quantity:['quantity','qty'],
+  unbilled:['unbilledamount','unbilled'],
+  desc:['description','jobdescription','notes','completionnotes','summary'],
+  ageDays:['age','daysopen','days','agedays']
+};
+
+/* ---------------- state ---------------- */
+const reports = {};            // key -> {rows, map}
+let TASKS = [];
+let checks = loadChecks();
+
+function norm(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');}
+function loadChecks(){
+  try{ Object.keys(localStorage).filter(k=>k.startsWith('mcc_checks_')&&k!=='mcc_checks_'+TODAY_KEY).forEach(k=>localStorage.removeItem(k));
+    return JSON.parse(localStorage.getItem('mcc_checks_'+TODAY_KEY)||'{}'); }catch(e){return {};}
+}
+function saveChecks(){ try{localStorage.setItem('mcc_checks_'+TODAY_KEY,JSON.stringify(checks));}catch(e){} }
+
+/* build a normalized header->field map for a row set */
+function mapColumns(headers){
+  const map={};
+  const nh = headers.map(h=>({raw:h,n:norm(h)}));
+  for(const field in COLS){
+    for(const cand of COLS[field]){
+      const hit = nh.find(h=>h.n===cand) || nh.find(h=>h.n.includes(cand)&&cand.length>3);
+      if(hit){ map[field]=hit.raw; break; }
+    }
+  }
+  return map;
+}
+function val(row,map,field){ const c=map[field]; return c?String(row[c]??'').trim():''; }
+function truthy(v){ const s=String(v||'').trim().toLowerCase(); return s!=='' && !['no','false','n','0','-','—','none','n/a'].includes(s); }
+function parseDate(s){ if(!s)return null; const d=new Date(s); return isNaN(d)?null:d; }
+function daysOld(d){ return d?Math.floor((TODAY-d)/86400000):null; }
+function hourOf(str){ if(!str)return null; const s=String(str).trim();
+  let m=s.match(/(\d{1,2}):(\d{2})\s*([ap])\.?m\.?/i);
+  if(m){ let h=parseInt(m[1],10)%12; if(/p/i.test(m[3]))h+=12; return h; }
+  m=s.match(/(\d{1,2}):(\d{2})/);
+  if(m){ const h=parseInt(m[1],10); return (h>=0&&h<=23)?h:null; }
+  return null; }
+
+/* ---------------- file intake ---------------- */
+function buildSlots(){
+  const c=document.getElementById('slots');
+  SLOTS.forEach(s=>{
+    const el=document.createElement('div'); el.className='slot'; el.id='slot-'+s.key;
+    el.innerHTML=`<h3>${s.name}</h3><p>${s.hint}</p>
+      <label>Choose file<input type="file" accept=".csv,.xlsx,.xls" data-key="${s.key}"></label>
+      <div class="status"></div><div class="cols"></div>`;
+    c.appendChild(el);
+    const inp=el.querySelector('input');
+    inp.addEventListener('change',e=>{ if(e.target.files[0]) loadFile(s.key,e.target.files[0]); });
+    ['dragover','dragenter'].forEach(ev=>el.addEventListener(ev,e=>{e.preventDefault();el.classList.add('drag');}));
+    ['dragleave','drop'].forEach(ev=>el.addEventListener(ev,e=>{e.preventDefault();el.classList.remove('drag');}));
+    el.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) loadFile(s.key,f); });
+  });
+}
+function detectReport(headers){
+  const H=headers.map(norm); const has=c=>H.some(h=>h.includes(c));
+  if(has('inspectionname')||has('markeddoneby')||has('markeddoneon')||has('inspectiontemplate')||has('inspectionstatus')||(has('template')&&(has('inspector')||has('completedby')))) return 'insp';
+  if(has('inventoryaddedon')||has('inventorylocation')||(has('itemname')&&has('saleprice'))) return 'inv';
+  if(has('workflow')) return 'realmx';
+  if(has('billabletype')) return 'bill';                                                  // billable detail tab
+  if(has('starttime')||has('timerstart')) return 'labor';                                 // labor summary tab (timer columns)
+  if(has('unbilledamount')) return 'audit';                                               // audit: unbilled, no billable type / timer
+  if(has('markedafterhours')||has('workedhours')||has('billablehours')) return 'bill';    // other labor-detail report
+  if(has('codeviolation')||has('lifesafetyissue')||has('partsneededordered')) return 'cf';
+  if(has('jobdescription')||has('primaryresident')||has('priority')||has('assigneduser')) return 'wo';
+  return null;
+}
+function norm0(v){ return String(v==null?'':v).trim(); }
+function findHeaderRow(aoa){
+  const TOKENS=['work order','property','unit ','status','priority','maintenance tech','worked hours','billable hours','marked after hours','start time','end time','timer','code violation','life safety','parts needed','estimated completion','item name','inspection name','marked done','quantity','sale price','service request','unbilled','billed amount','assigned user','created','vendor','labor date','inventory added','description'];
+  let best=-1,bestScore=0; const lim=Math.min(aoa.length,80);
+  for(let i=0;i<lim;i++){
+    const cells=(aoa[i]||[]).map(c=>norm0(c).toLowerCase());
+    const nonEmpty=cells.filter(c=>c!=='').length; if(nonEmpty<4) continue;
+    let score=0; cells.forEach(c=>{ if(c && TOKENS.some(t=>c===t.trim()||c.includes(t.trim()))) score++; });
+    if(score>bestScore){ bestScore=score; best=i; }
+  }
+  if(best===-1){ for(let i=0;i<lim;i++){ if((aoa[i]||[]).filter(c=>norm0(c)!=='').length>=5){best=i;break;} } }
+  return best;
+}
+function aoaToReport(aoa){
+  if(!aoa||!aoa.length) return null;
+  const h=findHeaderRow(aoa); if(h<0) return null;
+  const headerRow=aoa[h]||[]; const cols=[]; const seen={};
+  headerRow.forEach((c,idx)=>{ const name=norm0(c); if(!name||name===' ') return; if(seen[name]) return; seen[name]=1; cols.push({idx,name}); });
+  if(cols.length<2) return null;
+  const headers=cols.map(c=>c.name); const rows=[];
+  for(let i=h+1;i<aoa.length;i++){ const r=aoa[i]; if(!r||!r.some(c=>norm0(c)!=='')) continue;
+    const rec={}; cols.forEach(c=>{ rec[c.name]=norm0(r[c.idx]); }); rows.push(rec); }
+  return {headers,rows};
+}
+function ingest(headers,rawRows,droppedKey){
+  const rows=rawRows.filter(r=>Object.values(r).some(v=>String(v).trim()!==''));
+  if(!rows.length){ alert('That file had no data rows.'); return; }
+  const map=mapColumns(headers);
+  const key=detectReport(headers)||droppedKey;
+  reports[key]={rows,map,headers};
+  document.querySelectorAll('.slot').forEach(sl=>{}); // noop
+  const el=document.getElementById('slot-'+key); if(!el)return key;
+  el.classList.add('ok');
+  const found=Object.keys(map);
+  const where=key!==droppedKey?'(auto-routed here) ':'';
+  el.querySelector('.status').textContent=`✓ ${rows.length} rows loaded`;
+  el.querySelector('.cols').textContent=where+'Detected columns: '+(found.length?found.join(', '):'none recognized');
+  return key;
+}
+function loadFile(key,file){
+  const name=((file&&file.name)||'').toLowerCase();
+  if(name.endsWith('.xlsx')||name.endsWith('.xls')){
+    const fr=new FileReader();
+    fr.onload=e=>{ try{
+      const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});
+      let loaded=0; const routed=[];
+      wb.SheetNames.forEach(sn=>{
+        const ws=wb.Sheets[sn]; if(!ws) return;
+        const aoa=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false,blankrows:false});
+        const repObj=aoaToReport(aoa);
+        if(repObj && repObj.rows.length){ const rk=ingest(repObj.headers,repObj.rows,key); if(rk){loaded++; routed.push(REPORT_NAMES[rk]||sn);} }
+      });
+      const st=document.getElementById('wbStatus');
+      if(loaded){ if(st) st.innerHTML='<b>✓ Loaded '+loaded+' tab'+(loaded===1?'':'s')+':</b> '+routed.map(esc).join(' &nbsp;·&nbsp; '); }
+      else { alert('No readable report tabs were found in that workbook.'); if(st) st.textContent='No readable tabs found in that file.'; }
+    }catch(err){ alert('Could not read that Excel file: '+err.message); } };
+    fr.readAsArrayBuffer(file);
+  } else {
+    Papa.parse(file,{header:false,skipEmptyLines:false,complete:res=>{
+      const repObj=aoaToReport(res.data||[]);
+      if(repObj && repObj.rows.length) ingest(repObj.headers,repObj.rows,key);
+      else alert('That file had no readable data rows.');
+    }});
+  }
+}
+
+/* ---------------- merge ---------------- */
+function mergeWorkOrders(){
+  const idx=new Map(); const all=new Set();
+  function gc(woId,woNum,srId){
+    let o = (woId&&idx.get('I'+woId)) || (woNum&&idx.get('N'+woNum)) || null;
+    if(!o){ o={woId:woId||'',woNum:woNum||'',srId:srId||'',_src:{},_hoursB:0,_unbB:0,_unbA:0,_af:false,_inv:false,_startAH:false,_haveStart:false}; all.add(o); }
+    if(woId){ if(!o.woId)o.woId=woId; idx.set('I'+woId,o); }
+    if(woNum){ if(!o.woNum)o.woNum=woNum; idx.set('N'+woNum,o); }
+    if(srId&&!o.srId)o.srId=srId;
+    return o;
+  }
+  const STATIC=['status','property','unit','tech','vendor','issue','wotype','priority','created','completedOn','startTime','endTime','desc','link','parts','estcompletion','codeviolation','lifesafety','ageDays','woNum'];
+  ['wo','bill','cf','audit','labor','inv'].forEach(src=>{
+    const rep=reports[src]; if(!rep)return;
+    rep.rows.forEach(row=>{
+      const woId=val(row,rep.map,'woId'); const woNum=val(row,rep.map,'woNum'); const srId=val(row,rep.map,'srId');
+      if(!woId&&!woNum)return;
+      const o=gc(woId,woNum,srId); o._src[src]=true;
+      STATIC.forEach(f=>{ const v=val(row,rep.map,f); if(v && (o[f]===undefined||o[f]==='')) o[f]=v; });
+      if(truthy(val(row,rep.map,'afterhours'))) o._af=true;
+      if(src==='bill'){
+        o._hoursB += num(val(row,rep.map,'hours'));
+        o._unbB += num(val(row,rep.map,'unbilled'));
+        const bt=norm(val(row,rep.map,'billtype')); const qty=num(val(row,rep.map,'quantity'));
+        if(/invent|material|part|supply/.test(bt) || (qty>0 && bt!=='' && !/labor|hour|service/.test(bt))) o._inv=true;
+      } else if(src==='audit'){
+        o._unbA += num(val(row,rep.map,'unbilled'));
+      } else if(src==='inv'){
+        o._inv=true;
+      }
+      const _sh=hourOf(val(row,rep.map,'startTime'));
+      if(_sh!=null){ o._haveStart=true; if(_sh>=18||_sh<8) o._startAH=true; }
+    });
+  });
+  return [...all].map(o=>{
+    o.hours=o._hoursB;
+    o.unbilled = o._unbB>0 ? o._unbB : o._unbA;
+    o.afterhours = o._af ? 'yes' : '';
+    o.inventory = o._inv ? 'yes' : '';
+    return o;
+  });
+}
+
+/* ---------------- link building ---------------- */
+function woLink(o){
+  if(o.link && /^https?:/i.test(o.link)) return o.link;
+  if(o.srId && o.woId) return `${BASE}/maintenance/service_requests/${encodeURIComponent(o.srId)}/work_orders/${encodeURIComponent(o.woId)}`;
+  if(o.woId) return `${BASE}/maintenance/work_orders/${encodeURIComponent(o.woId)}`;
+  return null;
+}
+
+/* ---------------- detectors ---------------- */
+function statusOf(o){return (o.status||'').toLowerCase();}
+function isCancelled(o){return statusOf(o).includes('cancel');}
+function isWorkDone(o){return statusOf(o).includes('work done');}
+function isReadyToBill(o){return statusOf(o).includes('ready to bill');}
+function isCompleted(o){return statusOf(o).includes('complete');}
+function isClosed(o){return isReadyToBill(o)||isWorkDone(o)||isCompleted(o)||isCancelled(o);}
+function assigned(o){return truthy(o.tech) || /assigned|scheduled|in[ -]?progress|work done|ready to bill|completed|waiting|on hold|estimate/.test(statusOf(o));}
+function hasVendor(o){return truthy(o.vendor);}
+function num(v){const n=parseFloat(String(v||'').replace(/[^0-9.\-]/g,''));return isNaN(n)?0:n;}
+function needsTranslation(text){
+  if(!text)return false; const t=' '+text.toLowerCase()+' ';
+  const hasES=SPANISH_HINTS.some(c=>text.includes(c))||SPANISH_WORDS.some(w=>t.includes(w));
+  if(!hasES)return false;
+  return !ENGLISH_WORDS.some(w=>t.includes(w));
+}
+function partsAction(raw){
+  const n=norm(raw);
+  if(n.includes('notinshop'))return "Part needed, not in shop — add details to the notes, then follow up.";
+  if(n.includes('homedepot')||n.includes('nexttrip'))return "Will buy next Home Depot trip — remind the tech in the notes and tag them.";
+  if(n.includes('pendingarrival')||(n.includes('ordered')&&n.includes('pending')))return "Ordered, pending arrival — check with the supplier that the part is on the way, then update the notes.";
+  if(n.includes('arrived'))return "Parts arrived — notify the tech (tag them) the part is in, update the notes, and schedule the install.";
+  if(n.includes('supervisor')||n.includes('approval'))return "Pending supervisor approval — tag the supervisor in the notes asking for approval and link the order.";
+  return null;
+}
+const PART_USE=['replaced','installed','reinstalled','re-installed','swapped','changed out','change out','put in a new','installed a new','installed new','replaced the','replaced with','new part','replacement part','mounted a new'];
+function partTrigger(t){ if(!t)return null; const s=' '+t.toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ')+' '; return PART_USE.find(k=>s.includes(k))||null; }
+function mentionsPart(t){ return !!partTrigger(t); }
+const APPLIANCE_KW=['refrigerator','fridge','stove','oven','range','dishwasher','microwave','washer','dryer','water heater','disposal','freezer','a/c unit','ac unit','furnace'];
+function applianceMoved(desc){
+  if(!desc)return null; const s=' '+desc.toLowerCase().replace(/\s+/g,' ')+' ';
+  const ap=APPLIANCE_KW.find(a=>s.includes(' '+a)); if(!ap)return null;
+  const verb=/(took|take|taken|taking|moved|move|moving|swap|swapped|transfer|transferr?ed|borrow|borrowed|relocat|pull|pulled|using|used|grab|grabbed)/.test(s);
+  const between=/(from (unit|apt|apartment|#|\d)|out of (unit|apt|apartment|#|\d)|another (unit|apt|apartment)|other (unit|apt|apartment)|different (unit|apt|apartment)|to (unit|apt|apartment|#|\d).*(use|install|put)|use (it )?in (unit|apt|apartment|#|\d))/.test(s);
+  return (verb && between) ? ap : null;
+}
+function unitsInText(t){
+  if(!t)return [];
+  const found=new Set(); const re=/(?:\bunit\b|\bapt\.?\b|\bapartment\b|#)\s*#?\s*([0-9]{1,4}(?:-[0-9]{1,4})?[a-z]?)\b/gi;
+  let m; while((m=re.exec(t))){ found.add(m[1].toLowerCase()); }
+  return [...found];
+}
+function isGrounds(o){ const s=((o.issue||'')+' '+(o.wotype||'')+' '+(o.desc||'')).toLowerCase(); return /grounds|groundskeep|valet trash|leaf|landscap/.test(s); }
+function isUnitTurn(o){ return /unit turn|make ready|turn/.test(((o.wotype||'')+' '+(o.issue||'')).toLowerCase()); }
+function closedEarly(o){ const c=parseDate(o.completedOn); if(!c)return false; const d=c.getDay(); return d>=1&&d<=4; }
+function looksEmergency(t){ const s=' '+String(t||'').toLowerCase()+' '; return EMERGENCY_KW.some(k=>s.includes(k)); }
+function descSig(d){ if(!d)return ''; const w=d.toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(x=>x.length>2&&!STOP.has(x)); return [...new Set(w)].sort().slice(0,4).join(' '); }
+function closedEarly(o){ const c=parseDate(o.completedOn); if(!c)return false; const d=c.getDay(); return d>=1&&d<=4; }
+
+/* ---------------- task categories ---------------- */
+const CATS=[
+  {key:'urgent',   label:'Urgent work orders — review',  color:'var(--red)',   desc:'Marked urgent. Check notes for completion, follow up with the tech, and update the resident daily.'},
+  {key:'afterhours',label:'After-hours marked in error',     color:'var(--red)',   desc:'Marked after-hours but the timer shows a business-hours start and/or it isn’t urgent. After-hours needs BOTH an after-hours timer start AND an urgent order.'},
+  {key:'realmx',   label:'Realm-X workflows \u2014 due & past due', color:'var(--red)', desc:'Workflows assigned to you that are due today or overdue. Complete them in AppFolio.'},
+  {key:'code',     label:'Code violations & life safety', color:'var(--red)',   desc:'Read notes and follow up. Code violations are time-sensitive — email photos to the code officer on resolution.'},
+  {key:'assign',   label:'Assign work orders',           color:'var(--navy)',  desc:'Every work order must be assigned — by priority, property, and tech skill (see the matrix).'},
+  {key:'cancelbucket',label:'Cancelled, still unassigned',color:'var(--grey)',  desc:'Clear from the Unassigned bucket without un-cancelling.'},
+  {key:'waiting',  label:'Waiting status — audit',       color:'var(--gold)',  desc:'Completed work held for a billing issue — a QC concern or missing photos/detail.'},
+  {key:'inspreview',label:'Inspections to review & re-mark done', color:'var(--blue)', desc:'Marked done by someone other than '+COORD_NAME+' — review, create work orders, then re-mark Done. The Coordinator marks inspections done, not techs.'},
+  {key:'insppending',label:'Pending inspections — remind tech',  color:'var(--gold)', desc:'Not started or not completed. WhatsApp the tech to finish; the Coordinator marks it Done afterward.'},
+  {key:'hours',    label:'Low hours — remind tech',      color:'var(--gold)',  desc:'Under '+LOW_HOURS+' hours logged the previous business day. Remind them to enter hours in real time.'},
+  {key:'parts',    label:'Parts needed / ordered',       color:'var(--teal)',  desc:'Follow up by parts status.'},
+  {key:'partinv',  label:'Part used but no inventory',   color:'var(--teal)',  desc:'Description mentions a part, but no inventory is on the order.'},
+  {key:'pest',     label:'Pest / rodent — add vendor',   color:'var(--teal)',  desc:'Vendor isn\'t It\'s Bugs R Us.'},
+  {key:'duplicates',label:'Possible duplicates',         color:'var(--purple)',desc:'Same property + unit and a similar description.'},
+  {key:'addunit',  label:'Add unit to work order',       color:'var(--blue)',  desc:'Description names a unit but the Unit field is blank.'},
+  {key:'splitunit',label:'Multiple units on one WO',     color:'var(--red)',   desc:'Break out into separate orders.'},
+  {key:'missing',  label:'Missing work-order issue',     color:'var(--gold)',  desc:'No issue/category set (6/10/26 on; includes unit turns).'},
+  {key:'grounds',  label:'Grounds WO closed early',      color:'var(--gold)',  desc:'Weekly grounds orders stay open all week; a fresh one is created each Monday.'},
+  {key:'workdone', label:'Work Done — QC &amp; bill',       color:'var(--blue)',  desc:'QC fully, then Ready to Bill (or No Need to Bill with a reason).'},
+  {key:'aged',     label:'Unbilled over 30 days',        color:'var(--gold)',  desc:'Hard cap — labor can\'t accumulate past 30 days.'},
+  {key:'cancellabor',label:'Cancelled with labor/inventory',color:'var(--red)',desc:'Should never happen — investigate.'},
+  {key:'appliance', label:'Replace appliance moved between units',color:'var(--red)',desc:'A work order describes moving an appliance out of another unit — verify that unit gets a replacement work order.'}
+];
+
+function addTask(list,cat,o,title,instr,extraMeta){
+  list.push({id:cat+':'+(o.woId||o.srId||Math.random().toString(36).slice(2)),cat,title,instr,
+    wo:{woId:o.woId,srId:o.srId,property:o.property,unit:o.unit,tech:o.tech,vendor:o.vendor,status:o.status,priority:o.priority},
+    desc:o.desc||'',age:(o._age!=null?o._age:null),link:woLink(o),extraMeta:extraMeta||null});
+}
+
+function generate(){
+  const wos=mergeWorkOrders();
+  const list=[];
+  wos.forEach(o=>{
+    const created=parseDate(o.created); const age=o.ageDays?parseInt(o.ageDays):daysOld(created);
+    o._age=age; const desc=o.desc||'';
+    const inRich=o._src&&(o._src.wo||o._src.bill);
+    const inFlags=o._src&&o._src.cf;
+    const inLedger=o._src&&(o._src.bill||o._src.audit);
+    const actionable=!isCompleted(o)&&!isCancelled(o);
+    const blob=((o.issue||'')+' '+desc);
+    if(inLedger && age!==null && age>7 && !isCancelled(o) && (isWorkDone(o) || (num(o.unbilled)>0 && !isCompleted(o))))
+      addTask(list,'flag7',o,'Over 7 days in Work Done / unbilled',
+        "Work Done and unbilled work orders should never sit past 7 days. QC fully and get it to Ready to Bill today. If the request isn't finished, QC the completed portion, mark it Ready to Bill, and open a new service request referencing the original.",(age?age+' days old':null));
+    if(inRich){
+      if(isCancelled(o) && !assigned(o))
+        addTask(list,'cancelbucket',o,'Clear cancelled WO from Unassigned',"Open the cancelled work order, click Edit, and assign it to the Maintenance Coordinator. It stays Cancelled but leaves the Unassigned bucket.");
+      else if(!assigned(o) && !hasVendor(o) && !isClosed(o))
+        addTask(list,'assign',o,'Assign this work order',"Assign by priority, property, and tech skill (see the skills matrix). Every work order must be assigned.");
+      if(actionable && (o.priority||'').toLowerCase().includes('urgent'))
+        addTask(list,'urgent',o,'Urgent WO \u2014 check notes & follow up',"Check the notes for completion and follow up with the tech as needed. Notes must tell the full picture. Reach out to the resident with an update (daily).");
+      if(statusOf(o).includes('waiting'))
+        addTask(list,'waiting',o,'Audit Waiting status',"Waiting usually holds completed work with a billing issue \u2014 a QC concern or missing photos/detail. Check with the tech if needed to get it fully marked Ready to Bill.");
+      const isPest=PEST_RE.test(blob);
+      if(isPest && actionable && !(o.vendor||'').toLowerCase().includes('bugs r us'))
+        addTask(list,'pest',o,"Add It's Bugs R Us as the vendor","Add It's Bugs R Us as the vendor so they get notified of this work order.");
+      const units=actionable?unitsInText(desc):[];
+      if(units.length>=2) addTask(list,'splitunit',o,'Multiple units on one work order',"The description references more than one unit ("+units.join(', ')+"). A work order should cover one unit \u2014 break this out into separate work orders.");
+      else if(units.length===1 && !truthy(o.unit)) addTask(list,'addunit',o,'Add the unit to this work order',"The description names a unit ("+units[0]+") but the Unit field is blank. Edit the work order and add the unit.");
+      const movedAp=actionable?applianceMoved(desc):null;
+      if(movedAp){
+        const hasReplacement=wos.some(x=>x!==o && norm(x.property)===norm(o.property) && (' '+String(x.desc||'').toLowerCase()+' ').includes(movedAp) && /(replace|replacement|install|new |order(ed)?|deliver|purchase|buy)/.test(String(x.desc||'').toLowerCase()));
+        if(!hasReplacement)
+          addTask(list,'appliance',o,'Replace the '+movedAp+' moved from another unit',"This work order describes moving a "+movedAp+" out of another unit to use here. Confirm a work order exists to replace the missing "+movedAp+" in the unit it was taken from \u2014 if not, create one. (No matching replacement work order was found for this property.)");
+      }
+      if(!truthy(o.issue) && actionable && (!created || created>=TRANSLATION_CUTOFF))
+        addTask(list,'missing',o,'Set the work-order issue', isUnitTurn(o)?"Unit-turn work order with no issue set. Edit it and add the most applicable work-order issue.":"This work order has no Work Order Issue set. Open it and select the correct issue/category.");
+      if(isGrounds(o) && (isWorkDone(o)||isReadyToBill(o)||isCompleted(o)) && closedEarly(o))
+        addTask(list,'grounds',o,'Grounds WO closed before Friday?',"Weekly grounds orders stay open all week (a fresh one is auto-created each Monday). If this was closed before Friday, remind the tech to leave grounds open all week, then reopen a new work order and assign it to the tech.");
+      if(isWorkDone(o)) addTask(list,'workdone',o,'QC and mark Ready to Bill',"QC the work order fully and mark it Ready to Bill. If no hours or inventory were used, click \u201CMark No Need to Bill\u201D and add a reason why.");
+      if(isCancelled(o) && (num(o.hours)>0||truthy(o.inventory)||num(o.unbilled)>0))
+        addTask(list,'cancellabor',o,'Cancelled WO carries labor/inventory',"Cancelled work orders should never carry labor or inventory. Investigate \u2014 if work was actually done, it shouldn't be cancelled. QC and route it correctly.");
+    }
+    const ptrig=(o._src&&o._src.bill&&actionable&&!truthy(o.inventory))?partTrigger(desc):null;
+    if(ptrig)
+      addTask(list,'partinv',o,'Part used but no inventory logged',"The labor description below indicates a part was used (\u201C"+ptrig+"\u201D) but there's no inventory on the work order. If a part was actually installed, message the tech on WhatsApp for details and add the inventory. If it was labor only, no action needed.",'matched: \u201C'+ptrig+'\u201D');
+    if(!isCompleted(o)){
+      if(truthy(o.codeviolation)) addTask(list,'code',o,'Code violation \u2014 review & follow up',"Code violation. Read the notes and follow up as needed. Time-sensitive \u2014 keep notes current; on resolution, email photos to the code officer and attach the email to the work order."+(o.desc?'':' (Load the Work Order report for the description.)'));
+      if(truthy(o.lifesafety)) addTask(list,'code',o,'Life safety \u2014 review & follow up',"Life-safety issue. Read the notes and follow up with priority."+(o.desc?'':' (Load the Work Order report for the description.)'));
+    }
+    if(inFlags){ const pa=partsAction(o.parts); if(pa) addTask(list,'parts',o,'Parts follow-up',pa,(o.parts||'').trim()); }
+    const urgentish=(o.priority||'').toLowerCase().includes('urgent')||looksEmergency(blob);
+    if(truthy(o.afterhours) && actionable && o._haveStart && !(o._startAH && urgentish)){
+      const why=[]; if(!o._startAH)why.push('the timer was started during business hours (not 6 PM\u20138 AM)'); if(!urgentish)why.push('it isn\u2019t marked urgent');
+      addTask(list,'afterhours',o,'After-hours marked in error',"Marked after-hours but "+why.join(' and ')+". After-hours requires BOTH an after-hours timer start AND an urgent work order. QC it, convert to an in-house bill, and manually override the labor rate (unchecking \u201Cafter hours\u201D doesn\u2019t work). "+LABOR_RATES, o.startTime?('start '+o.startTime):null);
+    }
+    if(inLedger && !isCancelled(o)){
+      const fromAudit=o._src&&o._src.audit;
+      if((fromAudit||num(o.unbilled)>0) && age!==null && age>30 && !isReadyToBill(o) && !isCompleted(o))
+        addTask(list,'aged',o,'Unbilled over 30 days',"Check this work order fully \u2014 if the work is complete, mark it Ready to Bill. We can't leave labor accumulated over 30 days. If the request isn't actually complete, QC the completed portion, mark it Ready to Bill, and open a NEW service request to finish the work, referencing the original.",age?age+' days old':null);
+    }
+  });
+  // possible duplicates: same property + unit + similar description
+  const dg={};
+  wos.forEach(o=>{ if(!(o._src&&(o._src.wo||o._src.bill))||isCancelled(o))return; const prop=norm(o.property),unit=norm(o.unit),sig=descSig(o.desc); if(!prop||!unit||!sig)return; const k=prop+'|'+unit+'|'+sig; (dg[k]=dg[k]||[]).push(o); });
+  Object.values(dg).forEach(g=>{ const uq=[...new Map(g.map(o=>[o.woId,o])).values()]; if(uq.length<2)return;
+    list.push({id:'dup:'+uq.map(o=>o.woId).join('_'),cat:'duplicates',title:'Possible duplicate ('+uq.length+' work orders)',
+      instr:'Same property + unit and a similar description. Review \u2014 cancel the most recent duplicate with a note referencing the open work order number.',
+      wo:{property:uq[0].property,unit:uq[0].unit},desc:'',age:null,link:null,
+      group:uq.map(o=>({woId:o.woId,srId:o.srId,status:o.status,age:o._age,desc:o.desc,link:woLink(o)}))}); });
+  generateRealmXTasks(list);
+  generateInspectionTasks(list);
+  generateHoursAudit(list);
+  TASKS=list;
+  renderTasks();
+  renderTotals();
+}
+
+/* ---------------- render ---------------- */
+function renderTasks(){
+  const host=document.getElementById('tasks'); host.innerHTML='';
+  const sum=document.getElementById('summary'); sum.innerHTML='';
+  if(!Object.keys(reports).length){ host.innerHTML='<div class="panel"><div class="empty"><b>No reports loaded</b>Load at least the Work Order report, then press Generate.</div></div>'; updateProgress(); return; }
+  if(!TASKS.length){ host.innerHTML='<div class="panel"><div class="empty"><b>Nothing flagged 🎉</b>No tasks generated from the loaded reports. Re-pull from AppFolio if something looks off.</div></div>'; updateProgress(); return; }
+
+  // 7-DAY RED FLAG BANNER (first thing)
+  const flags=TASKS.filter(t=>t.cat==='flag7');
+  if(flags.length){
+    const openF=flags.filter(t=>!checks[t.id]).length;
+    const a=document.createElement('div'); a.className='alert';
+    a.innerHTML=`<div class="ah"><span style="font-size:20px">⚠️</span><h3>Clear these first — over 7 days</h3><span class="count" id="flag7count">${openF} open</span></div>
+      <p class="sub">Work Done and unbilled work orders should never sit past 7 days.</p>`;
+    flags.forEach(t=>a.appendChild(taskRow(t)));
+    host.appendChild(a);
+  }
+
+  CATS.forEach(cat=>{
+    let items=TASKS.filter(t=>t.cat===cat.key);
+    if(!items.length)return;
+    let descHtml=cat.desc;
+    if(cat.key==='insppending'){
+      items=items.slice().sort((a,b)=>String(a.wo.tech||'~').localeCompare(String(b.wo.tech||'~')));
+      const by={}; items.forEach(t=>{const k=t.wo.tech||'Unassigned'; by[k]=(by[k]||0)+1;});
+      const tally=Object.entries(by).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${esc(k)} (${v})`).join(' \u00b7 ');
+      if(tally) descHtml+=` &nbsp;|&nbsp; <b>By tech:</b> ${tally}`;
+    }
+    const open=items.filter(t=>!checks[t.id]).length;
+    const pill=document.createElement('button'); pill.className='pill';
+    pill.innerHTML=`${cat.label} <b>${open}</b>`;
+    pill.onclick=()=>document.getElementById('cat-'+cat.key).scrollIntoView({behavior:'smooth',block:'start'});
+    sum.appendChild(pill);
+
+    const c=document.createElement('div'); c.className='cat'; c.id='cat-'+cat.key;
+    c.innerHTML=`<div class="cat-head" style="border-left-color:${cat.color}">
+        <span class="acc" style="background:${cat.color}"></span>
+        <h3>${cat.label}</h3><span class="count" style="background:${cat.color}">${open} open</span>
+        <span class="chev">▼</span></div>
+      <div class="cat-desc">${descHtml}</div><div class="cat-body"></div>`;
+    const body=c.querySelector('.cat-body');
+    c.querySelector('.cat-head').onclick=()=>c.classList.toggle('collapsed');
+
+    items.forEach(t=>body.appendChild(taskRow(t)));
+    host.appendChild(c);
+  });
+  updateProgress();
+}
+function taskRow(t){
+  const done=!!checks[t.id];
+  const d=document.createElement('div'); d.className='task'+(done?' done':'');
+  const meta=[];
+  if(t.wo.property)meta.push(`<span class="chip">${esc(t.wo.property)}${t.wo.unit?' \u00b7 '+esc(t.wo.unit):''}</span>`);
+  if(t.wo.tech)meta.push(`<span class="chip">\ud83d\udc64 ${esc(t.wo.tech)}</span>`);
+  if(t.wo.vendor)meta.push(`<span class="chip">\ud83c\udfe2 ${esc(t.wo.vendor)}</span>`);
+  if(t.wo.status)meta.push(`<span class="chip">${esc(t.wo.status)}</span>`);
+  if(t.wo.priority)meta.push(`<span class="chip">${esc(t.wo.priority)}</span>`);
+  if(t.age!=null)meta.push(`<span class="chip">${t.age}d old</span>`);
+  if(t.extraMeta)meta.push(`<span class="chip kpi">${esc(t.extraMeta)}</span>`);
+  if(t.wo.woId)meta.push(`<span class="chip">WO ${esc(t.wo.woId)}${t.wo.srId?' \u00b7 SR '+esc(t.wo.srId):''}</span>`);
+  let extra='';
+  if((t.cat==='code'||t.cat==='partinv'||t.cat==='appliance') && t.desc) extra=`<div class="detail">${esc(t.desc)}</div>`;
+  if(t.group) extra='<div class="dups">'+t.group.map(m=>`<div class="dup">${m.link?`<a href="${m.link}" target="_blank" rel="noopener">WO ${esc(m.woId)}</a>`:'WO '+esc(m.woId)} <span>${esc(m.status||'')}${m.age!=null?' \u00b7 '+m.age+'d':''}${m.desc?' \u00b7 '+esc(String(m.desc).slice(0,70)):''}</span></div>`).join('')+'</div>';
+  const openLink=t.group?'':(t.link?`<a class="open" href="${t.link}" target="_blank" rel="noopener">Open WO \u2197</a>`:'<span class="open" style="color:var(--grey)">no link</span>');
+  d.innerHTML=`<input type="checkbox" class="tck" ${done?'checked':''}>
+    <div class="body">
+      <div class="ttl">${esc(t.title)}</div>
+      <div class="meta">${meta.join('')}</div>
+      <div class="instr">${esc(t.instr)}</div>
+      ${extra}
+      <div class="remind">${STD_REMINDER}</div>
+    </div>
+    ${openLink}`;
+  d.querySelector('.tck').addEventListener('change',e=>{
+    if(e.target.checked)checks[t.id]=1; else delete checks[t.id];
+    saveChecks(); d.classList.toggle('done',e.target.checked); refreshCounts();
+  });
+  return d;
+}
+/* ---------------- inspections / hours / totals ---------------- */
+function cleanTech(s){ if(!s)return ''; let x=String(s).replace(/\s+/g,' ').trim(); x=x.replace(/\s*\(hidden\)$/i,'').trim(); x=x.replace(/[\s,]+[-Cc]$/,'').trim(); return x; }
+function ymd(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function fmtD(d){ return d.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}); }
+function round1(x){ return Math.round(x*10)/10; }
+function money(x){ return '$'+Math.round(x).toLocaleString(); }
+function weekStart(d){ const x=new Date(d.getFullYear(),d.getMonth(),d.getDate()); const day=(x.getDay()+6)%7; x.setDate(x.getDate()-day); return x; }
+function monthStart(d){ return new Date(d.getFullYear(),d.getMonth(),1); }
+function prevBusinessDay(d){ const x=new Date(d.getFullYear(),d.getMonth(),d.getDate()); do{x.setDate(x.getDate()-1);}while(x.getDay()===0||x.getDay()===6); return x; }
+function propName(pn){ if(!pn)return ''; const x=String(pn); const i=x.indexOf(' - '); return (i>0?x.slice(0,i):x).trim(); }
+function invLines(){
+  const out=[]; const rep=reports.inv; if(!rep)return out; const m=rep.map;
+  rep.rows.forEach(r=>{
+    const prop=val(r,m,'property'), unit=val(r,m,'unit');
+    const date=parseDate(val(r,m,'invAddedOn'))||parseDate(val(r,m,'created'));
+    const qty=num(val(r,m,'quantity')); const sale=num(val(r,m,'salePrice')); const cost=num(val(r,m,'cost'));
+    const amount=qty*(sale||cost);
+    out.push({prop,unit,date,amount});
+  });
+  return out;
+}
+function laborLines(){
+  const out=[]; const rep=reports.bill||reports.labor; if(!rep)return out; const useBill=!!reports.bill; const m=rep.map;
+  rep.rows.forEach(r=>{
+    const techs=String(val(r,m,'laborTech')||val(r,m,'tech')||'').split(/[,;\/]| and /i).map(cleanTech).filter(Boolean);
+    const prop=val(r,m,'property');
+    const date=parseDate(val(r,m,'laborDate'))||parseDate(val(r,m,'completedOn'))||parseDate(val(r,m,'created'));
+    const hours=num(val(r,m,'hours')); let inv=0;
+    if(useBill){ const bt=norm(val(r,m,'billtype')); if(/invent|material|part|supply/.test(bt)) inv=num(val(r,m,'amount')); }
+    out.push({techs,prop,date,hours,inv});
+  });
+  return out;
+}
+function inspLink(inspId){ return inspId?(BASE+'/maintenance/inspections/'+encodeURIComponent(inspId)):(BASE+'/maintenance/inspections?filters%5Bstatus_list%5D=IN+PROGRESS'); }
+function generateRealmXTasks(list){
+  const rep=reports.realmx; if(!rep)return; const m=rep.map;
+  const today=new Date(TODAY.getFullYear(),TODAY.getMonth(),TODAY.getDate());
+  rep.rows.forEach(r=>{
+    const status=(val(r,m,'status')||'').toLowerCase();
+    if(/done|complete|finished|closed|cancel/.test(status)) return;
+    const due=parseDate(val(r,m,'dueDate')); if(!due) return;
+    const dueDay=new Date(due.getFullYear(),due.getMonth(),due.getDate());
+    if(dueDay>today) return;
+    const wf=val(r,m,'workflowName')||'Realm-X workflow';
+    const woNum=val(r,m,'woNum'), woId=val(r,m,'woId'), srId=val(r,m,'srId');
+    const overdue=dueDay<today; const days=Math.round((today-dueDay)/86400000);
+    const o={woId,woNum,srId,property:val(r,m,'property'),unit:val(r,m,'unit'),tech:val(r,m,'tech')};
+    list.push({id:'realmx:'+wf+'|'+(woNum||val(r,m,'created')||wf), cat:'realmx',
+      title:(overdue?'Past due: ':'Due today: ')+wf,
+      instr:'Realm-X workflow assigned to you '+(overdue?('is '+days+' day'+(days===1?'':'s')+' past due'):'is due today')+' (due '+fmtD(dueDay)+'). Complete it in AppFolio.',
+      wo:o,desc:'',age:overdue?days:null,link:woLink(o)});
+  });
+}
+function generateInspectionTasks(list){
+  const rep=reports.insp; if(!rep)return; const m=rep.map;
+  rep.rows.forEach(r=>{
+    const created=parseDate(val(r,m,'created')); if(created && created<INSPECTION_CUTOFF) return;
+    const status=(val(r,m,'status')||'').toLowerCase(); if(!status) return;
+    const prop=val(r,m,'property'), unit=val(r,m,'unit'), tmpl=val(r,m,'template'), inspId=val(r,m,'inspId');
+    const completedBy=val(r,m,'completedBy'), inspector=val(r,m,'inspector');
+    const link=inspLink(inspId); const isDone=/done|complete|submitted|approved|finished/.test(status);
+    if(isDone){
+      if((completedBy||'').toLowerCase().indexOf(COORD_NAME.toLowerCase())===-1)
+        list.push({id:'insprev:'+(inspId||prop+unit+tmpl),cat:'inspreview',title:'Review inspection'+(tmpl?': '+tmpl:''),
+          instr:'Marked done by '+(completedBy||'a tech')+'. Review it, create work orders for any items needed, then re-mark it Done \u2014 the Maintenance Coordinator marks inspections done, not techs.',
+          wo:{property:prop,unit,tech:completedBy},desc:'',age:null,link});
+    } else {
+      list.push({id:'insppend:'+(inspId||prop+unit+tmpl),cat:'insppending',title:'Pending inspection'+(tmpl?': '+tmpl:''),
+        instr:'This inspection isn\u2019t started/completed (status: '+status+'). Remind '+(inspector||'the tech')+' on WhatsApp to complete it \u2014 the Coordinator marks it Done afterward.',
+        wo:{property:prop,unit,tech:inspector},desc:'',age:null,link});
+    }
+  });
+}
+function generateHoursAudit(list){
+  if(TODAY.getDay()<1||TODAY.getDay()>5) return;
+  const lines=laborLines(); if(!lines.length) return;
+  const ws=weekStart(TODAY); const pbd=prevBusinessDay(TODAY); const key=ymd(pbd);
+  const active={}, prev={};
+  lines.forEach(l=>{ l.techs.forEach(tech=>{ if(l.date&&l.date>=ws) active[tech]=(active[tech]||0)+l.hours; if(l.date&&ymd(l.date)===key) prev[tech]=(prev[tech]||0)+l.hours; }); });
+  Object.keys(active).forEach(tech=>{ const h=prev[tech]||0; if(h<LOW_HOURS)
+    list.push({id:'hours:'+tech,cat:'hours',title:tech+' \u2014 '+round1(h)+'h on '+fmtD(pbd),
+      instr:'Only '+round1(h)+' hours logged for '+fmtD(pbd)+'. Reach out to '+tech+' and remind them to enter their hours in real time.',
+      wo:{tech},desc:'',age:null,link:null}); });
+}
+function renderTotals(){
+  const host=document.getElementById('totals'); const panel=document.getElementById('totalspanel'); if(!host)return;
+  const lines=laborLines(); const invL=invLines();
+  if(!lines.length && !invL.length){ panel.style.display='none'; return; }
+  const ws=weekStart(TODAY), ms=monthStart(TODAY);
+  const HtW={},HpW={},IpW={},HpM={},IpM={};
+  lines.forEach(l=>{ if(!l.date)return; const prop=propName(l.prop);
+    if(l.date>=ws){ l.techs.forEach(t=>{HtW[t]=(HtW[t]||0)+l.hours;}); if(prop)HpW[prop]=(HpW[prop]||0)+l.hours; }
+    if(l.date>=ms){ if(prop)HpM[prop]=(HpM[prop]||0)+l.hours; }
+  });
+  const invSrc = invL.length ? invL : lines.map(l=>({prop:l.prop,date:l.date,amount:l.inv}));
+  invSrc.forEach(l=>{ if(!l.date||!l.amount)return; const prop=propName(l.prop); if(!prop)return;
+    if(l.date>=ws) IpW[prop]=(IpW[prop]||0)+l.amount;
+    if(l.date>=ms) IpM[prop]=(IpM[prop]||0)+l.amount;
+  });
+  const noInvSrc = !invL.length;
+  const tbl=(title,obj,fmt,inv)=>{ const rows=Object.entries(obj).filter(([k,v])=>k&&v).sort((a,b)=>b[1]-a[1]);
+    if(!rows.length && !inv) return '';
+    const inner = rows.length ? rows.map(([k,v])=>'<tr><td>'+esc(k)+'</td><td>'+fmt(v)+'</td></tr>').join('')
+      : '<tr><td colspan="2" style="color:var(--grey);font-style:italic">'+(noInvSrc?'Load the KPI Inventory Usage report to populate inventory totals.':'No inventory used in this window.')+'</td></tr>';
+    return '<div class="ttbl"><h4>'+esc(title)+'</h4><table>'+inner+'</table></div>'; };
+  host.innerHTML = tbl('Hours by tech \u2014 week to date',HtW,v=>round1(v)+'h')
+    + tbl('Hours by property \u2014 week to date',HpW,v=>round1(v)+'h')
+    + tbl('Inventory by property \u2014 week to date',IpW,money,true)
+    + tbl('Hours by property \u2014 month to date',HpM,v=>round1(v)+'h')
+    + tbl('Inventory by property \u2014 month to date',IpM,money,true);
+  panel.style.display='';
+}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+function refreshCounts(){
+  const fc=document.getElementById('flag7count');
+  if(fc){const fl=TASKS.filter(t=>t.cat==='flag7');fc.textContent=fl.filter(t=>!checks[t.id]).length+' open';}
+  // update per-cat open counts + pills + ring
+  CATS.forEach(cat=>{
+    const items=TASKS.filter(t=>t.cat===cat.key); if(!items.length)return;
+    const open=items.filter(t=>!checks[t.id]).length;
+    const c=document.getElementById('cat-'+cat.key);
+    if(c)c.querySelector('.count').textContent=open+' open';
+  });
+  // rebuild pills
+  const sum=document.getElementById('summary'); sum.innerHTML='';
+  CATS.forEach(cat=>{ const items=TASKS.filter(t=>t.cat===cat.key); if(!items.length)return;
+    const open=items.filter(t=>!checks[t.id]).length;
+    const pill=document.createElement('button'); pill.className='pill'; pill.innerHTML=`${cat.label} <b>${open}</b>`;
+    pill.onclick=()=>document.getElementById('cat-'+cat.key).scrollIntoView({behavior:'smooth',block:'start'});
+    sum.appendChild(pill);
+  });
+  updateProgress();
+}
+function updateProgress(){
+  const all=[...document.querySelectorAll('.tck'),...document.querySelectorAll('.rck')];
+  const total=all.length, done=all.filter(c=>c.checked).length;
+  const pct=total?Math.round(done/total*100):0;
+  document.getElementById('pct').textContent=pct+'%';
+  const r=26,circ=2*Math.PI*r;
+  const fg=document.getElementById('ringfg'); fg.style.strokeDasharray=circ; fg.style.strokeDashoffset=circ*(1-pct/100);
+  const taskTotal=TASKS.length, taskDone=TASKS.filter(t=>checks[t.id]).length;
+  document.getElementById('counts').textContent = taskTotal? `${taskDone}/${taskTotal} report tasks done` : 'no tasks generated yet';
+}
+
+/* ---------------- routine checklist ---------------- */
+const ROUTINE=[
+  ['whereby','First thing daily login to Whereby to be the Warehouse Cashier All Day!','Stay logged in all day so techs can check out parts and reach you.'],
+  ['dashboard','Check the dashboard for pending tasks','Open Assigned Tasks on the AppFolio dashboard and clear anything pending.'],
+  ['texts','Check for text messages assigned to you in Communication','Open Communication in AppFolio and answer any texts assigned to you.'],
+  ['emergencies','Audit urgent / emergency work orders','Notes must tell the full picture; downgrade anything mis-flagged.'],
+  ['assign-all','Assign every new work order','By priority, property, and tech skill. Keep Unassigned at zero.'],
+  ['waiting','Audit the Waiting queue','Completed orders held for billing issues — clear QC concerns / missing detail.'],
+  ['qc','QC the Work Done queue','Aim for zero left by end of day → Ready to Bill or No Need to Bill.'],
+  ['inspections','Review & approve completed inspections','Review all in-progress inspections, create work orders, and mark them completed (the Coordinator marks inspections done, not techs).','https://metricpropertymanagement.appfolio.com/maintenance/inspections?filters%5Bstatus_list%5D=IN+PROGRESS'],
+  ['residents','Update residents on open & escalated items','A quick AppFolio message — never a personal cell. Daily.'],
+  ['whatsapp','Monitor the Metric Maintenance WhatsApp','Turn field reports into work orders; techs don\'t create them.'],
+  ['parts','Work the parts follow-ups','Chase ordered/arrived parts; tag techs and the supplier.']
+];
+function buildRoutine(){
+  const host=document.getElementById('routine'); host.innerHTML='';
+  ROUTINE.forEach(([id,t,sub,lnk])=>{
+    const cid='routine:'+id; const done=!!checks[cid];
+    const el=document.createElement('label'); el.className='check'+(done?' done':'');
+    el.innerHTML=`<input type="checkbox" class="rck" ${done?'checked':''}><span class="ct"><b>${t}</b><span>${sub}${lnk?` <a href="${lnk}" target="_blank" rel="noopener">open in-progress inspections ↗</a>`:''}</span></span>`;
+    const a=el.querySelector('a'); if(a)a.addEventListener('click',e=>e.stopPropagation());
+    el.querySelector('input').addEventListener('change',e=>{
+      if(e.target.checked){
+        checks[cid]=1;
+        fetch(DASHBOARD+'/api/lyndsay/tasks/'+encodeURIComponent(cid)+'/done',{method:'POST'}).catch(()=>{});
+      } else {
+        delete checks[cid];
+        fetch(DASHBOARD+'/api/lyndsay/tasks/'+encodeURIComponent(cid)+'/done',{method:'DELETE'}).catch(()=>{});
+      }
+      saveChecks(); el.classList.toggle('done',e.target.checked); updateProgress();
+    });
+    host.appendChild(el);
+  });
+}
+
+function exportActivity(){
+  const data={tool:'mcc-activity',exportedAt:new Date().toISOString(),date:TODAY_KEY,checks:checks};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download='maintenance-activity-'+TODAY_KEY+'.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+async function exportToDashboard(){
+  if(!TASKS||!TASKS.length){ alert('No tasks generated yet — press "Generate today\'s tasks" first.'); return; }
+  const data={tool:'mcc-dashboard-export',exportedAt:new Date().toISOString(),date:TODAY_KEY,tasks:TASKS,checks:checks};
+  try{
+    const res=await fetch(DASHBOARD+'/api/lyndsay/import',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(data)
+    });
+    if(!res.ok){ alert('El dashboard respondió con error '+res.status+'. Revisa que esté corriendo.'); return; }
+    const r=await res.json();
+    alert('✅ '+r.count+' tareas enviadas al dashboard ('+r.open+' pendientes). Claude ya puede verlas con get_lyndsay_dashboard_tasks.');
+  }catch(e){
+    // Dashboard no disponible — descarga el archivo como respaldo
+    const blob=new Blob([JSON.stringify(data)],{type:'application/json'});
+    const url=URL.createObjectURL(blob); const a=document.createElement('a');
+    a.href=url; a.download='lyndsay-dashboard-'+TODAY_KEY+'.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    alert('No se pudo conectar al dashboard ('+DASHBOARD+'). Se descargó el archivo como respaldo.\nAsegúrate de que el dashboard esté abierto con "Iniciar Dashboard.bat".');
+  }
+}
+async function loadServerChecks(){
+  try{
+    const res=await fetch(DASHBOARD+'/api/lyndsay/tasks');
+    if(!res.ok){ alert('Dashboard respondió con error. Asegúrate de que esté corriendo ("Iniciar Dashboard.bat").'); return; }
+    const d=await res.json();
+    if(d.date!==TODAY_KEY){ alert('No hay tareas de hoy en el dashboard. Genera las tareas y usa "📤 Export to Dashboard" primero.'); return; }
+
+    // Sync routine checks from server
+    let routineCount=0;
+    const rc=d.routineChecks||{};
+    Object.entries(rc).forEach(([k,v])=>{ if(v && !checks[k]){ checks[k]=1; routineCount++; } });
+
+    // Sync task completions from server
+    let count=0;
+    if(Array.isArray(d.tasks)) d.tasks.forEach(t=>{ if(t.completed && !checks[t.id]){ checks[t.id]=1; count++; } });
+
+    saveChecks();
+    if(count||routineCount){ buildRoutine(); if(TASKS&&TASKS.length) renderTasks(); else updateProgress(); }
+    const total=count+routineCount;
+    alert(total ? total+' item'+(total===1?'':'s')+' sincronizado'+(total===1?'':'s')+' desde el dashboard.' : 'Todo al día — sin nuevas completaciones en el dashboard.');
+  }catch(e){
+    alert('No se pudo conectar al dashboard (http://localhost:3000). Asegúrate de que esté abierto con "Iniciar Dashboard.bat".');
+  }
+}
+function importActivity(file){
+  const fr=new FileReader();
+  fr.onload=e=>{ try{ const d=JSON.parse(e.target.result); const c=(d&&d.checks)?d.checks:d;
+    if(!c||typeof c!=='object'){ alert('That file does not look like an activity export.'); return; }
+    Object.assign(checks,c); saveChecks();
+    if(typeof TASKS!=='undefined' && TASKS && TASKS.length) renderTasks();
+    buildRoutine(); updateProgress(); refreshCounts();
+    alert('Prior activity imported — your checked-off items are restored.');
+  }catch(err){ alert('Could not read that activity file: '+err.message); } };
+  fr.readAsText(file);
+}
+/* ---------------- boot ---------------- */
+document.getElementById('today').textContent=TODAY.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});
+buildRoutine();
+(function(){ const dl=document.getElementById('tmplDl'); if(dl) dl.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,'+TEMPLATE_B64; })();
+(function(){ const wi=document.getElementById('wbInput'); const dz=document.querySelector('.workbook-drop');
+  if(wi) wi.addEventListener('change',e=>{ if(e.target.files[0]) loadFile('bill',e.target.files[0]); });
+  if(dz){ dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag');});
+    dz.addEventListener('dragleave',()=>dz.classList.remove('drag'));
+    dz.addEventListener('drop',e=>{ e.preventDefault(); dz.classList.remove('drag'); const f=e.dataTransfer.files[0]; if(f) loadFile('bill',f); }); }
+})();
+document.getElementById('exportAct').addEventListener('click',exportActivity);
+document.getElementById('exportDash').addEventListener('click',exportToDashboard);
+document.getElementById('loadDash').addEventListener('click',loadServerChecks);
+document.getElementById('importAct').addEventListener('change',e=>{ if(e.target.files[0]) importActivity(e.target.files[0]); e.target.value=''; });
+document.getElementById('gen').addEventListener('click',generate);
+document.getElementById('clear').addEventListener('click',()=>{
+  for(const k in reports)delete reports[k];
+  const ws=document.getElementById('wbStatus'); if(ws)ws.innerHTML='';
+  TASKS=[]; renderTasks(); renderTotals();
+});
+updateProgress();
+</script>
+</body>
+</html>

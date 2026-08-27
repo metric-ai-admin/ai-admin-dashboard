@@ -4,3 +4,8 @@ node_modules/
 .DS_Store
 data/
 *.bat
+
+# Sample AppFolio exports. These carry real resident names, unit numbers and
+# work-order detail; the reference HTML beside them is ours and is tracked.
+reference/*.xlsx
+reference/*.csv

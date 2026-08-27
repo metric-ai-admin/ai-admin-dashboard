@@ -1298,12 +1298,59 @@
     <!-- 12. Command Center -->
     <div id="maint-view-command-center" class="maint-view hidden">
       <div class="view-head">
-        <div><h2>Command Center</h2><p class="muted small">Lyndsay's task snapshot — readonly</p></div>
-        <div class="view-actions"><button class="btn-sm" id="maint-lyndsay-refresh">🔄 Refresh</button></div>
+        <div>
+          <h2>Daily Command Center</h2>
+          <p class="muted small">Pull the reports, generate today's tasks, work the list to zero. AppFolio is always the source of truth.</p>
+        </div>
+        <div class="view-actions">
+          <div class="cc-progress">
+            <div class="cc-progress-top"><b id="cc-pct">0%</b> <span class="muted small">done today</span></div>
+            <div class="cc-bar-track"><div class="cc-bar-fill" id="cc-bar"></div></div>
+            <div class="muted small" id="cc-counts">no tasks generated yet</div>
+          </div>
+        </div>
       </div>
-      <div class="banner banner-warn">
-        🚧 <b>Command Center — coming soon.</b> Use Lyndsay's HTML tool in the meantime.
+      <p class="muted small" id="cc-today">—</p>
+
+      <!-- Step 1 — intake -->
+      <div class="card" style="margin-bottom:16px">
+        <h4 style="margin-top:0">Step 1 · Master Data File</h4>
+        <p class="muted small">Everything runs off one Excel workbook. Refresh every tab with the AppFolio <b>Excel Connect</b> add-in for the last 90 days, save, and load it here — each tab is detected and routed automatically.</p>
+        <p><a class="btn-sm" href="Maintenance_Master_Data_Template.xlsx" download>⬇ Download the Master Data File template</a></p>
+        <label class="cc-drop" id="cc-drop">
+          <input type="file" id="cc-file" accept=".xlsx,.xls,.csv" hidden>
+          <span class="cc-drop-icon">⬆</span>
+          <span><b>Load the Master Data File here</b> — drop your .xlsx (all tabs at once) or click to choose</span>
+        </label>
+        <div class="cc-status small" id="cc-status"></div>
+        <div class="cc-slots" id="cc-slots"></div>
+        <div class="cc-actions">
+          <button class="btn-sm primary" id="cc-generate">Generate today's tasks</button>
+          <button class="btn-sm" id="cc-clear">Clear loaded data</button>
+          <button class="btn-sm" id="cc-export">⬇ Export activity</button>
+          <label class="btn-sm" style="cursor:pointer;margin:0">⬆ Import prior activity<input type="file" id="cc-import" accept=".json" hidden></label>
+        </div>
+        <p class="muted small" style="margin-bottom:0">Export your activity to save your checked-off progress; import it later, or on another device, to pick up where you left off.</p>
       </div>
+
+      <!-- Always-on routine -->
+      <div class="card" style="margin-bottom:16px">
+        <h4 style="margin-top:0">Standing daily routine</h4>
+        <p class="muted small">Do these every day regardless of the reports. Resets each morning.</p>
+        <div class="cc-routine" id="cc-routine"></div>
+      </div>
+
+      <!-- Running totals -->
+      <div class="card hidden" id="cc-totals-panel" style="margin-bottom:16px">
+        <h4 style="margin-top:0">Running totals</h4>
+        <p class="muted small">Hours from the Billable report; inventory at sale price from Inventory Usage. Week and month to date.</p>
+        <div class="cc-totals" id="cc-totals"></div>
+      </div>
+
+      <div class="cc-summary" id="cc-summary"></div>
+      <div id="cc-tasks"></div>
+
+      <!-- Lyndsay's snapshot, unchanged — it already lived in this tab. -->
       <div id="afUrgentFeed"></div>
       <div id="maint-lyndsay-body"></div>
     </div>
@@ -1333,5 +1380,6 @@
      appfolio-views.js uses; both rely on $ / esc / api / toast from app.js. -->
 <script src="reports-sync.js"></script>
 <script src="appfolio-views.js"></script>
+<script src="command-center.js"></script>
 </body>
 </html>

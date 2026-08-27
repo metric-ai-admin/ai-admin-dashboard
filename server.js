@@ -214,7 +214,7 @@ app.use(express.json({ limit: '5mb' }));
 // also gives every restart a fresh stamp, which is what you want while editing.
 const BUILD_HASH = (process.env.RENDER_GIT_COMMIT || '').trim().slice(0, 7) || String(Date.now());
 const INDEX_FILE = path.join(__dirname, 'public', 'index.html');
-const STAMPED = /\b(src|href)="((?:app|reports-sync|appfolio-views)\.js|styles\.css)"/g;
+const STAMPED = /\b(src|href)="((?:app|reports-sync|appfolio-views|command-center)\.js|styles\.css)"/g;
 let indexHtml = null;
 
 function renderIndex() {

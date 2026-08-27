@@ -1201,3 +1201,113 @@ tr.row-editing select[data-field] { border-color: var(--border-accent); }
 .report-counts { display: flex; flex-wrap: wrap; gap: 14px; padding-top: 6px;
   border-top: 1px solid var(--border); }
 .report-counts b { color: var(--text-primary); }
+
+/* ── Maintenance · Daily Command Center ─────────────────────────────
+   Ported from the standalone tool, which was a light "paper" design.
+   Rebuilt on the dashboard's dark tokens rather than carried across, so
+   it sits in the same visual language as the other eleven sub-views —
+   the category accent colours are the one thing kept, because Erick
+   reads the board by them. */
+.cc-progress { min-width: 190px; }
+.cc-progress-top { display: flex; align-items: baseline; gap: 6px; }
+.cc-progress-top b { font-size: 22px; color: var(--accent); }
+.cc-bar-track { height: 6px; border-radius: 999px; background: var(--bg-elevated);
+  border: 1px solid var(--border); overflow: hidden; margin: 4px 0 3px; }
+.cc-bar-fill { height: 100%; width: 0; background: var(--accent); transition: width .25s ease; }
+
+.cc-drop { display: flex; align-items: center; gap: 12px; margin: 12px 0 4px; padding: 16px 18px;
+  border: 2px dashed var(--border-accent); border-radius: 12px; background: var(--bg-surface);
+  cursor: pointer; font-size: 14px; transition: background .15s, border-color .15s; }
+.cc-drop:hover, .cc-drop.drag { background: var(--accent-glow); border-color: var(--accent); }
+.cc-drop-icon { font-size: 22px; line-height: 1; }
+.cc-status { min-height: 18px; margin: 6px 0; color: var(--text-secondary); }
+.cc-status b { color: var(--accent); }
+
+.cc-slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 12px 0; }
+.cc-slot { border: 1px dashed var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg-surface); }
+.cc-slot.ok { border-style: solid; border-color: var(--success); background: var(--success-bg, rgba(63,122,78,.12)); }
+.cc-slot h4 { margin: 0 0 3px; font-size: 12.5px; }
+.cc-slot p { margin: 0 0 6px; font-size: 11px; color: var(--text-secondary); line-height: 1.35; }
+.cc-slot-status { font-size: 11.5px; font-weight: 600; color: var(--text-muted); }
+.cc-slot.ok .cc-slot-status { color: var(--success); }
+.cc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+
+.cc-routine { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px; }
+.cc-check { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); cursor: pointer; }
+.cc-check input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; flex: none; }
+.cc-ct { font-size: 13px; }
+.cc-ct b { display: block; margin-bottom: 1px; }
+.cc-ct span { color: var(--text-secondary); font-size: 12px; }
+.cc-check.done { opacity: .5; }
+.cc-check.done .cc-ct b { text-decoration: line-through; }
+
+.cc-totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.cc-ttbl h5 { margin: 0 0 6px; font-size: 13px; }
+.cc-ttbl table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.cc-ttbl td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.cc-ttbl td:last-child { text-align: right; font-weight: 600; white-space: nowrap; }
+
+.cc-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.cc-pill { font-size: 12px; font-weight: 600; background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 999px; padding: 5px 12px; color: var(--text-secondary); cursor: pointer; }
+.cc-pill:hover { border-color: var(--border-accent); }
+.cc-pill b { color: var(--accent); margin-left: 3px; }
+
+.cc-alert { border: 2px solid var(--critical); background: var(--critical-bg); border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 16px; }
+.cc-alert-head { display: flex; align-items: center; gap: 10px; }
+.cc-alert-head h4 { margin: 0; color: var(--critical); flex: 1; }
+.cc-alert .cc-count { background: var(--critical); color: #fff; }
+
+.cc-cat { margin-bottom: 14px; border: 1px solid var(--border); border-radius: 12px;
+  overflow: hidden; background: var(--bg-elevated); }
+.cc-cat-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer;
+  border-left: 4px solid var(--text-muted); background: var(--bg-surface); user-select: none; }
+.cc-cat-head h4 { margin: 0; flex: 1; font-size: 14.5px; }
+.cc-acc { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
+.cc-count { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 3px 10px;
+  background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-secondary); }
+.cc-chev { color: var(--text-secondary); font-size: 12px; transition: transform .18s; }
+.cc-cat.collapsed .cc-chev { transform: rotate(-90deg); }
+.cc-cat.collapsed .cc-cat-body, .cc-cat.collapsed .cc-cat-desc { display: none; }
+.cc-cat-desc { font-size: 12px; color: var(--text-secondary); padding: 8px 16px 0 32px; }
+.cc-cat-body { padding: 6px 16px 14px; }
+/* One accent per tone, applied to the rail, the dot and the count chip. */
+.cc-tone-red    .cc-cat-head { border-left-color: var(--critical); }
+.cc-tone-red    .cc-acc { background: var(--critical); }
+.cc-tone-gold   .cc-cat-head { border-left-color: var(--warning); }
+.cc-tone-gold   .cc-acc { background: var(--warning); }
+.cc-tone-blue   .cc-cat-head { border-left-color: #345C8C; }
+.cc-tone-blue   .cc-acc { background: #345C8C; }
+.cc-tone-teal   .cc-cat-head { border-left-color: #2C7A75; }
+.cc-tone-teal   .cc-acc { background: #2C7A75; }
+.cc-tone-purple .cc-cat-head { border-left-color: #6B4E8A; }
+.cc-tone-purple .cc-acc { background: #6B4E8A; }
+.cc-tone-navy   .cc-cat-head { border-left-color: var(--accent); }
+.cc-tone-navy   .cc-acc { background: var(--accent); }
+
+.cc-task { display: flex; gap: 10px; align-items: flex-start; padding: 11px 0;
+  border-bottom: 1px solid var(--border); }
+.cc-task:last-child { border-bottom: none; }
+.cc-tck { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; flex: none; }
+.cc-body { flex: 1; min-width: 0; }
+.cc-ttl { font-weight: 650; font-size: 13.5px; margin-bottom: 4px; }
+.cc-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 5px; }
+.cc-chip { font-size: 11px; padding: 2px 8px; border-radius: 6px;
+  background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-secondary); }
+.cc-chip.kpi { color: var(--accent); border-color: var(--border-accent); }
+.cc-instr { font-size: 12.5px; color: var(--text-secondary); border-left: 3px solid var(--border-accent);
+  padding-left: 10px; line-height: 1.5; }
+.cc-detail { font-size: 12px; color: var(--text-secondary); background: var(--bg-surface);
+  border-radius: 6px; padding: 7px 9px; margin-top: 6px; white-space: pre-wrap; }
+.cc-remind { font-size: 11.5px; color: var(--text-muted); margin-top: 5px; font-style: italic; }
+.cc-dups { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.cc-dup { font-size: 12px; color: var(--text-secondary); }
+.cc-open { flex: none; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.cc-task.done { opacity: .45; }
+.cc-task.done .cc-ttl { text-decoration: line-through; }
+@media (max-width: 720px) {
+  .cc-task { flex-wrap: wrap; }
+  .cc-open { margin-left: 26px; }
+}
