@@ -60,7 +60,22 @@ const TAB_ACCESS = {
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
   maintenance: ['maintenance'],
   bd_agent:    ['crm'],
+  // Confirmed by Jay 2026-08-27. None of these three exist in dashboard_users
+  // yet — Arturo creates the accounts once passwords are agreed — so the entries
+  // sit here inert until then rather than needing a deploy on the day.
+  regional_director:   ['maintenance', 'reports'],   // Rebekah Tuckner
+  resident_success:    ['maintenance', 'reports'],   // Kara Garst
+  collections_leasing: ['reports'],                  // Rocío Hunsberger
 };
+
+// Maintenance is read-only for these two: they consult the board, they do not
+// work it. Erick and Arturo keep every control.
+//
+// This hides the controls; it does not defend the endpoints. /api/operational
+// and the technician routes take no auth at all today, so anyone with the URL
+// can still write. Closing that is a server-side change and is not part of this
+// one — see the note in the commit message.
+const MAINT_VIEW_ONLY_ROLES = ['regional_director', 'resident_success'];
 
 let currentUser = null;
 
@@ -81,6 +96,12 @@ async function initAuth() {
   if (brandName) brandName.textContent = currentUser.name;
   if (brandRole) brandRole.textContent = roleLabelFor(currentUser.role);
   if (brandEmail) brandEmail.textContent = currentUser.email;
+
+  // Read-only Maintenance. Set alongside the tab gating so it is in place before
+  // any maintenance render runs, and on the section itself so the CSS cannot
+  // reach controls in other tabs that share class names.
+  $('#tab-maintenance')?.classList.toggle('maint-readonly',
+    MAINT_VIEW_ONLY_ROLES.includes(currentUser.role));
 
   // Gate tabs by role
   const allowed = TAB_ACCESS[currentUser.role] || [];
@@ -108,7 +129,12 @@ async function initAuth() {
 }
 
 function roleLabelFor(role) {
-  return { admin: 'AI Admin', ceo: 'CEO', operations: 'Operations Manager', maintenance: 'Maintenance Coordinator', bd_agent: 'BD Agent' }[role] || role;
+  return {
+    admin: 'AI Admin', ceo: 'CEO', operations: 'Operations Manager',
+    maintenance: 'Maintenance Coordinator', bd_agent: 'BD Agent',
+    regional_director: 'Regional Director', resident_success: 'Resident Success',
+    collections_leasing: 'Collections & Leasing',
+  }[role] || role;
 }
 
 // ---- Tabs -------------------------------------------------------------------

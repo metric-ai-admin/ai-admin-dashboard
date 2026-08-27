@@ -1135,3 +1135,32 @@ tr.row-editing select[data-field] { border-color: var(--border-accent); }
 .report-card[open] > .report-card-head::before { transform: rotate(90deg); }
 .report-card-title { flex: 1; }
 .report-card-body { padding: 12px 14px; }
+
+/* ── Maintenance, read-only ─────────────────────────────────────────
+   regional_director and resident_success consult the board; they do not
+   work it. Every selector is scoped to the maintenance section, because
+   .card-actions, .note-add and .row-actions are also used by the Task
+   Manager and the CRM, which these roles either cannot reach or use
+   normally.
+
+   This hides controls. It is not a security boundary — /api/operational
+   and the technician routes take no auth today, so the server still
+   accepts writes from anyone. */
+#tab-maintenance.maint-readonly #maint-task-form,
+#tab-maintenance.maint-readonly #afDropZone,
+#tab-maintenance.maint-readonly #techAddBtn,
+#tab-maintenance.maint-readonly #techAddForm,
+#tab-maintenance.maint-readonly #cwoSyncBtn,
+#tab-maintenance.maint-readonly #meSyncBtn,
+#tab-maintenance.maint-readonly #taSyncBtn,
+#tab-maintenance.maint-readonly #rsSyncAllBtn,
+#tab-maintenance.maint-readonly .card-actions,
+#tab-maintenance.maint-readonly .note-add,
+#tab-maintenance.maint-readonly .row-actions,
+#tab-maintenance.maint-readonly .tech-toggle { display: none !important; }
+/* The capability and priority selects render outside .card-actions in the
+   technician matrix, so they are neutralised rather than hidden — the value
+   is worth reading, the control is not theirs to use. */
+#tab-maintenance.maint-readonly .tc-table select,
+#tab-maintenance.maint-readonly .tc-table input,
+#tab-maintenance.maint-readonly .crm-table input { pointer-events: none; }
