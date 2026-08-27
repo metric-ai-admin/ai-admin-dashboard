@@ -1164,3 +1164,32 @@ tr.row-editing select[data-field] { border-color: var(--border-accent); }
 #tab-maintenance.maint-readonly .tc-table select,
 #tab-maintenance.maint-readonly .tc-table input,
 #tab-maintenance.maint-readonly .crm-table input { pointer-events: none; }
+
+/* ── BD CRM · Team Performance ──────────────────────────────────────
+   Three columns on desktop, one on mobile. auto-fit rather than a fixed
+   three, so five agents do not leave a ragged last row on a narrow
+   desktop window. */
+.tp-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+@media (max-width: 720px) { .tp-grid { grid-template-columns: 1fr; } }
+.tp-card { background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px; }
+.tp-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.tp-avatar { flex: 0 0 34px; height: 34px; border-radius: 50%;
+  background: var(--accent-glow); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 12px; letter-spacing: .04em; }
+.tp-name { flex: 1; display: flex; flex-direction: column; font-weight: 600; line-height: 1.25; }
+.tp-rank { flex: 0 0 auto; border-radius: 20px; padding: 2px 9px; font-size: 11px; font-weight: 700;
+  background: var(--bg-surface); border: 1px solid var(--border); }
+/* Only the top three are shown at all, so three cases is the whole set. */
+.tp-rank-1 { background: rgba(201,151,46,.18); border-color: var(--crm-gold); color: var(--crm-gold); }
+.tp-rank-2 { background: rgba(139,139,168,.18); border-color: var(--text-secondary); color: var(--text-secondary); }
+.tp-rank-3 { background: rgba(180,120,60,.18); border-color: #b4783c; color: #b4783c; }
+.tp-empty { margin: 0 0 8px; }
+.tp-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tp-chip { border-radius: 6px; padding: 3px 8px; font-size: 11.5px;
+  background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-secondary); }
+.tp-chip b { color: var(--text-primary); font-size: 13px; margin-right: 3px; }
+/* An unrecorded metric must not look like a measured zero — it is greyed and
+   says so, because a 0 beside a rank badge reads as "did nothing". */
+.tp-chip-untracked { color: var(--text-muted); border-style: dashed; font-style: italic; }

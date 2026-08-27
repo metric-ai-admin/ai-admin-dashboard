@@ -3535,6 +3535,128 @@ app.patch('/api/crm/bd-agents/:id/status', requireCRM, requireAuth, requireRole(
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- GET /api/crm/team-performance ---------------------------------------------
+// Same guard as the roster read: this is per-person output, and operations is as
+// far down as it should go.
+//
+// Every number here is counted from activity rows the agent created. There is no
+// task-completion record to read and there should not be one: crm-task-engine.js
+// derives the queue from property state, so a task disappears precisely when the
+// row that answers it is written. The row is the completion. A "mark complete"
+// button would count clicks rather than work, and would not clear the task
+// anyway, since the engine recomputes from state and would not consult it.
+//
+// Which means a metric can only be as honest as its attribution. Until 006 only
+// phone_shops recorded who did the work, so the rest are reported as untracked
+// rather than as zero — a zero next to a rank badge reads as "did nothing",
+// which is a different and damaging claim.
+const TP_RANGES = { today: 0, week: 6, month: 29 };
+// A metric counts as tracked once enough rows carry a name to mean anything. Four
+// rows cannot support a performance panel whatever fraction of them is populated.
+const TP_MIN_ATTRIBUTED = 10;
+
+function tpDaysAgo(n) {
+  const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - n);
+  return d;
+}
+const tpDateStr = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+app.get('/api/crm/team-performance', requireCRM, requireAuth, requireRole('admin', 'operations'), async (req, res) => {
+  const range = TP_RANGES[req.query.range] != null ? req.query.range : 'week';
+  const client = supabaseAdmin || supabasePublic;
+
+  try {
+    const { data: agents, error: ae } = await client.from('bd_agents')
+      .select('name, crm_alias, status').eq('status', 'active').not('crm_alias', 'is', null).order('name');
+    if (ae) return res.status(500).json({ error: ae.message });
+
+    // One read per table over the widest window, bucketed in memory afterwards,
+    // rather than three round trips per agent per metric.
+    const monthAgo = tpDateStr(tpDaysAgo(TP_RANGES.month));
+    const monthAgoTs = tpDaysAgo(TP_RANGES.month).toISOString();
+    const [phone, online, fups, dms, drafts] = await Promise.all([
+      client.from('phone_shops').select('agent_name, shop_date, notes').gte('shop_date', monthAgo),
+      client.from('online_shops').select('agent_name, shop_date').gte('shop_date', monthAgo),
+      client.from('follow_ups').select('agent_name, follow_up_date').gte('follow_up_date', monthAgo),
+      client.from('dm_reviews').select('agent_name, updated_at').gte('updated_at', monthAgoTs),
+      client.from('outreach_drafts').select('approved_by, created_at').gte('created_at', monthAgoTs),
+    ]);
+
+    const rows = r => (r?.data || []);
+    // Coverage asks whether the metric is being recorded at all, so it looks at
+    // every row in the window rather than only the selected period — a quiet
+    // week is not the same as a column nobody fills in.
+    const attributed = (list, key) => list.filter(r => r[key] != null && String(r[key]).trim() !== '').length;
+
+    const inRange = (value, r) => {
+      if (!value) return false;
+      const day = String(value).slice(0, 10);
+      return day >= tpDateStr(tpDaysAgo(TP_RANGES[r])) && day <= tpDateStr(new Date());
+    };
+
+    // connection lives inside the notes JSON string, not a column, so it is read
+    // here rather than filtered in the query.
+    const connOf = n => {
+      if (!n) return null;
+      try { const p = typeof n === 'object' ? n : JSON.parse(n); return p && typeof p === 'object' ? (p.connection ?? null) : null; }
+      catch { return null; }
+    };
+
+    const phoneRows = rows(phone), onlineRows = rows(online), fupRows = rows(fups),
+          dmRows = rows(dms), draftRows = rows(drafts);
+
+    const withConnection = phoneRows.filter(r => connOf(r.notes) != null).length;
+    const coverage = {
+      phone_shops:     attributed(phoneRows, 'agent_name')  >= TP_MIN_ATTRIBUTED,
+      online_shops:    attributed(onlineRows, 'agent_name') >= TP_MIN_ATTRIBUTED,
+      follow_ups:      attributed(fupRows, 'agent_name')    >= TP_MIN_ATTRIBUTED,
+      dm_reviews:      attributed(dmRows, 'agent_name')     >= TP_MIN_ATTRIBUTED,
+      outreach_drafts: attributed(draftRows, 'approved_by') >= TP_MIN_ATTRIBUTED,
+      hot_leads:       withConnection >= TP_MIN_ATTRIBUTED,
+    };
+    // Tasks completed is the sum of the four activity types, so it is only
+    // meaningful once at least one of them is attributed.
+    coverage.tasks_completed = coverage.phone_shops || coverage.online_shops
+      || coverage.follow_ups || coverage.dm_reviews;
+
+    const countFor = (list, nameKey, dateKey, alias, r) =>
+      list.filter(x => x[nameKey] === alias && inRange(x[dateKey], r)).length;
+
+    const out = agents.map(a => {
+      const alias = a.crm_alias;
+      const tasksIn = r =>
+        countFor(phoneRows,  'agent_name',  'shop_date',       alias, r) +
+        countFor(onlineRows, 'agent_name',  'shop_date',       alias, r) +
+        countFor(fupRows,    'agent_name',  'follow_up_date',  alias, r) +
+        countFor(dmRows,     'agent_name',  'updated_at',      alias, r);
+      return {
+        agent_name: a.name,
+        crm_alias: alias,
+        tasks_completed_today: tasksIn('today'),
+        tasks_completed_week:  tasksIn('week'),
+        tasks_completed_month: tasksIn('month'),
+        hot_leads_contacted: phoneRows.filter(x =>
+          x.agent_name === alias && connOf(x.notes) === 'answered_agent' && inRange(x.shop_date, range)).length,
+        phone_shops:     countFor(phoneRows,  'agent_name',  'shop_date',      alias, range),
+        online_shops:    countFor(onlineRows, 'agent_name',  'shop_date',      alias, range),
+        follow_ups:      countFor(fupRows,    'agent_name',  'follow_up_date', alias, range),
+        outreach_drafts: countFor(draftRows,  'approved_by', 'created_at',     alias, range),
+        dm_reviews:      countFor(dmRows,     'agent_name',  'updated_at',     alias, range),
+      };
+    });
+
+    // Ranked on phone shops alone, because it is the only metric with enough
+    // history to rank on. Ties share a place rather than being ordered by name.
+    const ranked = [...out].filter(a => a.phone_shops > 0)
+      .sort((a, b) => b.phone_shops - a.phone_shops);
+    let place = 0, prev = null;
+    ranked.forEach((a, i) => { if (a.phone_shops !== prev) { place = i + 1; prev = a.phone_shops; } a.rank = place; });
+    for (const a of out) if (a.rank == null) a.rank = null;
+
+    res.json({ range, agents: out, coverage, rankedBy: 'phone_shops' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- POST /api/crm/bulk-import -------------------------------------------------
 // Bulk upsert for data migration. Requires SUPABASE_SERVICE_ROLE_KEY.
 // Accepts { properties: [...], phone_shops: [...], ... }

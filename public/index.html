@@ -331,6 +331,7 @@
         <button class="crm-nav-btn" data-crm-view="tasks">Task Queue</button>
         <button class="crm-nav-btn" data-crm-view="drafts">Outreach Drafts</button>
         <button class="crm-nav-btn" data-crm-view="market">Market Changes</button>
+        <button class="crm-nav-btn" data-crm-view="performance">Team Performance</button>
         <button class="crm-nav-btn" data-crm-view="roster">Agent Roster</button>
         <button class="crm-nav-btn" data-crm-view="settings">Settings</button>
       </nav>
@@ -463,6 +464,21 @@
     </div>
 
     <!-- ══════════════ VIEW: SETTINGS ══════════════ -->
+    <div id="crm-view-performance" class="crm-view hidden">
+      <div class="view-head">
+        <div><h3>Team Performance</h3><p class="muted small" id="crm-tp-status">Loading…</p></div>
+        <div class="view-actions">
+          <div class="filter-pills" id="crm-tp-pills">
+            <button class="pill" data-range="today">📅 Today</button>
+            <button class="pill active" data-range="week">📆 This Week</button>
+            <button class="pill" data-range="month">🗓 This Month</button>
+          </div>
+          <button class="btn-sm" id="crm-tp-refresh">🔄 Refresh</button>
+        </div>
+      </div>
+      <div id="crm-tp-body"></div>
+    </div>
+
     <div id="crm-view-roster" class="crm-view hidden">
       <div class="view-head">
         <div><h3>Agent Roster</h3><p class="muted small" id="crm-roster-status">Loading…</p></div>

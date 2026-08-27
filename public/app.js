@@ -1317,6 +1317,7 @@ function crmSetView(view) {
   if (view === 'drafts') crmLoadDraftsList();
   if (view === 'settings') crmLoadTargeted();
   if (view === 'roster' && crmCanSeeRoster()) crmLoadRoster();
+  if (view === 'performance' && crmCanSeePerformance()) crmLoadTeamPerformance();
 }
 
 $$('.crm-nav-btn').forEach(btn =>
@@ -1342,6 +1343,10 @@ function crmApplyUserRole() {
   if (!crmCanSeeRoster()) {
     $('.crm-nav-btn[data-crm-view="roster"]')?.classList.add('hidden');
     if (crmState.view === 'roster') crmSetView('dashboard');
+  }
+  if (!crmCanSeePerformance()) {
+    $('.crm-nav-btn[data-crm-view="performance"]')?.classList.add('hidden');
+    if (crmState.view === 'performance') crmSetView('dashboard');
   }
 
   const lockedRoles = ['bd_agent', 'maintenance'];
@@ -1516,6 +1521,100 @@ $('#crm-roster-form')?.addEventListener('submit', async e => {
     crmLoadRoster();
   } catch (err) { toast(err.message, 'error'); }
 });
+
+
+// ── Team Performance ──────────────────────────────────────────────────────────
+// Same allowlist as the roster: both are per-person data about colleagues.
+const crmCanSeePerformance = () => CRM_ROSTER_ROLES.includes(currentUser?.role);
+
+let crmTpRange = 'week';
+let crmTpData = null;
+
+// Six chips, in the order the spec lists them. `key` reads the agent row for the
+// selected range; `cov` is which coverage flag decides whether the number means
+// anything yet.
+const CRM_TP_CHIPS = [
+  { label: 'Tasks Completed',  cov: 'tasks_completed', key: a => a[`tasks_completed_${crmTpRange}`] },
+  { label: 'HOT Leads',        cov: 'hot_leads',       key: a => a.hot_leads_contacted },
+  { label: 'Phone Shops',      cov: 'phone_shops',     key: a => a.phone_shops },
+  { label: 'Online Shops',     cov: 'online_shops',    key: a => a.online_shops },
+  { label: 'Follow-ups',       cov: 'follow_ups',      key: a => a.follow_ups },
+  { label: 'Outreach Drafts',  cov: 'outreach_drafts', key: a => a.outreach_drafts },
+];
+
+const CRM_TP_RANGE_LABEL = { today: 'today', week: 'this week', month: 'this month' };
+
+// Two letters from the name — "Roxanne De Vero" gives RD, "Katie" gives KA.
+function crmTpInitials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '??';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+async function crmLoadTeamPerformance() {
+  const el = $('#crm-tp-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    crmTpData = await api(`/api/crm/team-performance?range=${encodeURIComponent(crmTpRange)}`);
+    crmRenderTeamPerformance();
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+    $('#crm-tp-status').textContent = 'Could not load team performance';
+  }
+}
+
+function crmRenderTeamPerformance() {
+  const el = $('#crm-tp-body');
+  if (!el || !crmTpData) return;
+  const { agents = [], coverage = {} } = crmTpData;
+
+  const untracked = CRM_TP_CHIPS.filter(c => !coverage[c.cov]).length;
+  $('#crm-tp-status').textContent =
+    `${agents.length} active agents · ranked by phone shops ${CRM_TP_RANGE_LABEL[crmTpRange]}`
+    + (untracked ? ` · ${untracked} of ${CRM_TP_CHIPS.length} metrics not tracked yet` : '');
+
+  if (!agents.length) {
+    el.innerHTML = '<div class="empty-state">No active agents with a CRM name. Add one under Agent Roster.</div>';
+    return;
+  }
+
+  el.innerHTML = `<div class="tp-grid">${agents.map(a => {
+    // Only the metrics that are actually being recorded count towards "no data".
+    // An agent with nothing logged is different from a board that logs nothing.
+    const tracked = CRM_TP_CHIPS.filter(c => coverage[c.cov]);
+    const anyData = tracked.some(c => (c.key(a) || 0) > 0);
+    return `
+    <div class="tp-card">
+      <div class="tp-head">
+        <span class="tp-avatar">${esc(crmTpInitials(a.agent_name))}</span>
+        <span class="tp-name">
+          ${esc(a.agent_name)}
+          <span class="muted small">${esc(a.crm_alias || '')}</span>
+        </span>
+        ${a.rank && a.rank <= 3 ? `<span class="tp-rank tp-rank-${a.rank}" title="Ranked by phone shops ${esc(CRM_TP_RANGE_LABEL[crmTpRange])}">#${a.rank}</span>` : ''}
+      </div>
+      ${!anyData && tracked.length
+        ? '<p class="small muted tp-empty">No data yet for this period.</p>' : ''}
+      <div class="tp-chips">
+        ${CRM_TP_CHIPS.map(c => coverage[c.cov]
+          ? `<span class="tp-chip"><b>${c.key(a) ?? 0}</b> ${esc(c.label)}</span>`
+          : `<span class="tp-chip tp-chip-untracked" title="Will count once agent_name is recorded">${esc(c.label)}: not tracked yet</span>`
+        ).join('')}
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+$('#crm-tp-refresh')?.addEventListener('click', crmLoadTeamPerformance);
+$$('#crm-tp-pills .pill').forEach(p => p.addEventListener('click', () => {
+  crmTpRange = p.dataset.range;
+  $$('#crm-tp-pills .pill').forEach(q => q.classList.toggle('active', q === p));
+  // Refetched rather than re-bucketed on the client: the period is part of the
+  // query, and the counts for it are the server's to decide.
+  crmLoadTeamPerformance();
+}));
 
 // ── KPI bar ───────────────────────────────────────────────────────────────────
 function crmRenderKPI(data) {
@@ -1799,7 +1898,7 @@ $('#crm-online-cancel').addEventListener('click', () => $('#crm-online-form').cl
 $('#crm-online-save').addEventListener('click', async () => {
   const p = crmState.activeProperty;
   if (!p) return;
-  const body = { shop_date: $('#of-date').value || new Date().toISOString().slice(0,10), agent_name: $('#of-agent').value, platform: $('#of-platform').value, score: parseFloat($('#of-score').value) || null, notes: $('#of-notes').value };
+  const body = { shop_date: $('#of-date').value || new Date().toISOString().slice(0,10), agent_name: $('#of-agent').value || crmState.agent || null, platform: $('#of-platform').value, score: parseFloat($('#of-score').value) || null, notes: $('#of-notes').value };
   try {
     await crmFetch(`/api/crm/properties/${p.id}/online-shops`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
@@ -1857,7 +1956,9 @@ $('#crm-fu-cancel').addEventListener('click', () => $('#crm-fu-form').classList.
 $('#crm-fu-save').addEventListener('click', async () => {
   const p = crmState.activeProperty;
   if (!p) return;
-  const body = { method: $('#ff-method').value, follow_up_date: $('#ff-date').value || new Date().toISOString().slice(0,10), completed: $('#ff-completed').value === 'true', outcome: $('#ff-outcome').value, next_action: $('#ff-next').value };
+  // Attribution for Team Performance. crmState.agent is the "Working as"
+  // selector, which is already how the CRM knows who is at the keyboard.
+  const body = { method: $('#ff-method').value, follow_up_date: $('#ff-date').value || new Date().toISOString().slice(0,10), completed: $('#ff-completed').value === 'true', outcome: $('#ff-outcome').value, next_action: $('#ff-next').value, agent_name: crmState.agent || null };
   try {
     await crmFetch(`/api/crm/properties/${p.id}/follow-ups`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
@@ -1967,7 +2068,7 @@ $('#crm-dm-save-btn').addEventListener('click', async () => {
     await crmFetch(`/api/crm/properties/${p.id}/dm-review`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...crmState.dmScores, audit_notes: $('#crm-dm-audit-notes').value }),
+      body: JSON.stringify({ ...crmState.dmScores, audit_notes: $('#crm-dm-audit-notes').value, agent_name: crmState.agent || null }),
     });
     toast('DM Review saved ✅', 'success');
   } catch (err) { toast(err.message, 'error'); }
