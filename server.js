@@ -13,6 +13,27 @@
  *  4. Platform Projects    (/api/platform-projects/*)
  *  5. Email & Calendar     (/api/email/*, /api/calendar/*) — stub until Graph API credentials are set
  *  6. End of Day Summary   (/api/summary)
+ *
+ * Planned — not built:
+ *
+ *  Accounting / Billing Module — Claudia Villalobos (Accounting/QC).
+ *  Pending discovery.
+ *
+ *    Sources:  the Work Order Billable tab of the Command Center workbook;
+ *              QC of work orders moving Work Done → Ready to Bill;
+ *              vendor payments; daily billing.
+ *
+ *    Daily Report section: Claudia reports daily on work orders ready to bill,
+ *              vendor items outstanding, and QC status. That means a seventh
+ *              owner on the report and a section of her own — today the seven
+ *              sections are fixed in REPORT_SECTIONS and only Maintenance has a
+ *              live source.
+ *
+ *    Blocked on: (1) a session with Claudia to map her daily flow,
+ *                (2) access to her area of AppFolio.
+ *
+ *  Written here rather than in docs/backlog because this is where the module
+ *  list lives, and the next person to add a module reads this header first.
  */
 
 require('dotenv').config();
