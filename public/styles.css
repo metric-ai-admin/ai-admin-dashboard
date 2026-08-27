@@ -461,7 +461,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .ta-hours { font-weight: 700; font-size: 16px; color: var(--accent); }
 .ta-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; margin-bottom: 8px; }
 .ta-wos { display: flex; flex-direction: column; gap: 1px; }
-.ta-wo { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 6px; border-radius: 5px; }
+.ta-wo { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 6px; border-radius: 5px; flex-wrap: wrap; }
+/* Own line, full width: .ta-wo-prop truncates with an ellipsis, so nesting
+   the start time inside it would have clipped it away on narrow cards.
+   Secondary information — smaller and dimmer than the WO number it sits
+   under, and absent entirely when no timer was started. */
+.ta-wo-start { flex: 1 0 100%; font-size: 10.5px; color: var(--text-muted); padding-left: 2px; }
 .ta-wo:nth-child(odd) { background: var(--bg-elevated); }
 .ta-wo-num { font-weight: 700; color: var(--accent); white-space: nowrap; }
 .ta-wo-prop { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }

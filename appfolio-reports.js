@@ -668,6 +668,35 @@ function rowDay(r, keys) {
  *   back to ACTIVE_TECHNICIANS when omitted, so this module still works
  *   standalone (and in the original metric-dashboard) with no database.
  */
+// pick() normalises keys, so "Start Time", "start_time" and "StartTime" all
+// resolve to the same candidate. Listed rather than hardcoded to one spelling
+// because the synced JSON is not in the repo — data/ is gitignored and the file
+// lives on Render's disk — so the exact header could not be read from here, and
+// a wrong guess would render nothing while looking exactly like "no tech marked
+// a start", which is a state the card is meant to show.
+const START_TIME_KEYS = ['start_time', 'timer_start', 'started_at', 'time_started',
+                         'labor_start', 'clock_in', 'start'];
+
+// Minutes since midnight, for comparing two starts. Handles "8:32 AM", "08:32"
+// and a full "…T08:32:00Z"; anything else returns null and simply loses the
+// comparison rather than throwing.
+function clockMinutes(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  let m = s.match(/(\d{1,2}):(\d{2})\s*([ap])\.?m\.?/i);
+  if (m) {
+    let h = parseInt(m[1], 10) % 12;
+    if (/p/i.test(m[3])) h += 12;
+    return h * 60 + parseInt(m[2], 10);
+  }
+  m = s.match(/T(\d{2}):(\d{2})/) || s.match(/^(\d{1,2}):(\d{2})/);
+  if (m) {
+    const h = parseInt(m[1], 10), mi = parseInt(m[2], 10);
+    return (h >= 0 && h <= 23 && mi >= 0 && mi <= 59) ? h * 60 + mi : null;
+  }
+  return null;
+}
+
 async function techActivityToday(day, roster) {
   const labor = await readReportData('work_order_labor_summary');
   if (!labor) return null;
@@ -695,6 +724,10 @@ async function techActivityToday(day, roster) {
     const wo = pick(r, ['work_order_number', 'wo_number', 'number', 'work_order_id'], '—');
     const property = pick(r, ['property_name', 'property', 'building'], 'Unknown');
     const unit = pick(r, ['unit_name', 'unit', 'unit_number'], '');
+    // Raw, not formatted: the value may be a full timestamp, and turning it into
+    // a clock reading here would use the server's zone — UTC on Render — and
+    // print an hour that is five off. The card formats it in the browser.
+    const startTime = pick(r, START_TIME_KEYS, '') || null;
 
     const t = techs[name] || (techs[name] = {
       name, hours: 0, billableHours: 0, wos: [], _seen: new Set(),
@@ -704,10 +737,18 @@ async function techActivityToday(day, roster) {
     const key = `${wo}|${property}|${unit}`;
     if (!t._seen.has(key)) {
       t._seen.add(key);
-      t.wos.push({ wo, property, unit, hours });
+      t.wos.push({ wo, property, unit, hours, startTime });
     } else {
       const existing = t.wos.find(w => `${w.wo}|${w.property}|${w.unit}` === key);
-      if (existing) existing.hours += hours;
+      if (existing) {
+        existing.hours += hours;
+        // Labor Summary holds one row per timer session, so a work order picked
+        // up twice in a day arrives as two rows. "Started" means when the tech
+        // first got to it, so the earliest wins — and a row with no start does
+        // not overwrite one that has it.
+        const cur = clockMinutes(existing.startTime), next = clockMinutes(startTime);
+        if (next != null && (cur == null || next < cur)) existing.startTime = startTime;
+      }
     }
 
     // Track which techs touched each unit, for the overlap flag.

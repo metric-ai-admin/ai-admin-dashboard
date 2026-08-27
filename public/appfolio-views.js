@@ -121,6 +121,36 @@ $('#meSyncBtn')?.addEventListener('click', async () => {
 // TECHNICIAN ACTIVITY TODAY
 // =====================================================================
 
+// The server hands the start time through untouched, because it can arrive as a
+// clock reading or as a full timestamp and only the browser knows Austin's
+// offset. Returns null for anything unparseable or missing -- not every tech
+// starts a timer, and the card simply says nothing rather than guessing.
+function taFormatStart(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+
+  // A full timestamp: let the browser place it in the local zone.
+  if (/\d{4}-\d{2}-\d{2}/.test(s) || /T\d{2}:\d{2}/.test(s)) {
+    const d = new Date(s);
+    if (!isNaN(d)) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  // Already a clock reading, with or without a meridiem.
+  let m = s.match(/^(\d{1,2}):(\d{2})\s*([ap])\.?m\.?$/i);
+  if (m) {
+    const h = parseInt(m[1], 10) % 12 || 12;
+    return h + ':' + m[2] + ' ' + (/p/i.test(m[3]) ? 'PM' : 'AM');
+  }
+  m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (m) {
+    const h24 = parseInt(m[1], 10);
+    if (h24 < 0 || h24 > 23) return null;
+    const h = h24 % 12 || 12;
+    return h + ':' + m[2] + ' ' + (h24 < 12 ? 'AM' : 'PM');
+  }
+  return null;
+}
+
 async function loadTechActivity() {
   const day = $('#taDate')?.value;
   let d;
@@ -180,12 +210,15 @@ async function loadTechActivity() {
       '<div class="ta-sub">' + t.billableHours + ' billable · ' + t.wos.length +
         ' WO' + (t.wos.length === 1 ? '' : 's') + '</div>' +
       '<div class="ta-wos">' +
-        t.wos.map(w =>
-          '<div class="ta-wo">' +
+        t.wos.map(w => {
+          const started = taFormatStart(w.startTime);
+          return '<div class="ta-wo">' +
             '<span class="ta-wo-num">#' + esc(w.wo) + '</span>' +
             '<span class="ta-wo-prop">' + esc(w.property) + (w.unit ? ' · ' + esc(w.unit) : '') + '</span>' +
             '<span class="ta-wo-hrs">' + w.hours + 'h</span>' +
-          '</div>').join('') +
+            (started ? '<span class="ta-wo-start">Started: ' + esc(started) + '</span>' : '') +
+          '</div>';
+        }).join('') +
       '</div>' +
     '</div>').join('') + '</div>';
 }
