@@ -676,6 +676,8 @@ function rowDay(r, keys) {
 // a start", which is a state the card is meant to show.
 const START_TIME_KEYS = ['start_time', 'timer_start', 'started_at', 'time_started',
                          'labor_start', 'clock_in', 'start'];
+const END_TIME_KEYS = ['end_time', 'timer_end', 'ended_at', 'time_ended',
+                       'labor_end', 'clock_out', 'end', 'finish_time', 'finished_at'];
 
 // Minutes since midnight, for comparing two starts. Handles "8:32 AM", "08:32"
 // and a full "…T08:32:00Z"; anything else returns null and simply loses the
@@ -695,6 +697,29 @@ function clockMinutes(raw) {
     return (h >= 0 && h <= 23 && mi >= 0 && mi <= 59) ? h * 60 + mi : null;
   }
   return null;
+}
+
+// Minutes between the start and the end of a work order, or null.
+//
+// Only for work orders with a single timer session. With two, the span from the
+// earliest start to the latest end is elapsed time, not worked time — 8-9am plus
+// 2-3pm is a seven-hour span for two hours of work, and the two hours are
+// already on the same row. Printing seven beside them would invite exactly the
+// wrong reading, so multi-session work orders show their times and no duration.
+//
+// Safe to compute here despite the server running UTC: both values come from the
+// same column in the same shape, so whatever offset they carry cancels in the
+// subtraction. An end before the start is read as crossing midnight, which
+// after-hours work really does; anything past sixteen hours is treated as a
+// mismatched pair rather than a very long night.
+function woDuration(w) {
+  if (!w || w._sessions !== 1) return null;
+  const a = clockMinutes(w.startTime), b = clockMinutes(w.endTime);
+  if (a == null || b == null) return null;
+  let mins = b - a;
+  if (mins < 0) mins += 1440;
+  if (mins <= 0 || mins > 16 * 60) return null;
+  return mins;
 }
 
 async function techActivityToday(day, roster) {
@@ -728,6 +753,7 @@ async function techActivityToday(day, roster) {
     // a clock reading here would use the server's zone — UTC on Render — and
     // print an hour that is five off. The card formats it in the browser.
     const startTime = pick(r, START_TIME_KEYS, '') || null;
+    const endTime = pick(r, END_TIME_KEYS, '') || null;
 
     const t = techs[name] || (techs[name] = {
       name, hours: 0, billableHours: 0, wos: [], _seen: new Set(),
@@ -737,17 +763,20 @@ async function techActivityToday(day, roster) {
     const key = `${wo}|${property}|${unit}`;
     if (!t._seen.has(key)) {
       t._seen.add(key);
-      t.wos.push({ wo, property, unit, hours, startTime });
+      t.wos.push({ wo, property, unit, hours, startTime, endTime, _sessions: 1 });
     } else {
       const existing = t.wos.find(w => `${w.wo}|${w.property}|${w.unit}` === key);
       if (existing) {
         existing.hours += hours;
+        existing._sessions++;
         // Labor Summary holds one row per timer session, so a work order picked
         // up twice in a day arrives as two rows. "Started" means when the tech
         // first got to it, so the earliest wins — and a row with no start does
-        // not overwrite one that has it.
-        const cur = clockMinutes(existing.startTime), next = clockMinutes(startTime);
-        if (next != null && (cur == null || next < cur)) existing.startTime = startTime;
+        // not overwrite one that has it. "Finished" is the mirror: the latest.
+        const cs = clockMinutes(existing.startTime), ns = clockMinutes(startTime);
+        if (ns != null && (cs == null || ns < cs)) existing.startTime = startTime;
+        const ce = clockMinutes(existing.endTime), ne = clockMinutes(endTime);
+        if (ne != null && (ce == null || ne > ce)) existing.endTime = endTime;
       }
     }
 
@@ -758,6 +787,10 @@ async function techActivityToday(day, roster) {
 
   const list = Object.values(techs).map(t => {
     delete t._seen;
+    for (const w of t.wos) {
+      w.durationMin = woDuration(w);
+      delete w._sessions;
+    }
     t.hours = Math.round(t.hours * 100) / 100;
     t.billableHours = Math.round((billableByTech[normName(t.name)] || 0) * 100) / 100;
     return t;

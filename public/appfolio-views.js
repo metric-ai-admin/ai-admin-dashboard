@@ -125,6 +125,15 @@ $('#meSyncBtn')?.addEventListener('click', async () => {
 // clock reading or as a full timestamp and only the browser knows Austin's
 // offset. Returns null for anything unparseable or missing -- not every tech
 // starts a timer, and the card simply says nothing rather than guessing.
+// "1h 23m", "45m", "2h" on the hour. Null passes through untouched, which is
+// what a multi-session work order and one still running both send.
+function taFormatDuration(mins) {
+  if (mins == null || !Number.isFinite(mins) || mins <= 0) return null;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  if (!h) return m + 'm';
+  return m ? h + 'h ' + m + 'm' : h + 'h';
+}
+
 function taFormatStart(raw) {
   if (!raw) return null;
   const s = String(raw).trim();
@@ -211,12 +220,21 @@ async function loadTechActivity() {
         ' WO' + (t.wos.length === 1 ? '' : 's') + '</div>' +
       '<div class="ta-wos">' +
         t.wos.map(w => {
+          // taFormatStart handles both ends: the two columns come from the same
+          // report in the same shape, so a separate formatter would be the same
+          // function under a different name.
           const started = taFormatStart(w.startTime);
+          const finished = taFormatStart(w.endTime);
+          const dur = taFormatDuration(w.durationMin);
           return '<div class="ta-wo">' +
             '<span class="ta-wo-num">#' + esc(w.wo) + '</span>' +
             '<span class="ta-wo-prop">' + esc(w.property) + (w.unit ? ' · ' + esc(w.unit) : '') + '</span>' +
             '<span class="ta-wo-hrs">' + w.hours + 'h</span>' +
             (started ? '<span class="ta-wo-start">Started: ' + esc(started) + '</span>' : '') +
+            (finished
+              ? '<span class="ta-wo-start">Finished: ' + esc(finished) +
+                  (dur ? ' · ' + esc(dur) : '') + '</span>'
+              : '') +
           '</div>';
         }).join('') +
       '</div>' +
