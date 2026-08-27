@@ -4233,6 +4233,15 @@ function reportSectionBadge(s) {
   return REPORT_STATUS_BADGE.ok;
 }
 
+// Two things write the Maintenance section and they see different days: the
+// board holds what someone typed up, the Command Center holds what the AppFolio
+// workbook flagged. Saying which one produced these numbers is the difference
+// between a reader trusting them and wondering why they moved.
+const REPORT_SOURCE_LABEL = {
+  command_center: 'via Command Center',
+  operational_tasks: "via Erick's board",
+};
+
 function reportSectionBody(s) {
   if (s.status !== 'auto') {
     // A section whose owner typed something keeps showing it; the rest say who
@@ -4252,6 +4261,7 @@ function reportSectionBody(s) {
       <span>✅ Completed today: <b>${c.completed_today ?? 0}</b></span>
       <span>📋 Total open: <b>${c.total_open ?? 0}</b></span>
       ${s.last_updated ? `<span>Updated ${new Date(s.last_updated).toLocaleTimeString()}</span>` : ''}
+      ${c.source ? `<span>${esc(REPORT_SOURCE_LABEL[c.source] || c.source)}</span>` : ''}
     </div>`;
 }
 

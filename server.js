@@ -3770,6 +3770,32 @@ async function reportMaintenanceSection(client) {
       // would roll over to "tomorrow" a few hours before local midnight.
       completed_today: rows.filter(t => t.completed_at && localDateStr(t.completed_at) === today).length,
       total_open: open.length,
+      source: 'operational_tasks',
+    },
+    last_updated: new Date().toISOString(),
+  };
+}
+
+// The Command Center generates its own view of the day from the AppFolio
+// workbook — a different and usually larger picture than the board, because it
+// flags work orders nobody has turned into a task yet. Both write the same
+// section; whichever wrote last is what the report shows, and content.source
+// says which it was. "Freshest wins" rather than a precedence table: pressing
+// Refresh means "read the board now", and generating in the Command Center
+// means "read the workbook now", and each is right at the moment it is asked
+// for.
+function reportCommandCenterSection(payload) {
+  const clean = a => (Array.isArray(a) ? a : []).map(t => String(t || '').trim()).filter(Boolean);
+  const critical = clean(payload.critical);
+  const followup = clean(payload.followup);
+  return {
+    key: 'maintenance', icon: '🔧', title: 'Maintenance', owner: 'Erick Frey',
+    status: 'auto',
+    content: {
+      critical, followup,
+      completed_today: Number.isFinite(+payload.completed_today) ? Math.max(0, +payload.completed_today) : 0,
+      total_open: Number.isFinite(+payload.total_open) ? Math.max(0, +payload.total_open) : (critical.length + followup.length),
+      source: 'command_center',
     },
     last_updated: new Date().toISOString(),
   };
@@ -3810,6 +3836,31 @@ app.post('/api/reports/daily/generate', requireAuth, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     res.json({ ...data, created: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Pushed by the Command Center right after it generates the day's tasks. It does
+// not know the report's id and should not create one: if nobody has generated
+// today's report, there is nothing to attach to and this is a no-op rather than
+// a report that appears without anyone asking for it. 200 either way, because
+// the caller treats this as a background write and must not surface a failure.
+app.post('/api/reports/daily/maintenance-snapshot', requireAuth, async (req, res) => {
+  const client = supabaseAdmin || supabasePublic;
+  try {
+    const { data: report } = await client.from('daily_reports')
+      .select('id, sections').eq('report_date', reportDateStr()).maybeSingle();
+    if (!report) return res.json({ ok: true, applied: false, reason: 'no report generated for today' });
+
+    const fresh = reportCommandCenterSection(req.body || {});
+    const sections = (report.sections || []).map(s => (s.key === 'maintenance' ? fresh : s));
+    if (!sections.some(s => s.key === 'maintenance')) sections.push(fresh);
+
+    const { error } = await client.from('daily_reports').update({ sections }).eq('id', report.id);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, applied: true, critical: fresh.content.critical.length, followup: fresh.content.followup.length });
+  } catch (err) {
+    console.error('[reports] command-center snapshot:', err.message);
+    res.json({ ok: false, applied: false, error: err.message });
+  }
 });
 
 // Re-reads a live section against its source. Only maintenance has one today, so
