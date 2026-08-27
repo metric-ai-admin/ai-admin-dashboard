@@ -395,8 +395,19 @@ function registerMetricRoutes(app, db) {
   }
 
   // ── MODULE: Operational Tasks (Erick's maintenance board) ─────────────────
+  // Every route here took no guard at all: /api/operational answered 200 to any
+  // request, with no cookie and no key, so the board could be read, rewritten or
+  // emptied by anyone who knew the URL.
+  //
+  // requireMetricAccess rather than a session-only check, and for the same reason
+  // the technician routes below use it: Erick's MCP tools reach these endpoints
+  // over loopback with no cookie, sending x-metric-key instead. A session-only
+  // guard would lock out every maintenance tool he has. This takes either and
+  // refuses everything else.
+  //
+  // No requireRole: Erick writes to this board as his job.
 
-  app.get('/api/operational', async (req, res) => {
+  app.get('/api/operational', requireMetricAccess, async (req, res) => {
     try {
       const tasks = await opsGetAll(db);
       await resetDailyTasks(db, tasks);
@@ -404,7 +415,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.post('/api/operational', async (req, res) => {
+  app.post('/api/operational', requireMetricAccess, async (req, res) => {
     const { title, type, person, action, priority, notes } = req.body;
     if (!title?.trim()) return res.status(400).json({ error: 'Title required' });
     const now = new Date().toISOString();
@@ -425,7 +436,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.put('/api/operational/:id', async (req, res) => {
+  app.put('/api/operational/:id', requireMetricAccess, async (req, res) => {
     try {
       const { data: existing, error: fe } = await db.from('operational_tasks').select('*').eq('id', req.params.id).single();
       if (fe || !existing) return res.status(404).json({ error: 'Task not found' });
@@ -444,7 +455,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.post('/api/operational/:id/done', async (req, res) => {
+  app.post('/api/operational/:id/done', requireMetricAccess, async (req, res) => {
     try {
       const { data: existing, error: fe } = await db.from('operational_tasks').select('priority,completed_at').eq('id', req.params.id).single();
       if (fe || !existing) return res.status(404).json({ error: 'Task not found' });
@@ -456,7 +467,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.post('/api/operational/:id/notes', async (req, res) => {
+  app.post('/api/operational/:id/notes', requireMetricAccess, async (req, res) => {
     const text = (req.body.text || '').trim();
     if (!text) return res.status(400).json({ error: 'Note text required' });
     try {
@@ -469,7 +480,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.delete('/api/operational/:id', async (req, res) => {
+  app.delete('/api/operational/:id', requireMetricAccess, async (req, res) => {
     try {
       const { data: existing } = await db.from('operational_tasks').select('id').eq('id', req.params.id).single();
       if (!existing) return res.status(404).json({ error: 'Task not found' });
