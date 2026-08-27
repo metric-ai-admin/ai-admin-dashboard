@@ -129,7 +129,7 @@ function loadTab(tab) {
   if (tab === 'email') loadEmail();
   if (tab === 'eod') loadEod();
   if (tab === 'maintenance') loadMaintenance();
-  if (tab === 'crm') { crmApplyUserRole(); crmLoadMeta(); crmLoadProperties(); }
+  if (tab === 'crm') { crmApplyUserRole(); crmLoadMeta(); crmLoadProperties(); crmLoadRoster(); }
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -1284,6 +1284,7 @@ function crmSetView(view) {
   if (view === 'tasks') crmLoadTasks();
   if (view === 'drafts') crmLoadDraftsList();
   if (view === 'settings') crmLoadTargeted();
+  if (view === 'roster') crmLoadRoster();
 }
 
 $$('.crm-nav-btn').forEach(btn =>
@@ -1313,6 +1314,159 @@ function crmApplyUserRole() {
     taskSel.disabled = true;
   }
 }
+
+// ── Agent Roster ──────────────────────────────────────────────────────────────
+let crmRosterCache = [];
+let crmRosterFilter = '';
+const crmIsAdmin = () => currentUser?.role === 'admin';
+
+// Unknown is a real state, not a missing value: five of these are names we have
+// without knowing whether they still work with us. It gets its own badge rather
+// than being folded into either of the other two.
+const ROSTER_BADGE = {
+  active:   '<span class="badge badge-green">Active</span>',
+  inactive: '<span class="badge badge-gray">Inactive</span>',
+  unknown:  '<span class="badge badge-amber">Unknown</span>',
+};
+// Placeholder for the fields we simply do not have for the unnamed half of the
+// roster — distinct from an empty cell, which reads as a rendering fault.
+const tbd = v => (v && String(v).trim())
+  ? esc(v) : '<span class="muted small">TBD</span>';
+
+async function crmLoadRoster() {
+  const el = $('#crm-roster-body');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    crmRosterCache = await api('/api/crm/bd-agents');
+    crmRenderRoster();
+    crmPopulateAgentSelects();
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+    $('#crm-roster-status').textContent = 'Could not load the roster';
+  }
+}
+
+function crmRenderRoster() {
+  const el = $('#crm-roster-body');
+  if (!el) return;
+  const admin = crmIsAdmin();
+  $('#crm-roster-add')?.classList.toggle('hidden', !admin);
+
+  const rows = crmRosterCache.filter(a => !crmRosterFilter || a.status === crmRosterFilter);
+  const counts = crmRosterCache.reduce((m, a) => ((m[a.status] = (m[a.status] || 0) + 1), m), {});
+  $('#crm-roster-status').textContent =
+    `${crmRosterCache.length} agents · ${counts.active || 0} active · ${counts.inactive || 0} inactive · ${counts.unknown || 0} unknown`
+    + (admin ? '' : ' · read-only');
+
+  if (!rows.length) {
+    el.innerHTML = crmRosterCache.length
+      ? '<div class="empty-state">No agents with that status.</div>'
+      : '<div class="empty-state">No agents yet.</div>';
+    return;
+  }
+
+  el.innerHTML = `<div style="overflow-x:auto"><table class="crm-table">
+    <thead><tr>
+      <th>Name</th><th>Email</th><th>Role</th><th>Phone</th>
+      <th title="The short name the CRM stores on properties — what the Task Queue filter matches">CRM name</th>
+      <th>Status</th>${admin ? '<th></th>' : ''}
+    </tr></thead><tbody>
+    ${rows.map(a => `<tr data-id="${esc(a.id)}">
+      ${admin ? `
+        <td><input class="crm-input" data-field="name" value="${esc(a.name ?? '')}"></td>
+        <td><input class="crm-input" data-field="email" value="${esc(a.email ?? '')}"></td>
+        <td><input class="crm-input" data-field="role" value="${esc(a.role ?? '')}"></td>
+        <td><input class="crm-input" data-field="phone" value="${esc(a.phone ?? '')}"></td>
+        <td><input class="crm-input" data-field="crm_alias" value="${esc(a.crm_alias ?? '')}"></td>`
+      : `
+        <td>${tbd(a.name)}</td><td>${tbd(a.email)}</td>
+        <td>${tbd(a.role)}</td><td>${tbd(a.phone)}</td><td>${tbd(a.crm_alias)}</td>`}
+      <td>${ROSTER_BADGE[a.status] || esc(a.status)}</td>
+      ${admin ? `<td class="row-actions">
+        ${ROW_EDIT_BUTTONS}
+        <button class="btn-sm crm-roster-toggle">${a.status === 'active' ? 'Deactivate' : 'Activate'}</button>
+      </td>` : ''}
+    </tr>`).join('')}
+  </tbody></table></div>`;
+
+  if (!admin) return;
+  // Same locked-by-default rows as the Properties tab, for the same reason: a
+  // table you opened to read should not be one keystroke from being written.
+  el.querySelectorAll('tbody tr').forEach(tr => wireRowEditing(tr, crmSaveRosterRow));
+  el.querySelectorAll('.crm-roster-toggle').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.closest('tr').dataset.id;
+      btn.disabled = true;
+      try {
+        await api(`/api/crm/bd-agents/${encodeURIComponent(id)}/status`, { method: 'PATCH' });
+        toast('Status updated', 'success');
+        crmLoadRoster();
+      } catch (err) { btn.disabled = false; toast(err.message, 'error'); }
+    });
+  });
+}
+
+async function crmSaveRosterRow(tr, btn) {
+  const payload = {};
+  tr.querySelectorAll('[data-field]').forEach(i => { payload[i.dataset.field] = i.value.trim(); });
+  if (!payload.name) { toast('Name is required', 'error'); return false; }
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    await api(`/api/crm/bd-agents/${encodeURIComponent(tr.dataset.id)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    toast('Agent saved', 'success');
+    crmLoadRoster();
+    return true;
+  } catch (err) {
+    toast(err.message, 'error');
+    return false;   // not saved — closing the row would imply it was
+  } finally { btn.disabled = false; btn.textContent = original; }
+}
+
+// The Task Queue filter compares against the assignee strings stored on
+// properties, which are short names — 'Rhoxie', not 'Roxanne De Vero'. So the
+// option value is crm_alias and only the label is the full name. An agent with
+// no alias is left out: it could only ever return an empty queue.
+function crmPopulateAgentSelects() {
+  const sel = $('#crm-task-agent-filter');
+  // crmApplyUserRole pins and disables this for bd_agent and maintenance. Do not
+  // undo that by repopulating it underneath them.
+  if (!sel || sel.disabled) return;
+  const cur = sel.value;
+  const withAlias = crmRosterCache.filter(a => a.crm_alias);
+  sel.innerHTML = '<option value="">All Agents</option>' +
+    withAlias.map(a => `<option value="${esc(a.crm_alias)}"${a.crm_alias === cur ? ' selected' : ''}>${esc(a.name)}</option>`).join('');
+}
+
+$('#crm-roster-refresh')?.addEventListener('click', crmLoadRoster);
+$$('#crm-roster-pills .pill').forEach(p => p.addEventListener('click', () => {
+  crmRosterFilter = p.dataset.status;
+  $$('#crm-roster-pills .pill').forEach(q => q.classList.toggle('active', q === p));
+  crmRenderRoster();
+}));
+$('#crm-roster-add')?.addEventListener('click', () => $('#crm-roster-form')?.classList.toggle('hidden'));
+$('#crm-roster-cancel')?.addEventListener('click', () => {
+  $('#crm-roster-form')?.classList.add('hidden');
+  $('#crm-roster-form')?.reset();
+});
+$('#crm-roster-form')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  try {
+    await api('/api/crm/bd-agents', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.fromEntries(fd)),
+    });
+    toast('Agent added', 'success');
+    e.target.reset();
+    e.target.classList.add('hidden');
+    crmLoadRoster();
+  } catch (err) { toast(err.message, 'error'); }
+});
 
 // ── KPI bar ───────────────────────────────────────────────────────────────────
 function crmRenderKPI(data) {

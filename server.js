@@ -3450,6 +3450,89 @@ app.get('/api/crm/meta', requireCRM, async (req, res) => {
   }
 });
 
+// ---- BD Agents (roster) --------------------------------------------------------
+// requireAuth on the read as well: this table carries staff emails and phone
+// numbers, which the property list does not. Writes are admin-only on top.
+const BD_AGENT_FIELDS = ['name', 'email', 'role', 'phone', 'status', 'crm_alias', 'notes'];
+const BD_AGENT_STATUSES = ['active', 'inactive', 'unknown'];
+
+function bdAgentPayload(body, { partial }) {
+  const out = {};
+  for (const k of BD_AGENT_FIELDS) {
+    if (!(k in body)) continue;
+    // Blanks are stored as null, not '', so the partial unique index on email
+    // keeps treating "no email" as absent rather than as a value five rows share.
+    const v = typeof body[k] === 'string' ? body[k].trim() : body[k];
+    out[k] = (v === '' || v === undefined) ? null : v;
+  }
+  if (!partial && !out.name) return { error: 'Name is required' };
+  if ('name' in out && !out.name) return { error: 'Name cannot be empty' };
+  if (out.status && !BD_AGENT_STATUSES.includes(out.status)) {
+    return { error: `status must be one of ${BD_AGENT_STATUSES.join(', ')}` };
+  }
+  return { data: out };
+}
+
+// The database enforces uniqueness on the normalised name and email; this turns
+// its error into something a person can act on rather than a raw 23505.
+function bdAgentError(error) {
+  if (error.code === '23505') {
+    return error.message.includes('email')
+      ? 'Another agent already has that email.'
+      : 'An agent with that name already exists.';
+  }
+  return error.message;
+}
+
+app.get('/api/crm/bd-agents', requireCRM, requireAuth, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('bd_agents').select('*').order('name');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/crm/bd-agents', requireCRM, requireAuth, requireRole('admin'), async (req, res) => {
+  const { data: payload, error: bad } = bdAgentPayload(req.body || {}, { partial: false });
+  if (bad) return res.status(400).json({ error: bad });
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('bd_agents').insert(payload).select().single();
+    if (error) return res.status(400).json({ error: bdAgentError(error) });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/crm/bd-agents/:id', requireCRM, requireAuth, requireRole('admin'), async (req, res) => {
+  const { data: payload, error: bad } = bdAgentPayload(req.body || {}, { partial: true });
+  if (bad) return res.status(400).json({ error: bad });
+  if (!Object.keys(payload).length) return res.status(400).json({ error: 'No valid fields to update' });
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('bd_agents').update(payload).eq('id', req.params.id).select().single();
+    if (error) return res.status(400).json({ error: bdAgentError(error) });
+    if (!data) return res.status(404).json({ error: 'Agent not found' });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Separate from the PATCH above because it is a toggle, not an edit: the caller
+// says which agent, the server decides the next value. An agent whose status is
+// 'unknown' becomes 'active' — the toggle is how you resolve that, and going to
+// 'inactive' instead would record a decision nobody made.
+app.patch('/api/crm/bd-agents/:id/status', requireCRM, requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data: cur, error: fe } = await client.from('bd_agents').select('status').eq('id', req.params.id).single();
+    if (fe || !cur) return res.status(404).json({ error: 'Agent not found' });
+    const next = cur.status === 'active' ? 'inactive' : 'active';
+    const { data, error } = await client.from('bd_agents').update({ status: next }).eq('id', req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- POST /api/crm/bulk-import -------------------------------------------------
 // Bulk upsert for data migration. Requires SUPABASE_SERVICE_ROLE_KEY.
 // Accepts { properties: [...], phone_shops: [...], ... }

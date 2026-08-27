@@ -302,6 +302,7 @@
         <button class="crm-nav-btn" data-crm-view="tasks">Task Queue</button>
         <button class="crm-nav-btn" data-crm-view="drafts">Outreach Drafts</button>
         <button class="crm-nav-btn" data-crm-view="market">Market Changes</button>
+        <button class="crm-nav-btn" data-crm-view="roster">Agent Roster</button>
         <button class="crm-nav-btn" data-crm-view="settings">Settings</button>
       </nav>
       <div class="crm-agent-selector">
@@ -433,6 +434,36 @@
     </div>
 
     <!-- ══════════════ VIEW: SETTINGS ══════════════ -->
+    <div id="crm-view-roster" class="crm-view hidden">
+      <div class="view-head">
+        <div><h3>Agent Roster</h3><p class="muted small" id="crm-roster-status">Loading…</p></div>
+        <div class="view-actions">
+          <div class="filter-pills" id="crm-roster-pills">
+            <button class="pill active" data-status="">All</button>
+            <button class="pill" data-status="active">Active</button>
+            <button class="pill" data-status="inactive">Inactive</button>
+          </div>
+          <button class="btn-sm primary hidden" id="crm-roster-add">+ Add Agent</button>
+          <button class="btn-sm" id="crm-roster-refresh">🔄 Refresh</button>
+        </div>
+      </div>
+      <form id="crm-roster-form" class="quick-add hidden" style="margin-bottom:12px">
+        <input name="name" placeholder="Full name" required>
+        <input name="email" placeholder="Email" type="email">
+        <input name="role" placeholder="Role" value="BD Agent">
+        <input name="phone" placeholder="Phone">
+        <input name="crm_alias" placeholder="CRM short name (e.g. Rhoxie)">
+        <select name="status">
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+          <option value="unknown">Unknown</option>
+        </select>
+        <button type="submit">Add</button>
+        <button type="button" id="crm-roster-cancel">Cancel</button>
+      </form>
+      <div id="crm-roster-body"></div>
+    </div>
+
     <div id="crm-view-settings" class="crm-view hidden">
       <div class="view-head"><h3>CRM Settings</h3></div>
       <div class="crm-settings-grid">
