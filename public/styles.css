@@ -1119,3 +1119,19 @@ tr.row-editing select[data-field] { border-color: var(--border-accent); }
 .asana-comment-input { margin-bottom: 6px; }
 .asana-card-error { color: var(--critical); background: var(--critical-bg, rgba(239,68,68,.12));
   border-radius: 4px; padding: 4px 6px; margin: 6px 0; }
+
+/* ── Unified Daily Operations Report ────────────────────────────────
+   Collapsible section cards. <details> rather than a click handler so
+   the open/closed state is the browser's job and keyboard users get it
+   for free. */
+.report-card { background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+.report-card-head { display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none;
+  background: var(--bg-surface); font-weight: 600; list-style: none; }
+.report-card-head::-webkit-details-marker { display: none; }
+.report-card-head::before { content: '▸'; margin-right: 6px; color: var(--text-secondary);
+  transition: transform .15s ease; }
+.report-card[open] > .report-card-head::before { transform: rotate(90deg); }
+.report-card-title { flex: 1; }
+.report-card-body { padding: 12px 14px; }

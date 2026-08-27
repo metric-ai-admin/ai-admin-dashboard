@@ -49,9 +49,13 @@ function copyToClipboard(text) {
 // The data itself is protected server-side (requireAuth + the agent filter on
 // the CRM routes), so a hidden tab is never the only thing standing in the way.
 const TAB_ACCESS = {
-  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm'],
-  ceo:         ['crm', 'platform', 'eod'],
-  operations:  ['tasks', 'platform', 'email', 'eod'],
+  // 'reports' is the Unified Daily Operations Report. Given to the three roles
+  // whose people are named on it; Bekah, Kara and Rocío need their roles checked
+  // against dashboard_users, because if they are not 'operations' the tab —
+  // and their sign-off row — will not appear for them.
+  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports'],
+  ceo:         ['crm', 'platform', 'eod', 'reports'],
+  operations:  ['tasks', 'platform', 'email', 'eod', 'reports'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
   maintenance: ['maintenance'],
   bd_agent:    ['crm'],
@@ -130,6 +134,7 @@ function loadTab(tab) {
   if (tab === 'eod') loadEod();
   if (tab === 'maintenance') loadMaintenance();
   if (tab === 'crm') { crmApplyUserRole(); crmLoadMeta(); crmLoadProperties(); crmLoadRoster(); }
+  if (tab === 'reports') reportLoad();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -3965,6 +3970,164 @@ async function loadLyndsayCommandCenter() {
     el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
   }
 }
+
+
+// ============================================================================
+// UNIFIED DAILY OPERATIONS REPORT
+// ============================================================================
+// Shell only. The seven sections render their structure and a placeholder; the
+// content phase lands once the team confirms what each of them reports.
+
+let reportState = { report: null, sections: [], signers: [], me: null };
+
+// The spec calls for green/yellow/red. A freshly generated section is none of
+// those — nobody has looked at it yet — so 'pending' gets its own grey badge
+// rather than borrowing one of the three and implying a judgement.
+const REPORT_STATUS_BADGE = {
+  ok:        '<span class="badge badge-green">On track</span>',
+  attention: '<span class="badge badge-amber">Needs attention</span>',
+  urgent:    '<span class="badge badge-red">Urgent</span>',
+  pending:   '<span class="badge badge-gray">Pending</span>',
+};
+
+async function reportLoad() {
+  const el = $('#report-sections');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const data = await api('/api/reports/daily/today');
+    reportState = { report: data.report, sections: data.sections || [], signers: data.signers || [], me: data.me };
+    reportRenderSections();
+    $('#report-views-panel')?.classList.toggle('hidden', !data.me?.isAdmin);
+
+    if (!data.report) {
+      $('#report-meta').textContent = 'No report generated for today yet.';
+      $('#report-signoffs').innerHTML = '<p class="small muted">Generate the report before signing off.</p>';
+      $('#report-views').innerHTML = '';
+      return;
+    }
+    $('#report-meta').textContent =
+      `${data.report.report_date} · generated ${new Date(data.report.created_at).toLocaleString()}`;
+
+    // Logged before the sign-offs render, so opening the tab counts as a read
+    // whether or not the person goes on to sign.
+    api('/api/reports/daily/view', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report_id: data.report.id }),
+    }).catch(() => {});
+
+    await reportLoadSignoffs();
+    if (data.me?.isAdmin) await reportLoadViews();
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+function reportRenderSections() {
+  const el = $('#report-sections');
+  if (!el) return;
+  // Before the first generate there is no stored report, so the structure comes
+  // from the server's section list — the shell is visible either way.
+  const sections = reportState.report?.sections?.length
+    ? reportState.report.sections : reportState.sections;
+  if (!sections.length) { el.innerHTML = '<div class="empty-state">No sections defined.</div>'; return; }
+
+  el.innerHTML = sections.map(s => `
+    <details class="report-card" open>
+      <summary class="report-card-head">
+        <span class="report-card-title">${esc(s.icon || '')} ${esc(s.title || s.key)}</span>
+        ${REPORT_STATUS_BADGE[s.status] || REPORT_STATUS_BADGE.pending}
+      </summary>
+      <div class="report-card-body">
+        ${s.content
+          ? esc(s.content)
+          : `<span class="muted small">Pending data from ${esc(s.owner || 'the team')}</span>`}
+      </div>
+    </details>`).join('');
+}
+
+async function reportLoadSignoffs() {
+  const el = $('#report-signoffs');
+  if (!el || !reportState.report) return;
+  try {
+    const data = await api(`/api/reports/daily/signoffs/${encodeURIComponent(reportState.report.id)}`);
+    const mine = reportState.me?.signer;
+    $('#report-signoff-note').textContent = data.admin
+      ? 'Everyone on the list, and who is still outstanding.'
+      : (mine ? 'Your sign-off for today.' : 'You are not on the sign-off list for this report.');
+
+    if (!data.rows.length) { el.innerHTML = '<p class="small muted">Nothing to sign.</p>'; return; }
+
+    el.innerHTML = `<div style="overflow-x:auto"><table class="crm-table">
+      <thead><tr><th>Name</th><th>Status</th><th>Confirmed</th><th></th></tr></thead><tbody>
+      ${data.rows.map(r => {
+        const isMe = mine && r.name === mine;
+        return `<tr data-signer="${esc(r.name)}">
+          <td>${esc(r.name)}${isMe ? ' <span class="muted small">(you)</span>' : ''}</td>
+          <td>${r.signed ? '<span class="badge badge-green">✅ Confirmed</span>' : '<span class="badge badge-gray">Not signed</span>'}</td>
+          <td class="small muted">${r.confirmed_at ? new Date(r.confirmed_at).toLocaleString() : '—'}</td>
+          <td>${(!r.signed && isMe) ? `
+            <input class="crm-input report-signoff-name" placeholder="Type your name" style="max-width:180px">
+            <button class="btn-sm primary report-signoff-btn">Confirm</button>` : ''}</td>
+        </tr>`;
+      }).join('')}
+    </tbody></table></div>`;
+
+    el.querySelectorAll('.report-signoff-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const tr = btn.closest('tr');
+        const typed = tr.querySelector('.report-signoff-name').value.trim();
+        if (!typed) return toast('Type your name to confirm', 'error');
+        // A sign-off cannot be undone, so it is worth one deliberate pause.
+        if (!confirm('Sign off on today’s report? This cannot be undone.')) return;
+        btn.disabled = true;
+        try {
+          await api('/api/reports/daily/signoff', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ report_id: reportState.report.id, typed_name: typed }),
+          });
+          toast('Signed off', 'success');
+          reportLoadSignoffs();
+        } catch (err) { btn.disabled = false; toast(err.message, 'error'); }
+      });
+    });
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+async function reportLoadViews() {
+  const el = $('#report-views');
+  if (!el || !reportState.report) return;
+  try {
+    const data = await api(`/api/reports/daily/views/${encodeURIComponent(reportState.report.id)}`);
+    el.innerHTML = data.rows.length
+      ? `<div style="overflow-x:auto"><table class="crm-table">
+          <thead><tr><th>Name</th><th>First opened</th><th>Last opened</th><th>Views</th></tr></thead><tbody>
+          ${data.rows.map(r => `<tr>
+            <td>${esc(r.name)}</td>
+            <td class="small muted">${new Date(r.first).toLocaleString()}</td>
+            <td class="small muted">${new Date(r.last).toLocaleString()}</td>
+            <td>${r.count}</td>
+          </tr>`).join('')}
+        </tbody></table></div>`
+      : '<p class="small muted">Nobody has opened this report yet.</p>';
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+$('#report-refresh')?.addEventListener('click', reportLoad);
+$('#report-generate')?.addEventListener('click', async () => {
+  const btn = $('#report-generate');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/reports/daily/generate', { method: 'POST' });
+    toast(r.created ? 'Report generated' : 'Today’s report already exists', r.created ? 'success' : 'info');
+    reportLoad();
+  } catch (err) { toast(err.message, 'error'); }
+  finally { btn.disabled = false; }
+});
 
 // Boot — verify session, gate tabs, then load initial tab
 initAuth();

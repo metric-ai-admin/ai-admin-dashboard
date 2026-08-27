@@ -71,6 +71,7 @@
           <button data-maint-view="command-center">Command Center</button>
         </div>
       </div>
+      <button data-tab="reports"><span class="nav-dot"></span>Daily Report</button>
       <button data-tab="crm"><span class="nav-dot"></span>BD CRM</button>
     </nav>
     <div class="sidebar-foot">
@@ -155,6 +156,34 @@
         <button class="pill active" data-time="all">📋 All</button>
       </div>
       <div id="asana-panel-body"></div>
+    </div>
+  </section>
+
+  <!-- ============ UNIFIED DAILY OPERATIONS REPORT ============ -->
+  <section id="tab-reports" class="tab">
+    <div class="view-head">
+      <div>
+        <h2>Unified Daily Operations Report</h2>
+        <p class="muted small" id="report-meta">Loading…</p>
+      </div>
+      <div class="view-actions">
+        <button class="btn-sm primary" id="report-generate">Generate Report</button>
+        <button class="btn-sm" id="report-refresh">🔄 Refresh</button>
+      </div>
+    </div>
+
+    <div id="report-sections"></div>
+
+    <div class="view-head" style="margin-top:24px">
+      <div><h3 style="margin:0">Sign-off</h3><p class="muted small" id="report-signoff-note"></p></div>
+    </div>
+    <div id="report-signoffs"></div>
+
+    <div id="report-views-panel" class="hidden">
+      <div class="view-head" style="margin-top:24px">
+        <div><h3 style="margin:0">Read Visibility</h3><p class="muted small">Who opened this report, and how often.</p></div>
+      </div>
+      <div id="report-views"></div>
     </div>
   </section>
 

@@ -3556,6 +3556,195 @@ app.post('/api/crm/bulk-import', async (req, res) => {
 
 // ── End BD CRM ──────────────────────────────────────────────────────────────
 
+// =====================================================================
+// MODULE — UNIFIED DAILY OPERATIONS REPORT
+// =====================================================================
+// Shell only: the seven sections are structure and placeholders. Content lands
+// in a later phase, once the team confirms what each of them reports.
+
+// Stored into the report's jsonb at generate time rather than read from here at
+// render time, so changing this constant later cannot rewrite the history of
+// reports already signed. The owners are a first pass from the org roles — Jay
+// operations, Erick maintenance, Rocío collections and leasing — and are meant
+// to be confirmed, not assumed correct.
+const REPORT_SECTIONS = [
+  { key: 'urgent',      icon: '🚨', title: 'Urgent / Needs Attention', owner: 'Jay' },
+  { key: 'leasing',     icon: '🏠', title: 'Leasing & Applications',   owner: 'Rocío' },
+  { key: 'maintenance', icon: '🔧', title: 'Maintenance',              owner: 'Erick' },
+  { key: 'collections', icon: '💰', title: 'Collections',              owner: 'Rocío' },
+  { key: 'kpi',         icon: '📊', title: 'KPI Results',              owner: 'Jay' },
+  { key: 'pending',     icon: '⏳', title: 'Pending Items',            owner: 'Bekah' },
+  { key: 'other',       icon: '📝', title: 'Other',                    owner: 'the team' },
+];
+
+// Who is expected to sign. Kept as first names because that is how the report
+// was specified; a row is matched to an account by comparing against the signed
+// in user's name, so someone whose dashboard_users.name does not start with
+// their first name will not be offered a row. Worth checking against the real
+// records before this goes live.
+const REPORT_SIGNERS = ['Jay', 'Bekah', 'Kara', 'Rocío'];
+
+// Lyndsay's role is 'ceo', not 'admin'. Gating the confidential views on admin
+// alone would lock her out of a feature that is hers.
+const REPORT_ADMIN_ROLES = ['admin', 'ceo'];
+const isReportAdmin = req => REPORT_ADMIN_ROLES.includes(req.user?.role);
+
+// Accents and casing must not decide whether a sign-off counts: 'Rocío',
+// 'rocio' and 'ROCIO ' are one person.
+const reportNorm = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .trim().toLowerCase();
+
+// Which roster row belongs to the signed-in user. Matches on the full name or on
+// its first token, so "Rocío Hunsberger" answers to the "Rocío" row.
+function reportSignerFor(req) {
+  const me = reportNorm(req.user?.name);
+  if (!me) return null;
+  const first = me.split(/\s+/)[0];
+  return REPORT_SIGNERS.find(s => {
+    const n = reportNorm(s);
+    return n === me || n === first;
+  }) || null;
+}
+
+function reportDateStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Generating twice in one day returns the existing report rather than a second
+// one. Sign-offs hang off a report id, so two reports for the same date would
+// split the team across two documents with no sign that it had happened.
+app.post('/api/reports/daily/generate', requireAuth, async (req, res) => {
+  const client = supabaseAdmin || supabasePublic;
+  const report_date = reportDateStr();
+  const sections = REPORT_SECTIONS.map(s => ({ ...s, status: 'pending', content: null }));
+  try {
+    const { data: existing } = await client.from('daily_reports').select('*').eq('report_date', report_date).maybeSingle();
+    if (existing) return res.json({ ...existing, created: false });
+
+    const { data, error } = await client.from('daily_reports')
+      .insert({ report_date, sections }).select().single();
+    // 23505 means someone else generated it between the check and the insert.
+    // Their report is as good as ours, so take it rather than failing.
+    if (error && error.code === '23505') {
+      const { data: raced } = await client.from('daily_reports').select('*').eq('report_date', report_date).single();
+      return res.json({ ...raced, created: false });
+    }
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...data, created: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Today's report without creating one, so opening the tab is a read.
+app.get('/api/reports/daily/today', requireAuth, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data } = await client.from('daily_reports').select('*').eq('report_date', reportDateStr()).maybeSingle();
+    res.json({
+      report: data || null,
+      sections: REPORT_SECTIONS,
+      signers: REPORT_SIGNERS,
+      me: { name: req.user?.name || null, signer: reportSignerFor(req), isAdmin: isReportAdmin(req) },
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// The typed name is an attestation, not the identity — the row is written from
+// the session either way. Requiring it to match stops Jay from signing Kara's
+// row by typing her name, which is the whole point of asking someone to type it.
+app.post('/api/reports/daily/signoff', requireAuth, async (req, res) => {
+  const signer = reportSignerFor(req);
+  if (!signer) return res.status(403).json({ error: 'You are not on the sign-off list for this report.' });
+
+  const typed = reportNorm(req.body?.typed_name);
+  if (!typed) return res.status(400).json({ error: 'Type your name to confirm.' });
+  const me = reportNorm(req.user.name);
+  if (typed !== me && typed !== me.split(/\s+/)[0] && typed !== reportNorm(signer)) {
+    return res.status(400).json({ error: 'That is not your name — type your own to sign off.' });
+  }
+
+  const report_id = String(req.body?.report_id || '').trim();
+  if (!report_id) return res.status(400).json({ error: 'report_id required' });
+
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('report_signoffs')
+      .insert({ report_id, user_name: signer }).select().single();
+    // Already signed. There is no un-sign, so this is not an error worth
+    // surfacing as one — report the existing record instead.
+    if (error && error.code === '23505') {
+      const { data: prev } = await client.from('report_signoffs')
+        .select('*').eq('report_id', report_id).eq('user_name', signer).single();
+      return res.json({ ...prev, alreadySigned: true });
+    }
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admins see the whole roster and who is missing. Everyone else sees their own
+// row and nothing about their colleagues.
+app.get('/api/reports/daily/signoffs/:report_id', requireAuth, async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('report_signoffs')
+      .select('*').eq('report_id', req.params.report_id).order('confirmed_at');
+    if (error) return res.status(500).json({ error: error.message });
+
+    const signoffs = data || [];
+    if (isReportAdmin(req)) {
+      const byName = new Map(signoffs.map(s => [reportNorm(s.user_name), s]));
+      return res.json({
+        admin: true,
+        rows: REPORT_SIGNERS.map(name => {
+          const hit = byName.get(reportNorm(name));
+          return { name, signed: !!hit, confirmed_at: hit?.confirmed_at || null };
+        }),
+      });
+    }
+    const signer = reportSignerFor(req);
+    const mine = signer ? signoffs.find(s => reportNorm(s.user_name) === reportNorm(signer)) : null;
+    res.json({
+      admin: false,
+      rows: signer ? [{ name: signer, signed: !!mine, confirmed_at: mine?.confirmed_at || null }] : [],
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// One row per open. Deliberately not deduplicated — the repetition is the point.
+app.post('/api/reports/daily/view', requireAuth, async (req, res) => {
+  const report_id = String(req.body?.report_id || '').trim();
+  if (!report_id) return res.status(400).json({ error: 'report_id required' });
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { error } = await client.from('report_views')
+      .insert({ report_id, user_name: req.user?.name || req.user?.username || 'Unknown' });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin-only, and it stays that way: this is a record of who read what and when,
+// and the people in it cannot see it.
+app.get('/api/reports/daily/views/:report_id', requireAuth, requireRole(...REPORT_ADMIN_ROLES), async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { data, error } = await client.from('report_views')
+      .select('user_name, viewed_at').eq('report_id', req.params.report_id).order('viewed_at');
+    if (error) return res.status(500).json({ error: error.message });
+
+    const agg = new Map();
+    for (const v of (data || [])) {
+      const cur = agg.get(v.user_name);
+      if (!cur) agg.set(v.user_name, { name: v.user_name, first: v.viewed_at, last: v.viewed_at, count: 1 });
+      else { cur.last = v.viewed_at; cur.count++; }
+    }
+    res.json({ rows: [...agg.values()].sort((a, b) => b.count - a.count) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── End Daily Operations Report ─────────────────────────────────────────────
+
 // ── Maintenance routes (Erick's board, property assignments, Lyndsay snapshots,
 //    AppFolio analyzer) — registered on the same app instance using Supabase db ──
 registerMetricRoutes(app, supabaseAdmin || supabasePublic);
