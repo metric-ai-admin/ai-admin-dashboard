@@ -121,10 +121,6 @@ $('#meSyncBtn')?.addEventListener('click', async () => {
 // TECHNICIAN ACTIVITY TODAY
 // =====================================================================
 
-// The server hands the start time through untouched, because it can arrive as a
-// clock reading or as a full timestamp and only the browser knows Austin's
-// offset. Returns null for anything unparseable or missing -- not every tech
-// starts a timer, and the card simply says nothing rather than guessing.
 // "1h 23m", "45m", "2h" on the hour. Null passes through untouched, which is
 // what a multi-session work order and one still running both send.
 function taFormatDuration(mins) {
@@ -134,28 +130,47 @@ function taFormatDuration(mins) {
   return m ? h + 'h ' + m + 'm' : h + 'h';
 }
 
-function taFormatStart(raw) {
+// AppFolio sends these as UTC with an explicit Z — 8:04 AM in Austin arrives as
+// "2026-08-27T13:04:00Z". Formatting that in the browser's own zone printed the
+// right instant in the wrong place: an hour late from Venezuela, and further off
+// from anywhere else. These are Austin work orders and AppFolio shows them in
+// Austin time, so the zone is pinned rather than left to wherever the dashboard
+// happens to be open.
+//
+// Pinning applies only when the string actually carries a zone. A bare clock
+// reading has none to convert — its digits are already the wall time — and
+// putting it through a Date would invent an offset and shift it.
+//
+// One function for both ends: the two columns come from the same report in the
+// same shape.
+function taFormatTime(raw) {
   if (!raw) return null;
   const s = String(raw).trim();
   if (!s) return null;
 
-  // A full timestamp: let the browser place it in the local zone.
+  // Explicit zone (Z or ±HH:MM) — a real instant, rendered in Austin's zone.
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(s)) {
+    const d = new Date(s);
+    if (!isNaN(d)) return d.toLocaleTimeString('en-US', {
+      hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago',
+    });
+  }
+
+  // ISO with no zone — JS parses it as local, so the digits pass through.
   if (/\d{4}-\d{2}-\d{2}/.test(s) || /T\d{2}:\d{2}/.test(s)) {
     const d = new Date(s);
-    if (!isNaN(d)) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (!isNaN(d)) return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   }
-  // Already a clock reading, with or without a meridiem.
-  let m = s.match(/^(\d{1,2}):(\d{2})\s*([ap])\.?m\.?$/i);
+
+  // Bare clock reading — no Date involved at all.
+  const m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([ap])\.?\s*m\.?$/i)
+         || s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?()$/);
   if (m) {
-    const h = parseInt(m[1], 10) % 12 || 12;
-    return h + ':' + m[2] + ' ' + (/p/i.test(m[3]) ? 'PM' : 'AM');
-  }
-  m = s.match(/^(\d{1,2}):(\d{2})/);
-  if (m) {
-    const h24 = parseInt(m[1], 10);
-    if (h24 < 0 || h24 > 23) return null;
-    const h = h24 % 12 || 12;
-    return h + ':' + m[2] + ' ' + (h24 < 12 ? 'AM' : 'PM');
+    const h = parseInt(m[1], 10), min = m[2];
+    // Meridiem normalised, so "8:32 a.m." prints like every other row.
+    if (m[3]) return (h % 12 || 12) + ':' + min + ' ' + (/p/i.test(m[3]) ? 'PM' : 'AM');
+    if (h < 0 || h > 23) return null;
+    return (h % 12 || 12) + ':' + min + ' ' + (h < 12 ? 'AM' : 'PM');
   }
   return null;
 }
@@ -220,11 +235,8 @@ async function loadTechActivity() {
         ' WO' + (t.wos.length === 1 ? '' : 's') + '</div>' +
       '<div class="ta-wos">' +
         t.wos.map(w => {
-          // taFormatStart handles both ends: the two columns come from the same
-          // report in the same shape, so a separate formatter would be the same
-          // function under a different name.
-          const started = taFormatStart(w.startTime);
-          const finished = taFormatStart(w.endTime);
+          const started = taFormatTime(w.startTime);
+          const finished = taFormatTime(w.endTime);
           const dur = taFormatDuration(w.durationMin);
           return '<div class="ta-wo">' +
             '<span class="ta-wo-num">#' + esc(w.wo) + '</span>' +
