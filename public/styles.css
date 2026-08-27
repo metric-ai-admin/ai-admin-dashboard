@@ -16,6 +16,12 @@
   --accent-hover: #6b59e6;
   --accent-glow: rgba(124, 106, 247, 0.15);
 
+  /* Links. There was no `a` rule at all, so every link in the dashboard fell
+     back to the browser default #0000EE — navy text on a near-black background,
+     effectively unreadable. One token so it can be tuned in one place. */
+  --link: #60A5FA;
+  --link-hover: #93C5FD;
+
   /* Status colors */
   --critical: #f43f5e;
   --critical-bg: rgba(244, 63, 94, 0.15);
@@ -1311,3 +1317,19 @@ tr.row-editing select[data-field] { border-color: var(--border-accent); }
   .cc-task { flex-wrap: wrap; }
   .cc-open { margin-left: 26px; }
 }
+
+/* ── Links ──────────────────────────────────────────────────────────
+   Global, so it reaches every tab — Task Manager, SOPs, BD CRM,
+   Maintenance, Daily Report, Email/Cal — including the links rendered
+   into innerHTML by app.js, command-center.js and appfolio-views.js,
+   which no scoped rule would have covered.
+
+   A bare element selector, so anything with a class of its own still
+   wins: .btn-danger keeps its red, and a link styled as a button keeps
+   whatever that class gives it. :visited is pinned to the same colour
+   because the browser's default visited purple is just as unreadable
+   here as the default blue was. */
+a { color: var(--link); text-decoration: none; }
+a:visited { color: var(--link); }
+a:hover { color: var(--link-hover); text-decoration: underline; }
+a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 3px; }
