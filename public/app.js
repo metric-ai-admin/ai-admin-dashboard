@@ -160,7 +160,7 @@ function loadTab(tab) {
   if (tab === 'email') loadEmail();
   if (tab === 'eod') loadEod();
   if (tab === 'maintenance') loadMaintenance();
-  if (tab === 'crm') { crmApplyUserRole(); crmLoadMeta(); crmLoadProperties(); crmLoadRoster(); }
+  if (tab === 'crm') { crmApplyUserRole(); crmLoadMeta(); crmLoadProperties(); if (crmCanSeeRoster()) crmLoadRoster(); }
   if (tab === 'reports') reportLoad();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
@@ -1316,7 +1316,7 @@ function crmSetView(view) {
   if (view === 'tasks') crmLoadTasks();
   if (view === 'drafts') crmLoadDraftsList();
   if (view === 'settings') crmLoadTargeted();
-  if (view === 'roster') crmLoadRoster();
+  if (view === 'roster' && crmCanSeeRoster()) crmLoadRoster();
 }
 
 $$('.crm-nav-btn').forEach(btn =>
@@ -1325,8 +1325,25 @@ $$('.crm-nav-btn').forEach(btn =>
 
 $('#crm-agent-select').addEventListener('change', e => { crmState.agent = e.target.value; });
 
+// Mirrors the server guard on GET /api/crm/bd-agents. An allowlist, not a list of
+// roles to exclude: a role added later is hidden by default rather than shown
+// until someone remembers to add it here.
+const CRM_ROSTER_ROLES = ['admin', 'operations'];
+const crmCanSeeRoster = () => CRM_ROSTER_ROLES.includes(currentUser?.role);
+
 function crmApplyUserRole() {
   if (!currentUser) return;
+
+  // Runs for every role, so it sits above the early return below — that only
+  // concerns the two roles pinned to a single agent. The roster carries internal
+  // staff emails and phone numbers, so anyone the server would refuse is not
+  // offered the button either: a nav item that answers "Access denied" reads as
+  // broken rather than as restricted.
+  if (!crmCanSeeRoster()) {
+    $('.crm-nav-btn[data-crm-view="roster"]')?.classList.add('hidden');
+    if (crmState.view === 'roster') crmSetView('dashboard');
+  }
+
   const lockedRoles = ['bd_agent', 'maintenance'];
   if (!lockedRoles.includes(currentUser.role) || !currentUser.agentName) return;
   const me = currentUser.agentName;

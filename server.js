@@ -3584,12 +3584,14 @@ const REPORT_SECTIONS = [
 // matched to an account by comparing against the signed-in user's name, so the
 // two have to agree.
 //
-// Only the three who have accounts. Bekah (Rebekah Tuckner), Kara (Kara Garst)
-// and Rocío (Rocío Hunsberger) are named on the report but have no login yet,
-// pending Jay confirming their roles. Listing them here would put permanently
-// unsignable rows on every report and make the sign-off look incomplete when it
-// is not. Add them when their accounts exist.
-const REPORT_SIGNERS = ['Jay Manuel', 'Lyndsay Hanes', 'Arturo Mendoza'];
+// Spelled exactly as dashboard_users.name spells them — reportSignerFor matches a
+// row to an account by that string, so a mismatch means the person is offered no
+// row at all. Rebekah, Kara and Rocío are here ahead of their accounts being
+// created; until then their rows show as outstanding, which is accurate.
+const REPORT_SIGNERS = [
+  'Jay Manuel', 'Lyndsay Hanes', 'Arturo Mendoza',
+  'Rebekah Tuckner', 'Kara Garst', 'Rocío Hunsberger',
+];
 
 // Lyndsay is 'admin' in dashboard_users — there is no 'ceo' row today. Kept in
 // the list anyway because TAB_ACCESS already carries a ceo entry, so if that role
