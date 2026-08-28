@@ -1339,7 +1339,17 @@ $$('.crm-nav-btn').forEach(btn =>
   btn.addEventListener('click', () => crmSetView(btn.dataset.crmView))
 );
 
-$('#crm-agent-select').addEventListener('change', e => { crmState.agent = e.target.value; });
+function crmMarkAgentChoice() {
+  const sel = $('#crm-agent-select');
+  // Not while it is pinned: a locked role has no choice to make, and outlining
+  // a control they cannot use would read as an error.
+  if (sel) sel.classList.toggle('needs-choice', !sel.value && !sel.disabled);
+}
+$('#crm-agent-select').addEventListener('change', e => {
+  crmState.agent = e.target.value;
+  crmMarkAgentChoice();
+});
+crmMarkAgentChoice();
 
 // Mirrors the server guard on GET /api/crm/bd-agents. An allowlist, not a list of
 // roles to exclude: a role added later is hidden by default rather than shown
@@ -1387,6 +1397,7 @@ function crmApplyUserRole() {
   const sel = $('#crm-agent-select');
   if (sel) { sel.value = me; sel.disabled = true; }
   crmState.agent = me;
+  crmMarkAgentChoice();
 
   // The Task Queue has its own agent dropdown. The server already restricts
   // these roles to properties they shop, so leaving it open is not a data leak
@@ -2556,7 +2567,13 @@ async function crmLoadDraftsList() {
     const data = await crmFetch('/api/crm/outreach-drafts');
     const groups = data.groups || [];
     if (!groups.length) {
-      $('#crm-drafts-body').innerHTML = '<div style="text-align:center;padding:40px 20px;"><div style="font-size:2em;margin-bottom:12px;">✉️</div><p class="muted">No pending outreach drafts across all properties.</p></div>';
+      $('#crm-drafts-body').innerHTML = `<div class="empty-state">
+        <svg class="empty-icon" viewBox="0 0 48 36" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="45" height="33" rx="3"/>
+          <path d="M2 4l22 16L46 4"/>
+        </svg>
+        <div>No pending outreach drafts across all properties.</div>
+      </div>`;
       return;
     }
     const statusLine = `<p class="small muted" style="margin-bottom:12px;">${data.total} draft(s) across ${groups.length} propert${groups.length === 1 ? 'y' : 'ies'}</p>`;

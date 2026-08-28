@@ -1386,3 +1386,17 @@ tr.ca-sel { background: var(--accent-glow); }
    them readable instead of collapsing the conversation into a paragraph. */
 .sv-text { white-space: pre-wrap; font-size: 12.5px; line-height: 1.55; color: var(--text-secondary);
   max-height: 420px; overflow-y: auto; }
+
+/* Empty-state icon — inline SVG rather than an emoji. A glyph at 2em renders
+   as a tofu box wherever the font lacks it, which looks exactly like a broken
+   image; a path always draws. */
+.empty-icon { width: 46px; height: 34px; margin-bottom: 12px; fill: none;
+  stroke: var(--text-muted); stroke-width: 2; stroke-linejoin: round; opacity: .7; }
+
+/* "Working as" with nothing chosen. Everything logged in the CRM is attributed
+   to this field, so an empty one is worth pointing at — the outline clears the
+   moment a name is picked. */
+.crm-select.needs-choice {
+  border-color: var(--warning);
+  box-shadow: 0 0 0 2px var(--warning-bg);
+}
