@@ -1361,3 +1361,16 @@ a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-ra
 /* A selected row is tinted, so what Confirm is about to touch stays obvious
    while scrolling a long filtered list. */
 tr.ca-sel { background: var(--accent-glow); }
+
+/* Daily Report — Maintenance subsections (board / Command Center / Asana) */
+.report-sub { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px;
+  background: var(--bg-surface); overflow: hidden; }
+.report-sub > summary { display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 13px;
+  list-style: none; user-select: none; }
+.report-sub > summary::-webkit-details-marker { display: none; }
+.report-sub > summary::before { content: '▸'; color: var(--text-secondary); margin-right: 4px;
+  transition: transform .15s ease; }
+.report-sub[open] > summary::before { transform: rotate(90deg); }
+.report-sub > summary > span:first-of-type { flex: 1; }
+.report-sub-body { padding: 4px 12px 12px; }

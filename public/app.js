@@ -4450,7 +4450,8 @@ function reportRenderSections() {
   el.innerHTML = sections.map(s => `
     <details class="report-card" open>
       <summary class="report-card-head">
-        <span class="report-card-title">${esc(s.icon || '')} ${esc(s.title || s.key)}</span>
+        <span class="report-card-title">${esc(s.icon || '')} ${esc(s.title || s.key)}${
+          s.status === 'auto' && s.owner ? ' — ' + esc(s.owner) : ''}</span>
         ${s.status === 'auto' ? '<span class="badge badge-gray">Auto-updated</span>' : ''}
         ${reportSectionBadge(s)}
       </summary>
@@ -4458,25 +4459,93 @@ function reportRenderSections() {
     </details>`).join('');
 }
 
+// Only reached by reports stored before the three sources existed, where one
+// source wrote the whole section and the label said which. Kept so those still
+// render instead of throwing on a name that is no longer defined.
+const REPORT_SOURCE_LABEL = {
+  command_center: 'via Command Center',
+  operational_tasks: "via Erick's board",
+};
+
 // An auto section's colour is read off its own numbers. 'auto' says where the
 // data came from, not how bad it is, and a section holding six critical items
 // should not sit under the same grey chip as one holding none.
 function reportSectionBadge(s) {
   if (s.status !== 'auto') return REPORT_STATUS_BADGE[s.status] || REPORT_STATUS_BADGE.pending;
   const c = s.content || {};
+  // Three-source shape: the server has already taken the worst of the three, so
+  // no single source gets to call the day quiet on its own.
+  if (c.severity) {
+    return c.severity === 'red' ? REPORT_STATUS_BADGE.urgent
+         : c.severity === 'amber' ? REPORT_STATUS_BADGE.attention
+         : REPORT_STATUS_BADGE.ok;
+  }
+  // Reports generated before the three sources existed still render.
   if ((c.critical || []).length) return REPORT_STATUS_BADGE.urgent;
   if ((c.followup || []).length) return REPORT_STATUS_BADGE.attention;
   return REPORT_STATUS_BADGE.ok;
 }
 
-// Two things write the Maintenance section and they see different days: the
-// board holds what someone typed up, the Command Center holds what the AppFolio
-// workbook flagged. Saying which one produced these numbers is the difference
-// between a reader trusting them and wondering why they moved.
-const REPORT_SOURCE_LABEL = {
-  command_center: 'via Command Center',
-  operational_tasks: "via Erick's board",
-};
+const reportList = items => `<ul class="report-list">${items.map(t => `<li>${esc(t)}</li>`).join('')}</ul>`;
+
+// Open by default: this is a report, and a reader should not have to click three
+// times to find out whether the day is on fire.
+const reportSub = (title, badge, body) => `
+  <details class="report-sub" open>
+    <summary><span>${esc(title)}</span>${badge || ''}</summary>
+    <div class="report-sub-body">${body}</div>
+  </details>`;
+
+function reportBoardBlock(b) {
+  if (!b || b.error) {
+    return reportSub('Daily Operations Board', REPORT_STATUS_BADGE.pending,
+      `<span class="muted small">Could not be read${b?.error ? ': ' + esc(b.error) : ''}.</span>`);
+  }
+  const crit = b.critical || [], fu = b.followup || [];
+  const badge = b.severity === 'red' ? REPORT_STATUS_BADGE.urgent
+              : b.severity === 'amber' ? REPORT_STATUS_BADGE.attention
+              : REPORT_STATUS_BADGE.ok;
+  return reportSub('Daily Operations Board', badge, `
+    ${crit.length ? `<div class="report-group"><b>🔴 Critical (${crit.length}):</b>${reportList(crit)}</div>` : ''}
+    ${fu.length ? `<div class="report-group"><b>🟡 Follow-up (${fu.length}):</b>${reportList(fu)}</div>` : ''}
+    ${!crit.length && !fu.length ? '<p class="report-group">✅ No critical or follow-up items today</p>' : ''}
+    <div class="report-counts small muted">
+      <span>✅ Completed today: <b>${b.completed_today ?? 0}</b></span>
+      <span>📋 Total open: <b>${b.total_open ?? 0}</b></span>
+    </div>`);
+}
+
+function reportCommandCenterBlock(cc) {
+  if (!cc || !cc.loaded) {
+    return reportSub('Command Center (AppFolio)', REPORT_STATUS_BADGE.pending,
+      '<span class="muted small">No Excel loaded today.</span>');
+  }
+  const cats = Object.entries(cc.byCategory || {}).sort((a, b) => b[1] - a[1]);
+  const badge = cc.pct >= 100 ? REPORT_STATUS_BADGE.ok : REPORT_STATUS_BADGE.attention;
+  return reportSub('Command Center (AppFolio)', badge, `
+    <div class="report-group">
+      <b>${cc.completed_tasks} of ${cc.total_tasks} done — ${cc.pct}%</b>
+      <div class="cc-bar-track" style="max-width:260px"><div class="cc-bar-fill" style="width:${cc.pct}%"></div></div>
+    </div>
+    ${cats.length ? `<div class="report-counts small muted">${cats
+      .map(([k, n]) => `<span>${esc(k)}: <b>${n}</b></span>`).join('')}</div>` : ''}`);
+}
+
+// Absent entirely when Asana could not be reached — the brief asks for it to
+// disappear rather than explain itself, and an empty third of a report is worse
+// than a report with two sources in it.
+function reportAsanaBlock(a) {
+  if (!a) return '';
+  const badge = a.overdue > 0 ? REPORT_STATUS_BADGE.urgent
+              : a.open > 0 ? REPORT_STATUS_BADGE.attention : REPORT_STATUS_BADGE.ok;
+  return reportSub('Asana Tasks', badge, `
+    <div class="report-counts small muted">
+      <span>📋 Open: <b>${a.open}</b></span>
+      <span>⚠ Overdue: <b>${a.overdue}</b></span>
+      <span>✅ Completed today: <b>${a.completed_today}</b></span>
+    </div>
+    ${(a.titles || []).length ? reportList(a.titles) : ''}`);
+}
 
 function reportSectionBody(s) {
   if (s.status !== 'auto') {
@@ -4487,11 +4556,24 @@ function reportSectionBody(s) {
       : `<span class="muted small">Pending data from ${esc(s.owner || 'the team')}</span>`;
   }
   const c = s.content || {};
+
+  // Three sources, each with its own subsection. They used to share one block
+  // and overwrite each other, so the report showed whichever had been touched
+  // last and silently dropped the other two.
+  if (c.board || c.commandCenter || c.asana) {
+    return reportBoardBlock(c.board)
+      + reportCommandCenterBlock(c.commandCenter)
+      + reportAsanaBlock(c.asana)
+      + `<div class="report-counts small muted">
+           <span>Last updated: ${c.lastUpdated ? new Date(c.lastUpdated).toLocaleString() : '—'}</span>
+         </div>`;
+  }
+
+  // Single-source shape, kept so reports generated before this still read.
   const crit = c.critical || [], fu = c.followup || [];
-  const list = items => `<ul class="report-list">${items.map(t => `<li>${esc(t)}</li>`).join('')}</ul>`;
   return `
-    ${crit.length ? `<div class="report-group"><b>🔴 Critical (${crit.length}):</b>${list(crit)}</div>` : ''}
-    ${fu.length ? `<div class="report-group"><b>🟡 Follow-up (${fu.length}):</b>${list(fu)}</div>` : ''}
+    ${crit.length ? `<div class="report-group"><b>🔴 Critical (${crit.length}):</b>${reportList(crit)}</div>` : ''}
+    ${fu.length ? `<div class="report-group"><b>🟡 Follow-up (${fu.length}):</b>${reportList(fu)}</div>` : ''}
     ${!crit.length && !fu.length ? '<p class="report-group">✅ No critical or follow-up items today</p>' : ''}
     <div class="report-counts small muted">
       <span>✅ Completed today: <b>${c.completed_today ?? 0}</b></span>

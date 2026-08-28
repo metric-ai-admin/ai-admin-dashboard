@@ -559,36 +559,7 @@ function ccGenerate() {
   ccRenderTotals();
   ccGeneratedAt = new Date().toISOString();
   ccSaveState();
-  ccPushToDailyReport();
   toast(list.length ? `${list.length} tasks generated` : 'Nothing flagged', list.length ? 'success' : 'info');
-}
-
-/* Which categories count as critical in the Daily Report. urgent and code — the
-   latter carries both code violations and life-safety issues — plus flag7, the
-   over-seven-days work the tool banners above everything else. Leaving flag7 out
-   would show the report a calmer day than the one the Command Center is
-   showing Erick. */
-const CC_CRITICAL_CATS = new Set(['flag7', 'urgent', 'code']);
-
-/* Fires after Generate and is deliberately silent. There may be no report for
-   today, the session may have expired, the network may be down — none of that is
-   Erick's problem while he is working the board, and none of it should interrupt
-   him with an error about a document he did not open. The server answers 200
-   even when it declines, so nothing here needs to inspect the response. */
-function ccPushToDailyReport() {
-  const pending = CC_TASKS.filter(t => !ccChecks[t.id]);
-  const body = {
-    critical: pending.filter(t => CC_CRITICAL_CATS.has(t.cat)).map(t => t.title),
-    followup: pending.filter(t => !CC_CRITICAL_CATS.has(t.cat)).map(t => t.title),
-    completed_today: CC_TASKS.length - pending.length,
-    total_open: pending.length,
-  };
-  try {
-    fetch('/api/reports/daily/maintenance-snapshot', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }).catch(() => {});
-  } catch { /* silent by design */ }
 }
 
 /* ---------------- realm-x / inspections / hours ---------------- */

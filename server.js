@@ -3832,61 +3832,126 @@ function reportDateStr() {
 const OPS_CRITICAL = '🔴 Critical';
 const OPS_FOLLOWUP = '🟡 Follow-up';
 
-async function reportMaintenanceSection(client) {
+// Erick works from three places and they answer different questions: the board
+// is what he wrote down, the Command Center is what the AppFolio workbook
+// flagged, Asana is what other people asked of him. They used to share one
+// section and overwrite each other, so the report showed whichever had been
+// touched last and silently dropped the other two.
+//
+// operational_tasks carries no source or assigned_to column — the whole table is
+// his board, so there is nothing to filter it by.
+async function maintBoardSummary(client) {
   const { data, error } = await client.from('operational_tasks').select('title, priority, completed_at');
-  if (error) throw new Error(error.message);
+  if (error) return { error: error.message };
   const rows = data || [];
   const open = rows.filter(t => !t.completed_at);
   const today = reportDateStr();
+  const critical = open.filter(t => t.priority === OPS_CRITICAL).map(t => t.title);
+  const followup = open.filter(t => t.priority === OPS_FOLLOWUP).map(t => t.title);
+  return {
+    critical, followup,
+    // localDateStr, not a slice of the ISO string: that gives the UTC date and
+    // rolls over hours before local midnight.
+    completed_today: rows.filter(t => t.completed_at && localDateStr(t.completed_at) === today).length,
+    total_open: open.length,
+    severity: critical.length ? 'red' : (followup.length ? 'amber' : 'green'),
+  };
+}
+
+async function maintCommandCenterSummary(client) {
+  const { data, error } = await client.from('cc_daily_state')
+    .select('tasks, total_tasks, completed_tasks, generated_at, updated_at')
+    .eq('state_date', reportDateStr()).maybeSingle();
+  if (error) return { loaded: false, error: error.message };
+  if (!data) return { loaded: false };
+
+  // The stored tasks carry the Command Center's own category keys, so the
+  // breakdown is counted from them rather than guessed at.
+  const byCategory = {};
+  for (const t of (Array.isArray(data.tasks) ? data.tasks : [])) {
+    const k = t?.cat || 'other';
+    byCategory[k] = (byCategory[k] || 0) + 1;
+  }
+  const total = data.total_tasks || 0, done = data.completed_tasks || 0;
+  return {
+    loaded: true,
+    total_tasks: total,
+    completed_tasks: done,
+    pct: total ? Math.round(done / total * 100) : 0,
+    byCategory,
+    generated_at: data.generated_at || null,
+    updated_at: data.updated_at || null,
+  };
+}
+
+// Null rather than an error object: the brief asks for this one to disappear
+// quietly when Asana is unreachable, and a report missing a third of itself is
+// better than one shouting about a service nobody asked about.
+async function maintAsanaSummary() {
+  try {
+    const token = asanaTokenFor('erick');
+    if (!token) return null;
+    const me = await getMe(token);
+    if (!me.gid || !me.workspaceGid) return null;
+    const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+    const rows = await asanaGetAll(
+      `/tasks?assignee=${me.gid}&workspace=${me.workspaceGid}`
+      + `&opt_fields=name,due_on,due_at,completed,completed_at`
+      + `&completed_since=${encodeURIComponent(midnight.toISOString())}`, token);
+
+    const today = reportDateStr();
+    const all = rows || [];
+    const open = all.filter(t => !t.completed);
+    const due = t => t.due_on || (t.due_at ? localDateStr(t.due_at) : null);
+    return {
+      open: open.length,
+      overdue: open.filter(t => { const d = due(t); return d && d < today; }).length,
+      completed_today: all.filter(t => t.completed && t.completed_at
+        && localDateStr(t.completed_at) === today).length,
+      titles: open.slice(0, 10).map(t => t.name).filter(Boolean),
+    };
+  } catch (err) {
+    console.error('[maint-summary] asana unavailable:', err.message);
+    return null;
+  }
+}
+
+async function maintDailySummary() {
+  const client = supabaseAdmin || supabasePublic;
+  const [board, commandCenter, asana] = await Promise.all([
+    maintBoardSummary(client),
+    maintCommandCenterSummary(client),
+    maintAsanaSummary(),
+  ]);
+  // Worst of the three wins. Anything overdue in Asana is as red as a critical
+  // on the board — the point of showing all three is that no single one of them
+  // gets to call the day quiet.
+  const severity =
+    (board.severity === 'red' || (asana && asana.overdue > 0)) ? 'red'
+    : (board.severity === 'amber' || (commandCenter.loaded && commandCenter.pct < 100)) ? 'amber'
+    : 'green';
+  return { board, commandCenter, asana, severity, lastUpdated: new Date().toISOString() };
+}
+
+app.get('/api/maintenance/daily-summary', requireAuth, async (req, res) => {
+  try { res.json(await maintDailySummary()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+async function reportMaintenanceSection() {
   return {
     key: 'maintenance', icon: '🔧', title: 'Maintenance', owner: 'Erick Frey',
     status: 'auto',
-    content: {
-      critical: open.filter(t => t.priority === OPS_CRITICAL).map(t => t.title),
-      followup: open.filter(t => t.priority === OPS_FOLLOWUP).map(t => t.title),
-      // localDateStr, not completed_at.slice(0,10): that gives the UTC date and
-      // would roll over to "tomorrow" a few hours before local midnight.
-      completed_today: rows.filter(t => t.completed_at && localDateStr(t.completed_at) === today).length,
-      total_open: open.length,
-      source: 'operational_tasks',
-    },
+    content: await maintDailySummary(),
     last_updated: new Date().toISOString(),
   };
 }
 
-// The Command Center generates its own view of the day from the AppFolio
-// workbook — a different and usually larger picture than the board, because it
-// flags work orders nobody has turned into a task yet. Both write the same
-// section; whichever wrote last is what the report shows, and content.source
-// says which it was. "Freshest wins" rather than a precedence table: pressing
-// Refresh means "read the board now", and generating in the Command Center
-// means "read the workbook now", and each is right at the moment it is asked
-// for.
-function reportCommandCenterSection(payload) {
-  const clean = a => (Array.isArray(a) ? a : []).map(t => String(t || '').trim()).filter(Boolean);
-  const critical = clean(payload.critical);
-  const followup = clean(payload.followup);
-  return {
-    key: 'maintenance', icon: '🔧', title: 'Maintenance', owner: 'Erick Frey',
-    status: 'auto',
-    content: {
-      critical, followup,
-      completed_today: Number.isFinite(+payload.completed_today) ? Math.max(0, +payload.completed_today) : 0,
-      total_open: Number.isFinite(+payload.total_open) ? Math.max(0, +payload.total_open) : (critical.length + followup.length),
-      source: 'command_center',
-    },
-    last_updated: new Date().toISOString(),
-  };
-}
-
-// Builds the day's sections, filling in the ones that have a live source. A
-// failure to reach the board leaves that section as its placeholder rather than
-// failing the whole report — a report with six sections is still worth having.
 async function reportBuildSections(client) {
   const sections = REPORT_SECTIONS.map(s => ({ ...s, status: 'pending', content: null }));
   const i = sections.findIndex(s => s.key === 'maintenance');
   if (i >= 0) {
-    try { sections[i] = await reportMaintenanceSection(client); }
+    try { sections[i] = await reportMaintenanceSection(); }
     catch (err) { console.error('[reports] maintenance section unavailable:', err.message); }
   }
   return sections;
@@ -3916,31 +3981,6 @@ app.post('/api/reports/daily/generate', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Pushed by the Command Center right after it generates the day's tasks. It does
-// not know the report's id and should not create one: if nobody has generated
-// today's report, there is nothing to attach to and this is a no-op rather than
-// a report that appears without anyone asking for it. 200 either way, because
-// the caller treats this as a background write and must not surface a failure.
-app.post('/api/reports/daily/maintenance-snapshot', requireAuth, async (req, res) => {
-  const client = supabaseAdmin || supabasePublic;
-  try {
-    const { data: report } = await client.from('daily_reports')
-      .select('id, sections').eq('report_date', reportDateStr()).maybeSingle();
-    if (!report) return res.json({ ok: true, applied: false, reason: 'no report generated for today' });
-
-    const fresh = reportCommandCenterSection(req.body || {});
-    const sections = (report.sections || []).map(s => (s.key === 'maintenance' ? fresh : s));
-    if (!sections.some(s => s.key === 'maintenance')) sections.push(fresh);
-
-    const { error } = await client.from('daily_reports').update({ sections }).eq('id', report.id);
-    if (error) throw new Error(error.message);
-    res.json({ ok: true, applied: true, critical: fresh.content.critical.length, followup: fresh.content.followup.length });
-  } catch (err) {
-    console.error('[reports] command-center snapshot:', err.message);
-    res.json({ ok: false, applied: false, error: err.message });
-  }
-});
-
 // Re-reads a live section against its source. Only maintenance has one today, so
 // an unknown key is refused rather than silently doing nothing — a Refresh that
 // reports success without refreshing is worse than one that says it cannot.
@@ -3955,7 +3995,7 @@ app.patch('/api/reports/daily/:id/section', requireAuth, async (req, res) => {
       .select('id, sections').eq('id', req.params.id).single();
     if (fe || !report) return res.status(404).json({ error: 'Report not found' });
 
-    const fresh = await reportMaintenanceSection(client);
+    const fresh = await reportMaintenanceSection();
     // Rebuilt from the stored array rather than from REPORT_SECTIONS, so a
     // section added to the constant later cannot appear retroactively on a
     // report that was generated and signed before it existed.
