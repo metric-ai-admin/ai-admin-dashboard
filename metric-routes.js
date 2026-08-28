@@ -25,6 +25,8 @@ const path   = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
 const jwt    = require('jsonwebtoken');
+const cron   = require('node-cron');
+const simplevoip = require('./simplevoip');
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -911,6 +913,63 @@ function registerMetricRoutes(app, db) {
     await mSopsWriteIndex(index);
     res.json({ ok: true });
   });
+
+  // ── MODULE: SimpleVOIP Call Analyzer ──────────────────────────────────────
+  // Session only, deliberately: these responses carry resident conversations.
+  // requireMetricAccess would also let the shared x-metric-key through, which is
+  // right for Erick's MCP tools and wrong for transcripts of people's calls.
+  function requireSession(req, res, next) {
+    if (hasValidSession(req)) return next();
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+
+  app.get('/api/simplevoip/calls', requireSession, async (req, res) => {
+    if (!simplevoip.isConfigured()) {
+      return res.json({ configured: false, date: null, calls: [],
+        message: 'Set SIMPLEVOIP_ACCOUNT_ID and SIMPLEVOIP_USER_ID — see .env.example.' });
+    }
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? req.query.date : todayStr();
+    const { calls, error } = await simplevoip.fetchCallsForDate(null, date);
+    // 200 with an error field rather than a 500: partial pages are still worth
+    // showing, and the view can say what went wrong beside them.
+    res.json({ configured: true, date, calls: simplevoip.shapeCalls(calls), error: error || null });
+  });
+
+  app.get('/api/simplevoip/calls/:recording_id/transcript', requireSession, async (req, res) => {
+    if (!simplevoip.isConfigured()) return res.status(400).json({ error: 'SimpleVOIP is not configured.' });
+    const shaped = simplevoip.shapeTranscript(
+      await simplevoip.fetchCallTranscript(null, req.params.recording_id), req.params.recording_id);
+    if (!shaped) return res.status(404).json({ error: 'No transcript for that recording.' });
+    res.json(shaped);
+  });
+
+  // 6 PM Central. Timezone stated because Render runs UTC, where an unqualified
+  // hour would fire at lunchtime in Austin.
+  async function archiveTodaysCalls() {
+    if (!simplevoip.isConfigured()) return { skipped: 'not configured' };
+    const date = todayStr();
+    const { calls } = await simplevoip.fetchCallsForDate(null, date);
+    const shaped = simplevoip.shapeCalls(calls).filter(c => c.has_transcript && c.recording_id);
+    let stored = 0;
+    for (const c of shaped) {
+      const t = await simplevoip.fetchCallTranscript(null, c.recording_id);
+      const text = t?.transcription || '';
+      const { error } = await db.from('simplevoip_daily_calls').upsert({
+        call_date: date, recording_id: c.recording_id, caller: c.caller,
+        duration: c.duration, transcript: text, fetched_at: new Date().toISOString(),
+      }, { onConflict: 'recording_id' });
+      if (error) console.error('[simplevoip] store failed', c.recording_id, error.message);
+      else stored++;
+    }
+    return { date, seen: shaped.length, stored };
+  }
+
+  cron.schedule('0 18 * * *', () => {
+    archiveTodaysCalls()
+      .then(r => console.log('[simplevoip] archive:', JSON.stringify(r)))
+      .catch(err => console.error('[simplevoip] archive failed:', err.message));
+  }, { timezone: 'America/Chicago' });
+
 }
 
 module.exports = { registerMetricRoutes };

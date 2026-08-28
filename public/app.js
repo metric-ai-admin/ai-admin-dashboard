@@ -2740,6 +2740,7 @@ function switchMaintenanceView(view) {
     'coverage':       loadMaintenanceCoverage,
     'efficiency':     loadEfficiency,
     'technician':     loadTechActivity,
+    'calls':          loadCallAnalyzer,
     'reports-sync':   loadReportsSync,
     'command-center': loadLyndsayCommandCenter,
   };
@@ -3212,6 +3213,115 @@ function wireAsanaEditing(owner) {
 // above this line, and reaching it from there would hit the temporal dead zone.
 wireAsanaEditing('default');
 wireAsanaEditing('erick');
+
+
+// ── Call Analyzer (SimpleVOIP SimplyAI) ──────────────────────────────────────
+// Roughly 40% of a day's rows have no transcript — missed calls, internal
+// transfers — so the list shows every call and only offers the button where
+// there is something to open. Hiding the rest would make the day look quieter
+// than it was.
+
+let svCalls = [];
+
+function svTime(unixSeconds) {
+  if (!unixSeconds) return '—';
+  // Unix SECONDS from the vendor; multiplying is what puts it in this century.
+  return new Date(unixSeconds * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+function svDuration(sec) {
+  const s = Number(sec) || 0;
+  if (!s) return '—';
+  const m = Math.floor(s / 60), r = s % 60;
+  return m ? `${m}m ${r}s` : `${r}s`;
+}
+
+async function loadCallAnalyzer() {
+  const list = $('#sv-list');
+  if (!list) return;
+  const input = $('#sv-date');
+  if (input && !input.value) input.value = todayStr();
+
+  list.innerHTML = '<p class="small muted">Loading calls…</p>';
+  $('#sv-panel')?.classList.add('hidden');
+  $('#sv-panel')?.closest('.sv-split')?.classList.remove('has-panel');
+  try {
+    const d = await api(`/api/simplevoip/calls?date=${encodeURIComponent(input?.value || todayStr())}`);
+    if (!d.configured) {
+      list.innerHTML = `<div class="banner banner-warn">🔌 <b>SimpleVOIP is not configured.</b>
+        <div class="small" style="margin-top:6px">${esc(d.message || '')}</div></div>`;
+      $('#sv-meta').textContent = '';
+      return;
+    }
+    svCalls = d.calls || [];
+    const withT = svCalls.filter(c => c.has_transcript).length;
+    $('#sv-meta').textContent =
+      `${svCalls.length} call${svCalls.length === 1 ? '' : 's'} on ${d.date} · ${withT} with a transcript`;
+    svRender(d.error);
+  } catch (err) {
+    list.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+function svRender(error) {
+  const list = $('#sv-list');
+  if (!list) return;
+  if (!svCalls.length) {
+    list.innerHTML = (error ? `<div class="banner banner-warn">${esc(error)}</div>` : '')
+      + '<div class="empty-state">No calls found for this date.</div>';
+    return;
+  }
+  list.innerHTML = (error ? `<div class="banner banner-warn">Partial results — ${esc(error)}</div>` : '')
+    + `<div style="overflow-x:auto"><table class="crm-table">
+      <thead><tr><th>Time</th><th>Caller</th><th>Direction</th><th>Duration</th><th>Status</th><th></th></tr></thead>
+      <tbody>${svCalls.map(c => `<tr>
+        <td class="mono small">${esc(svTime(c.datetime))}</td>
+        <td>${esc(c.caller)}${c.caller_number && c.caller_number !== c.caller
+              ? ` <span class="muted small">${esc(c.caller_number)}</span>` : ''}</td>
+        <td class="small muted">${esc(c.direction || '')}</td>
+        <td>${esc(svDuration(c.duration))}</td>
+        <td class="small muted">${esc(c.status || '')}</td>
+        <td>${c.has_transcript
+              ? `<button class="btn-sm sv-view" data-id="${esc(c.recording_id)}">View Transcript</button>`
+              : '<span class="muted small">no transcript</span>'}</td>
+      </tr>`).join('')}</tbody></table></div>`;
+
+  list.querySelectorAll('.sv-view').forEach(btn => btn.addEventListener('click', () => svOpen(btn)));
+}
+
+async function svOpen(btn) {
+  const panel = $('#sv-panel');
+  if (!panel) return;
+  const id = btn.dataset.id;
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Loading…';
+  panel.classList.remove('hidden');
+  panel.closest('.sv-split')?.classList.add('has-panel');
+  panel.innerHTML = '<p class="small muted">Loading transcript…</p>';
+  try {
+    const t = await api(`/api/simplevoip/calls/${encodeURIComponent(id)}/transcript`);
+    panel.innerHTML = `
+      <div class="view-head">
+        <div><h4 style="margin:0">${esc(t.caller || 'Call')}</h4>
+          <p class="muted small" style="margin:0">${esc(t.caller_number || '')}${
+            t.sentiment ? ` · sentiment: ${esc(t.sentiment)}` : ''}${
+            t.word_count != null ? ` · ${t.word_count} words` : ''}</p></div>
+        <button class="btn-sm" id="sv-close">Close</button>
+      </div>
+      ${t.summary ? `<div class="card"><h5 style="margin-top:0">Summary</h5>
+        <div class="sv-text">${esc(t.summary)}</div></div>` : ''}
+      <div class="card"><h5 style="margin-top:0">Transcript</h5>
+        <div class="sv-text">${esc(t.transcript_text || '') || '<i class="muted">Empty transcript.</i>'}</div></div>`;
+    $('#sv-close')?.addEventListener('click', () => {
+      panel.classList.add('hidden');
+      panel.closest('.sv-split')?.classList.remove('has-panel');
+    });
+  } catch (err) {
+    panel.innerHTML = `<p class="small muted">Could not load that transcript: ${esc(err.message)}</p>`;
+  } finally { btn.disabled = false; btn.textContent = original; }
+}
+
+$('#sv-refresh')?.addEventListener('click', loadCallAnalyzer);
+$('#sv-date')?.addEventListener('change', loadCallAnalyzer);
 
 // ── Asana Tasks ──────────────────────────────────────────────────────
 // This view shows ERICK's Asana board, not Arturo's. ASANA_TOKEN belongs to

@@ -68,6 +68,7 @@
           <button data-maint-view="coverage">Coverage Map</button>
           <button data-maint-view="efficiency">Maintenance Efficiency</button>
           <button data-maint-view="technician">Technician Activity</button>
+          <button data-maint-view="calls">Call Analyzer</button>
           <button data-maint-view="reports-sync">Reports Sync</button>
           <button data-maint-view="command-center">Command Center</button>
         </div>
@@ -1332,6 +1333,20 @@
     </div>
 
     <!-- 10. Technician Activity Today -->
+    <div id="maint-view-calls" class="maint-view hidden">
+      <div class="view-head">
+        <div><h2>Call Analyzer</h2><p class="muted small" id="sv-meta">SimpleVOIP SimplyAI &mdash; calls and transcripts</p></div>
+        <div class="view-actions">
+          <input type="date" id="sv-date" class="crm-input">
+          <button class="btn-sm" id="sv-refresh">&#128260; Refresh</button>
+        </div>
+      </div>
+      <div class="sv-split">
+        <div id="sv-list"></div>
+        <div id="sv-panel" class="sv-panel hidden"></div>
+      </div>
+    </div>
+
     <div id="maint-view-technician" class="maint-view hidden">
       <div class="view-head">
         <div>
