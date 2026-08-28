@@ -3315,18 +3315,54 @@ function svDuration(sec) {
   return m ? `${m}m ${r}s` : `${r}s`;
 }
 
+// The date the view is actually showing. Held here rather than read back off
+// the input, because an incomplete entry leaves input.value as the empty
+// string — and falling through to today is what made a half-typed date look
+// like the picker had silently reset.
+let svDate = null;
+
+// input[type=date].value is always YYYY-MM-DD per the HTML spec, or '' when the
+// entry is incomplete; MM/DD/YYYY is only how the browser draws it. So this
+// mostly passes ISO straight through. The other branches are defensive: a value
+// set from script, or a browser that ever hands back what it displayed.
+//
+// Note this cannot repair digits the widget assigned to the wrong segment —
+// those are already wrong by the time .value exists. What it does do is refuse
+// a value it cannot trust instead of quietly loading a different day.
+function svNormalizeDate(raw) {
+  const v = String(raw || '').trim();
+  if (!v) return null;
+  let y, m, d;
+  let hit = v.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (hit) { [, y, m, d] = hit; }
+  else {
+    hit = v.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (hit) { [, m, d, y] = hit; }        // US order, matching how it is displayed
+    else return null;
+  }
+  y = +y; m = +m; d = +d;
+  // Round-trip through a real date so 2026-02-31 is rejected rather than
+  // silently rolling into March.
+  const dt = new Date(y, m - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
 async function loadCallAnalyzer() {
   const list = $('#sv-list');
   if (!list) return;
   const input = $('#sv-date');
-  if (input && !input.value) input.value = todayStr();
+  // First open only. Afterwards svDate is what the view is on, so Refresh
+  // reloads the day being looked at rather than jumping back to today.
+  if (!svDate) svDate = svNormalizeDate(input?.value) || todayStr();
+  if (input) input.value = svDate;
 
   await svLoadUsers();
   list.innerHTML = '<p class="small muted">Loading calls…</p>';
   svClosePanel();
   try {
     const who = $('#sv-user')?.value || '';
-    const d = await api(`/api/simplevoip/calls?date=${encodeURIComponent(input?.value || todayStr())}`
+    const d = await api(`/api/simplevoip/calls?date=${encodeURIComponent(svDate)}`
       + (who ? `&user_id=${encodeURIComponent(who)}` : ''));
     if (!d.configured) {
       list.innerHTML = `<div class="banner banner-warn">🔌 <b>SimpleVOIP is not configured.</b>
@@ -3476,7 +3512,18 @@ document.addEventListener('keydown', e => {
 });
 
 $('#sv-refresh')?.addEventListener('click', loadCallAnalyzer);
-$('#sv-date')?.addEventListener('change', loadCallAnalyzer);
+$('#sv-date')?.addEventListener('change', e => {
+  const next = svNormalizeDate(e.target.value);
+  if (!next) {
+    // Half-typed or impossible. Put back the day being shown and say so,
+    // rather than loading a different one and letting it pass for the ask.
+    e.target.value = svDate || todayStr();
+    return toast('That date could not be read — the day shown is unchanged.', 'error');
+  }
+  svDate = next;
+  e.target.value = next;
+  loadCallAnalyzer();
+});
 
 // ── Asana Tasks ──────────────────────────────────────────────────────
 // This view shows ERICK's Asana board, not Arturo's. ASANA_TOKEN belongs to
