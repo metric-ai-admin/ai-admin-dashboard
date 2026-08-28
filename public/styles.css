@@ -1400,3 +1400,12 @@ tr.ca-sel { background: var(--accent-glow); }
   border-color: var(--warning);
   box-shadow: 0 0 0 2px var(--warning-bg);
 }
+
+/* Email/Cal — meetings split into Upcoming and Past */
+.meeting-group + .meeting-group { margin-top: 14px; }
+.meeting-group-head { font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--text-secondary); margin-bottom: 6px; }
+/* Dimmed, not hidden: what already happened is still context for the day, but
+   it should not compete with what has not. */
+.meeting-card.meeting-past { opacity: .55; }
+.meeting-card.meeting-past:hover { opacity: .8; }

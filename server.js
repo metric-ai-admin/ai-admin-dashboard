@@ -1305,14 +1305,18 @@ function classifyMeeting(m) {
 // Builds the copy-paste reminder text for a meeting on Lyndsay's calendar.
 // Never sent automatically — Arturo copies this and sends it himself.
 function buildReminderMessage(m, reminderType = 'today', leadMinutes = REMINDER_MINUTES_DEFAULT) {
-  const dual = formatDualTime(m.start);
+  // Central only. This text is pasted to Lyndsay, who is in Central — the VET
+  // half of formatDualTime exists for Arturo reading the dashboard from
+  // Venezuela, and in a message to her it is a second time to reconcile against
+  // a meeting she may already be late for. formatDualTime still drives the UI.
   const ctTime = new Date(m.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: LYNDSAY_TIMEZONE });
   const count = (m.attendees || []).length;
   const lines = reminderType === 'tomorrow'
-    ? [`📅 Tomorrow reminder: ${m.subject} is scheduled for tomorrow at ${ctTime} CT.`, `🕐 ${dual} — ${m.platform}`, `👥 ${count} attendee(s)`]
-    : [`📅 Reminder: ${m.subject} starts in ${leadMinutes} minutes.`, `🕐 ${dual} — ${m.platform}`, `👥 ${count} attendee(s)`];
+    ? [`📅 Tomorrow reminder: ${m.subject} is scheduled for tomorrow at ${ctTime} CT.`, `🕐 ${ctTime} CT — ${m.platform}`, `👥 ${count} attendee(s)`]
+    : [`📅 Reminder: ${m.subject} starts in ${leadMinutes} minutes.`, `🕐 ${ctTime} CT — ${m.platform}`, `👥 ${count} attendee(s)`];
   if (m.joinUrl) lines.push(m.joinUrl);
-  lines.push('', '⚠️ If Lyndsay doesn\'t respond, call her on WhatsApp.');
+  // The WhatsApp fallback was a note to Arturo about what to do if she went
+  // quiet. Pasted into her own message, it told her to chase herself.
   return lines.join('\n');
 }
 

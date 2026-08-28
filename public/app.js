@@ -711,10 +711,21 @@ function formatCT(isoString) {
   }) + ' <span class="tz-label">CT</span>';
 }
 
-function renderMeetings(list, isLyndsay) {
-  if (!list || !list.length) return '<p class="muted small">No meetings today (or stub mode).</p>';
-  return list.map((m, i) => `
-    <div class="card meeting-card" style="margin-bottom:8px" data-start="${esc(m.start || '')}" data-subject="${esc(m.subject || '')}">
+// A meeting is past once it has ENDED, so one in progress still counts as
+// upcoming. The comparison is instant against instant — the calendar sends
+// absolute times, so this is correct from a browser in Venezuela reading a
+// Central calendar without consulting the server's clock. Comparing wall-clock
+// strings is what would have needed a timezone.
+function meetingHasEnded(m, now) {
+  const e = Date.parse(m.end || '');
+  // No end time: fall back to the start, so an undated meeting still sorts and
+  // groups rather than silently landing in Upcoming forever.
+  return (Number.isFinite(e) ? e : Date.parse(m.start || '')) < now;
+}
+
+function meetingCard(m, i, isLyndsay, isPast) {
+  return `
+    <div class="card meeting-card${isPast ? ' meeting-past' : ''}" style="margin-bottom:8px" data-start="${esc(m.start || '')}" data-subject="${esc(m.subject || '')}">
       <div class="card-title" style="font-size:13.5px">
         ${esc(m.subject)}
         ${m.conflict ? ' <span class="badge badge-red">⚠ CONFLICT</span>' : ''}
@@ -727,12 +738,39 @@ function renderMeetings(list, isLyndsay) {
         <span class="badge badge-blue">${esc(m.platform || '—')}</span>
         ${m.attendees && m.attendees.length ? `<span class="muted small">${m.attendees.length} attendee(s)</span>` : ''}
       </div>
-      ${isLyndsay && !m.isCancelled ? `
+      ${isLyndsay && !m.isCancelled && !isPast ? `
         <div class="card-actions">
           <button class="btn-sm add-reminder-btn" data-idx="${i}">+ Add Reminder</button>
           <span class="meeting-action-btns"></span>
         </div>` : ''}
-    </div>`).join('');
+    </div>`;
+}
+
+function renderMeetings(list, isLyndsay) {
+  if (!list || !list.length) return '<p class="muted small">No meetings today (or stub mode).</p>';
+  const now = Date.now();
+
+  // The original index travels with each meeting. The Add Reminder button
+  // carries it in data-idx and the click handler reads it straight back out of
+  // lyndsayTodayCache, so reordering without keeping it would schedule a
+  // reminder for whichever meeting happened to land in that slot.
+  const rows = list.map((m, i) => ({ m, i, past: meetingHasEnded(m, now) }));
+  const byStart = (a, b) => (Date.parse(a.m.start || '') || 0) - (Date.parse(b.m.start || '') || 0);
+  const upcoming = rows.filter(r => !r.past).sort(byStart);
+  const past = rows.filter(r => r.past).sort(byStart);
+
+  const group = (title, items, isPast) => items.length ? `
+    <div class="meeting-group">
+      <div class="meeting-group-head">${title} <span class="muted small">(${items.length})</span></div>
+      ${items.map(r => meetingCard(r.m, r.i, isLyndsay, isPast)).join('')}
+    </div>` : '';
+
+  // With nothing upcoming the "Past" heading is the only one, and with nothing
+  // past there is no second group to distinguish it from — a lone header over
+  // the only list is noise either way.
+  if (!upcoming.length) return past.map(r => meetingCard(r.m, r.i, isLyndsay, true)).join('');
+  if (!past.length) return upcoming.map(r => meetingCard(r.m, r.i, isLyndsay, false)).join('');
+  return group('Upcoming', upcoming, false) + group('Past', past, true);
 }
 
 async function addReminderForMeeting(meeting) {
