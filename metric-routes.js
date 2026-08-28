@@ -73,11 +73,18 @@ function timingSafeEq(a, b) {
   return crypto.timingSafeEqual(ba, bb);
 }
 
-function hasValidSession(req) {
+// Returns the decoded payload, or null. hasValidSession discarded it, but the
+// Call Analyzer needs the role: who may read whose calls is decided here, not
+// by whether a dropdown was rendered.
+function sessionPayload(req) {
   const token  = req.cookies?.dashboardToken;
   const secret = process.env.JWT_SECRET;
-  if (!token || !secret) return false;
-  try { jwt.verify(token, secret); return true; } catch { return false; }
+  if (!token || !secret) return null;
+  try { return jwt.verify(token, secret); } catch { return null; }
+}
+
+function hasValidSession(req) {
+  return !!sessionPayload(req);
 }
 
 function requireMetricAccess(req, res, next) {
@@ -919,26 +926,69 @@ function registerMetricRoutes(app, db) {
   // requireMetricAccess would also let the shared x-metric-key through, which is
   // right for Erick's MCP tools and wrong for transcripts of people's calls.
   function requireSession(req, res, next) {
-    if (hasValidSession(req)) return next();
-    return res.status(401).json({ error: 'Not authenticated' });
+    const user = sessionPayload(req);
+    if (!user) return res.status(401).json({ error: 'Not authenticated' });
+    req.svUser = user;
+    next();
   }
+
+  // Which SimpleVOIP user's calls this request may read.
+  //
+  // A non-admin gets the configured default and nothing else: passing a user_id
+  // is refused outright rather than ignored, so nobody can discover that the
+  // parameter exists and quietly read a colleague's calls. Hiding the dropdown
+  // is not a control — this is.
+  //
+  // An admin's choice is checked against simplevoip_users, so even they can
+  // only reach people on the roster rather than any id they care to type.
+  async function resolveVoipUser(req) {
+    const asked = String(req.query.user_id || '').trim();
+    const isAdmin = req.svUser?.role === 'admin';
+    if (!asked) return { userId: simplevoip.defaultUserId(), name: null };
+    if (!isAdmin) return { error: 'Only an admin can choose whose calls to view.' };
+    const { data, error } = await db.from('simplevoip_users')
+      .select('name, user_id').eq('user_id', asked).eq('active', true).maybeSingle();
+    if (error) return { error: error.message };
+    if (!data) return { error: 'That user is not on the SimpleVOIP roster.' };
+    return { userId: data.user_id, name: data.name };
+  }
+
+  // The selector's options. Empty until the roster is filled from Kazoo, which
+  // is why the module still falls back to SIMPLEVOIP_USER_ID.
+  app.get('/api/simplevoip/users', requireSession, async (req, res) => {
+    try {
+      const { data, error } = await db.from('simplevoip_users')
+        .select('name, user_id, role').eq('active', true).order('name');
+      if (error) return res.status(500).json({ error: error.message });
+      res.json({
+        users: data || [],
+        canChoose: req.svUser?.role === 'admin',
+        defaultUserId: simplevoip.defaultUserId() || null,
+      });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
 
   app.get('/api/simplevoip/calls', requireSession, async (req, res) => {
     if (!simplevoip.isConfigured()) {
       return res.json({ configured: false, date: null, calls: [],
         message: 'Set SIMPLEVOIP_ACCOUNT_ID and SIMPLEVOIP_USER_ID — see .env.example.' });
     }
+    const who = await resolveVoipUser(req);
+    if (who.error) return res.status(403).json({ error: who.error });
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? req.query.date : todayStr();
-    const { calls, error } = await simplevoip.fetchCallsForDate(null, date);
+    const { calls, error } = await simplevoip.fetchCallsForDate(who.userId, date);
     // 200 with an error field rather than a 500: partial pages are still worth
     // showing, and the view can say what went wrong beside them.
-    res.json({ configured: true, date, calls: simplevoip.shapeCalls(calls), error: error || null });
+    res.json({ configured: true, date, user: who.name, user_id: who.userId,
+               calls: simplevoip.shapeCalls(calls), error: error || null });
   });
 
   app.get('/api/simplevoip/calls/:recording_id/transcript', requireSession, async (req, res) => {
     if (!simplevoip.isConfigured()) return res.status(400).json({ error: 'SimpleVOIP is not configured.' });
+    const who = await resolveVoipUser(req);
+    if (who.error) return res.status(403).json({ error: who.error });
     const shaped = simplevoip.shapeTranscript(
-      await simplevoip.fetchCallTranscript(null, req.params.recording_id), req.params.recording_id);
+      await simplevoip.fetchCallTranscript(who.userId, req.params.recording_id), req.params.recording_id);
     if (!shaped) return res.status(404).json({ error: 'No transcript for that recording.' });
     res.json(shaped);
   });

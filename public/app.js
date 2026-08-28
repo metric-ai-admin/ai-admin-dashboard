@@ -3222,6 +3222,31 @@ wireAsanaEditing('erick');
 // than it was.
 
 let svCalls = [];
+let svUsersLoaded = false;
+
+// The roster comes from simplevoip_users. It is empty until the ids are pulled
+// from Kazoo, so the selector only appears once there is a choice to make —
+// until then the module uses SIMPLEVOIP_USER_ID and the control would be a
+// dropdown with one disabled option in it.
+//
+// Non-admins get no selector at all, and the server refuses a user_id from them
+// regardless: hiding a control is not access control, and who may read whose
+// calls is still an open question with Lyndsay.
+async function svLoadUsers() {
+  const sel = $('#sv-user');
+  if (!sel || svUsersLoaded) return;
+  try {
+    const d = await api('/api/simplevoip/users');
+    const users = d.users || [];
+    if (!d.canChoose || users.length < 2) { sel.classList.add('hidden'); svUsersLoaded = true; return; }
+    sel.classList.remove('hidden');
+    sel.innerHTML = users.map(u =>
+      `<option value="${esc(u.user_id)}"${u.user_id === d.defaultUserId ? ' selected' : ''}>${esc(u.name)}${
+        u.role ? ` — ${esc(u.role)}` : ''}</option>`).join('');
+    sel.addEventListener('change', loadCallAnalyzer);
+    svUsersLoaded = true;
+  } catch { sel.classList.add('hidden'); svUsersLoaded = true; }
+}
 
 function svTime(unixSeconds) {
   if (!unixSeconds) return '—';
@@ -3241,11 +3266,14 @@ async function loadCallAnalyzer() {
   const input = $('#sv-date');
   if (input && !input.value) input.value = todayStr();
 
+  await svLoadUsers();
   list.innerHTML = '<p class="small muted">Loading calls…</p>';
   $('#sv-panel')?.classList.add('hidden');
   $('#sv-panel')?.closest('.sv-split')?.classList.remove('has-panel');
   try {
-    const d = await api(`/api/simplevoip/calls?date=${encodeURIComponent(input?.value || todayStr())}`);
+    const who = $('#sv-user')?.value || '';
+    const d = await api(`/api/simplevoip/calls?date=${encodeURIComponent(input?.value || todayStr())}`
+      + (who ? `&user_id=${encodeURIComponent(who)}` : ''));
     if (!d.configured) {
       list.innerHTML = `<div class="banner banner-warn">🔌 <b>SimpleVOIP is not configured.</b>
         <div class="small" style="margin-top:6px">${esc(d.message || '')}</div></div>`;
@@ -3255,7 +3283,8 @@ async function loadCallAnalyzer() {
     svCalls = d.calls || [];
     const withT = svCalls.filter(c => c.has_transcript).length;
     $('#sv-meta').textContent =
-      `${svCalls.length} call${svCalls.length === 1 ? '' : 's'} on ${d.date} · ${withT} with a transcript`;
+      `${svCalls.length} call${svCalls.length === 1 ? '' : 's'} on ${d.date} · ${withT} with a transcript`
+      + (d.user ? ` · ${d.user}` : '');
     svRender(d.error);
   } catch (err) {
     list.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
@@ -3298,7 +3327,9 @@ async function svOpen(btn) {
   panel.closest('.sv-split')?.classList.add('has-panel');
   panel.innerHTML = '<p class="small muted">Loading transcript…</p>';
   try {
-    const t = await api(`/api/simplevoip/calls/${encodeURIComponent(id)}/transcript`);
+    const who = $('#sv-user')?.value || '';
+    const t = await api(`/api/simplevoip/calls/${encodeURIComponent(id)}/transcript`
+      + (who ? `?user_id=${encodeURIComponent(who)}` : ''));
     panel.innerHTML = `
       <div class="view-head">
         <div><h4 style="margin:0">${esc(t.caller || 'Call')}</h4>
