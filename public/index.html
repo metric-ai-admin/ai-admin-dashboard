@@ -55,6 +55,7 @@
       <button data-tab="email"><span class="nav-dot"></span>Email / Cal<span id="reminder-badge" class="reminder-badge hidden">0</span></button>
       <button data-tab="eod"><span class="nav-dot"></span>End of Day</button>
       <button data-tab="sixpm"><span class="nav-dot"></span>6PM Report</button>
+      <button data-tab="calls"><span class="nav-dot"></span>Call Analyzer</button>
       <div class="subnav-group" id="maintenance-nav-group">
         <button data-tab="maintenance"><span class="nav-dot"></span>Maintenance <span class="subnav-caret" id="maint-subnav-caret">›</span></button>
         <div class="subnav hidden" id="maintenance-subnav">
@@ -68,7 +69,6 @@
           <button data-maint-view="coverage">Coverage Map</button>
           <button data-maint-view="efficiency">Maintenance Efficiency</button>
           <button data-maint-view="technician">Technician Activity</button>
-          <button data-maint-view="calls">Call Analyzer</button>
           <button data-maint-view="reports-sync">Reports Sync</button>
           <button data-maint-view="command-center">Command Center</button>
         </div>
@@ -158,6 +158,22 @@
         <button class="pill active" data-time="all">📋 All</button>
       </div>
       <div id="asana-panel-body"></div>
+    </div>
+  </section>
+
+  <!-- ============ CALL ANALYZER (SimpleVOIP) ============ -->
+  <section id="tab-calls" class="tab">
+    <div class="view-head">
+      <div><h2>Call Analyzer</h2><p class="muted small" id="sv-meta">SimpleVOIP SimplyAI &mdash; calls and transcripts</p></div>
+      <div class="view-actions">
+        <select id="sv-user" class="crm-select" title="Whose calls to show"></select>
+        <input type="date" id="sv-date" class="crm-input">
+        <button class="btn-sm" id="sv-refresh">&#128260; Refresh</button>
+      </div>
+    </div>
+    <div class="sv-split">
+      <div id="sv-list"></div>
+      <div id="sv-panel" class="sv-panel hidden"></div>
     </div>
   </section>
 
@@ -1333,21 +1349,6 @@
     </div>
 
     <!-- 10. Technician Activity Today -->
-    <div id="maint-view-calls" class="maint-view hidden">
-      <div class="view-head">
-        <div><h2>Call Analyzer</h2><p class="muted small" id="sv-meta">SimpleVOIP SimplyAI &mdash; calls and transcripts</p></div>
-        <div class="view-actions">
-          <select id="sv-user" class="crm-select" title="Whose calls to show"></select>
-          <input type="date" id="sv-date" class="crm-input">
-          <button class="btn-sm" id="sv-refresh">&#128260; Refresh</button>
-        </div>
-      </div>
-      <div class="sv-split">
-        <div id="sv-list"></div>
-        <div id="sv-panel" class="sv-panel hidden"></div>
-      </div>
-    </div>
-
     <div id="maint-view-technician" class="maint-view hidden">
       <div class="view-head">
         <div>

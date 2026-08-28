@@ -54,9 +54,9 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm'],
+  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
-  operations:  ['tasks', 'platform', 'email', 'eod', 'reports', 'sixpm'],
+  operations:  ['tasks', 'platform', 'email', 'eod', 'reports', 'sixpm', 'calls'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
   maintenance: ['maintenance'],
   bd_agent:    ['crm'],
@@ -163,6 +163,7 @@ function loadTab(tab) {
   if (tab === 'crm') { crmApplyUserRole(); crmLoadMeta(); crmLoadProperties(); if (crmCanSeeRoster()) crmLoadRoster(); }
   if (tab === 'reports') reportLoad();
   if (tab === 'sixpm') sixpmLoad();
+  if (tab === 'calls') loadCallAnalyzer();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -2740,7 +2741,6 @@ function switchMaintenanceView(view) {
     'coverage':       loadMaintenanceCoverage,
     'efficiency':     loadEfficiency,
     'technician':     loadTechActivity,
-    'calls':          loadCallAnalyzer,
     'reports-sync':   loadReportsSync,
     'command-center': loadLyndsayCommandCenter,
   };
