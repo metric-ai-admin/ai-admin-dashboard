@@ -1350,3 +1350,14 @@ a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-ra
    failed is the most useful thing on the row. */
 .sixpm-src.pending { border-style: dashed; }
 .sixpm-src .muted { flex: 1 1 100%; }
+
+/* ── BD CRM · Property Assignments ──────────────────────────────────
+   Filters wrap; the bulk bar only appears with a selection. */
+.crm-assign-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 10px; }
+.crm-assign-filters label { display: flex; flex-direction: column; gap: 3px; }
+.crm-assign-bulk { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 10px 12px; border: 1px solid var(--accent); border-radius: 8px;
+  background: var(--accent-glow); margin-bottom: 8px; }
+/* A selected row is tinted, so what Confirm is about to touch stays obvious
+   while scrolling a long filtered list. */
+tr.ca-sel { background: var(--accent-glow); }

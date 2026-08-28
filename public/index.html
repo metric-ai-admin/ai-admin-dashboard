@@ -543,6 +543,48 @@
 
     <div id="crm-view-settings" class="crm-view hidden">
       <div class="view-head"><h3>CRM Settings</h3></div>
+
+      <!-- Property Assignments. Admin/operations only; hidden by crmApplyUserRole. -->
+      <div class="card hidden" id="crm-assign-panel" style="margin-bottom:16px">
+        <h4 style="margin-top:0">Property Assignments</h4>
+        <p class="muted small">Narrow the list, then assign one at a time or in bulk. Changes save immediately.</p>
+
+        <div class="crm-assign-filters">
+          <label class="small muted">Class
+            <select id="ca-class" class="crm-select"><option value="">All</option></select>
+          </label>
+          <label class="small muted">Submarket
+            <select id="ca-submarket" class="crm-select"><option value="">All</option></select>
+          </label>
+          <label class="small muted">Management
+            <select id="ca-mgmt" class="crm-select"><option value="">All</option></select>
+          </label>
+          <label class="small muted">Current assignee
+            <select id="ca-assignee" class="crm-select"><option value="">All</option></select>
+          </label>
+          <label class="small muted" style="flex:1;min-width:180px">Search
+            <input id="ca-search" class="crm-input" placeholder="Property name or address">
+          </label>
+          <button class="btn-sm" id="ca-reload">&#128260; Reload</button>
+        </div>
+
+        <div class="crm-assign-bulk hidden" id="ca-bulk">
+          <b id="ca-count">0 properties selected</b>
+          <span class="muted small">Assign selected to</span>
+          <select id="ca-bulk-agent" class="crm-select"></select>
+          <span class="muted small">as</span>
+          <select id="ca-bulk-field" class="crm-select">
+            <option value="phone_assignee">Phone Assignee</option>
+            <option value="phone_assignee3">Phone Assignee 3</option>
+          </select>
+          <button class="btn-sm primary" id="ca-bulk-apply">Confirm</button>
+          <button class="btn-sm" id="ca-bulk-clear">Clear selection</button>
+        </div>
+
+        <div class="muted small" id="ca-status" style="margin:8px 0"></div>
+        <div id="ca-body"></div>
+      </div>
+
       <div class="crm-settings-grid">
         <div class="card">
           <h4>Working User</h4>

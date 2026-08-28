@@ -1329,7 +1329,7 @@ function crmSetView(view) {
   $$('.crm-nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.crmView === view));
   if (view === 'tasks') crmLoadTasks();
   if (view === 'drafts') crmLoadDraftsList();
-  if (view === 'settings') crmLoadTargeted();
+  if (view === 'settings') { crmLoadTargeted(); if (crmCanAssign()) crmLoadAssignments(); }
   if (view === 'roster' && crmCanSeeRoster()) crmLoadRoster();
   if (view === 'performance' && crmCanSeePerformance()) crmLoadTeamPerformance();
 }
@@ -1375,6 +1375,9 @@ function crmApplyUserRole() {
     $('.crm-nav-btn[data-crm-view="performance"]')?.classList.add('hidden');
     if (crmState.view === 'performance') crmSetView('dashboard');
   }
+  // Settings itself stays open to everyone who reaches the CRM; only the
+  // assignment panel inside it is gated, so it is unhidden rather than hidden.
+  if (crmCanAssign()) $('#crm-assign-panel')?.classList.remove('hidden');
 
   const lockedRoles = ['bd_agent', 'maintenance'];
   if (!lockedRoles.includes(currentUser.role) || !currentUser.agentName) return;
@@ -1549,6 +1552,238 @@ $('#crm-roster-form')?.addEventListener('submit', async e => {
   } catch (err) { toast(err.message, 'error'); }
 });
 
+
+
+// ── Property Assignments (CRM Settings) ───────────────────────────────────────
+// Same allowlist as the roster and Team Performance: this reassigns people's
+// work, and operations is as far down as it should go.
+const crmCanAssign = () => CRM_ROSTER_ROLES.includes(currentUser?.role);
+
+// The column is phone_assignee3. There has never been a phone_assignee2, so the
+// label says 3 — a tool for editing a field should name the field it writes, or
+// the next person to read the data will not find what the UI promised.
+const CA_FIELDS = {
+  phone_assignee: 'Phone Assignee',
+  phone_assignee3: 'Phone Assignee 3',
+};
+
+let caProps = [];          // every property, fetched once
+let caAgents = [];         // active agents that have a CRM alias
+let caSelected = new Set();
+
+async function crmLoadAssignments() {
+  const el = $('#ca-body');
+  if (!el || !crmCanAssign()) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    // GET /api/crm/properties caps limit at 200 and there are 251 rows, so the
+    // "one view, no pagination" this panel wants still takes two requests.
+    const all = [];
+    for (let page = 1; page <= 20; page++) {
+      const d = await api(`/api/crm/properties?page=${page}&limit=200`);
+      const batch = d.properties || [];
+      all.push(...batch);
+      if (all.length >= (d.total || 0) || !batch.length) break;
+    }
+    caProps = all;
+
+    // Assignments are stored as the short name, so the dropdown's value has to
+    // be crm_alias and only its label is the full name.
+    const roster = await api('/api/crm/bd-agents').catch(() => []);
+    caAgents = (Array.isArray(roster) ? roster : [])
+      .filter(a => a.status === 'active' && a.crm_alias)
+      .map(a => ({ value: a.crm_alias, label: a.name }));
+
+    caBuildFilters();
+    crmRenderAssignments();
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+// Filter options come from the rows actually present, not a hardcoded list, so a
+// new submarket or a class nobody anticipated cannot make properties
+// unreachable through this panel.
+function caBuildFilters() {
+  const uniq = key => [...new Set(caProps.map(p => (p[key] || '').trim()).filter(Boolean))].sort();
+  const fill = (sel, values, firstLabel) => {
+    const el = $(sel); if (!el) return;
+    const cur = el.value;
+    el.innerHTML = `<option value="">${firstLabel}</option>` +
+      values.map(v => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  };
+  fill('#ca-class', uniq('asset_class'), 'All');
+  fill('#ca-submarket', uniq('submarket'), 'All');
+  fill('#ca-mgmt', uniq('management_type'), 'All');
+
+  // Current-assignee filter spans both columns, plus an explicit "unassigned"
+  // — the case most likely to need fixing is the one with no name in it.
+  const assignees = [...new Set(caProps.flatMap(p => [p.phone_assignee, p.phone_assignee3])
+    .map(v => (v || '').trim()).filter(Boolean))].sort();
+  const sel = $('#ca-assignee');
+  if (sel) {
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All</option><option value="__none__">— Unassigned —</option>' +
+      assignees.map(v => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  }
+
+  const bulk = $('#ca-bulk-agent');
+  if (bulk) {
+    bulk.innerHTML = '<option value="">— Unassign —</option>' +
+      caAgents.map(a => `<option value="${esc(a.value)}">${esc(a.label)}</option>`).join('');
+  }
+}
+
+function caFiltered() {
+  const cls = $('#ca-class')?.value || '';
+  const sub = $('#ca-submarket')?.value || '';
+  const mgmt = $('#ca-mgmt')?.value || '';
+  const who = $('#ca-assignee')?.value || '';
+  const q = ($('#ca-search')?.value || '').trim().toLowerCase();
+
+  return caProps.filter(p => {
+    if (cls && (p.asset_class || '') !== cls) return false;
+    if (sub && (p.submarket || '') !== sub) return false;
+    if (mgmt && (p.management_type || '') !== mgmt) return false;
+    if (who === '__none__') {
+      if ((p.phone_assignee || '').trim() || (p.phone_assignee3 || '').trim()) return false;
+    } else if (who) {
+      if ((p.phone_assignee || '') !== who && (p.phone_assignee3 || '') !== who) return false;
+    }
+    if (q) {
+      const hay = `${p.property_name || ''} ${p.address || ''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function caAgentSelect(prop, field) {
+  const cur = (prop[field] || '').trim();
+  // An assignment that is not on the roster still has to show, or editing one
+  // row would silently blank a name nobody meant to touch.
+  const known = caAgents.some(a => a.value === cur);
+  const extra = (cur && !known) ? `<option value="${esc(cur)}" selected>${esc(cur)} (not on roster)</option>` : '';
+  return `<select class="crm-select ca-one" data-id="${esc(prop.id)}" data-field="${field}" style="font-size:.8rem">
+    <option value="">— none —</option>${extra}
+    ${caAgents.map(a => `<option value="${esc(a.value)}"${a.value === cur ? ' selected' : ''}>${esc(a.label)}</option>`).join('')}
+  </select>`;
+}
+
+function crmRenderAssignments() {
+  const el = $('#ca-body');
+  if (!el) return;
+  const rows = caFiltered();
+  const ids = new Set(rows.map(p => p.id));
+  // Selection follows the filter: narrowing the list must not leave rows
+  // selected that nobody can see, or Confirm would reassign them unseen.
+  for (const id of [...caSelected]) if (!ids.has(id)) caSelected.delete(id);
+
+  $('#ca-status').textContent =
+    `${rows.length} of ${caProps.length} properties shown` +
+    (caSelected.size ? ` · ${caSelected.size} selected` : '');
+  caSyncBulkBar();
+
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty-state">No properties match these filters.</div>';
+    return;
+  }
+  const allShown = rows.every(p => caSelected.has(p.id));
+  el.innerHTML = `<div style="overflow-x:auto"><table class="crm-table">
+    <thead><tr>
+      <th style="width:28px"><input type="checkbox" id="ca-all"${allShown ? ' checked' : ''}></th>
+      <th>Property</th><th>Address</th><th>Class</th><th>Submarket</th>
+      <th>${esc(CA_FIELDS.phone_assignee)}</th><th>${esc(CA_FIELDS.phone_assignee3)}</th>
+    </tr></thead><tbody>
+    ${rows.map(p => `<tr${caSelected.has(p.id) ? ' class="ca-sel"' : ''}>
+      <td><input type="checkbox" class="ca-pick" data-id="${esc(p.id)}"${caSelected.has(p.id) ? ' checked' : ''}></td>
+      <td>${esc(p.property_name || '—')}</td>
+      <td class="small muted">${esc(p.address || '')}</td>
+      <td>${esc(p.asset_class || '')}</td>
+      <td class="small muted">${esc(p.submarket || '')}</td>
+      <td>${caAgentSelect(p, 'phone_assignee')}</td>
+      <td>${caAgentSelect(p, 'phone_assignee3')}</td>
+    </tr>`).join('')}
+  </tbody></table></div>`;
+
+  $('#ca-all')?.addEventListener('change', e => {
+    // Selects every filtered row, not only what a page would show — there is no
+    // pagination here, but the intent is "all matches" either way.
+    rows.forEach(p => e.target.checked ? caSelected.add(p.id) : caSelected.delete(p.id));
+    crmRenderAssignments();
+  });
+  el.querySelectorAll('.ca-pick').forEach(cb => cb.addEventListener('change', () => {
+    cb.checked ? caSelected.add(cb.dataset.id) : caSelected.delete(cb.dataset.id);
+    cb.closest('tr').classList.toggle('ca-sel', cb.checked);
+    $('#ca-status').textContent =
+      `${rows.length} of ${caProps.length} properties shown` +
+      (caSelected.size ? ` · ${caSelected.size} selected` : '');
+    caSyncBulkBar();
+  }));
+  el.querySelectorAll('.ca-one').forEach(sel => sel.addEventListener('change', async () => {
+    const { id, field } = sel.dataset;
+    const prev = caProps.find(p => p.id === id)?.[field] ?? '';
+    sel.disabled = true;
+    try {
+      await api(`/api/crm/properties/${encodeURIComponent(id)}/assign`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ field, agent_name: sel.value || null }),
+      });
+      const p = caProps.find(x => x.id === id);
+      if (p) p[field] = sel.value || null;
+      toast('Assignment saved', 'success');
+      caBuildFilters();
+    } catch (err) {
+      sel.value = prev || '';   // put the row back to what the database still holds
+      toast(err.message, 'error');
+    } finally { sel.disabled = false; }
+  }));
+}
+
+function caSyncBulkBar() {
+  const bar = $('#ca-bulk');
+  if (!bar) return;
+  bar.classList.toggle('hidden', caSelected.size === 0);
+  const c = $('#ca-count');
+  if (c) c.textContent = `${caSelected.size} propert${caSelected.size === 1 ? 'y' : 'ies'} selected`;
+}
+
+['#ca-class', '#ca-submarket', '#ca-mgmt', '#ca-assignee'].forEach(sel =>
+  $(sel)?.addEventListener('change', crmRenderAssignments));
+$('#ca-search')?.addEventListener('input', crmRenderAssignments);
+$('#ca-reload')?.addEventListener('click', crmLoadAssignments);
+$('#ca-bulk-clear')?.addEventListener('click', () => { caSelected.clear(); crmRenderAssignments(); });
+
+$('#ca-bulk-apply')?.addEventListener('click', async () => {
+  const ids = [...caSelected];
+  if (!ids.length) return;
+  const field = $('#ca-bulk-field').value;
+  const agent = $('#ca-bulk-agent').value || null;
+  const label = agent || 'nobody';
+  // Bulk reassignment is not something to do by a mis-click, and it cannot be
+  // undone from here.
+  if (!confirm(`Set ${CA_FIELDS[field]} to ${label} on ${ids.length} propert${ids.length === 1 ? 'y' : 'ies'}?`)) return;
+
+  const btn = $('#ca-bulk-apply');
+  btn.disabled = true; btn.textContent = 'Applying…';
+  try {
+    const r = await api('/api/crm/properties/bulk-assign', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ property_ids: ids, field, agent_name: agent }),
+    });
+    ids.forEach(id => { const p = caProps.find(x => x.id === id); if (p) p[field] = agent; });
+    caSelected.clear();
+    // The server counts rows it actually wrote, so a mismatch is worth showing
+    // rather than reporting the number that was asked for.
+    toast(r.updated === r.requested
+      ? `${r.updated} properties updated`
+      : `${r.updated} of ${r.requested} updated — reload to see the rest`,
+      r.updated === r.requested ? 'success' : 'error');
+    caBuildFilters();
+    crmRenderAssignments();
+  } catch (err) { toast(err.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = 'Confirm'; }
+});
 
 // ── Team Performance ──────────────────────────────────────────────────────────
 // Same allowlist as the roster: both are per-person data about colleagues.

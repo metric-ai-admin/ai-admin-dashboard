@@ -3001,6 +3001,63 @@ app.get('/api/crm/properties/:id', requireCRM, async (req, res) => {
   }
 });
 
+// ---- Property assignment ------------------------------------------------------
+// Registered ABOVE PATCH /api/crm/properties/:id on purpose: Express matches in
+// order, so "bulk-assign" would otherwise arrive as a property id and the route
+// below would try to update a property that does not exist.
+//
+// The column is phone_assignee3, not phone_assignee2 — there has never been a 2.
+// The alias is accepted so a caller written against the other name still lands
+// on the right column rather than failing with an unknown-column error.
+const ASSIGN_FIELDS = {
+  phone_assignee: 'phone_assignee',
+  phone_assignee3: 'phone_assignee3',
+  phone_assignee2: 'phone_assignee3',
+};
+
+function assignPayload(body) {
+  const field = ASSIGN_FIELDS[String(body?.field || '').trim()];
+  if (!field) {
+    return { error: `field must be one of ${Object.keys(ASSIGN_FIELDS).join(', ')}` };
+  }
+  // Blank clears the assignment, which is a real thing to want — stored as null
+  // rather than '' so the "unassigned" filters and the task engine agree.
+  const raw = body?.agent_name;
+  const agent_name = (raw === null || String(raw ?? '').trim() === '') ? null : String(raw).trim();
+  return { field, agent_name };
+}
+
+app.patch('/api/crm/properties/bulk-assign', requireCRM, requireAuth, requireRole('admin', 'operations'), async (req, res) => {
+  const { field, agent_name, error } = assignPayload(req.body);
+  if (error) return res.status(400).json({ error });
+  const ids = Array.isArray(req.body?.property_ids) ? req.body.property_ids.filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'property_ids required' });
+
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error: e } = await db.from('properties')
+      .update({ [field]: agent_name }).in('id', ids).select('id');
+    if (e) return res.status(500).json({ error: e.message });
+    // Counted from what came back, not from what was asked for: an id that no
+    // longer exists silently updates nothing, and reporting the request size
+    // would tell the operator a reassignment landed when it did not.
+    res.json({ ok: true, field, agent_name, updated: (data || []).length, requested: ids.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/crm/properties/:id/assign', requireCRM, requireAuth, requireRole('admin', 'operations'), async (req, res) => {
+  const { field, agent_name, error } = assignPayload(req.body);
+  if (error) return res.status(400).json({ error });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error: e } = await db.from('properties')
+      .update({ [field]: agent_name }).eq('id', req.params.id).select().single();
+    if (e) return res.status(500).json({ error: e.message });
+    if (!data) return res.status(404).json({ error: 'Property not found' });
+    res.json({ ok: true, field, agent_name, property: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- PATCH /api/crm/properties/:id ---------------------------------------------
 app.patch('/api/crm/properties/:id', requireCRM, async (req, res) => {
   try {
