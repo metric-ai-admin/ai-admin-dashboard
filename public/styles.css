@@ -1409,3 +1409,47 @@ tr.ca-sel { background: var(--accent-glow); }
    it should not compete with what has not. */
 .meeting-card.meeting-past { opacity: .55; }
 .meeting-card.meeting-past:hover { opacity: .8; }
+
+/* ── Call Analyzer · transcript panel ───────────────────────────────
+   Slides in over the table rather than pushing it: the list stays where
+   it was so the row you clicked is still where you left it. */
+.sv-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 60; }
+.sv-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 92vw);
+  z-index: 61; border-left: 1px solid var(--border); border-radius: 0;
+  background: var(--bg-surface); padding: 16px 18px; overflow-y: auto;
+  box-shadow: -12px 0 32px rgba(0,0,0,.35);
+  transform: translateX(0); transition: transform .18s ease; }
+.sv-panel.hidden { display: none; }
+/* The grid no longer needs a second column — the panel floats above it. */
+.sv-split, .sv-split.has-panel { grid-template-columns: 1fr; }
+
+.sv-panel-head { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.sv-sentiment { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+
+.sv-sec { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px;
+  background: var(--bg-elevated); overflow: hidden; }
+.sv-sec > summary { padding: 8px 12px; cursor: pointer; font-weight: 600; font-size: 12.5px;
+  list-style: none; user-select: none; }
+.sv-sec > summary::-webkit-details-marker { display: none; }
+.sv-sec > summary::before { content: '▸'; color: var(--text-secondary); margin-right: 6px;
+  display: inline-block; transition: transform .15s ease; }
+.sv-sec[open] > summary::before { transform: rotate(90deg); }
+.sv-sec-body { padding: 4px 12px 12px; }
+
+/* Speaker turns, if the transcript ever carries labels. SimplyAI sends plain
+   prose today, so this is the branch that does not fire yet. */
+.sv-turns { display: flex; flex-direction: column; gap: 8px; }
+.sv-turn { max-width: 88%; }
+.sv-turn-b { align-self: flex-end; text-align: right; }
+.sv-who { font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--text-muted); margin-bottom: 2px; }
+.sv-said { display: inline-block; padding: 7px 10px; border-radius: 10px; font-size: 12.5px;
+  line-height: 1.5; background: var(--bg-surface); border: 1px solid var(--border); }
+.sv-turn-b .sv-said { background: var(--accent-glow); border-color: var(--border-accent); }
+
+.sv-foot { padding-top: 10px; border-top: 1px solid var(--border); word-break: break-all; }
+.sv-loading { display: flex; align-items: center; gap: 8px; padding: 24px 0; color: var(--text-secondary); }
+.sv-spinner { width: 14px; height: 14px; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%; animation: sv-spin .7s linear infinite; }
+@keyframes sv-spin { to { transform: rotate(360deg); } }

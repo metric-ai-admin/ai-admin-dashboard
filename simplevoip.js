@@ -168,17 +168,37 @@ function shapeCalls(calls) {
   return out.sort((a, b) => (b.datetime || 0) - (a.datetime || 0));
 }
 
+// sentiment_score is NOT a 0-1 number. It comes back as a breakdown —
+// { Mixed, Neutral, Negative, Positive } — each a probability, e.g.
+// Neutral 0.7195 alongside Positive 0.2803. Rendering it as a percentage
+// directly would print "[object Object]%", so the confidence in the label
+// SimplyAI actually chose is pulled out here and the full breakdown is passed
+// through beside it.
+function sentimentPct(label, score) {
+  if (!label || !score || typeof score !== 'object') return null;
+  const want = String(label).trim().toLowerCase();
+  const hit = Object.entries(score).find(([k]) => k.toLowerCase() === want);
+  if (!hit || typeof hit[1] !== 'number') return null;
+  return Math.round(hit[1] * 100);
+}
+
 function shapeTranscript(d, recordingId) {
   if (!d) return null;
+  const sentiment = d.sentiment || null;
   return {
     recording_id: d.recording_id || recordingId,
     caller: d.caller_id_name || d.caller_id_number || 'Unknown',
     caller_number: d.caller_id_number || null,
     transcript_text: d.transcription || '',
     summary: d.summary || null,
-    sentiment: d.sentiment || null,
+    sentiment,
     sentiment_score: d.sentiment_score || null,
+    sentiment_pct: sentimentPct(sentiment, d.sentiment_score),
     word_count: d.word_count ?? null,
+    character_count: d.character_count ?? null,
+    tokens_used: d.tokens_used ?? null,
+    // Unix seconds, not an ISO string — multiplying is what puts it in this
+    // century.
     created_at: d.created_at || null,
   };
 }

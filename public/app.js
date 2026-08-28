@@ -3323,8 +3323,7 @@ async function loadCallAnalyzer() {
 
   await svLoadUsers();
   list.innerHTML = '<p class="small muted">Loading calls…</p>';
-  $('#sv-panel')?.classList.add('hidden');
-  $('#sv-panel')?.closest('.sv-split')?.classList.remove('has-panel');
+  svClosePanel();
   try {
     const who = $('#sv-user')?.value || '';
     const d = await api(`/api/simplevoip/calls?date=${encodeURIComponent(input?.value || todayStr())}`
@@ -3372,39 +3371,109 @@ function svRender(error) {
   list.querySelectorAll('.sv-view').forEach(btn => btn.addEventListener('click', () => svOpen(btn)));
 }
 
+const SV_SENTIMENT_CLASS = { positive: 'badge-green', negative: 'badge-red', neutral: 'badge-gray' };
+
+// SimplyAI returns the transcript as plain prose today — one paragraph, no
+// labels. It renders speaker bubbles in its own UI, but the API does not send
+// them, so the split is attempted and falls back rather than assumed: if labels
+// ever appear the panel picks them up with no further change.
+const SV_SPEAKER_RE = /^\s*((?:speaker|participant|agent|caller|customer)\s*\d*)\s*:\s*/i;
+
+function svRenderTranscript(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '<i class="muted">Empty transcript.</i>';
+  const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (!lines.some(l => SV_SPEAKER_RE.test(l))) return `<div class="sv-text">${esc(raw)}</div>`;
+  let last = null;
+  return `<div class="sv-turns">${lines.map(l => {
+    const m = l.match(SV_SPEAKER_RE);
+    const who = m ? m[1].trim() : last;
+    const said = m ? l.slice(m[0].length) : l;
+    const isNew = who !== last;
+    last = who;
+    // Alternating sides need a stable notion of "the other speaker"; the first
+    // one seen owns the left.
+    const side = who && who === lines[0].match(SV_SPEAKER_RE)?.[1]?.trim() ? 'a' : 'b';
+    return `<div class="sv-turn sv-turn-${side}">
+      ${isNew && who ? `<div class="sv-who">${esc(who)}</div>` : ''}
+      <div class="sv-said">${esc(said)}</div></div>`;
+  }).join('')}</div>`;
+}
+
+function svSection(title, body, open = true) {
+  return `<details class="sv-sec"${open ? ' open' : ''}>
+    <summary>${esc(title)}</summary><div class="sv-sec-body">${body}</div></details>`;
+}
+
+function svClosePanel() {
+  const panel = $('#sv-panel');
+  if (!panel) return;
+  panel.classList.add('hidden');
+  panel.closest('.sv-split')?.classList.remove('has-panel');
+  $('#sv-overlay')?.classList.add('hidden');
+}
+
 async function svOpen(btn) {
   const panel = $('#sv-panel');
   if (!panel) return;
   const id = btn.dataset.id;
+  // Time and duration live on the list row, not in the transcript payload.
+  const row = svCalls.find(c => c.recording_id === id) || {};
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = 'Loading…';
   panel.classList.remove('hidden');
   panel.closest('.sv-split')?.classList.add('has-panel');
-  panel.innerHTML = '<p class="small muted">Loading transcript…</p>';
+  $('#sv-overlay')?.classList.remove('hidden');
+  panel.innerHTML = '<div class="sv-loading"><span class="sv-spinner"></span> Loading transcript…</div>';
   try {
     const who = $('#sv-user')?.value || '';
     const t = await api(`/api/simplevoip/calls/${encodeURIComponent(id)}/transcript`
       + (who ? `?user_id=${encodeURIComponent(who)}` : ''));
+
+    // sentiment_pct is the model's confidence in the label it chose, pulled out
+    // of the four-way breakdown server-side. Hidden entirely when absent rather
+    // than shown as an empty badge.
+    const sentiment = t.sentiment ? `
+      <div class="sv-sentiment">
+        <span class="badge ${SV_SENTIMENT_CLASS[String(t.sentiment).toLowerCase()] || 'badge-gray'}">${esc(t.sentiment)}</span>
+        ${t.sentiment_pct != null ? `<span class="muted small">${t.sentiment_pct}% confidence</span>` : ''}
+      </div>` : '';
+
+    const meta = [
+      t.word_count != null ? `${t.word_count} words` : null,
+      t.tokens_used != null ? `${t.tokens_used} tokens` : null,
+      t.recording_id,
+    ].filter(Boolean).join(' · ');
+
     panel.innerHTML = `
-      <div class="view-head">
-        <div><h4 style="margin:0">${esc(t.caller || 'Call')}</h4>
-          <p class="muted small" style="margin:0">${esc(t.caller_number || '')}${
-            t.sentiment ? ` · sentiment: ${esc(t.sentiment)}` : ''}${
-            t.word_count != null ? ` · ${t.word_count} words` : ''}</p></div>
-        <button class="btn-sm" id="sv-close">Close</button>
+      <div class="sv-panel-head">
+        <div>
+          <h4 style="margin:0">${esc(t.caller || row.caller || 'Call')}</h4>
+          <p class="muted small" style="margin:2px 0 0">
+            ${esc(row.datetime ? svTime(row.datetime) : '')}${row.duration ? ` · ${esc(svDuration(row.duration))}` : ''}
+          </p>
+        </div>
+        <button class="btn-sm" id="sv-close" aria-label="Close">✕</button>
       </div>
-      ${t.summary ? `<div class="card"><h5 style="margin-top:0">Summary</h5>
-        <div class="sv-text">${esc(t.summary)}</div></div>` : ''}
-      <div class="card"><h5 style="margin-top:0">Transcript</h5>
-        <div class="sv-text">${esc(t.transcript_text || '') || '<i class="muted">Empty transcript.</i>'}</div></div>`;
-    $('#sv-close')?.addEventListener('click', () => {
-      panel.classList.add('hidden');
-      panel.closest('.sv-split')?.classList.remove('has-panel');
-    });
+      ${sentiment}
+      ${svSection('Summary', t.summary ? `<div class="sv-text">${esc(t.summary)}</div>`
+                                       : '<i class="muted">No summary available.</i>')}
+      ${svSection('Transcript', svRenderTranscript(t.transcript_text))}
+      <div class="sv-foot muted small">${esc(meta)}</div>`;
+    $('#sv-close')?.addEventListener('click', svClosePanel);
   } catch (err) {
-    panel.innerHTML = `<p class="small muted">Could not load that transcript: ${esc(err.message)}</p>`;
+    panel.innerHTML = `<div class="sv-panel-head"><span class="small muted">Could not load that transcript: ${esc(err.message)}</span>
+      <button class="btn-sm" id="sv-close">✕</button></div>`;
+    $('#sv-close')?.addEventListener('click', svClosePanel);
   } finally { btn.disabled = false; btn.textContent = original; }
 }
+
+// Clicking away closes it. Bound once to a backdrop rather than to document, so
+// a click inside the panel cannot bubble out and shut it mid-read.
+$('#sv-overlay')?.addEventListener('click', svClosePanel);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('#sv-panel')?.classList.contains('hidden')) svClosePanel();
+});
 
 $('#sv-refresh')?.addEventListener('click', loadCallAnalyzer);
 $('#sv-date')?.addEventListener('change', loadCallAnalyzer);

@@ -175,6 +175,9 @@
       <div id="sv-list"></div>
       <div id="sv-panel" class="sv-panel hidden"></div>
     </div>
+    <!-- Backdrop for click-away. Bound to this rather than to document, so a
+         click inside the panel cannot bubble out and close it mid-read. -->
+    <div id="sv-overlay" class="sv-overlay hidden"></div>
   </section>
 
   <!-- ============ DAILY 6 PM REPORT ============ -->
