@@ -3060,6 +3060,67 @@ app.post('/api/email/auto-move/toggle', requireMetricAdmin, async (req, res) => 
   res.json({ ok: true, enabled: autoMove.autoMoveEnabled(), dryRun: autoMove.autoMoveDryRun() });
 });
 
+// ---- GET /api/bd-crm/export/csv — GoHighLevel export for John Hernandez ----
+// Every property, all columns as headers, for john@writecode.ninja. The most
+// complete property is sorted first so the file opens on a fully-populated
+// example. requireMetricAdmin: exports owner names, phones and emails.
+app.get('/api/bd-crm/export/csv', requireMetricAdmin, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'BD CRM not configured' });
+  const db = supabaseAdmin || supabasePublic;
+  try {
+    const [props, phones, onlines, dms] = await Promise.all([
+      db.from('properties').select('*'),
+      db.from('phone_shops').select('property_id'),
+      db.from('online_shops').select('property_id'),
+      db.from('dm_reviews').select('property_id'),
+    ]);
+    for (const r of [props, phones, onlines, dms]) if (r.error) throw new Error(r.error.message);
+    const rows = props.data || [];
+
+    // "Ready for Lyndsay" = the three shops complete: 3 phone-shop calls, at
+    // least one online shop, and a DM review (dm_reviews is one row per
+    // property, upserted on property_id).
+    const countBy = (arr) => {
+      const m = new Map();
+      for (const r of (arr || [])) m.set(r.property_id, (m.get(r.property_id) || 0) + 1);
+      return m;
+    };
+    const phoneN = countBy(phones.data), onlineN = countBy(onlines.data), dmN = countBy(dms.data);
+    const rankOf = (p) => {
+      const ph = phoneN.get(p.id) || 0, on = onlineN.get(p.id) || 0, dm = dmN.get(p.id) || 0;
+      return { ready: ph >= 3 && on >= 1 && dm >= 1, tier: (ph >= 3 ? 1 : 0) + (on >= 1 ? 1 : 0) + (dm >= 1 ? 1 : 0), raw: ph + on + dm };
+    };
+    // Ready first, then most complete — so if no property is fully ready, the
+    // closest one still leads the file, as specified.
+    rows.sort((a, b) => {
+      const ra = rankOf(a), rb = rankOf(b);
+      if (ra.ready !== rb.ready) return ra.ready ? -1 : 1;
+      if (ra.tier !== rb.tier) return rb.tier - ra.tier;
+      return rb.raw - ra.raw;
+    });
+
+    // Headers derived from the rows so they track the schema; a fallback list
+    // keeps the export a valid template when the table is empty.
+    const FALLBACK_COLS = ['id', 'property_name', 'address', 'city', 'state', 'zip', 'submarket', 'style', 'year_built', 'asset_class', 'units', 'vacancy_pct', 'avg_asking_unit', 'avg_unit_sf', 'management_company', 'management_type', 'owner_name', 'owner_contact_name', 'owner_phone', 'owner_email', 'owner_address', 'assigned_to', 'phone_assignee', 'phone_assignee3', 'online_dm_assignee', 'rop_status', 'lead_score_override', 'lyndsay_reviewed', 'notes', 'created_at', 'updated_at'];
+    const cols = rows.length ? Object.keys(rows[0]) : FALLBACK_COLS;
+
+    const cell = (v) => {
+      if (v === null || v === undefined) return '';
+      const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    // BOM so Excel reads UTF-8 — owner names carry accents.
+    const csv = '﻿' + [cols.join(',')].concat(rows.map(r => cols.map(c => cell(r[c])).join(','))).join('\r\n');
+
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="bd_crm_export_${today}.csv"`);
+    res.send(csv);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // Middleware: require Supabase to be configured before serving CRM routes
 function requireCRM(req, res, next) {

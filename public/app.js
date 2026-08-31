@@ -1541,6 +1541,7 @@ function crmApplyUserRole() {
   if (crmCanAssign()) $('#crm-assign-panel')?.classList.remove('hidden');
   // Admin only — one step tighter than the assignment panel above it.
   if (crmIsAdmin()) $('#crm-gb-panel')?.classList.remove('hidden');
+  if (crmIsAdmin()) $('#crm-ghl-panel')?.classList.remove('hidden');
 
   const lockedRoles = ['bd_agent', 'maintenance'];
   if (!lockedRoles.includes(currentUser.role) || !currentUser.agentName) return;
@@ -2008,6 +2009,12 @@ function crmRenderGbRotation() {
 }
 
 $('#crm-gb-refresh')?.addEventListener('click', crmLoadGbRotation);
+
+// GHL export — navigate to the endpoint; Content-Disposition makes the browser
+// download it, and the session cookie satisfies requireMetricAdmin.
+$('#crm-ghl-download')?.addEventListener('click', () => {
+  window.location.href = '/api/bd-crm/export/csv';
+});
 $('#crm-gb-rotate')?.addEventListener('click', async () => {
   const n = crmGbData?.properties?.length || 0;
   // It appends rather than overwriting, so this is undoable by rotating again —
