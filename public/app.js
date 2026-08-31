@@ -3369,20 +3369,59 @@ let svUsersLoaded = false;
 // Non-admins get no selector at all, and the server refuses a user_id from them
 // regardless: hiding a control is not access control, and who may read whose
 // calls is still an open question with Lyndsay.
+// SmartPBX has 12 users. Only some are on the roster: the rest are held back
+// until Lyndsay settles who may read whose calls, then read from the portal by
+// hand. This is what the roster is measured against, so the "N pending" note
+// shrinks on its own as rows are added and disappears at 12.
+const SV_EXPECTED_USERS = 12;
+
 async function svLoadUsers() {
   const sel = $('#sv-user');
+  const note = $('#sv-roster-note');
   if (!sel || svUsersLoaded) return;
+  const setNote = (msg) => { if (note) note.textContent = msg || ''; };
   try {
     const d = await api('/api/simplevoip/users');
     const users = d.users || [];
-    if (!d.canChoose || users.length < 2) { sel.classList.add('hidden'); svUsersLoaded = true; return; }
-    sel.classList.remove('hidden');
-    sel.innerHTML = users.map(u =>
-      `<option value="${esc(u.user_id)}"${u.user_id === d.defaultUserId ? ' selected' : ''}>${esc(u.name)}${
-        u.role ? ` — ${esc(u.role)}` : ''}</option>`).join('');
-    sel.addEventListener('change', loadCallAnalyzer);
+    const pending = Math.max(0, SV_EXPECTED_USERS - users.length);
+
+    // Non-admins never get the selector, and the server refuses a user_id from
+    // them regardless: hiding a control is not access control, and who may read
+    // whose calls is still open with Lyndsay.
+    if (!d.canChoose) {
+      sel.classList.add('hidden');
+      setNote('');
+      svUsersLoaded = true;
+      return;
+    }
+
+    // One user is not a choice — the module falls back to SIMPLEVOIP_USER_ID —
+    // so the dropdown only earns its place at two or more.
+    if (users.length < 2) {
+      sel.classList.add('hidden');
+    } else {
+      sel.classList.remove('hidden');
+      sel.innerHTML = users.map(u =>
+        `<option value="${esc(u.user_id)}"${u.user_id === d.defaultUserId ? ' selected' : ''}>${esc(u.name)}${
+          u.role ? ` — ${esc(u.role)}` : ''}</option>`).join('');
+      sel.addEventListener('change', loadCallAnalyzer);
+    }
+
+    // Say plainly that the roster is partial and why — otherwise a 5-name
+    // dropdown reads as "these are all the users", not "these are the ones
+    // approved so far".
+    if (pending > 0) {
+      setNote(`Showing ${users.length} of ${SV_EXPECTED_USERS} SimpleVOIP users. `
+        + `${pending} more pending Lyndsay's access approval — they will be added once she confirms who can view whose calls.`);
+    } else {
+      setNote('');
+    }
     svUsersLoaded = true;
-  } catch { sel.classList.add('hidden'); svUsersLoaded = true; }
+  } catch {
+    sel.classList.add('hidden');
+    setNote('');
+    svUsersLoaded = true;
+  }
 }
 
 function svTime(unixSeconds) {
