@@ -17,21 +17,21 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   // ── Task Manager ──────────────────────────────────────────────────────────
 
   server.registerTool('get_operational_tasks', {
-    title: 'Ver tareas del AI Admin',
-    description: 'Devuelve las tareas del Task Manager: seguimientos de Lyndsay Review, "To Review Together", admin requests, tareas de plataforma, e importaciones de Asana.',
+    title: 'View AI Admin tasks',
+    description: 'Returns the Task Manager tasks: Lyndsay Review follow-ups, "To Review Together", admin requests, platform tasks, and Asana imports.',
     inputSchema: {},
   }, async () => text(await getJSON('/api/tasks')));
 
   server.registerTool('add_operational_task', {
-    title: 'Agregar tarea',
-    description: 'Crea una nueva tarea en el Task Manager. Úsala cuando surja algo que hay que hacer y quieras registrarlo.',
+    title: 'Add task',
+    description: 'Creates a new task in the Task Manager. Use it when something comes up that needs doing and you want it on record.',
     inputSchema: {
-      title: z.string().describe('Descripción corta de la tarea (requerido)'),
+      title: z.string().describe('Short description of the task (required)'),
       type: z.enum(['Lyndsay Review', 'To Review Together', 'Admin Request', 'Email Follow-up', 'Platform Build', 'Asana Import', 'Other'])
-        .optional().describe('Tipo de tarea'),
-      source: z.string().optional().describe('De dónde vino (p. ej. "Lyndsay", "Roxanne", correo, WhatsApp)'),
+        .optional().describe('Type of task'),
+      source: z.string().optional().describe('Where it came from (e.g. "Lyndsay", "Roxanne", email, WhatsApp)'),
       priority: z.enum(['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '✅ Done']).optional(),
-      notes: z.string().optional().describe('Notas o contexto adicional'),
+      notes: z.string().optional().describe('Notes or extra context'),
     },
   }, async (params) => {
     try {
@@ -47,14 +47,14 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('update_operational_task', {
-    title: 'Modificar tarea',
-    description: 'Actualiza campos de una tarea existente por su id (usa get_operational_tasks para ver los ids).',
+    title: 'Edit task',
+    description: 'Updates fields on an existing task by id (use get_operational_tasks to see the ids).',
     inputSchema: {
-      id: z.string().describe('El id de la tarea, p. ej. "task_1719421234567_4892"'),
+      id: z.string().describe('The id of the task, e.g. "task_1719421234567_4892"'),
       title: z.string().optional(),
       type: z.enum(['Lyndsay Review', 'To Review Together', 'Admin Request', 'Email Follow-up', 'Platform Build', 'Asana Import', 'Other']).optional(),
       source: z.string().optional(),
-      priority: z.enum(['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '✅ Done']).optional().describe('Cambia a "✅ Done" para marcarla como completada.'),
+      priority: z.enum(['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '✅ Done']).optional().describe('Set to "✅ Done" to mark it complete.'),
       notes: z.string().optional(),
     },
   }, async ({ id, ...fields }) => {
@@ -71,9 +71,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('complete_operational_task', {
-    title: 'Marcar tarea como completada',
-    description: 'Marca una tarea como completada (Done). Úsala cuando Arturo diga que terminó algo.',
-    inputSchema: { id: z.string().describe('El id de la tarea — obténlo con get_operational_tasks') },
+    title: 'Mark task complete',
+    description: 'Marks a task as complete (Done). Use it when Arturo says he has finished something.',
+    inputSchema: { id: z.string().describe('The id of the task — get it from get_operational_tasks') },
   }, async ({ id }) => {
     try {
       const res = await doFetch(`${BASE}/api/tasks/${encodeURIComponent(id)}/done`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
@@ -86,9 +86,9 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('delete_operational_task', {
-    title: 'Eliminar tarea',
-    description: 'Elimina una tarea permanentemente por su id. Confirma siempre con Arturo antes de eliminar.',
-    inputSchema: { id: z.string().describe('El id de la tarea a eliminar') },
+    title: 'Delete task',
+    description: 'Permanently deletes a task by id. Always confirm with Arturo before deleting.',
+    inputSchema: { id: z.string().describe('The id of the task to delete') },
   }, async ({ id }) => {
     try {
       const res = await doFetch(`${BASE}/api/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -103,33 +103,33 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   // ── SOPs ──────────────────────────────────────────────────────────────────
 
   server.registerTool('list_sops', {
-    title: 'Listar SOPs',
-    description: 'Lista todos los procedimientos (SOPs) en la base de conocimiento del AI Admin, incluyendo fuente, categoría y enlace a Slab (slab_url) cuando exista, para poder compartirlo.',
+    title: 'List SOPs',
+    description: 'Lists every procedure (SOP) in the AI Admin knowledge base, including source, category and the Slab link (slab_url) where there is one, so it can be shared.',
     inputSchema: {},
   }, async () => text(await getJSON('/api/sops')));
 
   server.registerTool('get_sop', {
-    title: 'Leer un SOP completo',
-    description: 'Devuelve el texto completo de un SOP por su id (usa list_sops para obtener los ids).',
-    inputSchema: { id: z.string().describe('El id del SOP, p. ej. sop_email_folders') },
+    title: 'Read a full SOP',
+    description: 'Returns the full text of a SOP by id (use list_sops to get the ids).',
+    inputSchema: { id: z.string().describe('The id of the SOP, e.g. sop_email_folders') },
   }, async ({ id }) => text(await getJSON(`/api/sops/${encodeURIComponent(id)}`)));
 
   server.registerTool('search_sops', {
-    title: 'Buscar en los SOPs',
-    description: 'Busca un término en todos los SOPs y devuelve los fragmentos que coinciden.',
-    inputSchema: { query: z.string().describe('Término o frase a buscar') },
+    title: 'Search the SOPs',
+    description: 'Searches every SOP for a term and returns the matching snippets.',
+    inputSchema: { query: z.string().describe('Term or phrase to search for') },
   }, async ({ query }) => text(await getJSON(`/api/sops/search/${encodeURIComponent(query)}`)));
 
   server.registerTool('add_sop', {
-    title: 'Agregar un SOP',
-    description: 'Agrega un nuevo procedimiento a la base de conocimiento (p. ej. dirección de redirección de facturas, reglas de calendario).',
+    title: 'Add a SOP',
+    description: 'Adds a new procedure to the knowledge base (e.g. the invoice forwarding address, calendar rules).',
     inputSchema: {
-      title: z.string().describe('Título del SOP'),
-      text: z.string().describe('Texto completo del procedimiento'),
-      tags: z.array(z.string()).optional().describe('Etiquetas opcionales, p. ej. ["email","calendario"]'),
-      source: z.string().optional().describe('Fuente, p. ej. "Slab — metric.slab.com" o "Jay Manuel — 08/14/2026"'),
-      category: z.string().optional().describe('Categoría, p. ej. "Email Management"'),
-      slab_url: z.string().optional().describe('Enlace al artículo original en Slab, si existe'),
+      title: z.string().describe('Title of the SOP'),
+      text: z.string().describe('Full text of the procedure'),
+      tags: z.array(z.string()).optional().describe('Optional tags, e.g. ["email","calendar"]'),
+      source: z.string().optional().describe('Source, e.g. "Slab — metric.slab.com" or "Jay Manuel — 08/14/2026"'),
+      category: z.string().optional().describe('Category, e.g. "Email Management"'),
+      slab_url: z.string().optional().describe('Link to the original Slab article, if there is one'),
     },
   }, async (params) => {
     try {
@@ -145,8 +145,8 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   // ── Asana ─────────────────────────────────────────────────────────────────
 
   server.registerTool('get_my_asana_tasks', {
-    title: 'Mis tareas de Asana',
-    description: 'Devuelve las tareas de Asana asignadas a Arturo (o donde participa), de los proyectos conectados al AI Admin dashboard.',
+    title: 'My Asana tasks',
+    description: 'Returns the Asana tasks assigned to Arturo (or that he is a collaborator on), from the projects connected to the AI Admin dashboard.',
     inputSchema: {},
   }, async () => {
     const me = await getJSON('/api/asana/me');
@@ -162,10 +162,10 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('import_asana_tasks', {
-    title: 'Importar tareas de Asana al Task Manager',
-    description: 'Importa las tareas abiertas de un proyecto de Asana (por su gid) al Task Manager del dashboard, para que aparezcan junto con el resto de las tareas del AI Admin en un solo lugar. No completa ni edita tareas en Asana — solo lectura/importación.',
+    title: 'Import Asana tasks into the Task Manager',
+    description: 'Imports the open tasks of an Asana project (by gid) into the dashboard Task Manager, so they sit alongside the rest of the AI Admin tasks in one place. It does not complete or edit anything in Asana — read/import only.',
     inputSchema: {
-      projectGid: z.string().describe('El gid del proyecto de Asana del que importar tareas'),
+      projectGid: z.string().describe('The gid of the Asana project to import tasks from'),
     },
   }, async ({ projectGid }) => {
     try {
@@ -183,16 +183,16 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   // ── Platform Projects Tracker ─────────────────────────────────────────────
 
   server.registerTool('get_platform_projects', {
-    title: 'Ver seguimiento de la plataforma multi-departamento',
-    description: 'Devuelve el estado de cada módulo de la Unified Operations Platform (BD CRM, Leasing Goal Board, Application Approval Board, Eviction Tracker, Operations Aggregate View): fase, bloqueos, última actualización y siguiente acción.',
+    title: 'View multi-department platform tracking',
+    description: 'Returns the status of each Unified Operations Platform module (BD CRM, Leasing Goal Board, Application Approval Board, Eviction Tracker, Operations Aggregate View): phase, blockers, last update and next action.',
     inputSchema: {},
   }, async () => text(await getJSON('/api/platform-projects')));
 
   server.registerTool('update_platform_project', {
-    title: 'Actualizar un módulo de la plataforma',
-    description: 'Actualiza la fase, bloqueos o siguiente acción de un módulo del Unified Operations Platform build. Usa get_platform_projects para ver los ids.',
+    title: 'Update a platform module',
+    description: 'Updates the phase, blockers or next action of a module in the Unified Operations Platform build. Use get_platform_projects to see the ids.',
     inputSchema: {
-      id: z.string().describe('El id del proyecto, p. ej. "proj_bd_crm" — obténlo con get_platform_projects'),
+      id: z.string().describe('The id of the project, e.g. "proj_bd_crm" — get it from get_platform_projects'),
       phase: z.enum(['Not started', 'Discovery', 'In Development', 'Testing', 'Live']).optional(),
       blockers: z.string().optional(),
       nextAction: z.string().optional(),
@@ -211,13 +211,13 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('add_platform_project', {
-    title: 'Crear un nuevo proyecto en el Platform Projects Tracker',
-    description: 'Crea un nuevo módulo/proyecto en el Unified Operations Platform build tracker. Útil para registrar nuevos proyectos sin necesitar el web UI.',
+    title: 'Create a new project in the Platform Projects Tracker',
+    description: 'Creates a new module/project in the Unified Operations Platform build tracker. Useful for recording new projects without the web UI.',
     inputSchema: {
-      id: z.string().optional().describe('ID personalizado, p. ej. "proj_maintenance_dashboard". Si se omite se genera automáticamente.'),
-      module: z.string().describe('Nombre del módulo o proyecto'),
+      id: z.string().optional().describe('Custom ID, e.g. "proj_maintenance_dashboard". Generated automatically if omitted.'),
+      module: z.string().describe('Name of the module or project'),
       phase: z.enum(['Not started', 'Discovery', 'In Development', 'Testing', 'Live']).optional(),
-      order: z.number().optional().describe('Posición en la lista (número entero)'),
+      order: z.number().optional().describe('Position in the list (whole number)'),
       nextAction: z.string().optional(),
       blockers: z.string().optional(),
     },
@@ -236,12 +236,12 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('add_platform_project_subtask', {
-    title: 'Agregar un subtask a un proyecto de la plataforma',
-    description: 'Agrega un subtask a un proyecto existente en el Platform Projects Tracker. Usa get_platform_projects para obtener el id del proyecto.',
+    title: 'Add a subtask to a platform project',
+    description: 'Adds a subtask to an existing project in the Platform Projects Tracker. Use get_platform_projects to get the project id.',
     inputSchema: {
-      projectId: z.string().describe('El id del proyecto, p. ej. "proj_bd_crm"'),
-      title: z.string().describe('Título del subtask'),
-      done: z.boolean().optional().describe('Si el subtask ya está completado (default: false)'),
+      projectId: z.string().describe('The id of the project, e.g. "proj_bd_crm"'),
+      title: z.string().describe('Title of the subtask'),
+      done: z.boolean().optional().describe('Whether the subtask is already complete (default: false)'),
     },
   }, async ({ projectId, title, done }) => {
     try {
@@ -259,12 +259,12 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('complete_platform_project_subtask', {
-    title: 'Marcar un subtask como done/undone',
-    description: 'Cambia el estado done/undone de un subtask. Usa get_platform_projects para obtener el projectId y subId.',
+    title: 'Mark a subtask done/undone',
+    description: 'Toggles a subtask between done and undone. Use get_platform_projects to get the projectId and subId.',
     inputSchema: {
-      projectId: z.string().describe('El id del proyecto'),
-      subId: z.string().describe('El id del subtask, p. ej. "sub_1787589937376_3761"'),
-      done: z.boolean().describe('true = completado, false = pendiente'),
+      projectId: z.string().describe('The id of the project'),
+      subId: z.string().describe('The id of the subtask, e.g. "sub_1787589937376_3761"'),
+      done: z.boolean().describe('true = complete, false = pending'),
     },
   }, async ({ projectId, subId, done }) => {
     try {
@@ -282,10 +282,10 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('delete_platform_project', {
-    title: 'Eliminar un proyecto del Platform Projects Tracker',
-    description: 'Elimina permanentemente un proyecto del tracker. Usa get_platform_projects para confirmar el id antes de borrar.',
+    title: 'Delete a project from the Platform Projects Tracker',
+    description: 'Permanently deletes a project from the tracker. Use get_platform_projects to confirm the id before deleting.',
     inputSchema: {
-      id: z.string().describe('El id del proyecto a eliminar'),
+      id: z.string().describe('The id of the project to delete'),
     },
   }, async ({ id }) => {
     try {
@@ -301,18 +301,18 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   // ── Email / Calendar (stub until Graph API credentials are set) ──────────
 
   server.registerTool('get_email_triage_status', {
-    title: 'Estado de triage de correo',
-    description: 'Devuelve el conteo real de correos no leídos y totales en el Inbox de ambos buzones (Lyndsay y Arturo), más los remitentes más frecuentes sin leer de Lyndsay. Requiere Graph API conectado — si no, indica configured:false o authRequired:true.',
+    title: 'Email triage status',
+    description: 'Returns the real unread and total counts for both mailboxes (Lyndsay and Arturo), plus the senders Lyndsay has most unread mail from. Requires Graph API to be connected — otherwise it reports configured:false or authRequired:true.',
     inputSchema: {},
   }, async () => text(await getJSON('/api/email/triage')));
 
   server.registerTool('get_lyndsay_inbox', {
-    title: 'Leer el inbox de Lyndsay (o de Arturo)',
-    description: 'Lee correos del Inbox de Lyndsay (o de Arturo) vía Graph API — remitente, asunto, preview, si está leído y si tiene adjuntos. Úsalo para el triage diario: Claude lee y clasifica correos sin necesitar Chrome ni Outlook abiertos. Solo lectura — no marca como leído, no mueve ni elimina nada.',
+    title: "Read Lyndsay's inbox (or Arturo's)",
+    description: "Reads mail from Lyndsay's Inbox (or Arturo's) via the Graph API — sender, subject, preview, read state and whether it has attachments. Use it for the daily triage: Claude reads and classifies mail without Chrome or Outlook being open. Read-only — it does not mark as read, move, or delete anything.",
     inputSchema: {
-      mailbox: z.enum(['lyndsay', 'arturo', 'both']).optional().describe('Qué buzón leer. Por defecto: lyndsay'),
-      limit: z.number().optional().describe('Número de correos a devolver. Por defecto: 50, máximo: 100'),
-      unread_only: z.boolean().optional().describe('Si es true, devuelve solo correos no leídos. Por defecto: false'),
+      mailbox: z.enum(['lyndsay', 'arturo', 'both']).optional().describe('Which mailbox to read. Defaults to lyndsay'),
+      limit: z.number().optional().describe('Number of emails to return. Defaults to 50, maximum 100'),
+      unread_only: z.boolean().optional().describe('If true, returns only unread mail. Defaults to false'),
     },
   }, async ({ mailbox, limit, unread_only } = {}) => {
     const params = new URLSearchParams();
@@ -324,30 +324,30 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('get_email_body', {
-    title: 'Leer el cuerpo completo de un correo',
-    description: 'Lee el cuerpo completo de un correo específico por su Graph message ID. Úsalo después de get_lyndsay_inbox cuando necesites más contexto para clasificar un correo correctamente. Solo lectura.',
+    title: 'Read the full body of an email',
+    description: 'Reads the full body of one email by its Graph message ID. Use it after get_lyndsay_inbox when you need more context to classify a message correctly. Read-only.',
     inputSchema: {
-      message_id: z.string().describe('El Graph message ID obtenido con get_lyndsay_inbox'),
-      mailbox: z.enum(['lyndsay', 'arturo']).describe('A qué buzón pertenece el mensaje'),
+      message_id: z.string().describe('The Graph message ID from get_lyndsay_inbox'),
+      mailbox: z.enum(['lyndsay', 'arturo']).describe('Which mailbox the message belongs to'),
     },
   }, async ({ message_id, mailbox }) => text(await getJSON(`/api/email/message/${encodeURIComponent(message_id)}?mailbox=${mailbox}`)));
 
   server.registerTool('get_lyndsay_folders', {
-    title: 'Listar carpetas del correo de Lyndsay',
-    description: 'Lista todas las carpetas del buzón de Lyndsay (o de Arturo) con su conteo de no leídos y total. Úsalo para descubrir qué carpetas existen (Lyndsay Review, Need to File, Rhoxie To Do, Client Emails, etc.) antes de leer una específica con get_lyndsay_folder_emails.',
+    title: "List the folders in Lyndsay's mailbox",
+    description: "Lists every folder in Lyndsay's mailbox (or Arturo's) with its unread and total counts. Use it to discover which folders exist (Lyndsay Review, Need to File, Rhoxie To Do, Client Emails, and so on) before reading a specific one with get_lyndsay_folder_emails.",
     inputSchema: {
-      mailbox: z.enum(['lyndsay', 'arturo', 'both']).optional().describe('Qué buzón listar. Por defecto: lyndsay'),
+      mailbox: z.enum(['lyndsay', 'arturo', 'both']).optional().describe('Which mailbox to list. Defaults to lyndsay'),
     },
   }, async ({ mailbox } = {}) => text(await getJSON(`/api/email/folders${mailbox ? `?mailbox=${mailbox}` : ''}`)));
 
   server.registerTool('get_lyndsay_folder_emails', {
-    title: 'Leer correos de una carpeta específica',
-    description: 'Lee correos de una carpeta específica del buzón de Lyndsay (o de Arturo) — no solo el Inbox. Usa el nombre de carpeta exactamente como lo devuelve get_lyndsay_folders (p. ej. "Need to File", "Lyndsay Review", "Rhoxie To Do"). Solo lectura.',
+    title: 'Read mail from a specific folder',
+    description: "Reads mail from one specific folder in Lyndsay's mailbox (or Arturo's) — not just the Inbox. Use the folder name exactly as get_lyndsay_folders returns it (e.g. \"Need to File\", \"Lyndsay Review\", \"Rhoxie To Do\"). Read-only.",
     inputSchema: {
-      folder_name: z.string().describe('Nombre exacto de la carpeta, p. ej. "Need to File", "Lyndsay Review", "Rhoxie To Do"'),
-      mailbox: z.enum(['lyndsay', 'arturo']).optional().describe('A qué buzón pertenece la carpeta. Por defecto: lyndsay'),
-      limit: z.number().optional().describe('Máximo de correos a devolver. Por defecto: 25'),
-      unread_only: z.boolean().optional().describe('Si es true, devuelve solo correos no leídos. Por defecto: false'),
+      folder_name: z.string().describe('Exact folder name, e.g. "Need to File", "Lyndsay Review", "Rhoxie To Do"'),
+      mailbox: z.enum(['lyndsay', 'arturo']).optional().describe('Which mailbox the folder belongs to. Defaults to lyndsay'),
+      limit: z.number().optional().describe('Maximum emails to return. Defaults to 25'),
+      unread_only: z.boolean().optional().describe('If true, returns only unread mail. Defaults to false'),
     },
   }, async ({ folder_name, mailbox, limit, unread_only } = {}) => {
     const params = new URLSearchParams();
@@ -359,12 +359,12 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('search_lyndsay_email', {
-    title: 'Buscar correos en todas las carpetas',
-    description: 'Busca en TODAS las carpetas del buzón de Lyndsay (o de Arturo) — no solo el Inbox — por un término. Úsalo cuando necesites encontrar un correo específico (factura, recibo, etc.) sin saber en qué de las ~65 carpetas está.',
+    title: 'Search mail across every folder',
+    description: "Searches EVERY folder in Lyndsay's mailbox (or Arturo's) — not just the Inbox — for a term. Use it when you need to find one specific email (an invoice, a receipt) without knowing which of the ~65 folders it is in.",
     inputSchema: {
-      query: z.string().describe('Término de búsqueda, p. ej. "recibo de OpenAI", "factura de Slab"'),
-      mailbox: z.enum(['lyndsay', 'arturo']).optional().describe('Qué buzón buscar. Por defecto: lyndsay'),
-      limit: z.number().optional().describe('Máximo de resultados. Por defecto: 10'),
+      query: z.string().describe('Search term, e.g. "OpenAI receipt", "Slab invoice"'),
+      mailbox: z.enum(['lyndsay', 'arturo']).optional().describe('Which mailbox to search. Defaults to lyndsay'),
+      limit: z.number().optional().describe('Maximum results. Defaults to 10'),
     },
   }, async ({ query, mailbox, limit } = {}) => {
     const params = new URLSearchParams();
@@ -375,15 +375,15 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('get_flagged_for_lyndsay', {
-    title: 'Elementos marcados para Lyndsay',
-    description: 'Devuelve los correos/elementos que requieren el juicio de Arturo antes de decidir si Lyndsay necesita verlos.',
+    title: 'Items flagged for Lyndsay',
+    description: 'Returns the emails and items that need Arturo to weigh in before deciding whether Lyndsay has to see them.',
     inputSchema: {},
   }, async () => text(await getJSON('/api/email/flagged-for-lyndsay')));
 
   server.registerTool('mark_email_handled', {
-    title: 'Marcar correo como atendido',
-    description: 'Marca un elemento de correo marcado ("flagged") como ya atendido.',
-    inputSchema: { id: z.string().describe('El id del elemento marcado — obtenlo con get_flagged_for_lyndsay') },
+    title: 'Mark an email handled',
+    description: 'Marks a flagged email item as handled.',
+    inputSchema: { id: z.string().describe('The id of the flagged item — get it from get_flagged_for_lyndsay') },
   }, async ({ id }) => {
     try {
       const res = await doFetch(`${BASE}/api/email/${encodeURIComponent(id)}/handled`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
@@ -396,14 +396,14 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('get_todays_meetings', {
-    title: 'Reuniones de hoy',
-    description: 'Devuelve las reuniones de hoy con hora, plataforma (Teams/Zoom/presencial) y asistentes, filtrable por buzón ("arturo" | "lyndsay"). Marca conflictos entre ambos calendarios. Modo stub hasta que se configure el Graph API.',
-    inputSchema: { mailbox: z.enum(['arturo', 'lyndsay']).optional().describe('Filtrar por calendario; si se omite devuelve ambos') },
+    title: "Today's meetings",
+    description: "Returns today's meetings with time, platform (Teams/Zoom/in-person) and attendees, filterable by mailbox (\"arturo\" | \"lyndsay\"). Flags conflicts between the two calendars. Stub mode until the Graph API is configured.",
+    inputSchema: { mailbox: z.enum(['arturo', 'lyndsay']).optional().describe('Filter by calendar; omit to return both') },
   }, async ({ mailbox } = {}) => text(await getJSON(`/api/calendar/today${mailbox ? `?mailbox=${mailbox}` : ''}`)));
 
   server.registerTool('get_pending_lyndsay_messages', {
-    title: 'Cola de mensajes listos para Lyndsay',
-    description: 'Devuelve la cola de mensajes de recordatorio listos para copiar y enviar a Lyndsay (WhatsApp/llamada). Incluye recordatorios auto-generados desde su calendario y mensajes agregados manualmente. NUNCA se envían automáticamente.',
+    title: 'Queue of messages ready for Lyndsay',
+    description: 'Returns the queue of reminder messages ready to copy and send to Lyndsay (WhatsApp/call). Includes reminders auto-generated from her calendar and messages added by hand. They are NEVER sent automatically.',
     inputSchema: {},
   }, async () => {
     const queue = await getJSON('/api/lyndsay-queue');
@@ -423,23 +423,23 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('get_inbox_tracking', {
-    title: 'Inbox Tracking — todos los buzones y carpetas personales de Metric',
-    description: 'Devuelve el conteo de correos no leídos y totales de cada fila rastreada en el reporte diario de Inbox Tracking: tanto el Inbox de cada buzón departamental (support, collections, hello, maintenance, leasing, accounting, marketing, admin) como las carpetas personales asignadas a cada persona dentro de esos buzones (p. ej. la carpeta "Arturo" dentro de support@, "Karla" dentro de collections@). Reemplaza el proceso manual donde cada persona reporta su propio conteo. El mapeo completo de filas está en INBOX_TRACKING_MAPPING (.env).',
+    title: 'Inbox Tracking — every Metric mailbox and personal folder',
+    description: 'Returns the unread and total counts for every row tracked in the daily Inbox Tracking report: the Inbox of each department mailbox (support, collections, hello, maintenance, leasing, accounting, marketing, admin) and the personal folders assigned to each person inside those mailboxes (e.g. the "Arturo" folder inside support@, "Karla" inside collections@). Replaces the manual process where each person reports their own count. The full row mapping lives in INBOX_TRACKING_MAPPING (.env).',
     inputSchema: {},
   }, async () => text(await getJSON('/api/email/inbox-tracking')));
 
   server.registerTool('get_all_folders_tracking', {
-    title: 'Todas las carpetas de todos los buzones de Metric',
-    description: 'Lista todas las carpetas con su conteo de no leídos en TODOS los buzones de Metric (support, collections, hello, maintenance, leasing, accounting, marketing, admin). Incluye carpetas del sistema (Inbox, Sent, Deleted) y carpetas personales por persona (p. ej. "Arturo" dentro de support@, "Rocío" dentro de collections@). Esencial para automatizar el reporte completo de Inbox Tracking en SharePoint.',
+    title: 'Every folder in every Metric mailbox',
+    description: 'Lists every folder and its unread count across ALL Metric mailboxes (support, collections, hello, maintenance, leasing, accounting, marketing, admin). Includes system folders (Inbox, Sent, Deleted) and per-person folders (e.g. "Arturo" inside support@, "Rocío" inside collections@). Essential for automating the full Inbox Tracking report in SharePoint.',
     inputSchema: {},
   }, async () => text(await getJSON('/api/email/all-folders-tracking')));
 
   server.registerTool('add_lyndsay_message_to_queue', {
-    title: 'Agregar mensaje a la cola de Lyndsay',
-    description: 'Agrega un mensaje de texto (listo para copiar/pegar) a la cola de recordatorios para Lyndsay. Nunca se envía automáticamente — Arturo lo copia y lo envía él mismo.',
+    title: "Add a message to Lyndsay's queue",
+    description: 'Adds a text message (ready to copy and paste) to the reminder queue for Lyndsay. It is never sent automatically — Arturo copies it and sends it himself.',
     inputSchema: {
-      text: z.string().describe('El texto del mensaje, listo para copiar y pegar'),
-      reason: z.string().optional().describe('Por qué se está enviando este mensaje (p. ej. "Reunión en 30 min", "Necesita firmar X")'),
+      text: z.string().describe('The message text, ready to copy and paste'),
+      reason: z.string().optional().describe('Why this message is being sent (e.g. "Meeting in 30 min", "Needs to sign X")'),
     },
   }, async (params) => {
     try {
@@ -453,10 +453,10 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('mark_lyndsay_message_sent', {
-    title: 'Marcar mensaje de Lyndsay como enviado',
-    description: 'Marca un mensaje de la cola de Lyndsay como ya enviado, para que desaparezca de la cola pendiente. Úsalo después de que Arturo confirme que copió y envió el mensaje por WhatsApp o llamada.',
+    title: 'Mark a Lyndsay message as sent',
+    description: 'Marks a message in the Lyndsay queue as sent so it drops off the pending list. Use it after Arturo confirms he copied and sent it by WhatsApp or call.',
     inputSchema: {
-      id: z.string().describe('El id del mensaje — obténlo con get_pending_lyndsay_messages'),
+      id: z.string().describe('The id of the message — get it from get_pending_lyndsay_messages'),
     },
   }, async ({ id }) => {
     try {
@@ -472,8 +472,8 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   // ── End of Day Summary ────────────────────────────────────────────────────
 
   server.registerTool('get_end_of_day_summary', {
-    title: 'Resumen de fin de día',
-    description: 'Resumen de fin de día: tareas completadas y abiertas, reuniones de hoy, elementos aún marcados para Lyndsay, y las prioridades top para mañana. Formato de viñetas listo para compartir con Lyndsay.',
+    title: 'End of day summary',
+    description: "End of day summary: tasks completed and still open, today's meetings, items still flagged for Lyndsay, and tomorrow's top priorities. Bulleted and ready to share with Lyndsay.",
     inputSchema: {},
   }, async () => text(await getJSON('/api/summary')));
 
@@ -487,19 +487,19 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   // ══════════════════════════════════════════════════════════════════════════
 
   server.registerTool('maintenance_get_tasks', {
-    title: 'Ver tareas de mantenimiento',
-    description: 'Devuelve todas las tareas del tablero de mantenimiento de Erick (operational_tasks en Supabase). Incluye prioridad, persona responsable, notas e historial.',
+    title: 'View maintenance tasks',
+    description: "Returns every task on Erick's maintenance board (operational_tasks in Supabase). Includes priority, owner, notes and history.",
     inputSchema: {},
   }, async () => text(await getJSON('/api/operational')));
 
   server.registerTool('maintenance_add_task', {
-    title: 'Agregar tarea de mantenimiento',
-    description: 'Crea una nueva tarea en el tablero de mantenimiento de Erick.',
+    title: 'Add a maintenance task',
+    description: "Creates a new task on Erick's maintenance board.",
     inputSchema: {
-      title: z.string().describe('Descripción de la tarea (requerido)'),
+      title: z.string().describe('Description of the task (required)'),
       type: z.enum(['WO Follow-up','Translation','Resident Contact','Tech Contact','Escalation','Billing QC','Daily Recurring','Other']).optional(),
-      person: z.string().optional().describe('Técnico o persona responsable'),
-      action: z.string().optional().describe('Acción a tomar o contexto detallado'),
+      person: z.string().optional().describe('Technician or person responsible'),
+      action: z.string().optional().describe('Action to take, or detailed context'),
       priority: z.enum(['🔴 Critical','🟡 Follow-up','🟢 In Progress','🔁 Daily Task','✅ Done']).optional(),
       notes: z.string().optional(),
     },
@@ -513,16 +513,16 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('maintenance_update_task', {
-    title: 'Modificar tarea de mantenimiento',
-    description: 'Actualiza campos de una tarea existente en el tablero de Erick. Pasar notes agrega una entrada al historial.',
+    title: 'Edit a maintenance task',
+    description: "Updates fields on an existing task on Erick's board. Passing notes appends an entry to the history.",
     inputSchema: {
-      id: z.string().describe('ID de la tarea (op_...)'),
+      id: z.string().describe('Task ID (op_...)'),
       title: z.string().optional(),
       type: z.enum(['WO Follow-up','Translation','Resident Contact','Tech Contact','Escalation','Billing QC','Daily Recurring','Other']).optional(),
       person: z.string().optional(),
       action: z.string().optional(),
       priority: z.enum(['🔴 Critical','🟡 Follow-up','🟢 In Progress','🔁 Daily Task','✅ Done']).optional(),
-      notes: z.string().optional().describe('Nota a agregar al historial'),
+      notes: z.string().optional().describe('Note to append to the history'),
     },
   }, async ({ id, ...rest }) => {
     try {
@@ -534,10 +534,10 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('maintenance_complete_task', {
-    title: 'Completar tarea de mantenimiento',
-    description: 'Marca una tarea de mantenimiento de Erick como completada.',
+    title: 'Complete a maintenance task',
+    description: "Marks one of Erick's maintenance tasks as complete.",
     inputSchema: {
-      id: z.string().describe('ID de la tarea (op_...)'),
+      id: z.string().describe('Task ID (op_...)'),
     },
   }, async ({ id }) => {
     try {
@@ -549,16 +549,16 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('maintenance_get_property_assignments', {
-    title: 'Ver asignaciones por propiedad',
-    description: 'Devuelve la tabla de asignaciones de mantenimiento por propiedad: técnico de grounds, técnico de mantenimiento, pest control, landscaping.',
+    title: 'View assignments by property',
+    description: 'Returns the maintenance assignment table by property: grounds tech, maintenance tech, pest control, landscaping.',
     inputSchema: {},
   }, async () => text(await getJSON('/api/assignments')));
 
   server.registerTool('maintenance_update_property', {
-    title: 'Actualizar asignación de propiedad',
-    description: 'Actualiza los campos de asignación de una propiedad específica.',
+    title: 'Update a property assignment',
+    description: 'Updates the assignment fields for one property.',
     inputSchema: {
-      property: z.string().describe('Nombre exacto de la propiedad'),
+      property: z.string().describe('Exact property name'),
       units: z.number().optional(),
       hasPool: z.boolean().optional(),
       groundsTech: z.string().optional(),
@@ -581,22 +581,22 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   // replaced the five hardcoded lists (supabase/migrations/002_technicians.sql).
 
   server.registerTool('maintenance_list_technicians', {
-    title: 'Ver técnicos',
-    description: 'Lista los técnicos de mantenimiento con su posición, propiedades asignadas, capacidades (AC, plomería, eléctrico, etc.) y sus nombres en AppFolio. Úsala para decidir a quién asignar un work order según su calificación.',
+    title: 'View technicians',
+    description: 'Lists the maintenance technicians with their position, assigned properties, skills (AC, plumbing, electrical, and so on) and their AppFolio names. Use it to decide who to assign a work order to based on what they are qualified for.',
     inputSchema: {
-      includeInactive: z.boolean().optional().describe('Incluir técnicos dados de baja (por defecto solo activos)'),
+      includeInactive: z.boolean().optional().describe('Include deactivated technicians (active only by default)'),
     },
   }, async ({ includeInactive }) =>
     text(await getJSON('/api/technicians?active=' + (includeInactive ? 'all' : '1'))));
 
   server.registerTool('maintenance_add_technician', {
-    title: 'Agregar técnico',
-    description: 'Registra un técnico nuevo. El id se genera del nombre si no lo especificas. appfolioAliases debe traer el nombre EXACTO como aparece en AppFolio (suele llevar inicial al final, p. ej. "Angel Martinez C"), porque de ahí depende la alerta de cero horas.',
+    title: 'Add a technician',
+    description: 'Registers a new technician. The id is generated from the name if you do not supply one. appfolioAliases must carry the name EXACTLY as it appears in AppFolio (usually with a trailing initial, e.g. "Angel Martinez C"), because the zero-hours alert depends on it.',
     inputSchema: {
-      fullName: z.string().describe('Nombre completo (requerido)'),
+      fullName: z.string().describe('Full name (required)'),
       position: z.enum(['field_supervisor', 'senior_maint_tech', 'maint_tech', 'make_ready', 'housekeeper', 'grounds', 'other']).optional(),
-      appfolioAliases: z.array(z.string()).optional().describe('Nombres exactos en AppFolio'),
-      expectDailyHours: z.boolean().optional().describe('Debe registrar horas a diario — activa la alerta de cero horas'),
+      appfolioAliases: z.array(z.string()).optional().describe('Exact names as they appear in AppFolio'),
+      expectDailyHours: z.boolean().optional().describe('Must log hours daily — drives the zero-hours alert'),
       propertiesLabel: z.string().optional(),
       notes: z.string().optional(),
     },
@@ -616,12 +616,12 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('maintenance_update_technician', {
-    title: 'Actualizar técnico',
-    description: 'Actualiza un técnico existente: posición, capacidades, alias de AppFolio, ubicación en el mapa, o darlo de baja con active:false. Usa maintenance_list_technicians para ver los ids. Las capacidades aceptan: highest, yes, minor, maybe, no, na.',
+    title: 'Update a technician',
+    description: 'Updates an existing technician: position, skills, AppFolio aliases, map location, or deactivate with active:false. Use maintenance_list_technicians to see the ids. Skills accept: highest, yes, minor, maybe, no, na.',
     inputSchema: {
-      id: z.string().describe('El id del técnico, p. ej. "angel-martinez"'),
+      id: z.string().describe('The id of the technician, e.g. "angel-martinez"'),
       fullName: z.string().optional(),
-      active: z.boolean().optional().describe('false para dar de baja sin borrar el historial'),
+      active: z.boolean().optional().describe('false to deactivate without deleting the history'),
       position: z.enum(['field_supervisor', 'senior_maint_tech', 'maint_tech', 'make_ready', 'housekeeper', 'grounds', 'other']).optional(),
       appfolioAliases: z.array(z.string()).optional(),
       expectDailyHours: z.boolean().optional(),
@@ -655,7 +655,7 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
     for (const [camel, snake] of Object.entries(map)) {
       if (rest[camel] !== undefined) body[snake] = rest[camel];
     }
-    if (!Object.keys(body).length) return text('No se envió ningún campo para actualizar.');
+    if (!Object.keys(body).length) return text('No fields were sent to update.');
     try {
       const res = await doFetch(`${BASE}/api/technicians/${encodeURIComponent(id)}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -667,16 +667,16 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('maintenance_get_lyndsay_tasks', {
-    title: 'Ver tareas de Lyndsay (mantenimiento)',
-    description: 'Devuelve el snapshot más reciente de tareas del Daily Command Center de Lyndsay con su estado de completado.',
+    title: "View Lyndsay's tasks (maintenance)",
+    description: "Returns the most recent task snapshot from Lyndsay's Daily Command Center with its completion state.",
     inputSchema: {},
   }, async () => text(await getJSON('/api/lyndsay/tasks')));
 
   server.registerTool('maintenance_complete_lyndsay_task', {
-    title: 'Marcar tarea de Lyndsay como hecha',
-    description: 'Marca una tarea del Command Center de Lyndsay como completada. Acepta IDs de tareas (ej. "code:14986") y de rutina (ej. "routine:qc").',
+    title: 'Mark a Lyndsay task done',
+    description: "Marks a task on Lyndsay's Command Center as complete. Accepts task IDs (e.g. \"code:14986\") and routine IDs (e.g. \"routine:qc\").",
     inputSchema: {
-      id: z.string().describe('ID de la tarea (p. ej. "code:14986" o "routine:qc")'),
+      id: z.string().describe('Task ID (e.g. "code:14986" or "routine:qc")'),
     },
   }, async ({ id }) => {
     try {
@@ -688,42 +688,42 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
   });
 
   server.registerTool('maintenance_get_appfolio_analysis', {
-    title: 'Ver análisis AppFolio más reciente',
-    description: 'Devuelve el análisis más reciente de work orders de AppFolio: grupos urgent, followup, ready for QC.',
+    title: 'View the latest AppFolio analysis',
+    description: 'Returns the most recent AppFolio work order analysis: the urgent, followup and ready-for-QC groups.',
     inputSchema: {},
   }, async () => text(await getJSON('/api/appfolio/latest')));
 
   server.registerTool('maintenance_get_eod_summary', {
-    title: 'Resumen de fin de día (mantenimiento)',
-    description: 'Resumen de fin de día de Erick: tareas operacionales completadas y abiertas, work orders de AppFolio, y prioridades para mañana.',
+    title: 'End of day summary (maintenance)',
+    description: "Erick's end of day summary: operational tasks completed and still open, AppFolio work orders, and tomorrow's priorities.",
     inputSchema: {},
   }, async () => text(await getJSON('/api/maintenance/summary')));
 
   server.registerTool('maintenance_get_daily_report', {
-    title: 'Reporte diario de trabajo (Erick)',
-    description: 'Reporte detallado de trabajo del día de Erick: tareas completadas, daily tasks, notas agregadas, y resumen de AppFolio. Listo para compartir con Lyndsay.',
+    title: 'Daily work report (Erick)',
+    description: "A detailed report of Erick's day: tasks completed, daily tasks, notes added, and the AppFolio summary. Ready to share with Lyndsay.",
     inputSchema: {},
   }, async () => text(await getJSON('/api/report')));
 
   server.registerTool('maintenance_list_sops', {
-    title: 'Listar SOPs de mantenimiento',
-    description: 'Lista los documentos de procedimientos estándar del departamento de mantenimiento.',
+    title: 'List maintenance SOPs',
+    description: 'Lists the standard operating procedure documents for the maintenance department.',
     inputSchema: {},
   }, async () => text(await getJSON('/api/maintenance/sops')));
 
   server.registerTool('maintenance_get_sop', {
-    title: 'Ver SOP de mantenimiento',
-    description: 'Devuelve el contenido completo de un SOP de mantenimiento por su ID.',
+    title: 'View a maintenance SOP',
+    description: 'Returns the full contents of a maintenance SOP by ID.',
     inputSchema: {
-      id: z.string().describe('ID del SOP (sop_...)'),
+      id: z.string().describe('SOP ID (sop_...)'),
     },
   }, async ({ id }) => text(await getJSON(`/api/maintenance/sops/${encodeURIComponent(id)}`)));
 
   server.registerTool('maintenance_search_sops', {
-    title: 'Buscar en SOPs de mantenimiento',
-    description: 'Busca por palabra clave en los SOPs de mantenimiento. Devuelve snippets relevantes.',
+    title: 'Search the maintenance SOPs',
+    description: 'Searches the maintenance SOPs by keyword. Returns the relevant snippets.',
     inputSchema: {
-      query: z.string().describe('Término de búsqueda'),
+      query: z.string().describe('Search term'),
     },
   }, async ({ query }) => text(await getJSON(`/api/maintenance/sops/search/${encodeURIComponent(query)}`)));
 }
