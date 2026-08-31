@@ -3121,6 +3121,58 @@ app.get('/api/bd-crm/export/csv', requireMetricAdmin, async (req, res) => {
   }
 });
 
+// =====================================================================
+// EVICTION TRACKER — persisted sessions + the ported standalone app
+// =====================================================================
+// The parsing/stage logic lives untouched in public/evictions-app.html (the
+// original React tool). The dashboard tab embeds it in an iframe; these routes
+// give it somewhere to save and reload.
+
+// Username from the session cookie, or null (e.g. an MCP caller with only the
+// key). Used to stamp who saved an eviction upload.
+function sessionUsername(req) {
+  try {
+    const token = req.cookies?.dashboardToken;
+    if (!token) return null;
+    return jwt.verify(token, JWT_SECRET)?.username || null;
+  } catch { return null; }
+}
+
+// Newest saved session. requireMetricAccess: session or key, like the other
+// read routes — the app fetches this on load to rehydrate.
+app.get('/api/evictions/session/latest', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ session: null });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('eviction_sessions')
+      .select('*').order('uploaded_at', { ascending: false }).limit(1).maybeSingle();
+    if (error) throw new Error(error.message);
+    res.json({ session: data || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Save one upload. requireMetricAdmin: uploading replaces what everyone sees.
+app.post('/api/evictions/session', requireMetricAdmin, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const { data, report_date } = req.body || {};
+  if (!data || typeof data !== 'object') return res.status(400).json({ error: 'data (object) is required' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const uploaded_by = sessionUsername(req) || 'unknown';
+    const row = { data, uploaded_by, report_date: report_date || null };
+    const { data: saved, error } = await db.from('eviction_sessions').insert([row]).select('id,uploaded_at,uploaded_by,report_date').single();
+    if (error) throw new Error(error.message);
+    res.status(201).json({ ok: true, session: saved });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// The ported app itself, served to any valid session (the nav tab is admin-only
+// on the client; upload is admin-gated on the server). Same-origin so its
+// fetches to /api/evictions/* carry the cookie.
+app.get('/evictions/app', requireMetricAccess, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'evictions-app.html'));
+});
+
 
 // Middleware: require Supabase to be configured before serving CRM routes
 function requireCRM(req, res, next) {

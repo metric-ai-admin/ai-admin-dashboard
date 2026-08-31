@@ -1,0 +1,2710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Metric Eviction Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<script id="react-script" src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+<script>
+  document.getElementById('react-script').onerror = function(){
+    document.getElementById('cdn-error').style.display = 'flex';
+  };
+</script>
+
+<style>
+  :root{
+    --navy:#1B2A4A; --navyMid:#2D4070; --navyLight:#3D5590;
+    --gold:#C9A84C; --offWhite:#F7F5F0; --white:#FFFFFF;
+    --red:#B91C1C; --redLight:#FEE2E2;
+    --amber:#B45309; --amberLight:#FEF3C7;
+    --green:#166534; --greenLight:#DCFCE7;
+    --purple:#6D28D9; --purpleLight:#EDE9FE;
+    --teal:#0E7490; --tealLight:#CFFAFE;
+    --orange:#C2410C; --orangeLight:#FFEDD5;
+    --rose:#9F1239; --roseLight:#FFE4E6;
+    --border:#E2DFD8; --muted:#6B7280; --text:#1C1917;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--offWhite);color:var(--text);font-family:'Barlow',sans-serif;}
+  #root{min-height:100vh;display:flex;flex-direction:column;}
+  h1,h2,h3,h4{font-family:'Barlow Condensed',sans-serif;margin:0;}
+  button{font-family:'Barlow',sans-serif;cursor:pointer;}
+  #cdn-error{
+    display:none;position:fixed;inset:0;background:#fff5f5;color:#7f1d1d;
+    align-items:center;justify-content:center;flex-direction:column;gap:8px;
+    font-family:'Barlow',sans-serif;padding:40px;text-align:center;z-index:9999;
+  }
+
+  /* ---------- Top Bar ---------- */
+  .topbar{
+    background:var(--navy);color:var(--white);padding:12px 24px;
+    display:flex;align-items:center;justify-content:space-between;
+    position:sticky;top:0;z-index:50;box-shadow:0 2px 8px rgba(0,0,0,0.2);
+    flex-wrap:wrap;gap:10px;
+  }
+  .logo{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:22px;letter-spacing:0.5px;}
+  .logo .accent{color:var(--gold);}
+  .topbar-actions{display:flex;gap:10px;flex-wrap:wrap;}
+  .btn{
+    border:1px solid var(--navyLight);background:var(--navyMid);color:var(--white);
+    padding:9px 16px;border-radius:6px;font-weight:600;font-size:13px;
+    display:inline-flex;align-items:center;gap:6px;position:relative;overflow:hidden;
+    transition:background .15s;
+  }
+  .btn:hover{background:var(--navyLight);}
+  .btn:disabled,.btn.disabled{opacity:0.45;cursor:not-allowed;}
+  .btn.gold{background:var(--gold);color:var(--navy);border-color:var(--gold);}
+  .btn.gold:hover{background:#dcb95e;}
+  .overlay-input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%;}
+
+  /* ---------- Upload Screen ---------- */
+  .upload-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:40px 20px;}
+  .upload-card{
+    border:2px dashed var(--navy);border-radius:14px;background:var(--white);
+    max-width:460px;width:100%;padding:44px 36px;text-align:center;transition:.15s;
+  }
+  .upload-card.dragover{background:#eef1f8;border-color:var(--gold);}
+  .upload-icon{font-size:42px;margin-bottom:10px;}
+  .upload-card h2{font-size:26px;color:var(--navy);font-weight:800;margin-bottom:10px;}
+  .upload-card p{color:var(--muted);font-size:14px;line-height:1.5;margin:6px 0;}
+  .browse-btn{
+    margin-top:18px;background:var(--navy);color:#fff;border:none;padding:13px 28px;
+    border-radius:7px;font-weight:700;font-size:15px;position:relative;display:inline-block;overflow:hidden;
+  }
+  .included-banner{
+    margin-top:20px;background:var(--white);border:1px solid var(--border);border-radius:8px;
+    padding:12px 16px;font-size:12.5px;color:var(--navyMid);max-width:520px;
+  }
+  .included-banner b{color:var(--navy);}
+
+  /* ---------- Yesterday Payments Panel ---------- */
+  .yp-panel{
+    background:var(--white);border-left:4px solid var(--gold);margin:14px 20px 0;
+    padding:12px 18px;border-radius:6px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+    font-size:13.5px;
+  }
+  .yp-title{font-weight:700;color:var(--navy);font-family:'Barlow Condensed',sans-serif;font-size:15px;}
+  .yp-total{font-weight:800;color:var(--green);}
+  .yp-agent{display:flex;gap:6px;align-items:baseline;padding-left:14px;border-left:1px solid var(--border);}
+  .yp-agent-name{font-weight:700;}
+  .yp-none{color:var(--muted);font-style:italic;}
+
+  /* ---------- Stat Cards ---------- */
+  .stats-row{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;padding:16px 20px 0;}
+  .stats-row.six{grid-template-columns:repeat(6,1fr);}
+  .stats-row.seven{grid-template-columns:repeat(7,1fr);}
+  .stat-card{background:var(--white);border:1px solid var(--border);border-radius:8px;padding:14px 16px;}
+  .stat-label{font-size:11px;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted);font-weight:600;}
+  .stat-value{font-family:'Barlow Condensed',sans-serif;font-size:30px;font-weight:800;color:var(--navy);margin-top:4px;}
+  .stat-value.small{font-size:22px;}
+  .stat-value.critical{color:var(--red);}
+  .stat-value.high{color:var(--amber);}
+  .stat-value.completed{color:var(--green);}
+  .stat-value.moveout{color:var(--purple);}
+  .activities-status{padding:6px 20px 0;font-size:12px;color:var(--muted);font-weight:600;}
+
+  /* ---------- Tabs ---------- */
+  .tabs{display:flex;gap:4px;padding:18px 20px 0;border-bottom:1px solid var(--border);margin:0 0;}
+  .tab{
+    padding:10px 18px;font-weight:700;font-size:14px;color:var(--muted);
+    border-bottom:3px solid transparent;background:none;border-top:none;border-left:none;border-right:none;
+  }
+  .tab.active{color:var(--navy);border-bottom-color:var(--gold);}
+
+  /* ---------- Filter Bar ---------- */
+  .filter-bar{padding:14px 20px;display:flex;flex-direction:column;gap:10px;}
+  .pill-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
+  .pill{
+    border:1px solid var(--border);background:var(--white);border-radius:20px;padding:5px 12px;
+    font-size:12px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:6px;
+  }
+  .pill.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+  .pill .count{background:rgba(0,0,0,0.08);border-radius:10px;padding:0 6px;font-size:11px;}
+  .pill.active .count{background:rgba(255,255,255,0.25);}
+  .filter-controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+  .filter-controls select, .filter-controls input[type=text]{
+    border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:13px;font-family:'Barlow',sans-serif;
+  }
+  .toggle-btn{
+    border:1px solid var(--navy);background:var(--white);color:var(--navy);border-radius:6px;
+    padding:7px 14px;font-size:12.5px;font-weight:700;
+  }
+  .toggle-btn.on{background:var(--navy);color:#fff;}
+
+  /* ---------- Table ---------- */
+  .table-wrap{padding:0 20px 30px;overflow-x:auto;}
+  table{width:100%;border-collapse:collapse;background:var(--white);border:1px solid var(--border);border-radius:8px;overflow:hidden;table-layout:fixed;}
+  thead th{
+    background:var(--navy);color:#fff;text-align:left;font-size:12.5px;text-transform:uppercase;
+    letter-spacing:0.5px;padding:12px 14px;font-weight:700;
+  }
+  tbody td{padding:14px;font-size:15px;border-bottom:1px solid var(--border);vertical-align:top;overflow-wrap:break-word;}
+  .data-row{cursor:pointer;}
+  .data-row:hover{background:#f7f8fb;}
+  .badge{
+    display:inline-block;border-radius:4px;padding:3px 9px;font-size:12.5px;font-weight:700;
+  }
+  .urgency-pill{
+    display:inline-flex;align-items:center;gap:4px;border-radius:4px;padding:3px 9px;font-size:12px;font-weight:800;
+    letter-spacing:0.3px;margin-bottom:5px;
+  }
+  .moveout-badge{
+    display:inline-flex;align-items:center;gap:4px;border-radius:4px;padding:3px 9px;font-size:12px;font-weight:800;
+    letter-spacing:0.3px;margin-bottom:5px;margin-left:6px;background:var(--purpleLight);color:var(--purple);
+    border:1px solid var(--purple);
+  }
+  .action-text{font-size:14.5px;color:var(--text);line-height:1.5;display:block;}
+  .tenant-name{font-weight:700;font-family:'Barlow Condensed',sans-serif;font-size:17px;margin-bottom:3px;}
+  .past-due{color:var(--red);font-weight:700;}
+  .row-num{color:var(--muted);font-size:13.5px;}
+  .profile-link{color:inherit;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;}
+  .profile-link:hover{color:var(--navyMid);text-decoration-style:solid;}
+  .profile-open-link{display:block;margin-top:10px;font-size:13px;font-weight:700;color:var(--navyMid);text-decoration:none;}
+  .profile-open-link:hover{text-decoration:underline;}
+  .completed-toggle{
+    display:inline-block;margin-top:7px;border:1px solid var(--border);background:var(--white);
+    color:var(--muted);font-size:12.5px;font-weight:700;border-radius:5px;padding:5px 11px;
+  }
+  .completed-toggle:hover{border-color:var(--navy);color:var(--navy);}
+  .completed-toggle.done{background:var(--greenLight);border-color:var(--green);color:var(--green);}
+  .completed-toggle.full{display:block;width:100%;padding:10px;font-size:13.5px;text-align:center;}
+  .row-completed{opacity:0.55;}
+  .row-completed .tenant-name{text-decoration:line-through;}
+
+  /* ---------- Expanded Row ---------- */
+  .expand-row td{background:#fbfbf8;padding:18px;}
+  .expand-grid{display:grid;grid-template-columns:220px 1fr;gap:20px;}
+  .side-box{background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px;}
+  .right-col{display:flex;flex-direction:column;gap:14px;}
+  .action-banner{border-radius:8px;padding:16px 18px;font-size:15.5px;line-height:1.5;font-weight:600;border-left:5px solid;}
+  .panel{background:#fff;border:1px solid var(--border);border-radius:8px;padding:14px 16px;}
+  .panel h4{font-size:13px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:10px;}
+  .detail-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+  .detail-item .dlabel{font-size:11.5px;color:var(--muted);text-transform:uppercase;font-weight:700;}
+  .detail-item .dval{font-size:15px;font-weight:700;margin-top:2px;}
+  .dval.stale{color:var(--red);}
+  .dval.dash{color:#9ca3af;font-weight:500;}
+  .case-row-wrap{border-bottom:1px dashed var(--border);}
+  .case-row-wrap:last-child{border-bottom:none;}
+  .case-row{display:flex;justify-content:space-between;padding:6px 0;font-size:14.5px;border-bottom:none;}
+  .case-overdue-bold{font-size:19px;font-weight:900;color:var(--red);padding:2px 0 8px;letter-spacing:0.2px;}
+  .case-row:last-child{border-bottom:none;}
+  .case-label{color:var(--muted);font-weight:600;}
+  .case-badge{font-size:10px;font-weight:800;border-radius:4px;padding:1px 6px;margin-left:6px;}
+  textarea.session-notes{width:100%;min-height:70px;border:1px solid var(--border);border-radius:6px;padding:10px;font-family:'Barlow',sans-serif;font-size:14.5px;resize:vertical;}
+  .appfolio-notes{font-size:14px;color:var(--muted);white-space:pre-wrap;max-height:120px;overflow-y:auto;}
+  .activity-log{max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;}
+  .activity-item{border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:#fbfbf8;}
+  .activity-item-head{display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap;}
+  .activity-date{font-weight:700;font-size:13px;color:var(--navy);}
+  .activity-label-badge{font-size:10px;font-weight:700;background:var(--tealLight);color:var(--teal);border-radius:4px;padding:1px 6px;text-transform:uppercase;}
+  .activity-status{font-size:10px;color:var(--muted);font-weight:600;}
+  .activity-text{font-size:14px;color:var(--text);white-space:pre-wrap;}
+  .activity-by{font-size:12px;color:var(--muted);margin-top:3px;}
+  .activity-more{font-size:11.5px;color:var(--muted);text-align:center;padding:4px;font-style:italic;}
+
+  /* ---------- Grades Panel ---------- */
+  .grades-panel{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;padding:20px;}
+  .grade-card{background:#fff;border:1px solid var(--border);border-radius:10px;padding:24px;text-align:center;}
+  .grade-agent{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:20px;color:var(--navy);margin-bottom:6px;}
+  .grade-score{font-family:'Barlow Condensed',sans-serif;font-size:52px;font-weight:900;color:var(--navy);}
+  .grade-letter{font-size:28px;color:var(--gold);margin-left:6px;}
+  .grade-stats{display:flex;justify-content:center;gap:18px;margin-top:14px;font-size:12.5px;color:var(--muted);}
+  .grade-breakdown{margin-top:18px;padding-top:14px;border-top:1px solid var(--border);text-align:left;font-size:13px;}
+  .grade-breakdown-title{font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:700;margin-bottom:8px;}
+  .grade-breakdown-row{display:flex;justify-content:space-between;gap:10px;padding:3px 0;color:var(--text);}
+  .grade-breakdown-row.muted{color:var(--muted);font-style:italic;}
+  .grade-breakdown-pts{font-weight:700;color:var(--red);white-space:nowrap;}
+  .grade-breakdown-final{margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-weight:800;font-family:'Barlow Condensed',sans-serif;font-size:16px;color:var(--navy);text-align:right;}
+  .grade-legend{max-width:900px;margin:20px auto 0;background:var(--white);border:1px solid var(--border);border-radius:8px;padding:16px 20px;font-size:13px;line-height:1.7;color:var(--text);}
+  .grade-stats div{font-weight:600;}
+
+  /* ---------- Footer ---------- */
+  .footer{text-align:center;padding:16px;color:var(--gold);background:var(--navy);font-size:12px;letter-spacing:0.5px;font-weight:600;}
+
+  @media (max-width: 900px){
+    .stats-row, .stats-row.six, .stats-row.seven{grid-template-columns:repeat(2,1fr);}
+    .expand-grid{grid-template-columns:1fr;}
+    .detail-grid{grid-template-columns:repeat(2,1fr);}
+    .grades-panel{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+
+<div id="cdn-error">
+  <h2>Unable to load required scripts</h2>
+  <p>This app requires an internet connection to load React and supporting libraries from a CDN.<br>Please check your connection and reload the page.</p>
+</div>
+
+<div id="root"></div>
+<script type="application/json" id="preload-data"></script>
+<script type="application/json" id="historical-snapshots">[{"date": "2026-06-16", "totalUnits": 86, "qualifying": 44, "totalAR": 98876.98000000003, "critical": 6, "stageCounts": {"NEED_TO_FILE": 5, "NEED_WRIT": 4, "BALANCE_ONLY": 19, "WRIT_PENDING": 5, "WRIT_EXECUTION": 1, "JP_SCHEDULED": 10}, "exact": false}, {"date": "2026-07-01", "totalUnits": 75, "qualifying": 32, "totalAR": 66644.12000000002, "critical": 4, "stageCounts": {"NEED_TO_FILE": 5, "NEED_WRIT": 4, "WRIT_PENDING": 5, "JP_SCHEDULED": 9, "BALANCE_ONLY": 9}, "exact": false}, {"date": "2026-07-15", "totalUnits": 76, "qualifying": 45, "totalAR": 81989.55, "critical": 17, "stageCounts": {"JP_SCHEDULED": 14, "NEED_WRIT": 3, "NEED_TO_FILE": 9, "WRIT_PENDING": 3, "BALANCE_ONLY": 16}, "exact": false}, {"date": "2026-08-14", "totalUnits": 103, "qualifying": 53, "totalAR": 68319.92, "critical": 12, "stageCounts": {"BALANCE_ONLY": 34, "JP_SCHEDULED": 9, "NEED_WRIT": 1, "NEED_TO_FILE": 8, "WRIT_PENDING": 1}, "exact": true}, {"date": "2026-08-19", "totalUnits": 111, "qualifying": 76, "totalAR": 105540.05999999995, "critical": 15, "stageCounts": {"BALANCE_ONLY": 54, "NEED_TO_FILE": 8, "JP_SCHEDULED": 11, "WRIT_PENDING": 1, "NEED_WRIT": 2}, "exact": false}, {"date": "2026-08-25", "totalUnits": 107, "qualifying": 69, "totalAR": 86402.50999999998, "critical": 14, "stageCounts": {"JP_SCHEDULED": 10, "NEED_TO_FILE": 8, "COUNTY_COURT": 1, "BALANCE_ONLY": 48, "NEED_WRIT": 1, "WRIT_PENDING": 1}, "exact": false}]</script>
+
+<script>
+const {
+  useState,
+  useEffect,
+  useMemo,
+  Fragment
+} = React;
+
+/* =========================================================
+   COLOR PALETTE
+========================================================= */
+const C = {
+  navy: '#1B2A4A',
+  navyMid: '#2D4070',
+  navyLight: '#3D5590',
+  gold: '#C9A84C',
+  offWhite: '#F7F5F0',
+  white: '#FFFFFF',
+  red: '#B91C1C',
+  redLight: '#FEE2E2',
+  amber: '#B45309',
+  amberLight: '#FEF3C7',
+  green: '#166534',
+  greenLight: '#DCFCE7',
+  purple: '#6D28D9',
+  purpleLight: '#EDE9FE',
+  teal: '#0E7490',
+  tealLight: '#CFFAFE',
+  orange: '#C2410C',
+  orangeLight: '#FFEDD5',
+  rose: '#9F1239',
+  roseLight: '#FFE4E6',
+  border: '#E2DFD8',
+  muted: '#6B7280',
+  text: '#1C1917'
+};
+
+/* =========================================================
+   STAGE DEFINITIONS
+========================================================= */
+const CURRENT_AGENTS = ['Karla'];
+const STAGES = [{
+  id: 'NEED_TO_FILE',
+  label: 'Need To File',
+  color: C.red,
+  light: C.redLight
+}, {
+  id: 'NEED_REFILE',
+  label: 'Need to Refile',
+  color: C.rose,
+  light: C.roseLight
+}, {
+  id: 'FILED',
+  label: 'Eviction Filed',
+  color: C.amber,
+  light: C.amberLight
+}, {
+  id: 'JP_SCHEDULED',
+  label: 'Pending JP Court Date',
+  color: '#92400E',
+  light: C.amberLight
+}, {
+  id: 'COUNTY_COURT',
+  label: 'Pending County Court Date',
+  color: C.purple,
+  light: C.purpleLight
+}, {
+  id: 'NEED_WRIT',
+  label: 'Need to File Writ',
+  color: C.orange,
+  light: C.orangeLight
+}, {
+  id: 'WRIT_PENDING',
+  label: 'Pending Writ to be Scheduled',
+  color: C.teal,
+  light: C.tealLight
+}, {
+  id: 'WRIT_EXECUTION',
+  label: 'Pending Writ Execution',
+  color: '#14532D',
+  light: C.greenLight
+}, {
+  id: 'RESOLVED',
+  label: 'EHO / Good Standing',
+  color: C.green,
+  light: C.greenLight
+}, {
+  id: 'BALANCE_ONLY',
+  label: 'Balance Due',
+  color: C.muted,
+  light: '#F3F4F6'
+}, {
+  id: 'OTHER',
+  label: 'Review Required',
+  color: '#4B5563',
+  light: '#F3F4F6'
+}];
+const STAGE_MAP = {};
+STAGES.forEach(s => STAGE_MAP[s.id] = s);
+const EVICTION_STAGES = new Set(STAGES.map(s => s.id).filter(id => !['RESOLVED', 'BALANCE_ONLY', 'OTHER'].includes(id)));
+const STAGE_RANK = ['BALANCE_ONLY', 'OTHER', 'NEED_TO_FILE', 'NEED_REFILE', 'FILED', 'JP_SCHEDULED', 'COUNTY_COURT', 'NEED_WRIT', 'WRIT_PENDING', 'WRIT_EXECUTION', 'RESOLVED'];
+function stageRankOf(stage) {
+  if (!stage) return -1;
+  const idx = STAGE_RANK.indexOf(stage);
+  return idx === -1 ? -1 : idx;
+}
+const URGENCY_MAP = {
+  critical: {
+    color: C.red,
+    light: C.redLight,
+    icon: '🚨',
+    label: 'CRITICAL'
+  },
+  high: {
+    color: C.amber,
+    light: C.amberLight,
+    icon: '⚡',
+    label: 'ACTION'
+  },
+  medium: {
+    color: C.orange,
+    light: C.orangeLight,
+    icon: '⏳',
+    label: 'PENDING'
+  },
+  low: {
+    color: C.green,
+    light: C.greenLight,
+    icon: '✅',
+    label: 'MONITOR'
+  }
+};
+
+/* =========================================================
+   UTILITY FUNCTIONS
+========================================================= */
+function startOfDay(d) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function parseDate(s) {
+  if (!s) return null;
+  if (s instanceof Date) return isNaN(s.getTime()) ? null : s;
+  let str = String(s).replace(/"/g, '').trim();
+  if (!str) return null;
+  let d;
+  const m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if (m) {
+    let mo = parseInt(m[1], 10),
+      da = parseInt(m[2], 10),
+      yr = parseInt(m[3], 10);
+    if (yr < 100) yr += 2000;
+    d = new Date(yr, mo - 1, da);
+  } else {
+    d = new Date(str);
+  }
+  if (isNaN(d.getTime())) return null;
+  if (d.getFullYear() < 1970 || d.getFullYear() > 2100) return null;
+  return d;
+}
+function parseMoney(s) {
+  if (s === null || s === undefined || s === '') return 0;
+  if (typeof s === 'number') return s;
+  const str = String(s).replace(/[$,"]/g, '').replace(/[()]/g, '').trim();
+  const n = parseFloat(str);
+  return isNaN(n) ? 0 : n;
+}
+function fmtDate(d) {
+  return d ? d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  }) : '—';
+}
+function fmtShort(d) {
+  return d ? d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric'
+  }) : '—';
+}
+function fmtMDY(d) {
+  if (!d) return '';
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  return `${mo}/${da}/${d.getFullYear()}`;
+}
+function fmtMoney(n) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0
+  }).format(n || 0);
+}
+function daysUntilRaw(d) {
+  if (!d) return 999;
+  return Math.round((startOfDay(d) - startOfDay(new Date())) / 86400000);
+}
+function daysUntil(d) {
+  return d ? daysUntilRaw(d) : null;
+}
+function isPersonName(s) {
+  return /^[A-Za-z][A-Za-z\s]{1,24}$/.test((s || '').trim());
+}
+function normalizePhone(raw) {
+  if (!raw) return '';
+  const digits = String(raw).replace(/\D/g, '');
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+function extractPhoneNumbers(phoneField) {
+  if (!phoneField) return [];
+  const matches = String(phoneField).match(/\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}/g) || [];
+  const nums = matches.map(normalizePhone).filter(p => p.length === 10);
+  return Array.from(new Set(nums));
+}
+function bizDaysSince(d) {
+  if (!d) return 0;
+  let count = 0;
+  let cur = startOfDay(d);
+  const today = startOfDay(new Date());
+  cur.setDate(cur.getDate() + 1);
+  while (cur <= today) {
+    const day = cur.getDay();
+    if (day !== 0 && day !== 6) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+function addBusinessDays(date, n) {
+  let d = startOfDay(date);
+  let count = 0;
+  while (count < n) {
+    d.setDate(d.getDate() + 1);
+    const day = d.getDay();
+    if (day !== 0 && day !== 6) count++;
+  }
+  return d;
+}
+function writEligibleDate(courtDate) {
+  return courtDate ? addBusinessDays(courtDate, 6) : null;
+}
+function getNextBizDay() {
+  let d = new Date();
+  d.setDate(d.getDate() + 1);
+  while (d.getDay() === 0 || d.getDay() === 6) {
+    d.setDate(d.getDate() + 1);
+  }
+  return d;
+}
+function ds(d) {
+  if (!d) return '';
+  const days = daysUntilRaw(d);
+  const wd = d.toLocaleDateString('en-US', {
+    weekday: 'short'
+  });
+  const md = d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric'
+  });
+  if (days < 0) return ` (⚠ PAST DUE — ${wd}, ${md})`;
+  if (days === 0) return ' (TODAY)';
+  if (days === 1) return ' (TOMORROW)';
+  return ` (${wd}, ${md}, ${days}d)`;
+}
+function nextDateOf(u) {
+  const dates = [u.jpDate, u.countyDate, u.writDate].filter(Boolean);
+  if (dates.length === 0) return null;
+  return dates.sort((a, b) => a - b)[0];
+}
+function nextCourtDays(u) {
+  const d = nextDateOf(u);
+  return d ? daysUntilRaw(d) : 999;
+}
+
+/* =========================================================
+   EXCEL PARSING
+========================================================= */
+function findHeaderRow(rows) {
+  const scanLimit = Math.min(rows.length, 60);
+  for (let i = 0; i < scanLimit; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const cells = row.map(c => c === undefined || c === null ? '' : String(c).trim());
+    if (cells.includes('Property Name') && cells.includes('AR Agent') && cells.includes('Unit')) {
+      return i;
+    }
+  }
+  return -1;
+}
+function extractAsOfDate(rows) {
+  const scanLimit = Math.min(rows.length, 60);
+  for (let i = 0; i < scanLimit; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    for (const cell of row) {
+      if (cell && typeof cell === 'string') {
+        const m = cell.match(/As of:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
+        if (m) {
+          const mo = parseInt(m[1], 10),
+            da = parseInt(m[2], 10),
+            yr = parseInt(m[3], 10);
+          return {
+            day: da,
+            date: new Date(yr, mo - 1, da)
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+function extractDateFromFilename(filename) {
+  if (!filename) return null;
+  const m = filename.match(/(\d{4})(\d{2})(\d{2})(?!\d)/);
+  if (!m) return null;
+  const yr = parseInt(m[1], 10),
+    mo = parseInt(m[2], 10),
+    da = parseInt(m[3], 10);
+  if (yr < 2020 || yr > 2100 || mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+  return {
+    day: da,
+    date: new Date(yr, mo - 1, da)
+  };
+}
+function findActivitiesHeaderRow(rows) {
+  const scanLimit = Math.min(rows.length, 20);
+  for (let i = 0; i < scanLimit; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const cells = row.map(c => c === undefined || c === null ? '' : String(c).trim());
+    const hasDateCol = cells.includes('Activity Date') || cells.includes('count(Activity)');
+    const hasPropertyCol = cells.includes('Property Name') || cells.includes('Property');
+    if (cells.includes('Activity For') && hasPropertyCol && hasDateCol) {
+      return i;
+    }
+  }
+  return -1;
+}
+function findCallsHeaderRow(rows) {
+  const scanLimit = Math.min(rows.length, 10);
+  for (let i = 0; i < scanLimit; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const cells = row.map(c => c === undefined || c === null ? '' : String(c).trim());
+    if (cells.includes('Direction') && cells.includes('Timestamp') && cells.includes('From Number') && cells.includes('To Number')) {
+      return i;
+    }
+  }
+  return -1;
+}
+function findDirectoryHeaderRow(rows) {
+  const scanLimit = Math.min(rows.length, 10);
+  for (let i = 0; i < scanLimit; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const cells = row.map(c => c === undefined || c === null ? '' : String(c).trim());
+    if (cells.includes('Tenant') && cells.includes('Emails') && cells.includes('Phone Numbers')) {
+      return i;
+    }
+  }
+  return -1;
+}
+function classifyRows(rows) {
+  if (!rows || rows.length < 2) return 'empty';
+  if (findHeaderRow(rows) !== -1) return 'delinquency';
+  if (findActivitiesHeaderRow(rows) !== -1) return 'activities';
+  if (findCallsHeaderRow(rows) !== -1) return 'calls';
+  if (findDirectoryHeaderRow(rows) !== -1) return 'directory';
+  return 'unknown';
+}
+function buildHeaderMap(headerRow) {
+  const map = {};
+  (headerRow || []).forEach((h, i) => {
+    if (h !== undefined && h !== null && String(h).trim() !== '') map[String(h).trim()] = i;
+  });
+  return map;
+}
+function cv(row, map, ...names) {
+  for (const n of names) {
+    const idx = map[n];
+    if (idx !== undefined && row[idx] !== undefined && row[idx] !== null && String(row[idx]).trim() !== '') {
+      return String(row[idx]).trim();
+    }
+  }
+  return '';
+}
+function gd(row, map, ...names) {
+  const v = cv(row, map, ...names);
+  return v ? parseDate(v) : null;
+}
+function gm(row, map, ...names) {
+  for (const n of names) {
+    const idx = map[n];
+    if (idx !== undefined && row[idx] !== undefined && row[idx] !== null && String(row[idx]).trim() !== '') {
+      const raw = row[idx];
+      return typeof raw === 'number' ? raw : parseMoney(raw);
+    }
+  }
+  return 0;
+}
+function inferStage(status, filedDate, jpDate, countyDate, writDate) {
+  const s = (status || '').toLowerCase();
+  if (s.includes('good standing') || s.includes('eho signed')) return 'RESOLVED';
+  if (s.includes('pending writ execution') || s.includes('writ to be executed') || s.includes('scheduled writ to be executed')) return 'WRIT_EXECUTION';
+  if (s.includes('pending writ to be scheduled') || s.includes('writ to be scheduled')) return 'WRIT_PENDING';
+  if (s.includes('writ needs to be filed') || s.includes('writ wait period') || s.includes('need to file writ') || s.includes('writ to be filed')) return 'NEED_WRIT';
+  if (writDate) return 'WRIT_PENDING';
+  if (s.includes('pending county court') || s.includes('county court')) return 'COUNTY_COURT';
+  if (countyDate) return 'COUNTY_COURT';
+  if (s.includes('jp court') || s.includes('pending jp')) return 'JP_SCHEDULED';
+  if (jpDate) return 'JP_SCHEDULED';
+  if (s.includes('need to refile')) return 'NEED_REFILE';
+  if (s.includes('need to file')) return 'NEED_TO_FILE';
+  if (s.includes('eviction filed')) return 'FILED';
+  if (filedDate) return 'FILED';
+  return null;
+}
+function detectPTP(evStatus, ptpDate1, ptpDate2, ptpDate3) {
+  const today = startOfDay(new Date());
+  return [ptpDate1, ptpDate2, ptpDate3].some(d => d && startOfDay(d) >= today);
+}
+const EXCLUDED_PROPERTY_SUBSTRINGS = ['sold', 'the sidney', 'brazos', 'urban villa'];
+function isExcludedProperty(property) {
+  const p = (property || '').toLowerCase();
+  return EXCLUDED_PROPERTY_SUBSTRINGS.some(sub => p.includes(sub));
+}
+function parseExcelData(rows) {
+  if (!rows || rows.length < 2) throw new Error('Tab appears empty.');
+  const map = buildHeaderMap(rows[0]);
+  if (map['Property Name'] === undefined) {
+    throw new Error('No tenant rows found — check that it has a Property Name column.');
+  }
+  const records = {};
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const property = cv(row, map, 'Property Name');
+    const unit = cv(row, map, 'Unit');
+    const name = cv(row, map, 'Name');
+    if (!property || !unit || !name) continue;
+    if (name.toLowerCase() === 'total') continue;
+    if (isExcludedProperty(property)) continue;
+    const agent = cv(row, map, 'AR Agent');
+    if (!isPersonName(agent)) continue;
+    const tenStatus = cv(row, map, 'Tenant Status');
+    const totalAR = gm(row, map, 'Amount Receivable');
+    const delRent = gm(row, map, 'Delinquent Rent');
+    const lastPmtDate = gd(row, map, 'Last Payment');
+    const lastPmtAmt = gm(row, map, 'Payment Amount');
+    const filedDate = gd(row, map, 'Eviction Filed on Date');
+    const jpDate = gd(row, map, 'JP Court Date');
+    const countyDate = gd(row, map, 'County Court Date');
+    const writDate = gd(row, map, 'Writ Scheduled Date', 'Writ Date');
+    const evStatus = cv(row, map, 'Eviction Status');
+    const notes = cv(row, map, 'Delinquency Notes');
+    const causeNum = cv(row, map, 'Cause #');
+    const envelopeNum = cv(row, map, 'Envelope Number');
+    const jpCourt = cv(row, map, 'JP Court #');
+    const missedPmts = parseInt(cv(row, map, '# Missed Pmt Arrangements'), 10) || 0;
+    const lastKnownOccupancy = gd(row, map, 'Last True Known Occupancy');
+    const ptpAmt1 = gm(row, map, 'Payment Amount 1');
+    const ptpDate1 = gd(row, map, 'Payment Date 1');
+    const ptpDate2 = gd(row, map, 'Payment Date 2');
+    const ptpDate3 = gd(row, map, 'Payment Date 3');
+    const profileLink = cv(row, map, 'Tenant Profile Link');
+    const moveOut = gd(row, map, 'Move Out');
+    const phoneNumbers = extractPhoneNumbers(cv(row, map, 'Phone Numbers'));
+    const rawStage = inferStage(evStatus, filedDate, jpDate, countyDate, writDate);
+    const key = property + '||' + unit;
+    if (!records[key]) {
+      records[key] = {
+        id: key,
+        property,
+        unit,
+        name,
+        agent,
+        tenStatus,
+        totalAR,
+        delRent,
+        lastPmtDate,
+        lastPmtAmt,
+        filedDate,
+        jpDate,
+        countyDate,
+        writDate,
+        evStatus,
+        notes,
+        causeNum,
+        envelopeNum,
+        jpCourt,
+        profileLink,
+        moveOut,
+        phoneNumbers,
+        ptpAmt1,
+        ptpDate1,
+        ptpDate2,
+        ptpDate3,
+        missedPmts,
+        lastKnownOccupancy,
+        rawStage
+      };
+    } else {
+      const rec = records[key];
+      if (stageRankOf(rawStage) > stageRankOf(rec.rawStage)) rec.rawStage = rawStage;
+      if (!rec.filedDate && filedDate) rec.filedDate = filedDate;
+      if (!rec.jpDate && jpDate) rec.jpDate = jpDate;
+      if (!rec.countyDate && countyDate) rec.countyDate = countyDate;
+      if (!rec.writDate && writDate) rec.writDate = writDate;
+      if (!rec.causeNum && causeNum) rec.causeNum = causeNum;
+      if (!rec.envelopeNum && envelopeNum) rec.envelopeNum = envelopeNum;
+      if (!rec.jpCourt && jpCourt) rec.jpCourt = jpCourt;
+      if (!rec.profileLink && profileLink) rec.profileLink = profileLink;
+      if (!rec.moveOut && moveOut) rec.moveOut = moveOut;
+      if (phoneNumbers.length) rec.phoneNumbers = Array.from(new Set([...(rec.phoneNumbers || []), ...phoneNumbers]));
+      if (lastKnownOccupancy && (!rec.lastKnownOccupancy || lastKnownOccupancy > rec.lastKnownOccupancy)) rec.lastKnownOccupancy = lastKnownOccupancy;
+      if (!rec.ptpDate1 && ptpDate1) {
+        rec.ptpDate1 = ptpDate1;
+        rec.ptpAmt1 = ptpAmt1;
+      }
+      if (!rec.ptpDate2 && ptpDate2) rec.ptpDate2 = ptpDate2;
+      if (!rec.ptpDate3 && ptpDate3) rec.ptpDate3 = ptpDate3;
+      if (missedPmts > rec.missedPmts) rec.missedPmts = missedPmts;
+      if (notes && notes.length > (rec.notes || '').length) rec.notes = notes;
+      if (totalAR > rec.totalAR) {
+        rec.totalAR = totalAR;
+        rec.delRent = delRent;
+      }
+      if (tenStatus) rec.tenStatus = tenStatus;
+      if (evStatus) rec.evStatus = evStatus;
+      if (lastPmtDate && (!rec.lastPmtDate || lastPmtDate > rec.lastPmtDate)) {
+        rec.lastPmtDate = lastPmtDate;
+        rec.lastPmtAmt = lastPmtAmt;
+      }
+    }
+  }
+  const units = Object.values(records).map(rec => ({
+    ...rec,
+    stage: rec.rawStage || 'BALANCE_ONLY'
+  }));
+  if (units.length === 0) throw new Error('No tenant rows found — check that it has a Property Name column.');
+  return units;
+}
+
+/* Picks the best usable delinquency sheet from a list of {name, rows} candidates
+   (already classified as delinquency-shaped) and derives the report date.
+   Prefers a date-named tab (historical multi-tab workbook) over an undated one,
+   so a larger historical workbook is used over a single current snapshot when
+   both are present in the same upload; falls back to whatever is available. */
+function parseDelinquencyFromSheets(sheets, fallbackFilename) {
+  const dateTabRe = /\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{4}/;
+  const named = sheets.filter(s => dateTabRe.test(s.name));
+  const other = sheets.filter(s => !dateTabRe.test(s.name));
+  const ordered = [...named, ...other];
+  for (const sheet of ordered) {
+    const headerIdx = findHeaderRow(sheet.rows);
+    if (headerIdx === -1) continue;
+    const dataRows = sheet.rows.slice(headerIdx);
+    try {
+      const units = parseExcelData(dataRows);
+      let day = null,
+        rd = null;
+      const mTab = sheet.name.match(/(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{4})/);
+      if (mTab) {
+        const mo = parseInt(mTab[1], 10),
+          da = parseInt(mTab[2], 10),
+          yr = parseInt(mTab[3], 10);
+        day = da;
+        rd = new Date(yr, mo - 1, da);
+      } else {
+        const asOf = extractAsOfDate(sheet.rows);
+        if (asOf) {
+          day = asOf.day;
+          rd = asOf.date;
+        } else {
+          const fromName = extractDateFromFilename(fallbackFilename);
+          if (fromName) {
+            day = fromName.day;
+            rd = fromName.date;
+          }
+        }
+      }
+      return {
+        units,
+        day,
+        rd,
+        sheetName: sheet.name
+      };
+    } catch (err) {
+      continue;
+    }
+  }
+  return null;
+}
+
+/* =========================================================
+   ACTIVITIES SUMMARY (CSV) PARSING
+   AppFolio's Activities Summary export is grouped by Assigned
+   User: rows starting with "->" in the first column are group
+   subtotal headers and are skipped. The free-text activity
+   description lives under the "count(Activity)" header (that
+   label only applies to the aggregate/group rows — on detail
+   rows the same column holds the raw Activity text).
+========================================================= */
+const RELEVANT_ACTIVITY_LABELS = new Set(['Collections', 'Evictions', 'Accounting', '']);
+function activityKey(property, name) {
+  return (property || '').trim().toLowerCase() + '||' + (name || '').trim().toLowerCase();
+}
+function extractActivityPropertyName(row, map) {
+  const direct = (row[map['Property Name']] || '').toString().trim();
+  if (direct) return direct;
+  const combined = (row[map['Property']] || '').toString().trim();
+  if (!combined) return '';
+  const idx = combined.indexOf(' - ');
+  return idx > -1 ? combined.slice(0, idx).trim() : combined;
+}
+function parseActivitiesCSV(rows) {
+  if (!rows || rows.length < 2) return [];
+  const header = rows[0];
+  const map = {};
+  header.forEach((h, i) => {
+    if (h !== undefined && h !== null) map[String(h).trim()] = i;
+  });
+  const textIdx = map['count(Activity)'] !== undefined ? map['count(Activity)'] : 1;
+  const activities = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.length < 2) continue;
+    const groupCell = row[0] !== undefined && row[0] !== null ? String(row[0]) : '';
+    if (groupCell.trim().indexOf('->') === 0) continue;
+    const dateStr = row[map['Activity Date']];
+    if (!dateStr) continue;
+    const property = extractActivityPropertyName(row, map);
+    const name = (row[map['Activity For']] || '').toString().trim();
+    if (!property || !name) continue;
+    activities.push({
+      property,
+      name,
+      date: parseDate(dateStr),
+      label: (row[map['Label']] || '').toString().trim(),
+      text: (row[textIdx] || '').toString().trim(),
+      createdBy: (row[map['Created By']] || '').toString().trim(),
+      completedBy: (row[map['Completed By']] || '').toString().trim(),
+      assignedUser: (row[map['Assigned User']] || '').toString().trim(),
+      status: (row[map['Status']] || '').toString().trim()
+    });
+  }
+  return activities;
+}
+function buildActivityIndex(activities) {
+  const idx = {};
+  activities.forEach(a => {
+    const key = activityKey(a.property, a.name);
+    if (!idx[key]) idx[key] = [];
+    idx[key].push(a);
+  });
+  Object.keys(idx).forEach(key => {
+    idx[key].sort((a, b) => (b.date ? b.date.getTime() : 0) - (a.date ? a.date.getTime() : 0));
+  });
+  return idx;
+}
+
+/* =========================================================
+   TENANT DIRECTORY — supplemental phone/email coverage.
+   The delinquency export's own Phone Numbers field is often
+   sparse or stale; the directory has a dedicated record per
+   person (including co-signers/other occupants sharing a
+   unit), so it fills in numbers the audit would otherwise miss.
+========================================================= */
+function parseDirectoryCSV(rows) {
+  if (!rows || rows.length < 2) return [];
+  const headerIdx = findDirectoryHeaderRow(rows);
+  if (headerIdx === -1) return [];
+  const header = rows[headerIdx];
+  const map = {};
+  header.forEach((h, i) => {
+    if (h !== undefined && h !== null) map[String(h).trim()] = i;
+  });
+  const entries = [];
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.length < 2) continue;
+    const groupCell = row[0] !== undefined && row[0] !== null ? String(row[0]) : '';
+    if (groupCell.trim().indexOf('->') === 0) continue;
+    const property = (row[map['Property Name']] || '').toString().trim();
+    const unit = (row[map['Unit']] || '').toString().trim();
+    const tenant = (row[map['Tenant']] || '').toString().trim();
+    if (!property || !tenant) continue;
+    entries.push({
+      property,
+      unit,
+      tenant,
+      status: (row[map['Status']] || '').toString().trim(),
+      tenantType: (row[map['Tenant Type']] || '').toString().trim(),
+      phoneNumbers: extractPhoneNumbers(row[map['Phone Numbers']]),
+      email: (row[map['Emails']] || '').toString().trim()
+    });
+  }
+  return entries;
+}
+function buildDirectoryIndex(directory) {
+  const byName = {};
+  const byUnit = {};
+  directory.forEach(d => {
+    const nameKey = activityKey(d.property, d.tenant);
+    if (!byName[nameKey]) byName[nameKey] = [];
+    byName[nameKey].push(d);
+    if (d.unit) {
+      const unitKey = activityKey(d.property, d.unit);
+      if (!byUnit[unitKey]) byUnit[unitKey] = [];
+      byUnit[unitKey].push(d);
+    }
+  });
+  return {
+    byName,
+    byUnit
+  };
+}
+function directoryPhonesForUnit(unit, directoryIndex) {
+  if (!directoryIndex) return [];
+  const nameKey = activityKey(unit.property, unit.name);
+  const unitKey = activityKey(unit.property, unit.unit);
+  const nameMatches = directoryIndex.byName[nameKey] || [];
+  const unitMatches = directoryIndex.byUnit[unitKey] || [];
+  const all = [...nameMatches, ...unitMatches];
+  const phones = [];
+  all.forEach(d => phones.push(...d.phoneNumbers));
+  return Array.from(new Set(phones));
+}
+
+/* =========================================================
+   CALLS DATA (phone system export) — used to audit whether
+   documented calls actually happened and vice versa. A call
+   counts as "connected" (a real conversation, not a ring/
+   voicemail/immediate hangup) when it wasn't marked missed
+   and had at least 15 seconds of active talk time.
+========================================================= */
+const CONNECTED_CALL_MIN_SECONDS = 15;
+function parseCallTimestamp(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (/^\d+$/.test(s)) {
+    return new Date(parseInt(s, 10) * 1000);
+  }
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}),?\s+(\d{1,2}):(\d{2}):(\d{2})/);
+  if (m) {
+    const mo = parseInt(m[1], 10),
+      da = parseInt(m[2], 10),
+      yr = parseInt(m[3], 10),
+      hh = parseInt(m[4], 10),
+      mi = parseInt(m[5], 10),
+      ss = parseInt(m[6], 10);
+    return new Date(yr, mo - 1, da, hh, mi, ss);
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function parseBoolField(raw) {
+  const s = (raw || '').toString().trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes';
+}
+function parseCallsCSV(rows) {
+  if (!rows || rows.length < 2) return [];
+  const headerIdx = findCallsHeaderRow(rows);
+  if (headerIdx === -1) return [];
+  const header = rows[headerIdx];
+  const map = {};
+  header.forEach((h, i) => {
+    if (h !== undefined && h !== null) map[String(h).trim()] = i;
+  });
+  const calls = [];
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.length < 2) continue;
+    const direction = (row[map['Direction']] || '').toString().trim().toLowerCase();
+    if (direction !== 'inbound' && direction !== 'outbound') continue;
+    const date = parseCallTimestamp(row[map['Timestamp']]);
+    if (!date) continue;
+    const externalRaw = direction === 'outbound' ? row[map['To Number']] : row[map['From Number']];
+    const externalNumber = normalizePhone(externalRaw);
+    if (externalNumber.length !== 10) continue;
+    const activeTime = parseInt(row[map['Total Active Time']], 10) || 0;
+    const totalDuration = parseInt(row[map['Total Duration']], 10) || 0;
+    const wasMissed = parseBoolField(row[map['Was Missed']]);
+    const fromName = (row[map['From Name']] || '').toString().trim();
+    const toName = (row[map['To Name']] || '').toString().trim();
+    const agentName = direction === 'outbound' ? fromName : toName;
+    const callId = (row[map['Call ID']] || '').toString().trim();
+    calls.push({
+      date,
+      direction,
+      externalNumber,
+      activeTime,
+      totalDuration,
+      wasMissed,
+      agentName,
+      callId,
+      connected: !wasMissed && activeTime >= CONNECTED_CALL_MIN_SECONDS
+    });
+  }
+  return calls;
+}
+function mergeCalls(existing, incoming) {
+  const seen = new Set();
+  const keyOf = c => c.callId || `${c.date.getTime()}|${c.direction}|${c.externalNumber}`;
+  const merged = [];
+  [...existing, ...incoming].forEach(c => {
+    const k = keyOf(c);
+    if (seen.has(k)) return;
+    seen.add(k);
+    merged.push(c);
+  });
+  return merged;
+}
+function callMadeByAgent(call, agentFirstName) {
+  if (!agentFirstName || !call.agentName) return false;
+  return call.agentName.toLowerCase().includes(agentFirstName.toLowerCase());
+}
+function buildCallIndex(calls) {
+  const idx = {};
+  calls.forEach(c => {
+    if (!idx[c.externalNumber]) idx[c.externalNumber] = [];
+    idx[c.externalNumber].push(c);
+  });
+  Object.keys(idx).forEach(key => {
+    idx[key].sort((a, b) => b.date.getTime() - a.date.getTime());
+  });
+  return idx;
+}
+function callsForUnit(unit, callIndex) {
+  const phones = unit.phoneNumbers || [];
+  const all = [];
+  phones.forEach(p => {
+    (callIndex[p] || []).forEach(c => all.push(c));
+  });
+  all.sort((a, b) => b.date.getTime() - a.date.getTime());
+  return all;
+}
+
+/* Delinquency Notes arrive as one blob of semicolon-and-date-prefixed entries,
+   e.g. "08/11/2026, Resident called...;\n08/07/2026, Account needs...;". Split
+   into individually-dated entries so the call audit can respect a time window. */
+function splitNotesEntries(notes) {
+  if (!notes) return [];
+  const parts = notes.split(/;\s*\n/);
+  return parts.map(p => {
+    const m = p.match(/^(\d{1,2}\/\d{1,2}\/\d{4}),\s*([\s\S]*)$/);
+    if (m) {
+      return {
+        date: parseDate(m[1]),
+        text: m[2].trim()
+      };
+    }
+    return {
+      date: null,
+      text: p.trim()
+    };
+  }).filter(e => e.text);
+}
+
+/* Best-effort classification of note/activity text re: whether it claims an
+   actual phone conversation happened, vs. merely an attempted/unanswered call
+   (e.g. "CNA" = Called No Answer) or a text message. A note saying a call was
+   attempted is NOT the same as documenting a completed call. */
+const CALL_ATTEMPT_ONLY_PATTERN = /(\bcna\b|no answer|voicemail|left (?:a )?(?:vm|voice ?mail|message)|unable to reach|could not reach|couldn'?t reach|did not answer|no response|not (?:able to )?reach(?:ed)?)/i;
+const CALL_CONNECTED_PATTERN = /(spoke (?:with|to)|talked (?:with|to)|phone call|phone conversation|call(?:ed)? with resident|resident called|conversation with|call(?:ed)?[^.;]{0,60}?(?:discuss|advis|explain|stat|confirm|agree|request|inform)|discussed[^.;]{0,30}?(?:with|phone|call))/i;
+const MENTIONS_CALL_PATTERN = /\bcall(?:ed|s|ing)?\b|\bphone\b|\bcna\b|\bspoke\b|\btalked\b|\bconversation\b/i;
+function classifyCallClaim(text) {
+  if (!text) return 'none';
+  if (CALL_ATTEMPT_ONLY_PATTERN.test(text)) return 'attempt_only';
+  if (CALL_CONNECTED_PATTERN.test(text)) return 'connected_claimed';
+  if (MENTIONS_CALL_PATTERN.test(text)) return 'ambiguous';
+  return 'none';
+}
+
+/* Cross-references real phone-system call records against documented notes/
+   activities for each unit within a trailing window. Flags two kinds of gaps:
+   a connected call with nothing documenting it, or documentation claiming a
+   completed call with no matching connected call on record. Units with no
+   phone number on file are skipped (can't be audited). Best-effort: text
+   classification of notes is inherently imperfect. */
+function auditCallDocumentation(enrichedUnits, callIndex, windowDays) {
+  const cutoff = startOfDay(new Date());
+  cutoff.setDate(cutoff.getDate() - windowDays);
+  const flags = [];
+  enrichedUnits.forEach(u => {
+    if (!u.phoneNumbers || u.phoneNumbers.length === 0) return;
+    const calls = callsForUnit(u, callIndex).filter(c => c.date >= cutoff);
+    const connectedCalls = calls.filter(c => c.connected);
+    const noteEntries = splitNotesEntries(u.notes).filter(e => e.date && e.date >= cutoff);
+    const activityEntries = (u.activityLog || []).filter(a => a.date && a.date >= cutoff).map(a => ({
+      date: a.date,
+      text: a.text
+    }));
+    const allEntries = [...noteEntries, ...activityEntries];
+    const connectedClaims = allEntries.filter(e => classifyCallClaim(e.text) === 'connected_claimed');
+    if (connectedCalls.length > 0 && connectedClaims.length === 0) {
+      flags.push({
+        type: 'call_not_documented',
+        unit: u,
+        calls: connectedCalls
+      });
+    } else if (connectedClaims.length > 0 && connectedCalls.length === 0) {
+      flags.push({
+        type: 'documented_no_call',
+        unit: u,
+        claims: connectedClaims
+      });
+    }
+  });
+  return flags;
+}
+
+/* Best-effort text match for move-out language in notes/activities. Deliberately
+   avoids bare "vacate" since "3-Day Notice to Vacate" is standard eviction
+   terminology and would false-positive on nearly every active eviction case. */
+const MOVE_OUT_PATTERN = /(moved out|moving out|move[- ]?out (?:complete|confirmed|done|processed)|vacated|abandoned (?:the )?(?:unit|apartment)|turned in (?:the |their )?keys|returned (?:the |their )?keys|keys (?:were |have been )?(?:turned in|returned|dropped off)|no longer (?:living|resides?|a resident)|unit is (?:now )?(?:empty|vacant)|confirmed vacant|already (?:moved|gone))/i;
+function hasMoveOutLanguage(text) {
+  return !!(text && MOVE_OUT_PATTERN.test(text));
+}
+function detectPossibleMoveOut(unit, allMatchedActivities) {
+  if (unit.moveOut) return false;
+  if (hasMoveOutLanguage(unit.notes)) return true;
+  if (allMatchedActivities && allMatchedActivities.some(a => hasMoveOutLanguage(a.text))) return true;
+  return false;
+}
+
+/* =========================================================
+   QUALIFICATION
+========================================================= */
+function qualifies(unit, reportDay) {
+  if (unit.totalAR < 300) {
+    return unit.stage === 'NEED_TO_FILE';
+  }
+  if (unit.possibleMoveOut) return true;
+  if (EVICTION_STAGES.has(unit.stage)) return true;
+  if ((unit.tenStatus || '').toLowerCase().includes('evict')) return true;
+  if (unit.stage === 'RESOLVED') return false;
+  const es = (unit.evStatus || '').toLowerCase();
+  if (es.includes('eho') || es.includes('good standing')) return false;
+  if (unit.missedPmts > 0) return true;
+  const today = startOfDay(new Date());
+  const hasFuturePTP = [unit.ptpDate1, unit.ptpDate2, unit.ptpDate3].some(d => d && startOfDay(d) >= today);
+  if (unit.totalAR >= 300 && unit.totalAR < 1000 && !hasFuturePTP) return true;
+  if (unit.totalAR >= 1000 && !hasFuturePTP && (reportDay == null || reportDay >= 10)) return true;
+  return false;
+}
+
+/* =========================================================
+   NEXT ACTION LOGIC
+========================================================= */
+const ADD_COURT_DATE = "Add Court Date as an AppFolio Activity and update the tenant profile with the date and status.";
+function buildFilingReviewText(unit) {
+  const callsPhrase = unit.hasCallsData ? `${unit.callsMadeCount} phone call${unit.callsMadeCount === 1 ? '' : 's'} made and ${unit.callsConnectedCount} result${unit.callsConnectedCount === 1 ? '' : 's'}.` : 'Calls Data not loaded — check call history manually.';
+  const occPhrase = unit.lastKnownOccupancy ? fmtDate(unit.lastKnownOccupancy) : 'not on file';
+  return `Decide if Filing ASAP — Balance and date make this account eligible for eviction. ${callsPhrase} Last known occupancy ${occPhrase} - review account and change to Need to File unless PTP or EHO in place or supervisor has approved a delay.`;
+}
+const JP_COURT_INSTRUCTIONS = {
+  'JP 1': 'Travis County JP 1 — email the court and request a Zoom hearing (this court sometimes approves, sometimes denies). Document the request and attach proof of the email to the tenant profile notes.',
+  'JP 2': 'Travis County JP 2 will not approve Zoom hearings. If there is a schedule conflict, request to reschedule the court date — document in notes and log as an AppFolio activity.',
+  'JP 5': 'Travis County JP 5 — email the court and request a Zoom hearing (this court typically approves these requests).',
+};
+function jpCourtInstruction(jpCourt) {
+  if (!jpCourt) return null;
+  const s = jpCourt.trim();
+  const match = Object.keys(JP_COURT_INSTRUCTIONS).find(key => key.toLowerCase() === s.toLowerCase());
+  return match ? JP_COURT_INSTRUCTIONS[match] : null;
+}
+function getNextAction(unit) {
+  const {
+    stage,
+    jpDate,
+    countyDate,
+    writDate,
+    totalAR,
+    hasPTP,
+    lastPmtDate,
+    evStatus,
+    missedPmts,
+    tenStatus,
+    filedDate,
+    envelopeNum,
+    causeNum,
+    reportDay,
+    ptpDate1,
+    ptpDate2,
+    lastKnownOccupancy,
+    jpCourt,
+    possibleMoveOut,
+    callsMadeCount,
+    callsConnectedCount,
+    hasCallsData
+  } = unit;
+  if (possibleMoveOut) {
+    return {
+      urgency: 'critical',
+      text: 'Notes or activity history suggest the resident may have moved out, but no Move Out date is recorded in AppFolio. Verify immediately — if confirmed, process the move-out in AppFolio so this account drops off the delinquency report.'
+    };
+  }
+  const ts = (tenStatus || '').toLowerCase();
+  const hasEvictData = !!(filedDate || jpDate || countyDate || writDate || envelopeNum || causeNum);
+  if (hasEvictData && !ts.includes('evict')) {
+    return {
+      urgency: 'high',
+      text: 'Account has eviction data (court dates or envelope number) but tenant status is not set to Evict. Update tenant status to Evict in AppFolio.'
+    };
+  }
+  if (ts.includes('evict') && !hasEvictData && stage !== 'NEED_TO_FILE' && stage !== 'NEED_REFILE') {
+    return {
+      urgency: 'high',
+      text: 'Tenant status says "Evict" but missing eviction filed date and envelope number. If eviction has been filed, add the envelope number and court date on the profile. If eviction has NOT been filed, change tenant status in AppFolio.'
+    };
+  }
+  const ACTIVE_COURT_STAGES = new Set(['NEED_TO_FILE', 'FILED', 'JP_SCHEDULED', 'COUNTY_COURT', 'NEED_WRIT', 'WRIT_PENDING', 'WRIT_EXECUTION']);
+  const occStale = !lastKnownOccupancy || daysUntilRaw(lastKnownOccupancy) < -7;
+  if (totalAR >= 1000 && (reportDay == null || reportDay >= 10) && occStale && !ACTIVE_COURT_STAGES.has(stage)) {
+    return {
+      urgency: 'high',
+      text: 'Confirm occupancy by checking resident contact history. If unknown, create an AppFolio activity for occupancy check.'
+    };
+  }
+  const daysSincePmt = lastPmtDate ? Math.abs(daysUntilRaw(lastPmtDate)) : null;
+  const lastPmtPhrase = lastPmtDate ? ` Last payment ${daysSincePmt}d ago.` : ' No recent payment on file.';
+  const judgmentDate = countyDate || jpDate;
+  const eligibleDate = writEligibleDate(judgmentDate);
+  const isWritEligible = eligibleDate ? startOfDay(new Date()) >= eligibleDate : false;
+  switch (stage) {
+    case 'NEED_TO_FILE':
+      {
+        const eligibleToFile = totalAR > 800 && (reportDay == null || reportDay >= 12);
+        if (!eligibleToFile) {
+          if (totalAR <= 800) {
+            return {
+              urgency: 'medium',
+              text: `Account is below filing threshold (balance ${fmtMoney(totalAR)}). Update tenant profile to remove it from "Need To File Eviction".`
+            };
+          }
+          return {
+            urgency: 'medium',
+            text: `Balance qualifies for filing (${fmtMoney(totalAR)}) but it is not yet past the 12th of the month — hold until day 12, then file.`
+          };
+        }
+        if (!lastKnownOccupancy) {
+          return {
+            urgency: 'critical',
+            text: 'Occupancy check should have already been done per policy- get occupancy check done and then decide if we are filing ASAP.'
+          };
+        }
+        if (daysUntilRaw(lastKnownOccupancy) < -7) {
+          return {
+            urgency: 'critical',
+            text: 'Occupancy check is over 7 days- do a new occupancy check ASAP and then decide if we are filing.'
+          };
+        }
+        return {
+          urgency: 'critical',
+          text: 'File Eviction and update tenant profile fully.'
+        };
+      }
+    case 'NEED_REFILE':
+      return {
+        urgency: 'critical',
+        text: 'Refile Eviction — prior filing was rejected or filed in wrong court. Correct error, serve new 3-Day if required, and refile with correct JP Court today.'
+      };
+    case 'FILED':
+      return {
+        urgency: 'high',
+        text: `Look up JP Court hearing date. ${ADD_COURT_DATE}`
+      };
+    case 'JP_SCHEDULED':
+      {
+        if (jpDate) {
+          const d = daysUntilRaw(jpDate);
+          if (d < 0) {
+            let text = `Court has passed — update tenant profile with court outcome and change Eviction Status to Pending Writ to be Filed.`;
+            let urgency = 'high';
+            if (isWritEligible) {
+              text += ` Writ has been eligible to file since ${fmtDate(eligibleDate)} (6th business day after court) — file Writ of Possession immediately.`;
+              urgency = 'critical';
+            } else if (eligibleDate) {
+              text += ` Writ is not yet eligible to file — eligible on ${fmtDate(eligibleDate)} (6th business day after court).`;
+            }
+            return {
+              urgency,
+              text
+            };
+          }
+          return {
+            urgency: d <= 3 ? 'critical' : 'high',
+            text: `JP Court hearing${ds(jpDate)} — confirm court date is entered as an activity in AppFolio and tenant profile has been updated.${jpCourtInstruction(jpCourt) ? ' ' + jpCourtInstruction(jpCourt) : ''}`
+          };
+        }
+        return {
+          urgency: 'high',
+          text: `JP Court date not yet entered — look up hearing date. ${ADD_COURT_DATE}`
+        };
+      }
+    case 'COUNTY_COURT':
+      {
+        if (countyDate) {
+          const d = daysUntilRaw(countyDate);
+          if (d < 0) {
+            let text = `Court has passed — update tenant profile with court outcome and change Eviction Status to Pending Writ to be Filed.`;
+            let urgency = 'high';
+            if (isWritEligible) {
+              text += ` Writ has been eligible to file since ${fmtDate(eligibleDate)} (6th business day after court) — file Writ of Possession immediately.`;
+              urgency = 'critical';
+            } else if (eligibleDate) {
+              text += ` Writ is not yet eligible to file — eligible on ${fmtDate(eligibleDate)} (6th business day after court).`;
+            }
+            return {
+              urgency,
+              text
+            };
+          }
+          return {
+            urgency: d <= 3 ? 'critical' : 'high',
+            text: `County Court hearing${ds(countyDate)} — confirm attorney and update evidence packet with latest ledger.`
+          };
+        }
+        return {
+          urgency: 'high',
+          text: `Call county court or look it up online, get hearing date. ${ADD_COURT_DATE}`
+        };
+      }
+    case 'NEED_WRIT':
+      {
+        if (eligibleDate && !isWritEligible) {
+          return {
+            urgency: 'medium',
+            text: `Judgment awarded but writ is not yet eligible to file — earliest filing date is ${fmtDate(eligibleDate)} (6th business day after court). Do not file early; monitor and file on or after that date.`
+          };
+        }
+        const eligiblePhrase = eligibleDate ? ` Writ has been eligible to file since ${fmtDate(eligibleDate)}.` : '';
+        return {
+          urgency: 'critical',
+          text: `File Writ of Possession — judgment has been awarded.${eligiblePhrase} Submit writ paperwork to constable office today and change status to Pending Writ to be Scheduled.`
+        };
+      }
+    case 'WRIT_PENDING':
+      {
+        if (writDate) {
+          const d = daysUntilRaw(writDate);
+          return {
+            urgency: d <= 3 ? 'critical' : 'high',
+            text: `Writ execution${ds(writDate)} — confirm constable, have locksmith on standby, notify maintenance.`
+          };
+        }
+        if (jpDate && daysUntilRaw(jpDate) < 0) {
+          let text = 'JP Court has passed and eviction status is not updated - update immediately.';
+          if (isWritEligible) {
+            text += ` Writ has been eligible to file since ${fmtDate(eligibleDate)} (6th business day after court) — schedule writ and update resident profile.`;
+          } else if (eligibleDate) {
+            text += ` Writ is not yet eligible to file — eligible on ${fmtDate(eligibleDate)} (6th business day after court).`;
+          }
+          return {
+            urgency: isWritEligible ? 'critical' : 'high',
+            text
+          };
+        }
+        return {
+          urgency: 'high',
+          text: `Call constable and get writ execution date. ${ADD_COURT_DATE}`
+        };
+      }
+    case 'WRIT_EXECUTION':
+      return {
+        urgency: 'high',
+        text: `Writ execution scheduled${ds(writDate)} — coordinate constable access, locksmith on standby same day, maintenance on standby for make-ready.`
+      };
+    case 'RESOLVED':
+      if (missedPmts > 0) return {
+        urgency: 'high',
+        text: `EHO/Payment Plan — ${missedPmts} missed payment(s). Verify if still in good standing. If defaulted, file eviction immediately.`
+      };
+      return {
+        urgency: 'low',
+        text: 'Monitor EHO — verify each payment posts on schedule. If any payment is missed, serve 3-Day Notice and file eviction immediately.'
+      };
+    case 'BALANCE_ONLY':
+      {
+        if (missedPmts > 0) return {
+          urgency: 'critical',
+          text: `Payment plan defaulted — ${missedPmts} missed payment(s). Serve 3-Day Notice and file eviction immediately.`
+        };
+        if (!hasPTP) {
+          const eligibleForFilingReview = totalAR > 800 && (reportDay == null || reportDay >= 12);
+          if (eligibleForFilingReview) {
+            return {
+              urgency: 'high',
+              text: buildFilingReviewText(unit)
+            };
+          }
+          if (totalAR < 800) {
+            return {
+              urgency: 'medium',
+              text: `Contact resident regarding balance and try to get a payment TODAY or a written payment arrangement.${lastPmtPhrase} Always update delinquency notes in AppFolio.`
+            };
+          }
+          return {
+            urgency: 'medium',
+            text: `Balance ${fmtMoney(totalAR)} will be eligible for a filing decision once past the 12th of the month. Continue contact/collection efforts and document all attempts.${lastPmtPhrase}`
+          };
+        }
+        const pastDuePTP = [ptpDate1, ptpDate2].some(d => d && daysUntilRaw(d) < 0);
+        if (pastDuePTP) {
+          return {
+            urgency: 'high',
+            text: 'Payment plan has past-due date — verify payment posted. If missed, serve 3-Day Notice and file eviction immediately.'
+          };
+        }
+        return {
+          urgency: 'low',
+          text: 'Monitor payment plan — verify payments are posting on schedule. File immediately if any payment is missed.'
+        };
+      }
+    default:
+      {
+        const es = (evStatus || '').toLowerCase();
+        if (es) {
+          if (es.includes('need to file')) return {
+            urgency: 'critical',
+            text: `File Eviction — balance ${fmtMoney(totalAR)}, no eviction on file. Confirm 3-Day Notice expired and no EHO active, then file with JP Court today.`
+          };
+          if (es.includes('file writ')) return {
+            urgency: 'critical',
+            text: 'File Writ of Possession — judgment has been awarded. Submit writ paperwork to constable office today and change status to Pending Writ to be Scheduled.'
+          };
+          if (es.includes('refile')) return {
+            urgency: 'critical',
+            text: 'Refile Eviction — prior filing was rejected or filed in wrong court. Correct error, serve new 3-Day if required, and refile with correct JP Court today.'
+          };
+          if (es.includes('jp court')) return {
+            urgency: 'high',
+            text: `JP Court date not yet entered — look up hearing date. ${ADD_COURT_DATE}`
+          };
+          if (es.includes('county')) return {
+            urgency: 'high',
+            text: `Call county court or look it up online, get hearing date. ${ADD_COURT_DATE}`
+          };
+          if (es.includes('writ')) return {
+            urgency: 'high',
+            text: `Call constable and get writ execution date. ${ADD_COURT_DATE}`
+          };
+          if (es.includes('eho') || es.includes('good standing')) return {
+            urgency: 'low',
+            text: 'Monitor EHO — verify each payment posts on schedule. If any payment is missed, serve 3-Day Notice and file eviction immediately.'
+          };
+          return {
+            urgency: 'medium',
+            text: `AppFolio status: "${evStatus}" — verify account status and confirm next step in AppFolio.`
+          };
+        }
+        const eligibleForFilingReview = !hasPTP && totalAR > 800 && (reportDay == null || reportDay >= 12);
+        if (eligibleForFilingReview) return {
+          urgency: 'high',
+          text: buildFilingReviewText(unit)
+        };
+        if (totalAR >= 300 && totalAR < 800) return {
+          urgency: 'medium',
+          text: `Contact resident regarding balance and try to get a payment TODAY or a written payment arrangement.${lastPmtPhrase} Always update delinquency notes in AppFolio.`
+        };
+        if (totalAR >= 800) return {
+          urgency: 'medium',
+          text: `Balance ${fmtMoney(totalAR)} will be eligible for a filing decision once past the 12th of the month. Continue contact/collection efforts and document all attempts.${lastPmtPhrase}`
+        };
+        return {
+          urgency: 'medium',
+          text: 'Verify account status in AppFolio — update Eviction Status field if action is needed.'
+        };
+      }
+  }
+}
+function enrichUnit(u, reportDay, activityIndex, directoryIndex, callIndex) {
+  const hasPTP = detectPTP(u.evStatus, u.ptpDate1, u.ptpDate2, u.ptpDate3);
+  const key = activityKey(u.property, u.name);
+  const matchedActivities = activityIndex && activityIndex[key] || [];
+  const activityLog = matchedActivities.filter(a => RELEVANT_ACTIVITY_LABELS.has(a.label));
+  const mostRecent = activityLog[0] || null;
+  const lastContactDate = mostRecent ? mostRecent.date : null;
+  const lastContactBy = mostRecent ? mostRecent.completedBy || mostRecent.createdBy || '' : '';
+  const judgmentDate = u.countyDate || u.jpDate;
+  const writEligible = writEligibleDate(judgmentDate);
+  const possibleMoveOut = detectPossibleMoveOut(u, matchedActivities);
+  const directoryPhones = directoryPhonesForUnit(u, directoryIndex);
+  const phoneNumbers = Array.from(new Set([...(u.phoneNumbers || []), ...directoryPhones]));
+  const hasCallsData = !!(callIndex && Object.keys(callIndex).length > 0);
+  const matchedCalls = hasCallsData ? callsForUnit({
+    phoneNumbers
+  }, callIndex) : [];
+  const callsMadeCount = matchedCalls.length;
+  const callsConnectedCount = matchedCalls.filter(c => c.connected).length;
+  const enriched = {
+    ...u,
+    hasPTP,
+    reportDay,
+    activityLog,
+    lastContactDate,
+    lastContactBy,
+    writEligible,
+    possibleMoveOut,
+    phoneNumbers,
+    hasCallsData,
+    callsMadeCount,
+    callsConnectedCount
+  };
+  enriched.nextAction = getNextAction(enriched);
+  return enriched;
+}
+
+/* =========================================================
+   EXPORT FUNCTIONS
+========================================================= */
+function taskBreakdown(list) {
+  const byStage = {};
+  const byUrgency = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0
+  };
+  list.forEach(u => {
+    const label = (STAGE_MAP[u.stage] || {}).label || u.stage;
+    byStage[label] = (byStage[label] || 0) + 1;
+    byUrgency[u.nextAction.urgency] = (byUrgency[u.nextAction.urgency] || 0) + 1;
+  });
+  return {
+    total: list.length,
+    byStage,
+    byUrgency
+  };
+}
+function exportSession(enriched, qualifying, notes, reportDate, completed, activities) {
+  const rows = enriched.map(u => ({
+    Property: u.property,
+    Unit: u.unit,
+    Tenant: u.name,
+    'Total AR': u.totalAR,
+    'Del Rent': u.delRent,
+    Stage: (STAGE_MAP[u.stage] || {}).label || u.stage,
+    'AppFolio Status': u.evStatus,
+    'Next Action': u.nextAction.text,
+    Urgency: u.nextAction.urgency,
+    Completed: completed && completed.has(u.id) ? 'Yes' : 'No',
+    'Last Payment': u.lastPmtDate ? fmtMDY(u.lastPmtDate) : '',
+    'Last Pmt Amt': u.lastPmtAmt || 0,
+    'Missed PTPs': u.missedPmts,
+    'Filed Date': u.filedDate ? fmtMDY(u.filedDate) : '',
+    'JP Court Date': u.jpDate ? fmtMDY(u.jpDate) : '',
+    'County Court Date': u.countyDate ? fmtMDY(u.countyDate) : '',
+    'Writ Date': u.writDate ? fmtMDY(u.writDate) : '',
+    'Case #': u.causeNum,
+    'AppFolio Profile': u.profileLink || '',
+    'Activities Logged': (u.activityLog || []).length,
+    'Last Contact Date': u.lastContactDate ? fmtMDY(u.lastContactDate) : '',
+    'Last Contact By': u.lastContactBy || '',
+    'Possible Move-Out Not Processed': u.possibleMoveOut ? 'YES' : '',
+    'Session Notes': notes[u.id] || '',
+    Agent: u.agent
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Eviction Tracker');
+  const completedSet = completed || new Set();
+  const starting = taskBreakdown(qualifying);
+  const remainingList = qualifying.filter(u => !completedSet.has(u.id));
+  const ending = taskBreakdown(remainingList);
+  const moveOutFlags = qualifying.filter(u => u.possibleMoveOut);
+  const summaryAoA = [['METRIC EVICTION TRACKER — SESSION SUMMARY'], ['Report Date', reportDate ? fmtMDY(reportDate) : ''], [], ['⚠ POSSIBLE MOVE-OUTS NOT PROCESSED IN APPFOLIO (HIGHEST PRIORITY)'], ['Count', moveOutFlags.length], ...moveOutFlags.map(u => [`${u.property} #${u.unit} — ${u.name}`, u.profileLink || '']), [], ['STARTING TASKS (On Tracker When Report Was Loaded)'], ['Total Tasks', starting.total], [], ['By Stage', 'Count'], ...Object.entries(starting.byStage), [], ['By Urgency', 'Count'], ['Critical', starting.byUrgency.critical || 0], ['High (Action)', starting.byUrgency.high || 0], ['Medium (Pending)', starting.byUrgency.medium || 0], ['Low (Monitor)', starting.byUrgency.low || 0], [], ['ENDING TASKS (Assuming All Items Marked Completed Are Done)'], ['Total Remaining', ending.total], [], ['By Stage', 'Count'], ...Object.entries(ending.byStage), [], ['By Urgency', 'Count'], ['Critical', ending.byUrgency.critical || 0], ['High (Action)', ending.byUrgency.high || 0], ['Medium (Pending)', ending.byUrgency.medium || 0], ['Low (Monitor)', ending.byUrgency.low || 0], [], ['Tasks Completed This Session', completedSet.size]];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryAoA), 'Summary');
+  if (activities && activities.length) {
+    const qualifyingKeys = new Set(qualifying.map(u => activityKey(u.property, u.name)));
+    const logRows = activities.filter(a => RELEVANT_ACTIVITY_LABELS.has(a.label) && qualifyingKeys.has(activityKey(a.property, a.name))).sort((a, b) => (b.date ? b.date.getTime() : 0) - (a.date ? a.date.getTime() : 0)).map(a => ({
+      Property: a.property,
+      Tenant: a.name,
+      Date: a.date ? fmtMDY(a.date) : '',
+      Label: a.label,
+      Activity: a.text,
+      'Created By': a.createdBy,
+      'Completed By': a.completedBy,
+      Status: a.status
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(logRows), 'Activity Log');
+  }
+  const iso = (reportDate || new Date()).toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `Metric_Eviction_Tracker_${iso}.xlsx`);
+}
+
+/* =========================================================
+   SMALL UI PIECES
+========================================================= */
+function OverlayButton({
+  className,
+  children,
+  onFiles,
+  accept
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: className,
+    style: {
+      position: 'relative',
+      display: 'inline-block'
+    }
+  }, children, /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    className: "overlay-input",
+    accept: accept || '.xlsx,.xls,.csv',
+    multiple: true,
+    onChange: e => {
+      if (e.target.files && e.target.files.length) onFiles(e.target.files);
+      e.target.value = '';
+    }
+  }));
+}
+function StatCard({
+  label,
+  value,
+  colorClass,
+  small
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "stat-card"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "stat-label"
+  }, label), /*#__PURE__*/React.createElement("div", {
+    className: `stat-value ${colorClass || ''} ${small ? 'small' : ''}`
+  }, value));
+}
+function GradesPanel({
+  enriched,
+  activities,
+  callIndex,
+  hasCallsData
+}) {
+  const agents = ['Karla'];
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "grades-panel"
+  }, agents.map(agent => {
+    const units = enriched.filter(u => u.agent === agent);
+    const total = units.length;
+    const critical = units.filter(u => u.nextAction.urgency === 'critical').length;
+    const high = units.filter(u => u.nextAction.urgency === 'high').length;
+    const overdue = units.filter(u => {
+      const d = nextDateOf(u);
+      return d && daysUntilRaw(d) < 0;
+    }).length;
+    const activitiesLogged = (activities || []).filter(a => {
+      if (!RELEVANT_ACTIVITY_LABELS.has(a.label)) return false;
+      const by = (a.createdBy || '').split(' ')[0];
+      const completedBy = (a.completedBy || '').split(' ')[0];
+      return by === agent || completedBy === agent;
+    }).length;
+    const criticalPct = total > 0 ? critical / total : 0;
+    const highPct = total > 0 ? high / total : 0;
+    const overduePct = total > 0 ? overdue / total : 0;
+    const criticalPts = criticalPct * 40;
+    const highPts = highPct * 15;
+    const overduePts = overduePct * 30;
+    let score = 100 - criticalPts - highPts - overduePts;
+    const auditableUnits = units.filter(u => u.phoneNumbers && u.phoneNumbers.length > 0);
+    let callFlags = 0,
+      callDocPts = 0,
+      callDocPct = 0;
+    if (hasCallsData && auditableUnits.length > 0) {
+      const agentFlags = auditCallDocumentation(units, callIndex, 7);
+      callFlags = agentFlags.length;
+      callDocPct = callFlags / auditableUnits.length;
+      callDocPts = callDocPct * 15;
+      score -= callDocPts;
+    }
+    score = Math.max(0, Math.round(score));
+    let grade = 'F';
+    if (score >= 90) grade = 'A';else if (score >= 80) grade = 'B';else if (score >= 70) grade = 'C';else if (score >= 60) grade = 'D';
+    return /*#__PURE__*/React.createElement("div", {
+      className: "grade-card",
+      key: agent
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "grade-agent"
+    }, agent), /*#__PURE__*/React.createElement("div", {
+      className: "grade-score"
+    }, score, /*#__PURE__*/React.createElement("span", {
+      className: "grade-letter"
+    }, grade)), /*#__PURE__*/React.createElement("div", {
+      className: "grade-stats"
+    }, /*#__PURE__*/React.createElement("div", null, "Accounts: ", total), /*#__PURE__*/React.createElement("div", null, "Critical: ", critical), /*#__PURE__*/React.createElement("div", null, "Overdue dates: ", overdue), activities && activities.length > 0 && /*#__PURE__*/React.createElement("div", null, "Activities Logged: ", activitiesLogged), hasCallsData && auditableUnits.length > 0 && /*#__PURE__*/React.createElement("div", null, "Call Doc Gaps: ", callFlags, "/", auditableUnits.length)), /*#__PURE__*/React.createElement("div", {
+      className: "grade-breakdown"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "grade-breakdown-title"
+    }, "How this score is calculated (starts at 100):"), /*#__PURE__*/React.createElement("div", {
+      className: "grade-breakdown-row"
+    }, /*#__PURE__*/React.createElement("span", null, "Critical tasks: ", critical, "/", total, " (", Math.round(criticalPct * 100), "%) \xD7 40"), /*#__PURE__*/React.createElement("span", {
+      className: "grade-breakdown-pts"
+    }, "-", criticalPts.toFixed(1))), /*#__PURE__*/React.createElement("div", {
+      className: "grade-breakdown-row"
+    }, /*#__PURE__*/React.createElement("span", null, "High-urgency tasks: ", high, "/", total, " (", Math.round(highPct * 100), "%) \xD7 15"), /*#__PURE__*/React.createElement("span", {
+      className: "grade-breakdown-pts"
+    }, "-", highPts.toFixed(1))), /*#__PURE__*/React.createElement("div", {
+      className: "grade-breakdown-row"
+    }, /*#__PURE__*/React.createElement("span", null, "Overdue court/writ dates: ", overdue, "/", total, " (", Math.round(overduePct * 100), "%) \xD7 30"), /*#__PURE__*/React.createElement("span", {
+      className: "grade-breakdown-pts"
+    }, "-", overduePts.toFixed(1))), hasCallsData && auditableUnits.length > 0 ? /*#__PURE__*/React.createElement("div", {
+      className: "grade-breakdown-row"
+    }, /*#__PURE__*/React.createElement("span", null, "Call documentation gaps: ", callFlags, "/", auditableUnits.length, " (", Math.round(callDocPct * 100), "%) \xD7 15"), /*#__PURE__*/React.createElement("span", {
+      className: "grade-breakdown-pts"
+    }, "-", callDocPts.toFixed(1))) : /*#__PURE__*/React.createElement("div", {
+      className: "grade-breakdown-row muted"
+    }, /*#__PURE__*/React.createElement("span", null, "Call documentation gaps \xD7 15"), /*#__PURE__*/React.createElement("span", {
+      className: "grade-breakdown-pts"
+    }, "no Calls Data loaded")), /*#__PURE__*/React.createElement("div", {
+      className: "grade-breakdown-final"
+    }, "= ", score, " (", grade, ")")));
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "grade-legend"
+  }, /*#__PURE__*/React.createElement("b", null, "What these mean:"), " ", /*#__PURE__*/React.createElement("br", null), "\u2022 ", /*#__PURE__*/React.createElement("b", null, "Critical tasks"), " \u2014 accounts currently sitting at the highest urgency (filing overdue, court passed with no update, writ overdue, etc.). Weighted heaviest since these carry the most legal/financial risk.", /*#__PURE__*/React.createElement("br", null), "\u2022 ", /*#__PURE__*/React.createElement("b", null, "High-urgency tasks"), " \u2014 accounts needing prompt action but not yet critical.", /*#__PURE__*/React.createElement("br", null), "\u2022 ", /*#__PURE__*/React.createElement("b", null, "Overdue court/writ dates"), " \u2014 any account whose next court or writ date has already passed.", /*#__PURE__*/React.createElement("br", null), "\u2022 ", /*#__PURE__*/React.createElement("b", null, "Call documentation gaps"), " \u2014 only scored when a Calls Data report is loaded. Flags accounts where a real phone call happened but wasn't documented, or where notes claim a completed call but no matching call record exists in the last 7 days. This is a best-effort text match \u2014 verify flagged accounts before treating them as confirmed issues.", /*#__PURE__*/React.createElement("br", null), "Each factor is (% of caseload affected) \xD7 its weight, subtracted from a starting score of 100."));
+}
+function LinkableDate({
+  date,
+  url,
+  fmt,
+  fallback
+}) {
+  if (!date) return /*#__PURE__*/React.createElement("span", {
+    className: "dash"
+  }, fallback || '—');
+  const text = fmt(date);
+  if (!url) return /*#__PURE__*/React.createElement("span", null, text);
+  return /*#__PURE__*/React.createElement("a", {
+    href: url,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    className: "profile-link",
+    onClick: e => e.stopPropagation(),
+    title: "Open resident profile in AppFolio"
+  }, text);
+}
+function CaseRow({
+  label,
+  date,
+  url,
+  overdueKind
+}) {
+  const past = date && daysUntilRaw(date) < 0;
+  const soon = date && daysUntilRaw(date) >= 0 && daysUntilRaw(date) <= 3;
+  const overdueDays = past ? Math.abs(daysUntilRaw(date)) : 0;
+  let overdueText = null;
+  if (past && overdueKind === 'court') overdueText = `Passed court by ${overdueDays} Days`;
+  if (past && overdueKind === 'writ') overdueText = `Writ past due for filing by ${overdueDays} days`;
+  return /*#__PURE__*/React.createElement("div", {
+    className: "case-row-wrap"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "case-row"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "case-label"
+  }, label), /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement(LinkableDate, {
+    date: date,
+    url: url,
+    fmt: fmtDate
+  }), past && !overdueText && /*#__PURE__*/React.createElement("span", {
+    className: "case-badge",
+    style: {
+      background: C.redLight,
+      color: C.red
+    }
+  }, "PAST"), soon && /*#__PURE__*/React.createElement("span", {
+    className: "case-badge",
+    style: {
+      background: C.redLight,
+      color: C.red
+    }
+  }, "(", daysUntilRaw(date), "d)"))), overdueText && /*#__PURE__*/React.createElement("div", {
+    className: "case-overdue-bold"
+  }, overdueText));
+}
+function CompletedToggle({
+  isCompleted,
+  onToggle,
+  size
+}) {
+  return /*#__PURE__*/React.createElement("button", {
+    className: `completed-toggle ${isCompleted ? 'done' : ''} ${size || ''}`,
+    onClick: e => {
+      e.stopPropagation();
+      onToggle();
+    },
+    title: isCompleted ? 'Mark as not completed' : 'Mark this task completed'
+  }, isCompleted ? '✓ Completed' : 'Mark Completed');
+}
+function ExpandedDetail({
+  u,
+  notes,
+  onNotes,
+  isCompleted,
+  onToggleCompleted
+}) {
+  const occStale = u.lastKnownOccupancy && daysUntilRaw(u.lastKnownOccupancy) < -7;
+  const urg = URGENCY_MAP[u.nextAction.urgency];
+  const hasPTPData = u.ptpDate1 || u.ptpDate2 || u.ptpDate3;
+  const hasCaseIds = u.causeNum || u.envelopeNum;
+  const link = u.profileLink;
+  return /*#__PURE__*/React.createElement("div", {
+    className: "expand-grid"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "side-box"
+  }, /*#__PURE__*/React.createElement(CompletedToggle, {
+    isCompleted: isCompleted,
+    onToggle: onToggleCompleted,
+    size: "full"
+  }), link && /*#__PURE__*/React.createElement("a", {
+    href: link,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    className: "profile-open-link",
+    onClick: e => e.stopPropagation()
+  }, "↗ Open Resident Profile in AppFolio")), /*#__PURE__*/React.createElement("div", {
+    className: "right-col"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "action-banner",
+    style: {
+      background: urg.light,
+      borderColor: urg.color,
+      color: urg.color
+    }
+  }, urg.icon, " ", u.nextAction.text), /*#__PURE__*/React.createElement("div", {
+    className: "panel"
+  }, /*#__PURE__*/React.createElement("h4", null, "Account Detail"), /*#__PURE__*/React.createElement("div", {
+    className: "detail-grid"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "detail-item"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "dlabel"
+  }, "Total Receivable"), /*#__PURE__*/React.createElement("div", {
+    className: "dval"
+  }, fmtMoney(u.totalAR))), /*#__PURE__*/React.createElement("div", {
+    className: "detail-item"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "dlabel"
+  }, "Delinquent Rent"), /*#__PURE__*/React.createElement("div", {
+    className: "dval"
+  }, fmtMoney(u.delRent))), /*#__PURE__*/React.createElement("div", {
+    className: "detail-item"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "dlabel"
+  }, "Last Payment"), /*#__PURE__*/React.createElement("div", {
+    className: "dval"
+  }, /*#__PURE__*/React.createElement(LinkableDate, {
+    date: u.lastPmtDate,
+    url: link,
+    fmt: fmtShort
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "detail-item"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "dlabel"
+  }, "Last Pmt Amount"), /*#__PURE__*/React.createElement("div", {
+    className: "dval"
+  }, u.lastPmtAmt ? fmtMoney(u.lastPmtAmt) : /*#__PURE__*/React.createElement("span", {
+    className: "dash"
+  }, "—"))), /*#__PURE__*/React.createElement("div", {
+    className: "detail-item"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "dlabel"
+  }, "Missed PTPs"), /*#__PURE__*/React.createElement("div", {
+    className: "dval"
+  }, u.missedPmts)), /*#__PURE__*/React.createElement("div", {
+    className: "detail-item"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "dlabel"
+  }, "Last Known Occupancy"), /*#__PURE__*/React.createElement("div", {
+    className: `dval ${occStale ? 'stale' : !u.lastKnownOccupancy ? 'dash' : ''}`
+  }, /*#__PURE__*/React.createElement(LinkableDate, {
+    date: u.lastKnownOccupancy,
+    url: link,
+    fmt: fmtShort
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "detail-item"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "dlabel"
+  }, "Agent"), /*#__PURE__*/React.createElement("div", {
+    className: "dval"
+  }, u.agent)), /*#__PURE__*/React.createElement("div", {
+    className: "detail-item"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "dlabel"
+  }, "Tenant Status"), /*#__PURE__*/React.createElement("div", {
+    className: "dval"
+  }, u.tenStatus || /*#__PURE__*/React.createElement("span", {
+    className: "dash"
+  }, "—"))), u.lastContactDate && /*#__PURE__*/React.createElement("div", {
+    className: "detail-item"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "dlabel"
+  }, "Last Contact"), /*#__PURE__*/React.createElement("div", {
+    className: "dval"
+  }, fmtShort(u.lastContactDate), u.lastContactBy ? ` — ${u.lastContactBy}` : '')))), hasPTPData && /*#__PURE__*/React.createElement("div", {
+    className: "panel"
+  }, /*#__PURE__*/React.createElement("h4", null, "Scheduled Payments"), [[u.ptpDate1, u.ptpAmt1], [u.ptpDate2, null], [u.ptpDate3, null]].map(([d, amt], i) => d && /*#__PURE__*/React.createElement("div", {
+    className: "case-row",
+    key: i
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "case-label"
+  }, "Installment ", i + 1), /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement(LinkableDate, {
+    date: d,
+    url: link,
+    fmt: fmtDate
+  }), amt ? ` — ${fmtMoney(amt)}` : '')))), /*#__PURE__*/React.createElement("div", {
+    className: "panel"
+  }, /*#__PURE__*/React.createElement("h4", null, "Case Dates"), /*#__PURE__*/React.createElement(CaseRow, {
+    label: "Filed",
+    date: u.filedDate,
+    url: link
+  }), /*#__PURE__*/React.createElement(CaseRow, {
+    label: "JP Court Date",
+    date: u.jpDate,
+    url: link,
+    overdueKind: "court"
+  }), /*#__PURE__*/React.createElement(CaseRow, {
+    label: "County Court Date",
+    date: u.countyDate,
+    url: link,
+    overdueKind: "court"
+  }), u.writEligible && /*#__PURE__*/React.createElement(CaseRow, {
+    label: "Writ Eligible Date (6th biz day after court)",
+    date: u.writEligible,
+    url: link,
+    overdueKind: u.writDate ? undefined : "writ"
+  }), /*#__PURE__*/React.createElement(CaseRow, {
+    label: "Writ to Be Scheduled Date",
+    date: null,
+    url: link
+  }), /*#__PURE__*/React.createElement(CaseRow, {
+    label: "Writ Scheduled with Constable Date",
+    date: u.writDate,
+    url: link
+  }), hasCaseIds && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10,
+      paddingTop: 10,
+      borderTop: `1px solid ${C.border}`,
+      fontSize: 13
+    }
+  }, u.causeNum && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("b", null, "Case #:"), " ", u.causeNum, u.jpCourt ? ` (${u.jpCourt})` : ''), u.envelopeNum && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("b", null, "Envelope #:"), " ", u.envelopeNum))), /*#__PURE__*/React.createElement("div", {
+    className: "panel"
+  }, /*#__PURE__*/React.createElement("h4", null, "Session Notes"), /*#__PURE__*/React.createElement("textarea", {
+    className: "session-notes",
+    value: notes[u.id] || '',
+    onChange: e => onNotes(u.id, e.target.value),
+    placeholder: "Notes for this working session..."
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "panel"
+  }, /*#__PURE__*/React.createElement("h4", null, "AppFolio Notes"), /*#__PURE__*/React.createElement("div", {
+    className: "appfolio-notes"
+  }, u.notes || '—')), u.activityLog && u.activityLog.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "panel"
+  }, /*#__PURE__*/React.createElement("h4", null, "Activity Log (", u.activityLog.length, ") — From Activities Summary"), /*#__PURE__*/React.createElement("div", {
+    className: "activity-log"
+  }, u.activityLog.slice(0, 20).map((a, i) => /*#__PURE__*/React.createElement("div", {
+    className: "activity-item",
+    key: i
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "activity-item-head"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "activity-date"
+  }, a.date ? fmtShort(a.date) : '—'), a.label && /*#__PURE__*/React.createElement("span", {
+    className: "activity-label-badge"
+  }, a.label), a.status && /*#__PURE__*/React.createElement("span", {
+    className: "activity-status"
+  }, a.status)), /*#__PURE__*/React.createElement("div", {
+    className: "activity-text"
+  }, a.text || '—'), /*#__PURE__*/React.createElement("div", {
+    className: "activity-by"
+  }, a.createdBy ? `By ${a.createdBy}` : '', a.completedBy && a.completedBy !== a.createdBy ? ` · Completed by ${a.completedBy}` : ''))), u.activityLog.length > 20 && /*#__PURE__*/React.createElement("div", {
+    className: "activity-more"
+  }, "+", u.activityLog.length - 20, " more not shown")))));
+}
+function Row({
+  u,
+  idx,
+  isExpanded,
+  onToggle,
+  notes,
+  onNotes,
+  isCompleted,
+  onToggleCompleted
+}) {
+  const stageInfo = STAGE_MAP[u.stage] || STAGE_MAP.OTHER;
+  const urg = URGENCY_MAP[u.nextAction.urgency];
+  const lastName = (u.name || '').split(',')[0].trim();
+  const nd = nextDateOf(u);
+  const ndPast = nd && daysUntilRaw(nd) < 0;
+  const link = u.profileLink;
+  return /*#__PURE__*/React.createElement(Fragment, null, /*#__PURE__*/React.createElement("tr", {
+    className: `data-row ${isCompleted ? 'row-completed' : ''}`,
+    onClick: () => onToggle(u.id)
+  }, /*#__PURE__*/React.createElement("td", {
+    className: "row-num"
+  }, idx + 1), /*#__PURE__*/React.createElement("td", null, u.property), /*#__PURE__*/React.createElement("td", null, u.unit), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("div", {
+    className: "tenant-name"
+  }, lastName), isCompleted ? /*#__PURE__*/React.createElement("span", {
+    className: "urgency-pill",
+    style: {
+      background: C.greenLight,
+      color: C.green
+    }
+  }, "✓ COMPLETED") : /*#__PURE__*/React.createElement("span", {
+    className: "urgency-pill",
+    style: {
+      background: urg.light,
+      color: urg.color
+    }
+  }, urg.icon, " ", urg.label), u.possibleMoveOut && /*#__PURE__*/React.createElement("span", {
+    className: "moveout-badge"
+  }, "🏃 POSSIBLE MOVE-OUT"), /*#__PURE__*/React.createElement("span", {
+    className: "action-text"
+  }, u.nextAction.text), /*#__PURE__*/React.createElement(CompletedToggle, {
+    isCompleted: isCompleted,
+    onToggle: () => onToggleCompleted(u.id)
+  })), /*#__PURE__*/React.createElement("td", null, fmtMoney(u.totalAR)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("span", {
+    className: "badge",
+    style: {
+      background: stageInfo.light,
+      color: stageInfo.color
+    }
+  }, stageInfo.label)), /*#__PURE__*/React.createElement("td", {
+    className: ndPast ? 'past-due' : ''
+  }, /*#__PURE__*/React.createElement(LinkableDate, {
+    date: nd,
+    url: link,
+    fmt: fmtShort
+  })), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement(LinkableDate, {
+    date: u.lastPmtDate,
+    url: link,
+    fmt: fmtShort
+  }))), isExpanded && /*#__PURE__*/React.createElement("tr", {
+    className: "expand-row"
+  }, /*#__PURE__*/React.createElement("td", {
+    colSpan: 8
+  }, /*#__PURE__*/React.createElement(ExpandedDetail, {
+    u: u,
+    notes: notes,
+    onNotes: onNotes,
+    isCompleted: isCompleted,
+    onToggleCompleted: () => onToggleCompleted(u.id)
+  }))));
+}
+
+/* =========================================================
+   MAIN APP
+========================================================= */
+function computeSnapshotSummary(units, reportDay, reportDate) {
+  if (!units || !reportDate) return null;
+  const enrichedForSnapshot = units.map(u => enrichUnit(u, reportDay, {}));
+  const qual = enrichedForSnapshot.filter(u => qualifies(u, reportDay));
+  const totalAR = qual.reduce((s, u) => s + u.totalAR, 0);
+  const critical = qual.filter(u => u.nextAction.urgency === 'critical').length;
+  const stageCounts = {};
+  qual.forEach(u => {
+    stageCounts[u.stage] = (stageCounts[u.stage] || 0) + 1;
+  });
+  return {
+    date: reportDate.toISOString().slice(0, 10),
+    totalUnits: units.length,
+    qualifying: qual.length,
+    totalAR,
+    critical,
+    stageCounts,
+    exact: true
+  };
+}
+function upsertSnapshot(list, snap) {
+  if (!snap || !snap.date) return list;
+  const filtered = (list || []).filter(s => s.date !== snap.date);
+  return [...filtered, snap].sort((a, b) => a.date.localeCompare(b.date));
+}
+function App() {
+  const [rawUnits, setRawUnits] = useState(null);
+  const [reportDate, setReportDate] = useState(null);
+  const [reportDay, setReportDay] = useState(null);
+  const [notes, setNotes] = useState({});
+  const [expanded, setExpanded] = useState(new Set());
+  const [completed, setCompleted] = useState(new Set());
+  const [activities, setActivities] = useState([]);
+  const [calls, setCalls] = useState([]);
+  const [directory, setDirectory] = useState([]);
+  const [historicalSnapshots, setHistoricalSnapshots] = useState(() => {
+    try {
+      const el = document.getElementById('historical-snapshots');
+      if (!el || !el.textContent || !el.textContent.trim()) return [];
+      return JSON.parse(el.textContent);
+    } catch (err) {
+      return [];
+    }
+  });
+  const [stageFilter, setStageFilter] = useState(null);
+  const [agentFilter, setAgentFilter] = useState('All');
+  const [propertyFilter, setPropertyFilter] = useState('');
+  const [search, setSearch] = useState('');
+  const [showAll, setShowAll] = useState(false);
+  const [activeTab, setActiveTab] = useState('tracker');
+  const [dragOver, setDragOver] = useState(false);
+  useEffect(() => {
+    if (rawUnits) return;
+    const el = document.getElementById('preload-data');
+    if (!el || !el.textContent || !el.textContent.trim()) return;
+    try {
+      const data = JSON.parse(el.textContent);
+      const reviveUnit = u => ({
+        ...u,
+        lastPmtDate: u.lastPmtDate ? new Date(u.lastPmtDate) : null,
+        filedDate: u.filedDate ? new Date(u.filedDate) : null,
+        jpDate: u.jpDate ? new Date(u.jpDate) : null,
+        countyDate: u.countyDate ? new Date(u.countyDate) : null,
+        writDate: u.writDate ? new Date(u.writDate) : null,
+        lastKnownOccupancy: u.lastKnownOccupancy ? new Date(u.lastKnownOccupancy) : null,
+        moveOut: u.moveOut ? new Date(u.moveOut) : null,
+        ptpDate1: u.ptpDate1 ? new Date(u.ptpDate1) : null,
+        ptpDate2: u.ptpDate2 ? new Date(u.ptpDate2) : null,
+        ptpDate3: u.ptpDate3 ? new Date(u.ptpDate3) : null
+      });
+      const reviveActivity = a => ({
+        ...a,
+        date: a.date ? new Date(a.date) : null
+      });
+      setRawUnits((data.units || []).map(reviveUnit));
+      setActivities((data.activities || []).map(reviveActivity));
+      setReportDay(data.reportDay != null ? data.reportDay : null);
+      setReportDate(data.reportDate ? new Date(data.reportDate) : null);
+    } catch (err) {
+      console.error('Failed to load preloaded data:', err);
+    }
+  }, []);
+  // ── Persistence glue for the dashboard migration ─────────────────────────
+  // Parsing and stage logic above/below are unchanged. These two effects add:
+  // (1) load the latest saved session from Supabase when there is nothing to
+  //     show, and (2) save every new upload. hydratingRef stops the load from
+  //     immediately re-saving what it just fetched.
+  const hydratingRef = React.useRef(false);
+  useEffect(() => {
+    if (rawUnits) return;
+    let cancelled = false;
+    fetch('/api/evictions/session/latest', { credentials: 'same-origin' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(j => {
+        if (cancelled || !j || !j.session || !j.session.data) return;
+        const d = j.session.data;
+        const reviveUnit = u => ({
+          ...u,
+          lastPmtDate: u.lastPmtDate ? new Date(u.lastPmtDate) : null,
+          filedDate: u.filedDate ? new Date(u.filedDate) : null,
+          jpDate: u.jpDate ? new Date(u.jpDate) : null,
+          countyDate: u.countyDate ? new Date(u.countyDate) : null,
+          writDate: u.writDate ? new Date(u.writDate) : null,
+          lastKnownOccupancy: u.lastKnownOccupancy ? new Date(u.lastKnownOccupancy) : null,
+          moveOut: u.moveOut ? new Date(u.moveOut) : null,
+          ptpDate1: u.ptpDate1 ? new Date(u.ptpDate1) : null,
+          ptpDate2: u.ptpDate2 ? new Date(u.ptpDate2) : null,
+          ptpDate3: u.ptpDate3 ? new Date(u.ptpDate3) : null
+        });
+        hydratingRef.current = true;
+        setRawUnits((d.units || []).map(reviveUnit));
+        setActivities((d.activities || []).map(a => ({ ...a, date: a.date ? new Date(a.date) : null })));
+        setReportDay(d.reportDay != null ? d.reportDay : null);
+        setReportDate(d.reportDate ? new Date(d.reportDate) : null);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (!rawUnits) return;
+    if (hydratingRef.current) { hydratingRef.current = false; return; }
+    const payload = {
+      data: { units: rawUnits, activities, reportDate, reportDay },
+      report_date: reportDate ? new Date(reportDate).toISOString().slice(0, 10) : null
+    };
+    fetch('/api/evictions/session', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).catch(() => {});
+  }, [rawUnits]);
+  const activityIndex = useMemo(() => buildActivityIndex(activities), [activities]);
+  const callIndex = useMemo(() => buildCallIndex(calls), [calls]);
+  const directoryIndex = useMemo(() => buildDirectoryIndex(directory), [directory]);
+  const enriched = useMemo(() => {
+    if (!rawUnits) return [];
+    return rawUnits.map(u => enrichUnit(u, reportDay, activityIndex, directoryIndex, callIndex));
+  }, [rawUnits, reportDay, activityIndex, directoryIndex, callIndex]);
+  const qualifying = useMemo(() => enriched.filter(u => qualifies(u, reportDay)), [enriched, reportDay]);
+  const properties = useMemo(() => {
+    const set = new Set(qualifying.map(u => u.property));
+    return Array.from(set).sort();
+  }, [qualifying]);
+  const visible = useMemo(() => {
+    let list = showAll ? enriched : qualifying;
+    if (stageFilter) list = list.filter(u => u.stage === stageFilter);
+    if (agentFilter !== 'All') list = list.filter(u => u.agent === agentFilter);
+    if (propertyFilter) list = list.filter(u => u.property === propertyFilter);
+    if (search.trim()) {
+      const s = search.toLowerCase();
+      list = list.filter(u => (u.name || '').toLowerCase().includes(s) || (u.unit || '').toLowerCase().includes(s) || (u.property || '').toLowerCase().includes(s));
+    }
+    const urgencyRank = {
+      critical: 0,
+      high: 1,
+      medium: 2,
+      low: 3
+    };
+    list = [...list].sort((a, b) => {
+      const ca = completed.has(a.id) ? 1 : 0,
+        cb = completed.has(b.id) ? 1 : 0;
+      if (ca !== cb) return ca - cb;
+      const ua = urgencyRank[a.nextAction.urgency],
+        ub = urgencyRank[b.nextAction.urgency];
+      if (ua !== ub) return ua - ub;
+      const da = nextCourtDays(a),
+        db = nextCourtDays(b);
+      if (Math.abs(da - db) > 1) return da - db;
+      return b.totalAR - a.totalAR;
+    });
+    return list;
+  }, [enriched, qualifying, showAll, stageFilter, agentFilter, propertyFilter, search, completed]);
+  const yesterdayPayments = useMemo(() => {
+    if (!reportDate) return null;
+    const y = new Date(reportDate);
+    y.setDate(y.getDate() - 1);
+    const ys = startOfDay(y);
+    const seen = new Set();
+    let total = 0,
+      count = 0;
+    const byAgent = {};
+    enriched.forEach(u => {
+      if (seen.has(u.id)) return;
+      seen.add(u.id);
+      if (u.lastPmtDate && startOfDay(u.lastPmtDate).getTime() === ys.getTime()) {
+        total += u.lastPmtAmt || 0;
+        count++;
+        if (CURRENT_AGENTS.includes(u.agent)) {
+          byAgent[u.agent] = byAgent[u.agent] || {
+            total: 0,
+            count: 0
+          };
+          byAgent[u.agent].total += u.lastPmtAmt || 0;
+          byAgent[u.agent].count++;
+        }
+      }
+    });
+    const agents = Object.entries(byAgent).map(([agent, v]) => ({
+      agent,
+      ...v
+    })).sort((a, b) => b.total - a.total);
+    return {
+      date: y,
+      total,
+      count,
+      agents
+    };
+  }, [enriched, reportDate]);
+  function applyDelinquencyResult(result) {
+    if (!result) return false;
+    setRawUnits(result.units);
+    setReportDay(result.day);
+    setReportDate(result.rd);
+    setNotes({});
+    setExpanded(new Set());
+    setCompleted(new Set());
+    const snap = computeSnapshotSummary(result.units, result.day, result.rd);
+    setHistoricalSnapshots(prev => upsertSnapshot(prev, snap));
+    return true;
+  }
+  function applyActivitiesRows(rows, sourceLabel) {
+    const parsed = parseActivitiesCSV(rows);
+    if (parsed.length === 0) {
+      alert(`Found an Activities Summary sheet in "${sourceLabel}" but couldn't read any activity rows from it.`);
+      return false;
+    }
+    setActivities(parsed);
+    return true;
+  }
+  function applyCallsRows(rows, sourceLabel) {
+    const parsed = parseCallsCSV(rows);
+    if (parsed.length === 0) {
+      alert(`Found a Calls Data sheet in "${sourceLabel}" but couldn't read any call records from it.`);
+      return false;
+    }
+    setCalls(prev => mergeCalls(prev, parsed));
+    return true;
+  }
+  function applyDirectoryRows(rows, sourceLabel) {
+    const parsed = parseDirectoryCSV(rows);
+    if (parsed.length === 0) {
+      alert(`Found a Tenant Directory sheet in "${sourceLabel}" but couldn't read any entries from it.`);
+      return false;
+    }
+    setDirectory(parsed);
+    return true;
+  }
+  function processCsvFile(file) {
+    Papa.parse(file, {
+      skipEmptyLines: false,
+      complete: results => {
+        try {
+          const rows = results.data;
+          const kind = classifyRows(rows);
+          if (kind === 'delinquency') {
+            const result = parseDelinquencyFromSheets([{
+              name: file.name,
+              rows
+            }], file.name);
+            if (!result) {
+              alert(`"${file.name}" looks like a Delinquency Report but no usable tenant rows could be parsed from it.`);
+              return;
+            }
+            applyDelinquencyResult(result);
+          } else if (kind === 'activities') {
+            applyActivitiesRows(rows, file.name);
+          } else if (kind === 'calls') {
+            applyCallsRows(rows, file.name);
+          } else if (kind === 'directory') {
+            applyDirectoryRows(rows, file.name);
+          } else {
+            alert(`Couldn't tell what kind of report "${file.name}" is. Expected a Delinquency Report, an Activities Summary, a Calls Data export, or a Tenant Directory.`);
+          }
+        } catch (err) {
+          alert(`Error reading "${file.name}": ` + err.message);
+        }
+      },
+      error: err => {
+        alert(`Error reading "${file.name}": ` + err.message);
+      }
+    });
+  }
+  function processExcelFile(file) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const wb = XLSX.read(data, {
+          type: 'array',
+          cellDates: true,
+          dateNF: 'mm/dd/yyyy'
+        });
+        const skip = ['Instructions', 'Progress', 'Call Log'];
+        const sheetNames = wb.SheetNames.filter(n => !skip.includes(n));
+        if (sheetNames.length === 0) {
+          alert(`No usable sheets found in "${file.name}".`);
+          return;
+        }
+        const delinquencySheets = [];
+        let activitiesRowsFound = null;
+        let callsRowsFound = null;
+        let directoryRowsFound = null;
+        let anyRecognized = false;
+        sheetNames.forEach(name => {
+          const ws = wb.Sheets[name];
+          const rows = XLSX.utils.sheet_to_json(ws, {
+            header: 1,
+            raw: false,
+            dateNF: 'mm/dd/yyyy',
+            defval: ''
+          });
+          const kind = classifyRows(rows);
+          if (kind === 'delinquency') {
+            delinquencySheets.push({
+              name,
+              rows
+            });
+            anyRecognized = true;
+          } else if (kind === 'activities' && !activitiesRowsFound) {
+            activitiesRowsFound = rows;
+            anyRecognized = true;
+          } else if (kind === 'calls' && !callsRowsFound) {
+            callsRowsFound = rows;
+            anyRecognized = true;
+          } else if (kind === 'directory' && !directoryRowsFound) {
+            directoryRowsFound = rows;
+            anyRecognized = true;
+          }
+        });
+        if (!anyRecognized) {
+          alert(`Couldn't find a Delinquency Report, an Activities Summary, a Calls Data export, or a Tenant Directory in "${file.name}". Sheets checked: ` + sheetNames.join(', '));
+          return;
+        }
+        let handledDelinquency = false;
+        if (delinquencySheets.length > 0) {
+          const result = parseDelinquencyFromSheets(delinquencySheets, file.name);
+          handledDelinquency = applyDelinquencyResult(result);
+        }
+        if (activitiesRowsFound) {
+          applyActivitiesRows(activitiesRowsFound, file.name);
+        }
+        if (callsRowsFound) {
+          applyCallsRows(callsRowsFound, file.name);
+        }
+        if (directoryRowsFound) {
+          applyDirectoryRows(directoryRowsFound, file.name);
+        }
+        if (delinquencySheets.length > 0 && !handledDelinquency) {
+          alert(`"${file.name}" had Delinquency-shaped sheet(s) but no usable tenant rows could be parsed from them.`);
+        }
+      } catch (err) {
+        alert(`Error reading "${file.name}": ` + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  function handleFiles(fileList) {
+    const files = Array.from(fileList || []);
+    files.forEach(file => {
+      const fname = file.name.toLowerCase();
+      if (fname.endsWith('.csv')) {
+        processCsvFile(file);
+      } else if (fname.endsWith('.xlsx') || fname.endsWith('.xls')) {
+        processExcelFile(file);
+      } else {
+        alert(`Unrecognized file type: "${file.name}". Expected an Excel (.xlsx/.xls) or CSV file containing a Delinquency Report or an Activities Summary.`);
+      }
+    });
+  }
+  function toggleExpand(id) {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);else next.add(id);
+      return next;
+    });
+  }
+  function setNote(id, val) {
+    setNotes(prev => ({
+      ...prev,
+      [id]: val
+    }));
+  }
+  function toggleCompleted(id) {
+    setCompleted(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);else next.add(id);
+      return next;
+    });
+  }
+  const critCount = qualifying.filter(u => u.nextAction.urgency === 'critical').length;
+  const highCount = qualifying.filter(u => u.nextAction.urgency === 'high').length;
+  const nextBizDay = getNextBizDay();
+  const dueNextBizCount = qualifying.filter(u => {
+    const d = nextDateOf(u);
+    return d && startOfDay(d).getTime() === startOfDay(nextBizDay).getTime();
+  }).length;
+  const totalARSum = qualifying.reduce((s, u) => s + u.totalAR, 0);
+  const completedCount = qualifying.filter(u => completed.has(u.id)).length;
+  const moveOutCount = qualifying.filter(u => u.possibleMoveOut).length;
+  const stageCounts = {};
+  qualifying.forEach(u => {
+    stageCounts[u.stage] = (stageCounts[u.stage] || 0) + 1;
+  });
+  return /*#__PURE__*/React.createElement(Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "topbar"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "logo"
+  }, "METRIC ", /*#__PURE__*/React.createElement("span", {
+    className: "accent"
+  }, "EVICTION TRACKER")), /*#__PURE__*/React.createElement("div", {
+    className: "topbar-actions"
+  }, /*#__PURE__*/React.createElement(OverlayButton, {
+    onFiles: handleFiles
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "btn"
+  }, "↑ Upload Reports")), /*#__PURE__*/React.createElement("button", {
+    className: `btn ${!rawUnits ? 'disabled' : ''}`,
+    disabled: !rawUnits,
+    onClick: () => exportSession(enriched, qualifying, notes, reportDate, completed, activities)
+  }, "↓ Export Session"))), !rawUnits ? /*#__PURE__*/React.createElement("div", {
+    className: "upload-wrap",
+    onDragOver: e => {
+      e.preventDefault();
+      setDragOver(true);
+    },
+    onDragLeave: () => setDragOver(false),
+    onDrop: e => {
+      e.preventDefault();
+      setDragOver(false);
+      if (e.dataTransfer.files && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: `upload-card ${dragOver ? 'dragover' : ''}`
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "upload-icon"
+  }, "📋"), /*#__PURE__*/React.createElement("h2", null, "Upload Reports"), /*#__PURE__*/React.createElement("p", null, "Drop or select your Delinquency Report, Activities Summary, Calls Data, and/or Tenant Directory.", /*#__PURE__*/React.createElement("br", null), "Excel or CSV, any layout — the file type is detected automatically."), /*#__PURE__*/React.createElement("p", null, "Only a Delinquency Report is required; the tracker builds from whichever reports are available."), /*#__PURE__*/React.createElement(OverlayButton, {
+    onFiles: handleFiles
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "browse-btn"
+  }, "Browse Files")), activities.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "included-banner",
+    style: {
+      marginTop: 14,
+      borderColor: C.green,
+      color: C.green
+    }
+  }, "✓ Activities Summary loaded (", activities.length.toLocaleString(), " activities). Add a Delinquency Report to build the tracker."), /*#__PURE__*/React.createElement("div", {
+    className: "included-banner"
+  }, /*#__PURE__*/React.createElement("b", null, "Included:"), " All eviction-stage accounts + balances >$1,000 on/after the 10th with no active payment plan or EHO."))) : /*#__PURE__*/React.createElement(Fragment, null, yesterdayPayments && /*#__PURE__*/React.createElement("div", {
+    className: "yp-panel"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "yp-title"
+  }, "Payments Received Yesterday — ", yesterdayPayments.date.toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric'
+  })), yesterdayPayments.count === 0 ? /*#__PURE__*/React.createElement("span", {
+    className: "yp-none"
+  }, "No payments recorded yesterday") : /*#__PURE__*/React.createElement(Fragment, null, /*#__PURE__*/React.createElement("span", {
+    className: "yp-total"
+  }, fmtMoney(yesterdayPayments.total), " · ", yesterdayPayments.count, " payment", yesterdayPayments.count === 1 ? '' : 's'), yesterdayPayments.agents.map(a => /*#__PURE__*/React.createElement("span", {
+    className: "yp-agent",
+    key: a.agent
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "yp-agent-name"
+  }, a.agent), " ", fmtMoney(a.total), " (", a.count, ")")))), /*#__PURE__*/React.createElement("div", {
+    className: "stats-row seven"
+  }, /*#__PURE__*/React.createElement(StatCard, {
+    label: "On Tracker",
+    value: qualifying.length
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Critical",
+    value: critCount,
+    colorClass: "critical"
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Possible Move-Outs",
+    value: moveOutCount,
+    colorClass: "moveout"
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Action Items",
+    value: highCount,
+    colorClass: "high"
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Due Next Biz",
+    value: dueNextBizCount
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Completed",
+    value: `${completedCount}/${qualifying.length}`,
+    colorClass: "completed",
+    small: true
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Total AR",
+    value: fmtMoney(totalARSum),
+    small: true
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "activities-status"
+  }, activities.length > 0 ? `✓ Activities Summary loaded — ${activities.length.toLocaleString()} activities` : '○ No Activities Summary loaded — drop the Activities Summary CSV to see per-account activity logs', " · ", calls.length > 0 ? `✓ Calls Data loaded — ${calls.length.toLocaleString()} calls` : '○ No Calls Data loaded', " · ", directory.length > 0 ? `✓ Tenant Directory loaded — ${directory.length.toLocaleString()} entries` : '○ No Tenant Directory loaded'), /*#__PURE__*/React.createElement("div", {
+    className: "tabs"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: `tab ${activeTab === 'tracker' ? 'active' : ''}`,
+    onClick: () => setActiveTab('tracker')
+  }, "Action Tracker"), /*#__PURE__*/React.createElement("button", {
+    className: `tab ${activeTab === 'grades' ? 'active' : ''}`,
+    onClick: () => setActiveTab('grades')
+  }, "Performance Grades")), activeTab === 'tracker' ? /*#__PURE__*/React.createElement(Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "filter-bar"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "pill-row"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: `pill ${!stageFilter ? 'active' : ''}`,
+    onClick: () => setStageFilter(null)
+  }, "All Stages"), STAGES.map(s => stageCounts[s.id] ? /*#__PURE__*/React.createElement("button", {
+    key: s.id,
+    className: `pill ${stageFilter === s.id ? 'active' : ''}`,
+    onClick: () => setStageFilter(s.id)
+  }, s.label, " ", /*#__PURE__*/React.createElement("span", {
+    className: "count"
+  }, stageCounts[s.id])) : null)), /*#__PURE__*/React.createElement("div", {
+    className: "filter-controls"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "pill-row"
+  }, ['All', 'Karla'].map(a => /*#__PURE__*/React.createElement("button", {
+    key: a,
+    className: `pill ${agentFilter === a ? 'active' : ''}`,
+    onClick: () => setAgentFilter(a)
+  }, a))), /*#__PURE__*/React.createElement("select", {
+    value: propertyFilter,
+    onChange: e => setPropertyFilter(e.target.value)
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "All Properties"), properties.map(p => /*#__PURE__*/React.createElement("option", {
+    key: p,
+    value: p
+  }, p))), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    placeholder: "Search name, unit, property...",
+    value: search,
+    onChange: e => setSearch(e.target.value),
+    style: {
+      minWidth: 220
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    className: `toggle-btn ${showAll ? 'on' : ''}`,
+    onClick: () => setShowAll(!showAll)
+  }, showAll ? 'Showing All' : 'Action Only'))), /*#__PURE__*/React.createElement("div", {
+    className: "table-wrap"
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("colgroup", null, /*#__PURE__*/React.createElement("col", {
+    style: {
+      width: '3%'
+    }
+  }), /*#__PURE__*/React.createElement("col", {
+    style: {
+      width: '14%'
+    }
+  }), /*#__PURE__*/React.createElement("col", {
+    style: {
+      width: '6%'
+    }
+  }), /*#__PURE__*/React.createElement("col", {
+    style: {
+      width: '39%'
+    }
+  }), /*#__PURE__*/React.createElement("col", {
+    style: {
+      width: '8%'
+    }
+  }), /*#__PURE__*/React.createElement("col", {
+    style: {
+      width: '13%'
+    }
+  }), /*#__PURE__*/React.createElement("col", {
+    style: {
+      width: '9%'
+    }
+  }), /*#__PURE__*/React.createElement("col", {
+    style: {
+      width: '8%'
+    }
+  })), /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "#"), /*#__PURE__*/React.createElement("th", null, "Property"), /*#__PURE__*/React.createElement("th", null, "Unit"), /*#__PURE__*/React.createElement("th", null, "Tenant / Next Action"), /*#__PURE__*/React.createElement("th", null, "Balance"), /*#__PURE__*/React.createElement("th", null, "Stage"), /*#__PURE__*/React.createElement("th", null, "Next Date"), /*#__PURE__*/React.createElement("th", null, "Last Pmt"))), /*#__PURE__*/React.createElement("tbody", null, visible.map((u, idx) => /*#__PURE__*/React.createElement(Row, {
+    key: u.id,
+    u: u,
+    idx: idx,
+    isExpanded: expanded.has(u.id),
+    onToggle: toggleExpand,
+    notes: notes,
+    onNotes: setNote,
+    isCompleted: completed.has(u.id),
+    onToggleCompleted: toggleCompleted
+  })), visible.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    colSpan: 8,
+    style: {
+      textAlign: 'center',
+      padding: 30,
+      color: C.muted
+    }
+  }, "No accounts match the current filters.")))))) : /*#__PURE__*/React.createElement(GradesPanel, {
+    enriched: enriched,
+    activities: activities,
+    callIndex: callIndex,
+    hasCallsData: calls.length > 0
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "footer"
+  }, "METRIC PROPERTY MANAGEMENT · EVICTION TRACKER · ", new Date().toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric'
+  })));
+}
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(/*#__PURE__*/React.createElement(App, null));
+</script>
+</body>
+</html>

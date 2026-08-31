@@ -54,7 +54,7 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls'],
+  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
   operations:  ['tasks', 'platform', 'email', 'eod', 'reports', 'sixpm', 'calls'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
@@ -164,7 +164,17 @@ function loadTab(tab) {
   if (tab === 'reports') reportLoad();
   if (tab === 'sixpm') sixpmLoad();
   if (tab === 'calls') loadCallAnalyzer();
+  if (tab === 'evictions') loadEvictions();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
+}
+
+// The eviction app is a self-contained React tool in an iframe. Load it lazily
+// the first time the tab opens so its CDN scripts aren't fetched on every page
+// load. The frame itself is same-origin, so its /api/evictions/* fetches carry
+// the session cookie; access is enforced server-side regardless of the nav.
+function loadEvictions() {
+  const frame = $('#evictions-frame');
+  if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/evictions/app');
 }
 
 // ---- Mobile sidebar toggle ----------------------------------------------------

@@ -75,6 +75,7 @@
       </div>
       <button data-tab="reports"><span class="nav-dot"></span>Daily Report</button>
       <button data-tab="crm"><span class="nav-dot"></span>BD CRM</button>
+      <button data-tab="evictions"><span class="nav-dot"></span>Evictions</button>
     </nav>
     <div class="sidebar-foot">
       <div class="sync-status">
@@ -1523,6 +1524,21 @@
       </div>
     </div>
     <div id="eod-output"></div>
+  </section>
+
+  <!-- ============ EVICTION TRACKER (admin only) ============ -->
+  <!-- The ported standalone app runs in its own iframe (its React + parsing
+       logic unchanged). src is set lazily by loadEvictions() the first time
+       the tab opens, so React/XLSX/PapaParse are not fetched on every load. -->
+  <section id="tab-evictions" class="tab">
+    <div class="view-head">
+      <div>
+        <h2>Eviction Tracker</h2>
+        <p class="muted small">AppFolio reports — Delinquency · Activities · Calls · Directory. Last upload is saved and reloaded automatically.</p>
+      </div>
+    </div>
+    <iframe id="evictions-frame" title="Eviction Tracker"
+            style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff"></iframe>
   </section>
 </main>
 </div>
