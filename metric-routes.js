@@ -398,9 +398,13 @@ function registerMetricRoutes(app, db) {
   }
   if (!fs.existsSync(MAINT_SOPS_INDEX)) fs.writeFileSync(MAINT_SOPS_INDEX, '[]');
 
-  if (afReports && !process.env.METRIC_API_KEY) {
-    console.warn('[WARN] METRIC_API_KEY not set — /api/appfolio/* is publicly readable. ' +
-                 'Set it in the Render dashboard and in Erick\'s MCP config.');
+  // requireMetricAccess fails open when the key is unset, and it now also
+  // guards the routes that serve Lyndsay's mailbox — so an unset key exposes
+  // her mail, not just billable amounts. Warn loudly either way.
+  if (!process.env.METRIC_API_KEY) {
+    console.warn('[WARN] METRIC_API_KEY not set — /api/appfolio/* AND the /api/email/* '
+               + 'routes that read the Lyndsay mailbox are publicly readable. '
+               + 'Set it in the Render dashboard and in the MCP config for Erick.');
   }
 
   // ── MODULE: Operational Tasks (Erick's maintenance board) ─────────────────
