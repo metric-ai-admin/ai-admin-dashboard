@@ -2397,7 +2397,7 @@ app.get('/api/triage/summary', async (req, res) => {
 // Creates 8 Outlook message rules in Lyndsay's inbox via Graph API.
 // Requires MailboxSettings.ReadWrite application permission.
 // Idempotent-ish: skips rules whose displayName already exists.
-app.post('/api/email/setup-outlook-rules', async (req, res) => {
+app.post('/api/email/setup-outlook-rules', requireAuth, requireRole('admin'), async (req, res) => {
   if (!GRAPH_CONFIGURED) return res.status(503).json({ error: 'Graph API not configured' });
   try {
     const token = await graphMailboxToken('lyndsay');
