@@ -1228,8 +1228,17 @@ function autoMoveRenderState(s) {
   }
 
   const fmt = ts => ts ? new Date(ts).toLocaleString() : '—';
-  $('#automove-meta').textContent =
-    `Last run: ${fmt(s.lastRun)} · Actions logged today: ${s.processedToday ?? 0}`;
+  // Last checked = the cron heartbeat (every ~15 min even when disabled). If it
+  // is stale by much more than the interval, the scheduler stopped — distinct
+  // from Last run, which only advances when the runner actually executes.
+  let meta = `Last run: ${fmt(s.lastRun)} · Last checked: ${fmt(s.lastTick)} · Actions logged today: ${s.processedToday ?? 0}`;
+  if (s.lastTick) {
+    const mins = Math.round((Date.now() - new Date(s.lastTick).getTime()) / 60000);
+    const stale = mins > (s.intervalMinutes || 15) * 2 + 2;
+    if (stale) meta += ` · ⚠️ scheduler may be stalled (${mins}m since last check)`;
+  }
+  if (s.lastError) meta += ` · last error: ${s.lastError}`;
+  $('#automove-meta').textContent = meta;
 }
 
 async function autoMoveToggle(setting) {

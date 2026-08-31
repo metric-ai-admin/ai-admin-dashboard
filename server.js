@@ -2928,6 +2928,26 @@ function readAutoMoveConfig() {
   } catch (err) { logLine(`[auto-move] config read failed: ${err.message}`); }
   return null;
 }
+
+// Run-state, separate from config. "Last run" used to be inferred from the
+// newest auto_move_log row, which froze whenever a pass logged nothing — a
+// disabled cron, or an enabled dry run over an empty inbox (scanned 0, no rows).
+// So the run itself is recorded here every time, independent of whether it moved
+// anything. lastTick is stamped on every cron fire even while disabled, so the
+// dashboard can show the cron is alive rather than crashed.
+const AUTOMOVE_STATE_FILE = path.join(DATA_DIR, 'automove_state.json');
+function readAutoMoveState() {
+  try {
+    if (fs.existsSync(AUTOMOVE_STATE_FILE)) return JSON.parse(fs.readFileSync(AUTOMOVE_STATE_FILE, 'utf8'));
+  } catch (err) { logLine(`[auto-move] state read failed: ${err.message}`); }
+  return {};
+}
+async function writeAutoMoveState(patch) {
+  try {
+    const next = Object.assign({}, readAutoMoveState(), patch);
+    await writeJSON(AUTOMOVE_STATE_FILE, next);
+  } catch (err) { logLine(`[auto-move] state write failed: ${err.message}`); }
+}
 // Synchronous at boot, so the startup log line below reflects the file, and so
 // the file wins over the Render env vars — which is the whole point of moving
 // the switch into the UI.
@@ -2943,16 +2963,37 @@ async function runAutoMoveNow(opts) {
   if (!GRAPH_CONFIGURED) throw new Error('Graph API not configured');
   if (!CRM_CONFIGURED) throw new Error('Supabase not configured — auto_move_log is unreachable');
   const db = supabaseAdmin || supabasePublic;
-  const token = await graphMailToken();
-  return autoMove.runAutoMove(
-    { fetchFn, token, mailbox: MAILBOX_LYNDSAY, db, log: logLine },
-    opts || {},
-  );
+  try {
+    const token = await graphMailToken();
+    const summary = await autoMove.runAutoMove(
+      { fetchFn, token, mailbox: MAILBOX_LYNDSAY, db, log: logLine },
+      opts || {},
+    );
+    // Stamp the run whether or not it moved anything — this is the fix for a
+    // "Last run" that froze on empty passes.
+    await writeAutoMoveState({
+      lastRun: new Date().toISOString(),
+      lastError: null,
+      lastSummary: {
+        scanned: summary.scanned, archived: summary.archived,
+        unsubscribed: summary.unsubscribed, errors: summary.errors, dryRun: summary.dryRun,
+      },
+    });
+    return summary;
+  } catch (err) {
+    // A failed attempt is still an attempt; record it so the dashboard shows
+    // the error instead of a silently stale timestamp.
+    await writeAutoMoveState({ lastRun: new Date().toISOString(), lastError: err.message });
+    throw err;
+  }
 }
 
 // Its own cron rather than a call inside refreshEmailAndCalendar(): if the
 // auto-move throws, the email/calendar refresh should not go down with it.
 cron.schedule(`*/${EMAIL_REFRESH_MINUTES} * * * *`, async () => {
+  // Stamp every fire, even while disabled, so "Last checked" proves the cron is
+  // alive — a frozen Last checked means the scheduler itself stopped.
+  await writeAutoMoveState({ lastTick: new Date().toISOString(), enabledAtTick: autoMove.autoMoveEnabled() });
   if (!autoMove.autoMoveEnabled()) return;
   try {
     const s = await runAutoMoveNow();
@@ -3084,11 +3125,18 @@ app.get('/api/email/auto-move/log', requireMetricAdmin, async (req, res) => {
 // Current switch state for the dashboard controls. requireMetricAdmin: this is
 // admin-only config, and the same guard the SOP/platform writes use.
 app.get('/api/email/auto-move/status', requireMetricAdmin, async (req, res) => {
+  const state = readAutoMoveState();
   const out = {
     enabled: autoMove.autoMoveEnabled(),
     dryRun: autoMove.autoMoveDryRun(),
     intervalMinutes: EMAIL_REFRESH_MINUTES,
-    lastRun: null,
+    // The actual last execution, recorded every run regardless of actions.
+    lastRun: state.lastRun || null,
+    // Every cron fire, disabled or not — a stale value here means the scheduler
+    // stopped, not just that nothing moved.
+    lastTick: state.lastTick || null,
+    lastError: state.lastError || null,
+    lastSummary: state.lastSummary || null,
     processedToday: 0,
   };
   if (CRM_CONFIGURED) {
@@ -3097,7 +3145,9 @@ app.get('/api/email/auto-move/status', requireMetricAdmin, async (req, res) => {
       const { data } = await db.from('auto_move_log')
         .select('executed_at').order('executed_at', { ascending: false }).limit(500);
       const rows = data || [];
-      out.lastRun = rows[0]?.executed_at || null;
+      // Fallback for installs from before run-state existed: the newest logged
+      // action, so lastRun is not blank on first deploy of this change.
+      if (!out.lastRun) out.lastRun = rows[0]?.executed_at || null;
       // Count in Central time so "today" is the office's day, not UTC's — the
       // same reason the runner slices the mailbox on local midnight.
       const ctDate = d => new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date(d));
