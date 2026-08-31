@@ -50,7 +50,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
-const { registerMetricRoutes, requireMetricAccess } = require('./metric-routes.js');
+const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const crmEngine = require('./crm-task-engine.js');
 const XLSX        = require('xlsx');
@@ -664,7 +664,7 @@ app.post('/api/tasks/bulk-import', async (req, res) => {
 // MODULE 2 — SOPs KNOWLEDGE BASE
 // =====================================================================
 
-app.get('/api/sops', async (req, res) => {
+app.get('/api/sops', requireMetricAccess, async (req, res) => {
   const index = await readJSON(SOPS_INDEX, []);
   res.json(index.map(s => ({
     id: s.id, title: s.title, tags: s.tags || [], uploadedAt: s.uploadedAt, chars: (s.text || '').length,
@@ -672,7 +672,7 @@ app.get('/api/sops', async (req, res) => {
   })));
 });
 
-app.post('/api/sops', async (req, res) => {
+app.post('/api/sops', requireMetricAdmin, async (req, res) => {
   const { title, text, tags, source, category, slab_url } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: 'Title required' });
   if (!text || !text.trim()) return res.status(400).json({ error: 'Body text required' });
@@ -692,14 +692,14 @@ app.post('/api/sops', async (req, res) => {
   res.json({ id: entry.id, title: entry.title, chars: entry.text.length });
 });
 
-app.get('/api/sops/:id', async (req, res) => {
+app.get('/api/sops/:id', requireMetricAccess, async (req, res) => {
   const index = await readJSON(SOPS_INDEX, []);
   const sop = index.find(s => s.id === req.params.id);
   if (!sop) return res.status(404).json({ error: 'SOP not found' });
   res.json(sop);
 });
 
-app.delete('/api/sops/:id', async (req, res) => {
+app.delete('/api/sops/:id', requireMetricAdmin, async (req, res) => {
   let index = await readJSON(SOPS_INDEX, []);
   const before = index.length;
   index = index.filter(s => s.id !== req.params.id);
@@ -724,7 +724,7 @@ app.post('/api/sops/bulk-import', async (req, res) => {
   res.json({ ok: true, added, updated, total: index.length });
 });
 
-app.get('/api/sops/search/:q', async (req, res) => {
+app.get('/api/sops/search/:q', requireMetricAccess, async (req, res) => {
   const q = (req.params.q || '').toLowerCase();
   if (!q) return res.json({ results: [] });
   const index = await readJSON(SOPS_INDEX, []);
@@ -1051,13 +1051,13 @@ app.post('/api/asana/import', async (req, res) => {
 
 const PROJECT_PHASES = ['Not started', 'Discovery', 'In Development', 'Testing', 'Live'];
 
-app.get('/api/platform-projects', async (req, res) => {
+app.get('/api/platform-projects', requireMetricAccess, async (req, res) => {
   const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
   projects.sort((a, b) => (a.order || 0) - (b.order || 0));
   res.json(projects);
 });
 
-app.post('/api/platform-projects', async (req, res) => {
+app.post('/api/platform-projects', requireMetricAdmin, async (req, res) => {
   const { id, module, phase, blockers, nextAction, order } = req.body;
   if (!module || !module.trim()) return res.status(400).json({ error: 'Module name required' });
   const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
@@ -1077,7 +1077,7 @@ app.post('/api/platform-projects', async (req, res) => {
 
 // Bulk import preserving exact ids/lastUpdate/subtasks — see
 // /api/tasks/bulk-import for why.
-app.post('/api/platform-projects/bulk-import', async (req, res) => {
+app.post('/api/platform-projects/bulk-import', requireMetricAdmin, async (req, res) => {
   const incoming = Array.isArray(req.body?.projects) ? req.body.projects : [];
   if (!incoming.length) return res.status(400).json({ error: '"projects" array required' });
   const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
@@ -1091,7 +1091,7 @@ app.post('/api/platform-projects/bulk-import', async (req, res) => {
   res.json({ ok: true, added, updated, total: projects.length });
 });
 
-app.put('/api/platform-projects/:id', async (req, res) => {
+app.put('/api/platform-projects/:id', requireMetricAdmin, async (req, res) => {
   const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
   const idx = projects.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Project not found' });
@@ -1111,7 +1111,7 @@ app.put('/api/platform-projects/:id', async (req, res) => {
 
 // ── Subtasks ──────────────────────────────────────────────────────────────
 
-app.post('/api/platform-projects/:id/subtasks', async (req, res) => {
+app.post('/api/platform-projects/:id/subtasks', requireMetricAdmin, async (req, res) => {
   const { title, done } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: 'Subtask title required' });
   const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
@@ -1125,7 +1125,7 @@ app.post('/api/platform-projects/:id/subtasks', async (req, res) => {
   res.json(projects[idx]);
 });
 
-app.put('/api/platform-projects/:id/subtasks/:subId', async (req, res) => {
+app.put('/api/platform-projects/:id/subtasks/:subId', requireMetricAdmin, async (req, res) => {
   const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
   const idx = projects.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Project not found' });
@@ -1139,7 +1139,7 @@ app.put('/api/platform-projects/:id/subtasks/:subId', async (req, res) => {
   res.json(projects[idx]);
 });
 
-app.delete('/api/platform-projects/:id/subtasks/:subId', async (req, res) => {
+app.delete('/api/platform-projects/:id/subtasks/:subId', requireMetricAdmin, async (req, res) => {
   const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
   const idx = projects.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Project not found' });
@@ -1151,7 +1151,7 @@ app.delete('/api/platform-projects/:id/subtasks/:subId', async (req, res) => {
   res.json(projects[idx]);
 });
 
-app.delete('/api/platform-projects/:id', async (req, res) => {
+app.delete('/api/platform-projects/:id', requireMetricAdmin, async (req, res) => {
   const projects = await readJSON(PLATFORM_PROJECTS_FILE, []);
   const idx = projects.findIndex(p => p.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Project not found' });

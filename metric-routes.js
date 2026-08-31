@@ -96,6 +96,26 @@ function requireMetricAccess(req, res, next) {
   return res.status(401).json({ error: 'Unauthorized — missing or invalid x-metric-key' });
 }
 
+// Write guard for routes the MCP tools also mutate (SOPs, platform projects).
+// requireRole('admin') alone would 403 every MCP call — those come over HTTP
+// with no cookie, so req.user is undefined. So a valid x-metric-key stands in
+// for admin: it is the shared server-to-server secret the MCP already sends,
+// and holding it is itself a trust boundary. A browser caller, which has no
+// key, must instead be a logged-in admin. Anyone who is neither gets 403.
+//
+// Unlike requireMetricAccess this does NOT fail open when the key is unset: a
+// write should never be admin-gated by an absent secret. With no key set, only
+// an admin session passes (and MCP writes would need the key configured, which
+// production has).
+function requireMetricAdmin(req, res, next) {
+  const key = process.env.METRIC_API_KEY;
+  const provided = req.get('x-metric-key');
+  if (key && provided && timingSafeEq(provided, key)) return next();
+  const payload = sessionPayload(req);
+  if (payload && payload.role === 'admin') return next();
+  return res.status(403).json({ error: 'Admin access required' });
+}
+
 // ── CSV parser (minimal, handles quotes/commas) ───────────────────────────────
 function parseCSV(text) {
   const rows = [];
@@ -1030,4 +1050,4 @@ function registerMetricRoutes(app, db) {
 // email routes that serve Lyndsay's mailbox. They need session-or-key for the
 // same reason /api/operational does: the MCP tools read them over HTTP with no
 // cookie, sending x-metric-key instead.
-module.exports = { registerMetricRoutes, requireMetricAccess };
+module.exports = { registerMetricRoutes, requireMetricAccess, requireMetricAdmin };
