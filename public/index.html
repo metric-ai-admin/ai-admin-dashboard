@@ -393,12 +393,44 @@
 
       <p class="muted small" id="automove-meta" style="margin:10px 0 4px"></p>
 
-      <h4 style="margin:16px 0 6px">Recent actions</h4>
+      <h4 style="margin:16px 0 6px">Action log</h4>
+
+      <!-- Summary — counts actions actually moved (dry_run = false). -->
+      <div class="automove-summary-bar" id="automove-summary"></div>
+
+      <!-- Filters -->
+      <div class="automove-log-filters">
+        <label class="small">From <input type="date" id="am-f-from" class="crm-input"></label>
+        <label class="small">To <input type="date" id="am-f-to" class="crm-input"></label>
+        <label class="small">Action
+          <select id="am-f-action" class="crm-select">
+            <option value="all">All</option>
+            <option value="move_unsubscribe">move_unsubscribe</option>
+            <option value="archive_read">archive_read</option>
+            <option value="error">error</option>
+          </select>
+        </label>
+        <label class="small">Dry Run
+          <select id="am-f-dry" class="crm-select">
+            <option value="all">All</option>
+            <option value="live">Live only</option>
+            <option value="dry">Dry run only</option>
+          </select>
+        </label>
+        <button class="btn-sm primary" id="am-f-apply">Apply</button>
+        <button class="btn-sm" id="am-f-clear">Clear</button>
+        <button class="btn-sm" id="am-export" style="margin-left:auto">&#11015; Export CSV</button>
+      </div>
+
       <div style="overflow-x:auto">
         <table class="crm-table" id="automove-log-table">
           <thead><tr><th>Time</th><th>Sender</th><th>Subject</th><th>Action</th><th>Dry run</th><th>Error</th></tr></thead>
           <tbody id="automove-log-body"></tbody>
         </table>
+      </div>
+      <div style="text-align:center;margin-top:10px">
+        <span class="small muted" id="am-log-count"></span>
+        <button class="btn-sm" id="am-load-more" style="display:none;margin-left:10px">Load more</button>
       </div>
     </div>
   </section>

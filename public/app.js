@@ -1254,26 +1254,82 @@ async function autoMoveToggle(setting) {
   loadAutoMove();
 }
 
-async function autoMoveLoadLog() {
+const AM_PAGE = 25;
+let amOffset = 0;
+let amLogWired = false;
+
+// Reads the filter controls into a query string shared by the log fetch and the
+// CSV export, so what you see is exactly what you download.
+function amFilterParams() {
+  const p = new URLSearchParams();
+  const from = $('#am-f-from')?.value, to = $('#am-f-to')?.value;
+  const action = $('#am-f-action')?.value, dry = $('#am-f-dry')?.value;
+  if (from) p.set('from', from);
+  if (to) p.set('to', to);
+  if (action && action !== 'all') p.set('action', action);
+  if (dry && dry !== 'all') p.set('dryRun', dry);
+  return p;
+}
+
+function amRenderRows(rows, append) {
   const body = $('#automove-log-body');
   if (!body) return;
+  const html = rows.map(r => `<tr>
+    <td class="mono small">${r.executed_at ? new Date(r.executed_at).toLocaleString() : '—'}</td>
+    <td class="small">${esc(r.sender || '—')}</td>
+    <td class="small">${esc((r.subject || '').slice(0, 60))}</td>
+    <td class="small">${esc(r.action || '—')}</td>
+    <td class="small">${r.dry_run ? '✓' : ''}</td>
+    <td class="small">${r.error ? `<span class="badge badge-red">${esc(r.error.slice(0, 40))}</span>` : ''}</td>
+  </tr>`).join('');
+  if (append) body.insertAdjacentHTML('beforeend', html);
+  else body.innerHTML = html || `<tr><td colspan="6" class="small muted">No actions match these filters.</td></tr>`;
+}
+
+// reset=true starts a fresh query (offset 0, replaces rows); false appends the
+// next page for "Load more".
+async function autoMoveLoadLog(reset = true) {
+  const body = $('#automove-log-body');
+  if (!body) return;
+
+  if (!amLogWired) {
+    $('#am-f-apply')?.addEventListener('click', () => autoMoveLoadLog(true));
+    $('#am-f-clear')?.addEventListener('click', () => {
+      ['am-f-from', 'am-f-to'].forEach(id => { const el = $('#' + id); if (el) el.value = ''; });
+      $('#am-f-action').value = 'all'; $('#am-f-dry').value = 'all';
+      autoMoveLoadLog(true);
+    });
+    $('#am-load-more')?.addEventListener('click', () => autoMoveLoadLog(false));
+    $('#am-export')?.addEventListener('click', () => {
+      const p = amFilterParams(); p.set('format', 'csv');
+      window.location.href = '/api/email/auto-move/log?' + p.toString();
+    });
+    amLogWired = true;
+  }
+
+  if (reset) amOffset = 0;
+  const p = amFilterParams();
+  p.set('limit', AM_PAGE); p.set('offset', amOffset);
+
   try {
-    const d = await api('/api/email/auto-move/log?limit=20');
-    const rows = d.entries || [];
-    if (!rows.length) {
-      body.innerHTML = `<tr><td colspan="6" class="small muted">No actions logged yet.</td></tr>`;
-      return;
+    const d = await api('/api/email/auto-move/log?' + p.toString());
+    if (reset && d.summary) {
+      $('#automove-summary').innerHTML =
+        `<span class="am-stat"><b>${d.summary.today}</b> moved today</span>`
+        + `<span class="am-stat"><b>${d.summary.week}</b> this week</span>`
+        + `<span class="am-stat"><b>${d.summary.month}</b> this month</span>`
+        + `<span class="small muted">(live moves only)</span>`;
     }
-    body.innerHTML = rows.map(r => `<tr>
-      <td class="mono small">${r.executed_at ? new Date(r.executed_at).toLocaleString() : '—'}</td>
-      <td class="small">${esc(r.sender || '—')}</td>
-      <td class="small">${esc((r.subject || '').slice(0, 60))}</td>
-      <td class="small">${esc(r.action || '—')}</td>
-      <td class="small">${r.dry_run ? '✓' : ''}</td>
-      <td class="small">${r.error ? `<span class="badge badge-red">${esc(r.error.slice(0, 40))}</span>` : ''}</td>
-    </tr>`).join('');
+    amRenderRows(d.entries || [], !reset);
+
+    const total = d.page?.total ?? (d.entries || []).length;
+    amOffset += (d.entries || []).length;
+    const more = $('#am-load-more');
+    if (more) more.style.display = amOffset < total ? '' : 'none';
+    const cnt = $('#am-log-count');
+    if (cnt) cnt.textContent = total ? `Showing ${Math.min(amOffset, total)} of ${total}` : '';
   } catch (err) {
-    body.innerHTML = `<tr><td colspan="6" class="small muted">Log unavailable: ${esc(err.message)}</td></tr>`;
+    if (reset) body.innerHTML = `<tr><td colspan="6" class="small muted">Log unavailable: ${esc(err.message)}</td></tr>`;
   }
 }
 

@@ -2985,24 +2985,100 @@ app.post('/api/email/auto-move/run', requireAuth, requireRole('admin'), async (r
   }
 });
 
-// What it has done. Newest first.
-app.get('/api/email/auto-move/log', requireAuth, requireRole('admin'), async (req, res) => {
+// The UTC instant of a Central-time day boundary — start (00:00) or end
+// (23:59:59.999) of a YYYY-MM-DD. shortOffset resolves CST vs CDT at that date,
+// so DST is handled. Used to filter executed_at on the office's day, not UTC's.
+function ctBoundaryUTC(dateStr, endOfDay) {
+  const wall = new Date(dateStr + (endOfDay ? 'T23:59:59.999' : 'T00:00:00.000') + 'Z');
+  const off = new Intl.DateTimeFormat('en-US', { timeZone: LYNDSAY_TIMEZONE, timeZoneName: 'shortOffset' })
+    .formatToParts(wall).find(p => p.type === 'timeZoneName').value;         // e.g. "GMT-5"
+  const m = off.match(/GMT([+-]\d+)(?::(\d+))?/);
+  const offMin = m ? (parseInt(m[1], 10) * 60 + (m[1].startsWith('-') ? -1 : 1) * (m[2] ? parseInt(m[2], 10) : 0)) : 0;
+  return new Date(wall.getTime() - offMin * 60000).toISOString();
+}
+
+// Applies the shared From/To/Action/DryRun filters to an auto_move_log query.
+function applyAutoMoveFilters(q, query) {
+  if (query.from) q = q.gte('executed_at', ctBoundaryUTC(String(query.from), false));
+  if (query.to) q = q.lte('executed_at', ctBoundaryUTC(String(query.to), true));
+  if (query.action && query.action !== 'all') {
+    if (query.action === 'error') q = q.not('error', 'is', null);
+    else q = q.eq('action', String(query.action));
+  }
+  if (query.dryRun === 'live') q = q.eq('dry_run', false);
+  else if (query.dryRun === 'dry') q = q.eq('dry_run', true);
+  return q;
+}
+
+// The action log: paginated, filterable, with global moved-today/week/month
+// counts, and a ?format=csv export of the filtered set. requireMetricAdmin.
+app.get('/api/email/auto-move/log', requireMetricAdmin, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   const db = supabaseAdmin || supabasePublic;
-  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
-  const { data, error } = await db
-    .from('auto_move_log')
-    .select('*')
-    .order('executed_at', { ascending: false })
-    .limit(limit);
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({
-    enabled: autoMove.autoMoveEnabled(),
-    dryRun: autoMove.autoMoveDryRun(),
-    intervalMinutes: EMAIL_REFRESH_MINUTES,
-    count: (data || []).length,
-    entries: data || [],
-  });
+
+  try {
+    // ── CSV export: the whole filtered set, no pagination ──────────────────
+    if (String(req.query.format).toLowerCase() === 'csv') {
+      let q = db.from('auto_move_log')
+        .select('executed_at,sender,subject,action,matched_on,target_folder,dry_run,error')
+        .order('executed_at', { ascending: false }).limit(10000);
+      q = applyAutoMoveFilters(q, req.query);
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+      const cols = ['executed_at', 'sender', 'subject', 'action', 'matched_on', 'target_folder', 'dry_run', 'error'];
+      const cell = (v) => {
+        if (v === null || v === undefined) return '';
+        const s = String(v);
+        return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      };
+      const csv = '﻿' + [cols.join(',')].concat((data || []).map(r => cols.map(c => cell(r[c])).join(','))).join('\r\n');
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="auto_move_log_${today}.csv"`);
+      return res.send(csv);
+    }
+
+    // ── Paginated page of entries ──────────────────────────────────────────
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 200);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    let q = db.from('auto_move_log').select('*', { count: 'exact' })
+      .order('executed_at', { ascending: false }).range(offset, offset + limit - 1);
+    q = applyAutoMoveFilters(q, req.query);
+    const { data, error, count } = await q;
+    if (error) throw new Error(error.message);
+
+    // ── Global summary — actions actually MOVED (dry_run=false) by CT day.
+    // One query since the start of the month, then bucketed in Central time.
+    const monthStart = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE }).slice(0, 7) + '-01';
+    const summary = { today: 0, week: 0, month: 0 };
+    const { data: moved, error: sErr } = await db.from('auto_move_log')
+      .select('executed_at').eq('dry_run', false)
+      .gte('executed_at', ctBoundaryUTC(monthStart, false));
+    if (sErr) throw new Error(sErr.message);
+    const ctDate = d => new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date(d));
+    const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date());
+    // Monday-based week start, in Central time.
+    const nowCt = new Date(new Date().toLocaleString('en-US', { timeZone: LYNDSAY_TIMEZONE }));
+    const weekStart = new Date(nowCt); weekStart.setDate(nowCt.getDate() - ((nowCt.getDay() + 6) % 7)); weekStart.setHours(0, 0, 0, 0);
+    const weekStartStr = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(weekStart);
+    for (const r of (moved || [])) {
+      const d = ctDate(r.executed_at);
+      summary.month++;
+      if (d === todayStr) summary.today++;
+      if (d >= weekStartStr) summary.week++;
+    }
+
+    res.json({
+      enabled: autoMove.autoMoveEnabled(),
+      dryRun: autoMove.autoMoveDryRun(),
+      intervalMinutes: EMAIL_REFRESH_MINUTES,
+      summary,
+      page: { offset, limit, total: count ?? (data || []).length, returned: (data || []).length },
+      entries: data || [],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Current switch state for the dashboard controls. requireMetricAdmin: this is

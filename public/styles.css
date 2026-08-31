@@ -1476,3 +1476,15 @@ tr.ca-sel { background: var(--accent-glow); }
 .toggle-btn.toggle-warn { background: var(--warning-bg); color: var(--warning); border-color: var(--warning); }
 .toggle-btn.toggle-live { background: var(--success-bg); color: var(--success); border-color: var(--success); }
 .toggle-btn.toggle-muted { background: var(--bg-elevated); color: var(--text-muted); opacity: 0.6; }
+
+/* ── Auto-Move log: summary bar + filters ─────────────────────────────────── */
+.automove-summary-bar { display: flex; gap: 18px; align-items: baseline; flex-wrap: wrap; margin: 4px 0 12px; }
+.am-stat { font-size: 0.9rem; color: var(--text-secondary); }
+.am-stat b { font-size: 1.25rem; color: var(--text); margin-right: 4px; }
+.automove-log-filters {
+  display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
+  padding: 10px 12px; margin-bottom: 10px;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px;
+}
+.automove-log-filters label { display: flex; flex-direction: column; gap: 3px; color: var(--text-muted); }
+.automove-log-filters input, .automove-log-filters select { min-width: 130px; }
