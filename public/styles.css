@@ -1453,3 +1453,26 @@ tr.ca-sel { background: var(--accent-glow); }
 .sv-spinner { width: 14px; height: 14px; border: 2px solid var(--border);
   border-top-color: var(--accent); border-radius: 50%; animation: sv-spin .7s linear infinite; }
 @keyframes sv-spin { to { transform: rotate(360deg); } }
+
+/* ── Auto-Move Controls (Email/Cal tab, admin only) ───────────────────────── */
+.automove-status { margin: 8px 0 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.automove-toggles { display: flex; flex-direction: column; gap: 8px; max-width: 420px; }
+.automove-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; background: var(--bg-elevated);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.automove-label { font-size: 0.92rem; }
+.toggle-btn {
+  min-width: 58px; padding: 5px 14px; border-radius: 999px;
+  border: 1px solid var(--border-accent); cursor: pointer;
+  font-weight: 700; font-size: 0.8rem; letter-spacing: 0.03em;
+  background: var(--bg-surface); color: var(--text-secondary);
+  transition: background .15s, color .15s, border-color .15s;
+}
+.toggle-btn:disabled { opacity: 0.5; cursor: default; }
+.toggle-btn.toggle-on   { background: var(--success-bg); color: var(--success); border-color: var(--success); }
+.toggle-btn.toggle-off  { background: var(--bg-elevated); color: var(--text-muted); }
+.toggle-btn.toggle-warn { background: var(--warning-bg); color: var(--warning); border-color: var(--warning); }
+.toggle-btn.toggle-live { background: var(--success-bg); color: var(--success); border-color: var(--success); }
+.toggle-btn.toggle-muted { background: var(--bg-elevated); color: var(--text-muted); opacity: 0.6; }

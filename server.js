@@ -2909,6 +2909,36 @@ const CRM_CONFIGURED = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 //   AUTO_MOVE_ENABLED=false   the cron does not run at all
 //   AUTO_MOVE_DRY_RUN=true    decide and log, move nothing
 
+// ── UI-driven config, without touching the runner ─────────────────────────
+// The runner (email-automove.js) reads AUTO_MOVE_ENABLED / AUTO_MOVE_DRY_RUN
+// from process.env and knows nothing about this file. The dashboard toggles
+// write here, and we mirror the file into process.env — at boot and on every
+// toggle — so the cron picks up the change on its next tick with no restart
+// and no Render edit. The file is the source of truth; until it exists the
+// Render env vars are the default, so nothing changes on first deploy.
+const AUTOMOVE_CONFIG_FILE = path.join(DATA_DIR, 'automove_config.json');
+
+function applyAutoMoveConfig(cfg) {
+  if (cfg && typeof cfg.enabled === 'boolean') process.env.AUTO_MOVE_ENABLED = cfg.enabled ? 'true' : 'false';
+  if (cfg && typeof cfg.dryRun === 'boolean') process.env.AUTO_MOVE_DRY_RUN = cfg.dryRun ? 'true' : 'false';
+}
+function readAutoMoveConfig() {
+  try {
+    if (fs.existsSync(AUTOMOVE_CONFIG_FILE)) return JSON.parse(fs.readFileSync(AUTOMOVE_CONFIG_FILE, 'utf8'));
+  } catch (err) { logLine(`[auto-move] config read failed: ${err.message}`); }
+  return null;
+}
+// Synchronous at boot, so the startup log line below reflects the file, and so
+// the file wins over the Render env vars — which is the whole point of moving
+// the switch into the UI.
+{
+  const bootCfg = readAutoMoveConfig();
+  if (bootCfg) {
+    applyAutoMoveConfig(bootCfg);
+    logLine(`[auto-move] config loaded from disk — enabled=${process.env.AUTO_MOVE_ENABLED} dryRun=${process.env.AUTO_MOVE_DRY_RUN}`);
+  }
+}
+
 async function runAutoMoveNow(opts) {
   if (!GRAPH_CONFIGURED) throw new Error('Graph API not configured');
   if (!CRM_CONFIGURED) throw new Error('Supabase not configured — auto_move_log is unreachable');
@@ -2973,6 +3003,61 @@ app.get('/api/email/auto-move/log', requireAuth, requireRole('admin'), async (re
     count: (data || []).length,
     entries: data || [],
   });
+});
+
+// Current switch state for the dashboard controls. requireMetricAdmin: this is
+// admin-only config, and the same guard the SOP/platform writes use.
+app.get('/api/email/auto-move/status', requireMetricAdmin, async (req, res) => {
+  const out = {
+    enabled: autoMove.autoMoveEnabled(),
+    dryRun: autoMove.autoMoveDryRun(),
+    intervalMinutes: EMAIL_REFRESH_MINUTES,
+    lastRun: null,
+    processedToday: 0,
+  };
+  if (CRM_CONFIGURED) {
+    try {
+      const db = supabaseAdmin || supabasePublic;
+      const { data } = await db.from('auto_move_log')
+        .select('executed_at').order('executed_at', { ascending: false }).limit(500);
+      const rows = data || [];
+      out.lastRun = rows[0]?.executed_at || null;
+      // Count in Central time so "today" is the office's day, not UTC's — the
+      // same reason the runner slices the mailbox on local midnight.
+      const ctDate = d => new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date(d));
+      const today = ctDate(new Date());
+      out.processedToday = rows.filter(r => ctDate(r.executed_at) === today).length;
+    } catch (err) { out.logError = err.message; }
+  }
+  res.json(out);
+});
+
+// Flip one switch. Writes the config file and mirrors it into process.env so
+// the cron picks it up next tick — no restart, no Render edit. The runner is
+// not touched. requireMetricAdmin, as specified.
+app.post('/api/email/auto-move/toggle', requireMetricAdmin, async (req, res) => {
+  const { setting, value } = req.body || {};
+  if (setting !== 'enabled' && setting !== 'dryRun') {
+    return res.status(400).json({ error: 'setting must be "enabled" or "dryRun"' });
+  }
+  if (typeof value !== 'boolean') {
+    return res.status(400).json({ error: 'value must be a boolean' });
+  }
+  // Merge onto current state so flipping one switch preserves the other, even
+  // on the very first toggle when no file exists yet.
+  const cfg = readAutoMoveConfig() || {
+    enabled: autoMove.autoMoveEnabled(),
+    dryRun: autoMove.autoMoveDryRun(),
+  };
+  cfg[setting] = value;
+  try {
+    await writeJSON(AUTOMOVE_CONFIG_FILE, cfg);
+  } catch (err) {
+    return res.status(500).json({ error: `Could not persist config: ${err.message}` });
+  }
+  applyAutoMoveConfig(cfg);
+  logLine(`[auto-move] ${setting}=${value} set by admin via dashboard`);
+  res.json({ ok: true, enabled: autoMove.autoMoveEnabled(), dryRun: autoMove.autoMoveDryRun() });
 });
 
 

@@ -1157,6 +1157,114 @@ async function loadEmail() {
       caret.textContent = isHidden ? '▼' : '▶';
     });
   }
+
+  loadAutoMove();
+}
+
+// ── Auto-Move Controls (admin only) ────────────────────────────────────────
+// The panel stays hidden for non-admins. Even if it were shown, the toggle and
+// status routes are requireMetricAdmin server-side, so hiding is convenience,
+// not the access control.
+let autoMoveWired = false;
+
+async function loadAutoMove() {
+  const panel = $('#automove-panel');
+  if (!panel) return;
+  if (currentUser?.role !== 'admin') { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+
+  if (!autoMoveWired) {
+    $('#automove-enabled').addEventListener('click', () => autoMoveToggle('enabled'));
+    $('#automove-dryrun').addEventListener('click', () => autoMoveToggle('dryRun'));
+    $('#automove-refresh')?.addEventListener('click', loadAutoMove);
+    autoMoveWired = true;
+  }
+
+  try {
+    const s = await api('/api/email/auto-move/status');
+    autoMoveRenderState(s);
+  } catch (err) {
+    $('#automove-status').innerHTML = `<span class="badge badge-red">Status unavailable</span> <span class="small muted">${esc(err.message)}</span>`;
+  }
+  autoMoveLoadLog();
+}
+
+function autoMoveRenderState(s) {
+  if ($('#automove-interval')) $('#automove-interval').textContent = s.intervalMinutes ?? 15;
+
+  const enBtn = $('#automove-enabled');
+  const dryBtn = $('#automove-dryrun');
+  // Buttons show the CURRENT state; clicking flips it. data-next carries the
+  // value the toggle will send, so the handler never re-reads the label.
+  enBtn.textContent = s.enabled ? 'ON' : 'OFF';
+  enBtn.className = 'toggle-btn ' + (s.enabled ? 'toggle-on' : 'toggle-off');
+  enBtn.dataset.next = s.enabled ? 'false' : 'true';
+  enBtn.disabled = false;
+
+  // Dry Run only means anything while enabled. When disabled, grey it out so
+  // nobody reads a stale "ON"/"OFF" as if it were doing something.
+  dryBtn.textContent = s.dryRun ? 'ON' : 'OFF';
+  dryBtn.className = 'toggle-btn ' + (!s.enabled ? 'toggle-muted' : (s.dryRun ? 'toggle-warn' : 'toggle-live'));
+  dryBtn.dataset.next = s.dryRun ? 'false' : 'true';
+  dryBtn.disabled = false;
+
+  const status = $('#automove-status');
+  if (!s.enabled) {
+    status.innerHTML = `<span class="badge badge-gray">OFF</span> <span class="small muted">Auto-Move is disabled — nothing is evaluated or moved.</span>`;
+  } else if (s.dryRun) {
+    status.innerHTML = `<span class="badge badge-yellow">DRY RUN</span> <span class="small">Running in dry run — logging only, no emails moved.</span>`;
+  } else {
+    status.innerHTML = `<span class="badge badge-green">LIVE</span> <span class="small">LIVE — emails are being moved automatically.</span>`;
+  }
+
+  const fmt = ts => ts ? new Date(ts).toLocaleString() : '—';
+  $('#automove-meta').textContent =
+    `Last run: ${fmt(s.lastRun)} · Actions logged today: ${s.processedToday ?? 0}`;
+}
+
+async function autoMoveToggle(setting) {
+  const btn = setting === 'enabled' ? $('#automove-enabled') : $('#automove-dryrun');
+  const value = btn.dataset.next === 'true';
+
+  // Turning dry run OFF while enabled means real mail starts moving. Confirm.
+  if (setting === 'dryRun' && value === false && $('#automove-enabled').textContent === 'ON') {
+    if (!confirm('Turn OFF dry run?\n\nAuto-Move will start moving real emails in Lyndsay\'s inbox automatically on its next run.')) return;
+  }
+
+  btn.disabled = true;
+  try {
+    await api('/api/email/auto-move/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ setting, value }),
+    });
+  } catch (err) {
+    alert('Could not change the setting: ' + err.message);
+  }
+  loadAutoMove();
+}
+
+async function autoMoveLoadLog() {
+  const body = $('#automove-log-body');
+  if (!body) return;
+  try {
+    const d = await api('/api/email/auto-move/log?limit=20');
+    const rows = d.entries || [];
+    if (!rows.length) {
+      body.innerHTML = `<tr><td colspan="6" class="small muted">No actions logged yet.</td></tr>`;
+      return;
+    }
+    body.innerHTML = rows.map(r => `<tr>
+      <td class="mono small">${r.executed_at ? new Date(r.executed_at).toLocaleString() : '—'}</td>
+      <td class="small">${esc(r.sender || '—')}</td>
+      <td class="small">${esc((r.subject || '').slice(0, 60))}</td>
+      <td class="small">${esc(r.action || '—')}</td>
+      <td class="small">${r.dry_run ? '✓' : ''}</td>
+      <td class="small">${r.error ? `<span class="badge badge-red">${esc(r.error.slice(0, 40))}</span>` : ''}</td>
+    </tr>`).join('');
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="6" class="small muted">Log unavailable: ${esc(err.message)}</td></tr>`;
+  }
 }
 
 async function markMessageSent(id) {
