@@ -564,6 +564,22 @@
     <div id="crm-view-settings" class="crm-view hidden">
       <div class="view-head"><h3>CRM Settings</h3></div>
 
+      <!-- G&B Rotation. Admin only; hidden by crmApplyUserRole. -->
+      <div class="card hidden" id="crm-gb-panel" style="margin-bottom:16px">
+        <div class="view-head" style="margin:0 0 4px">
+          <div>
+            <h4 style="margin:0">G&amp;B Rotation</h4>
+            <p class="muted small" style="margin:2px 0 0" id="crm-gb-status">Loading&hellip;</p>
+          </div>
+          <div class="view-actions">
+            <button class="btn-sm primary" id="crm-gb-rotate">Assign / Rotate</button>
+            <button class="btn-sm" id="crm-gb-refresh">&#128260; Refresh</button>
+          </div>
+        </div>
+        <p class="muted small">G&amp;B answers one phone number for every property it manages, so the same person must not call twice in a row.</p>
+        <div id="crm-gb-body"></div>
+      </div>
+
       <!-- Property Assignments. Admin/operations only; hidden by crmApplyUserRole. -->
       <div class="card hidden" id="crm-assign-panel" style="margin-bottom:16px">
         <h4 style="margin-top:0">Property Assignments</h4>

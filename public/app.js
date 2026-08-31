@@ -1368,7 +1368,11 @@ function crmSetView(view) {
   $$('.crm-nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.crmView === view));
   if (view === 'tasks') crmLoadTasks();
   if (view === 'drafts') crmLoadDraftsList();
-  if (view === 'settings') { crmLoadTargeted(); if (crmCanAssign()) crmLoadAssignments(); }
+  if (view === 'settings') {
+    crmLoadTargeted();
+    if (crmCanAssign()) crmLoadAssignments();
+    if (crmIsAdmin()) crmLoadGbRotation();
+  }
   if (view === 'roster' && crmCanSeeRoster()) crmLoadRoster();
   if (view === 'performance' && crmCanSeePerformance()) crmLoadTeamPerformance();
 }
@@ -1427,6 +1431,8 @@ function crmApplyUserRole() {
   // Settings itself stays open to everyone who reaches the CRM; only the
   // assignment panel inside it is gated, so it is unhidden rather than hidden.
   if (crmCanAssign()) $('#crm-assign-panel')?.classList.remove('hidden');
+  // Admin only — one step tighter than the assignment panel above it.
+  if (crmIsAdmin()) $('#crm-gb-panel')?.classList.remove('hidden');
 
   const lockedRoles = ['bd_agent', 'maintenance'];
   if (!lockedRoles.includes(currentUser.role) || !currentUser.agentName) return;
@@ -1833,6 +1839,82 @@ $('#ca-bulk-apply')?.addEventListener('click', async () => {
     crmRenderAssignments();
   } catch (err) { toast(err.message, 'error'); }
   finally { btn.disabled = false; btn.textContent = 'Confirm'; }
+});
+
+// ── G&B Rotation (CRM Settings) ───────────────────────────────────────────────
+// Admin only, tighter than the assignment panel beside it: this decides who
+// calls a management company, not who is listed against a property.
+let crmGbData = null;
+
+async function crmLoadGbRotation() {
+  const el = $('#crm-gb-body');
+  if (!el || !crmIsAdmin()) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    crmGbData = await api('/api/crm/gb-rotation');
+    crmRenderGbRotation();
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+    $('#crm-gb-status').textContent = 'Could not load the rotation';
+  }
+}
+
+function crmRenderGbRotation() {
+  const el = $('#crm-gb-body');
+  if (!el || !crmGbData) return;
+  const { properties = [], agents = [], overdue = 0, unassigned = 0, rotateDays } = crmGbData;
+
+  $('#crm-gb-status').textContent = agents.length
+    ? `${properties.length} propert${properties.length === 1 ? 'y' : 'ies'} · ${agents.length} in rotation (${agents.join(', ')}) · every ${rotateDays} days`
+    : 'Nobody is in the rotation — tick in_gb_rotation on bd_agents.';
+
+  // No G&B properties at all is the real empty state. Properties that exist but
+  // have never been assigned still get a row: seeing what is about to be
+  // rotated is the point of pressing the button.
+  if (!properties.length) {
+    el.innerHTML = '<div class="empty-state">No properties are managed by G&amp;B.</div>';
+    return;
+  }
+
+  el.innerHTML = `<div style="overflow-x:auto"><table class="crm-table">
+    <thead><tr>
+      <th>Property</th><th>Current agent</th><th>Assigned</th><th>Rotate after</th><th>Days left</th>
+    </tr></thead><tbody>
+    ${properties.map(p => {
+      const never = !p.assigned_agent;
+      const late = p.days_left != null && p.days_left < 0;
+      return `<tr>
+        <td>${esc(p.property_name || '—')}${p.address ? `<div class="muted small">${esc(p.address)}</div>` : ''}</td>
+        <td>${never ? '<span class="muted small">not assigned yet</span>' : `<b>${esc(p.assigned_agent)}</b>`}</td>
+        <td class="small muted">${p.assigned_at ? new Date(p.assigned_at).toLocaleDateString() : '—'}</td>
+        <td class="small muted">${p.rotate_after ? esc(p.rotate_after) : '—'}</td>
+        <td>${never ? '—'
+          : late ? `<span class="badge badge-red">${Math.abs(p.days_left)}d overdue</span>`
+          : `<span class="muted small">${p.days_left}d</span>`}</td>
+      </tr>`;
+    }).join('')}
+  </tbody></table></div>
+  ${unassigned || overdue ? `<p class="muted small" style="margin-bottom:0">${
+    [unassigned ? `${unassigned} never assigned` : null,
+     overdue ? `${overdue} past its rotation date` : null].filter(Boolean).join(' · ')}</p>` : ''}`;
+}
+
+$('#crm-gb-refresh')?.addEventListener('click', crmLoadGbRotation);
+$('#crm-gb-rotate')?.addEventListener('click', async () => {
+  const n = crmGbData?.properties?.length || 0;
+  // It appends rather than overwriting, so this is undoable by rotating again —
+  // but it changes who is expected to make a call, which is worth one pause.
+  if (!confirm(`Rotate ${n} G&B propert${n === 1 ? 'y' : 'ies'} to their next agent?`)) return;
+  const btn = $('#crm-gb-rotate');
+  btn.disabled = true; btn.textContent = 'Rotating…';
+  try {
+    const r = await api('/api/crm/gb-rotation/assign', { method: 'POST' });
+    const per = Object.entries(r.perAgent || {}).map(([a, c]) => `${a}: ${c}`).join(' · ');
+    toast(r.assigned ? `${r.assigned} assigned${per ? ' — ' + per : ''}` : (r.message || 'Nothing to rotate'),
+          r.assigned ? 'success' : 'info');
+    crmLoadGbRotation();
+  } catch (err) { toast(err.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = 'Assign / Rotate'; }
 });
 
 // ── Team Performance ──────────────────────────────────────────────────────────
