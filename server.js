@@ -50,7 +50,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
-const { registerMetricRoutes } = require('./metric-routes.js');
+const { registerMetricRoutes, requireMetricAccess } = require('./metric-routes.js');
 const crmEngine = require('./crm-task-engine.js');
 const XLSX        = require('xlsx');
 const multer      = require('multer');
@@ -1547,14 +1547,14 @@ app.get('/api/email/refresh-status', (req, res) => {
 
 // Separate from calendar's "last refreshed" — lets the UI show staleness of
 // the email check specifically (populated by the same cron cycle above).
-app.get('/api/email/inbox-counts', (req, res) => {
+app.get('/api/email/inbox-counts', requireMetricAccess, (req, res) => {
   res.json(refreshState.inboxCounts || { arturo: null, lyndsay: null, lastChecked: null });
 });
 
 // Unread/total counts for ALL Metric departmental mailboxes (Inbox Tracking
 // report). Served from the cache the 15-min cron keeps warm — call
 // POST /api/email/refresh-now first for a guaranteed-fresh read.
-app.get('/api/email/inbox-tracking', (req, res) => {
+app.get('/api/email/inbox-tracking', requireMetricAccess, (req, res) => {
   res.json(refreshState.inboxTracking || { lastChecked: null, rows: [] });
 });
 
@@ -1562,7 +1562,7 @@ app.get('/api/email/inbox-tracking', (req, res) => {
 // mailboxes, computed live on request (not cached by the cron — this is
 // meaningfully heavier than the inbox-only tracking above, since it also
 // recurses one level into any folder with children).
-app.get('/api/email/all-folders-tracking', async (req, res) => {
+app.get('/api/email/all-folders-tracking', requireMetricAccess, async (req, res) => {
   try {
     const mailboxes = await fetchAllMailboxFolders();
     res.json({ lastChecked: new Date().toISOString(), mailboxes });
@@ -1573,7 +1573,7 @@ app.get('/api/email/all-folders-tracking', async (req, res) => {
 
 // Manual trigger for the 8 AM CT Excel auto-fill job — lets Arturo (or a
 // verification run) confirm it writes correctly without waiting for the cron.
-app.post('/api/email/inbox-tracking/sync-excel', async (req, res) => {
+app.post('/api/email/inbox-tracking/sync-excel', requireMetricAccess, async (req, res) => {
   try {
     const result = await writeInboxTrackingToExcel();
     res.json({ ok: true, ...result });
@@ -1704,7 +1704,7 @@ app.post('/api/tools/convert-sops', async (req, res) => {
   }
 });
 
-app.post('/api/email/refresh-now', async (req, res) => {
+app.post('/api/email/refresh-now', requireMetricAccess, async (req, res) => {
   await refreshEmailAndCalendar();
   res.json({ configured: GRAPH_CONFIGURED, intervalMinutes: EMAIL_REFRESH_MINUTES, authUrl: '/auth/login', ...refreshState });
 });
@@ -2036,7 +2036,7 @@ async function resolveFolderPath(mailboxKey, token, folderName) {
 // GET /api/email/folders?mailbox=lyndsay|arturo|both|<any tenant email>
 // Any value other than lyndsay/arturo/both is treated as a raw departmental
 // mailbox address (support@, collections@, etc.) and read via graphMailToken().
-app.get('/api/email/folders', async (req, res) => {
+app.get('/api/email/folders', requireMetricAccess, async (req, res) => {
   if (!GRAPH_CONFIGURED) {
     return res.json({ configured: false, message: 'Graph API not configured yet — set GRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET in .env once the Azure App Registration is ready.' });
   }
@@ -2074,7 +2074,7 @@ app.get('/api/email/folders', async (req, res) => {
 // custom folders) in one call and works under both delegated and
 // application permissions. Read-only, same response shape as /api/email/inbox.
 // GET /api/email/search?mailbox=lyndsay|arturo&q=OpenAI&limit=10
-app.get('/api/email/search', async (req, res) => {
+app.get('/api/email/search', requireMetricAccess, async (req, res) => {
   if (!GRAPH_CONFIGURED) {
     return res.json({ configured: false, message: 'Graph API not configured yet — set GRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET in .env once the Azure App Registration is ready.' });
   }
@@ -2107,7 +2107,7 @@ app.get('/api/email/search', async (req, res) => {
 
 // Read-only inbox reader — no marking as read, moving, or deleting.
 // GET /api/email/inbox?mailbox=lyndsay|arturo|both&limit=50&unread=true&folder=Inbox
-app.get('/api/email/inbox', async (req, res) => {
+app.get('/api/email/inbox', requireMetricAccess, async (req, res) => {
   if (!GRAPH_CONFIGURED) {
     return res.json({ configured: false, message: 'Graph API not configured yet — set GRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET in .env once the Azure App Registration is ready.' });
   }
@@ -2160,7 +2160,7 @@ app.get('/api/email/inbox', async (req, res) => {
 // Read-only single-message reader (full body) — for classifying an email
 // that needs more context than the inbox preview gives.
 // GET /api/email/message/:id?mailbox=lyndsay|arturo
-app.get('/api/email/message/:id', async (req, res) => {
+app.get('/api/email/message/:id', requireMetricAccess, async (req, res) => {
   if (!GRAPH_CONFIGURED) {
     return res.json({ configured: false, message: 'Graph API not configured yet — set GRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET in .env once the Azure App Registration is ready.' });
   }
@@ -2198,10 +2198,11 @@ app.get('/api/email/message/:id', async (req, res) => {
 });
 
 // ---- Copilot Export — secure read of Lyndsay's latest 100 inbox emails ----
-// Internal route for the dashboard UI — no auth required (same-origin, never
-// exposes COPILOT_API_KEY to the browser). External callers must use
-// /api/copilot/export with a valid x-api-key header.
-app.get('/api/copilot/export-internal', async (req, res) => {
+// Internal route for the dashboard UI — never exposes COPILOT_API_KEY to the
+// browser. "Same-origin" is not a guard: anyone could GET this URL and read a
+// hundred of Lyndsay's emails, so it takes a session or x-metric-key like the
+// rest. External callers still use /api/copilot/export with x-api-key.
+app.get('/api/copilot/export-internal', requireMetricAccess, async (req, res) => {
   if (!GRAPH_CONFIGURED) {
     return res.status(503).json({ error: 'Graph API not configured — set GRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET in .env.' });
   }
@@ -2515,7 +2516,7 @@ app.post('/api/email/setup-outlook-rules', requireAuth, requireRole('admin'), as
 });
 
 // Real unread/total counts + top senders per mailbox — backs get_email_triage_status.
-app.get('/api/email/triage', async (req, res) => {
+app.get('/api/email/triage', requireMetricAccess, async (req, res) => {
   if (!GRAPH_CONFIGURED) {
     return res.json({ configured: false, message: 'Graph API not configured yet — set GRAPH_TENANT_ID/CLIENT_ID/CLIENT_SECRET in .env once the Azure App Registration is ready.' });
   }
@@ -2552,12 +2553,12 @@ app.get('/api/email/triage', async (req, res) => {
   }
 });
 
-app.get('/api/email/flagged-for-lyndsay', async (req, res) => {
+app.get('/api/email/flagged-for-lyndsay', requireMetricAccess, async (req, res) => {
   const flagged = await readJSON(FLAGGED_FILE, []);
   res.json(flagged.filter(f => !f.handled));
 });
 
-app.post('/api/email/:id/handled', async (req, res) => {
+app.post('/api/email/:id/handled', requireMetricAccess, async (req, res) => {
   const flagged = await readJSON(FLAGGED_FILE, []);
   const idx = flagged.findIndex(f => f.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Item not found' });

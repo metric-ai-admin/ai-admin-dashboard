@@ -1022,4 +1022,8 @@ function registerMetricRoutes(app, db) {
 
 }
 
-module.exports = { registerMetricRoutes };
+// requireMetricAccess is exported so server.js can put the same guard on the
+// email routes that serve Lyndsay's mailbox. They need session-or-key for the
+// same reason /api/operational does: the MCP tools read them over HTTP with no
+// cookie, sending x-metric-key instead.
+module.exports = { registerMetricRoutes, requireMetricAccess };
