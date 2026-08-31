@@ -3194,30 +3194,41 @@ app.get('/api/bd-crm/export/csv', requireMetricAdmin, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'BD CRM not configured' });
   const db = supabaseAdmin || supabasePublic;
   try {
+    // Full rows now, not just property_id — the shop data is flattened into the
+    // CSV, so we need every column of the three related tables.
     const [props, phones, onlines, dms] = await Promise.all([
       db.from('properties').select('*'),
-      db.from('phone_shops').select('property_id'),
-      db.from('online_shops').select('property_id'),
-      db.from('dm_reviews').select('property_id'),
+      db.from('phone_shops').select('*'),
+      db.from('online_shops').select('*'),
+      db.from('dm_reviews').select('*'),
     ]);
     for (const r of [props, phones, onlines, dms]) if (r.error) throw new Error(r.error.message);
     const rows = props.data || [];
 
-    // "Ready for Lyndsay" = the three shops complete: 3 phone-shop calls, at
-    // least one online shop, and a DM review (dm_reviews is one row per
-    // property, upserted on property_id).
-    const countBy = (arr) => {
+    // Group the related rows by property.
+    const groupBy = (arr) => {
       const m = new Map();
-      for (const r of (arr || [])) m.set(r.property_id, (m.get(r.property_id) || 0) + 1);
+      for (const r of (arr || [])) { if (!m.has(r.property_id)) m.set(r.property_id, []); m.get(r.property_id).push(r); }
       return m;
     };
-    const phoneN = countBy(phones.data), onlineN = countBy(onlines.data), dmN = countBy(dms.data);
+    const phonesByProp = groupBy(phones.data);
+    const onlinesByProp = groupBy(onlines.data);
+    const dmsByProp = groupBy(dms.data);
+
+    // shop_date is a plain DATE string (YYYY-MM-DD); lexical compare == date
+    // compare, nulls last. Phone calls read oldest→newest (call1 = first call).
+    const byDateAsc = (a, b) => (a.shop_date || '9999') < (b.shop_date || '9999') ? -1 : 1;
+    const byDateDesc = (a, b) => (a.shop_date || '') > (b.shop_date || '') ? -1 : 1;
+
+    // "Ready for Lyndsay" = 3 phone calls + >=1 online shop + a DM review.
     const rankOf = (p) => {
-      const ph = phoneN.get(p.id) || 0, on = onlineN.get(p.id) || 0, dm = dmN.get(p.id) || 0;
+      const ph = (phonesByProp.get(p.id) || []).length;
+      const on = (onlinesByProp.get(p.id) || []).length;
+      const dm = (dmsByProp.get(p.id) || []).length;
       return { ready: ph >= 3 && on >= 1 && dm >= 1, tier: (ph >= 3 ? 1 : 0) + (on >= 1 ? 1 : 0) + (dm >= 1 ? 1 : 0), raw: ph + on + dm };
     };
-    // Ready first, then most complete — so if no property is fully ready, the
-    // closest one still leads the file, as specified.
+    // Ready first, then most complete — the leading row is the best example
+    // (Cannon South, currently). Not hardcoded: it wins on completeness.
     rows.sort((a, b) => {
       const ra = rankOf(a), rb = rankOf(b);
       if (ra.ready !== rb.ready) return ra.ready ? -1 : 1;
@@ -3225,18 +3236,68 @@ app.get('/api/bd-crm/export/csv', requireMetricAdmin, async (req, res) => {
       return rb.raw - ra.raw;
     });
 
-    // Headers derived from the rows so they track the schema; a fallback list
-    // keeps the export a valid template when the table is empty.
+    // ── Flattened columns from the related tables ──────────────────────────
+    // agent is mapped with a fallback: online_shops/dm_reviews may or may not
+    // carry an agent column depending on how a row was written; a missing key
+    // is simply blank rather than an error.
+    const PHONE_FIELDS = ['date', 'agent', 'duration', 'score', 'greeting', 'product_knowledge', 'closing', 'notes'];
+    const phoneVal = (row, field) => {
+      if (!row) return null;
+      switch (field) {
+        case 'date': return row.shop_date;
+        case 'agent': return row.agent_name ?? row.agent ?? null;
+        case 'duration': return row.call_duration;
+        default: return row[field];   // score, greeting, product_knowledge, closing, notes
+      }
+    };
+    const phoneHeaders = [];
+    for (let n = 1; n <= 3; n++) for (const f of PHONE_FIELDS) phoneHeaders.push(`call${n}_${f}`);
+
+    const onlineHeaders = ['online_date', 'online_platform', 'online_agent', 'online_score',
+      'online_response_hrs', 'online_photos_quality', 'online_listing_accuracy', 'online_notes'];
+    const onlineVals = (o) => o ? [
+      o.shop_date, o.platform, o.agent_name ?? o.agent ?? null, o.score,
+      o.response_time_hrs, o.photos_quality, o.listing_accuracy, o.notes,
+    ] : new Array(onlineHeaders.length).fill(null);
+
+    const dmHeaders = ['dm_reviewed_at', 'dm_agent', 'dm_overall_score', 'dm_ai_filled', 'dm_audit_notes',
+      'dm_website_scores', 'dm_floorplan_scores', 'dm_gbp_scores', 'dm_facebook_scores', 'dm_ils_scores'];
+    const jsonCell = (v) => (v === null || v === undefined) ? null : (typeof v === 'string' ? v : JSON.stringify(v));
+    const dmVals = (d) => d ? [
+      d.reviewed_at, d.agent_name ?? d.agent ?? null, d.overall_score, d.ai_filled, d.audit_notes,
+      jsonCell(d.website_scores), jsonCell(d.floorplan_scores), jsonCell(d.gbp_scores),
+      jsonCell(d.facebook_scores), jsonCell(d.ils_scores),
+    ] : new Array(dmHeaders.length).fill(null);
+
+    // Base property columns first, then phone (call1/2/3), then online, then dm.
     const FALLBACK_COLS = ['id', 'property_name', 'address', 'city', 'state', 'zip', 'submarket', 'style', 'year_built', 'asset_class', 'units', 'vacancy_pct', 'avg_asking_unit', 'avg_unit_sf', 'management_company', 'management_type', 'owner_name', 'owner_contact_name', 'owner_phone', 'owner_email', 'owner_address', 'assigned_to', 'phone_assignee', 'phone_assignee3', 'online_dm_assignee', 'rop_status', 'lead_score_override', 'lyndsay_reviewed', 'notes', 'created_at', 'updated_at'];
-    const cols = rows.length ? Object.keys(rows[0]) : FALLBACK_COLS;
+    const baseCols = rows.length ? Object.keys(rows[0]) : FALLBACK_COLS;
+    const header = [...baseCols, ...phoneHeaders, ...onlineHeaders, ...dmHeaders];
 
     const cell = (v) => {
       if (v === null || v === undefined) return '';
       const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
       return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
+
+    const lines = [header.join(',')];
+    for (const p of rows) {
+      const base = baseCols.map(c => cell(p[c]));
+
+      const calls = (phonesByProp.get(p.id) || []).slice().sort(byDateAsc).slice(0, 3);
+      const phoneCells = [];
+      for (let n = 0; n < 3; n++) for (const f of PHONE_FIELDS) phoneCells.push(cell(phoneVal(calls[n], f)));
+
+      const latestOnline = (onlinesByProp.get(p.id) || []).slice().sort(byDateDesc)[0] || null;
+      const onlineCells = onlineVals(latestOnline).map(cell);
+
+      const dm = (dmsByProp.get(p.id) || [])[0] || null;
+      const dmCells = dmVals(dm).map(cell);
+
+      lines.push([...base, ...phoneCells, ...onlineCells, ...dmCells].join(','));
+    }
     // BOM so Excel reads UTF-8 — owner names carry accents.
-    const csv = '﻿' + [cols.join(',')].concat(rows.map(r => cols.map(c => cell(r[c])).join(','))).join('\r\n');
+    const csv = '﻿' + lines.join('\r\n');
 
     const today = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
