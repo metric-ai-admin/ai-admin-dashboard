@@ -74,6 +74,13 @@ services:
         sync: false
       # AppFolio Reports API v2 (read-only). Without all three, the Reports
       # Sync / Efficiency / Technician Activity views report "not configured".
+      # Email Auto-Move (Phase 1). Both default to off in code, so leaving
+      # them unset changes nothing. Turn ENABLED on with DRY_RUN still true
+      # to get a log of what it would do, then flip DRY_RUN off.
+      - key: AUTO_MOVE_ENABLED
+        sync: false
+      - key: AUTO_MOVE_DRY_RUN
+        sync: false
       - key: APPFOLIO_CLIENT_ID
         sync: false
       - key: APPFOLIO_CLIENT_SECRET

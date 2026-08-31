@@ -51,6 +51,7 @@ const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/ser
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
 const { registerMetricRoutes, requireMetricAccess } = require('./metric-routes.js');
+const autoMove = require('./email-automove.js');
 const crmEngine = require('./crm-task-engine.js');
 const XLSX        = require('xlsx');
 const multer      = require('multer');
@@ -2897,6 +2898,83 @@ if (SUPABASE_URL && SUPABASE_ANON_KEY) {
 }
 
 const CRM_CONFIGURED = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+// =====================================================================
+// EMAIL AUTO-MOVE — Phase 1 (see email-automove.js for what it does)
+// =====================================================================
+// Placed after the Supabase clients exist, because the runner needs one to
+// read the allowlist and write auto_move_log.
+//
+// Both switches default to off, so deploying this changes nothing:
+//   AUTO_MOVE_ENABLED=false   the cron does not run at all
+//   AUTO_MOVE_DRY_RUN=true    decide and log, move nothing
+
+async function runAutoMoveNow(opts) {
+  if (!GRAPH_CONFIGURED) throw new Error('Graph API not configured');
+  if (!CRM_CONFIGURED) throw new Error('Supabase not configured — auto_move_log is unreachable');
+  const db = supabaseAdmin || supabasePublic;
+  const token = await graphMailToken();
+  return autoMove.runAutoMove(
+    { fetchFn, token, mailbox: MAILBOX_LYNDSAY, db, log: logLine },
+    opts || {},
+  );
+}
+
+// Its own cron rather than a call inside refreshEmailAndCalendar(): if the
+// auto-move throws, the email/calendar refresh should not go down with it.
+cron.schedule(`*/${EMAIL_REFRESH_MINUTES} * * * *`, async () => {
+  if (!autoMove.autoMoveEnabled()) return;
+  try {
+    const s = await runAutoMoveNow();
+    if (s.scanned) {
+      logLine(`[auto-move]${s.dryRun ? ' DRY RUN' : ''} scanned ${s.scanned}, `
+            + `archived ${s.archived}, unsubscribe ${s.unsubscribed}, `
+            + `left alone ${s.skipped}, already handled ${s.alreadyHandled}, errors ${s.errors}`);
+    }
+  } catch (err) {
+    logLine(`[auto-move] ERROR: ${err.message}`);
+  }
+}, { timezone: LYNDSAY_TIMEZONE });
+
+if (autoMove.autoMoveEnabled()) {
+  logLine(`Email Auto-Move: ENABLED, ${autoMove.autoMoveDryRun() ? 'DRY RUN (nothing will move)' : 'LIVE — mail will be moved'}`);
+} else {
+  logLine('Email Auto-Move: disabled (set AUTO_MOVE_ENABLED=true to start, with AUTO_MOVE_DRY_RUN=true first)');
+}
+
+// Manual trigger — the only way to see what a pass would do without waiting
+// for the cron. Defaults to a dry run whatever the environment says: a route
+// that moves mail should need asking twice, so a live pass takes an explicit
+// {"dryRun": false}.
+app.post('/api/email/auto-move/run', requireAuth, requireRole('admin'), async (req, res) => {
+  const dryRun = (req.body && req.body.dryRun === false) ? false : true;
+  try {
+    res.json({ ok: true, summary: await runAutoMoveNow({ dryRun }) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// What it has done. Newest first.
+app.get('/api/email/auto-move/log', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const db = supabaseAdmin || supabasePublic;
+  const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+  const { data, error } = await db
+    .from('auto_move_log')
+    .select('*')
+    .order('executed_at', { ascending: false })
+    .limit(limit);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({
+    enabled: autoMove.autoMoveEnabled(),
+    dryRun: autoMove.autoMoveDryRun(),
+    intervalMinutes: EMAIL_REFRESH_MINUTES,
+    count: (data || []).length,
+    entries: data || [],
+  });
+});
+
 
 // Middleware: require Supabase to be configured before serving CRM routes
 function requireCRM(req, res, next) {
