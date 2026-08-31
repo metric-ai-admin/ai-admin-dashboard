@@ -3617,6 +3617,160 @@ app.patch('/api/crm/bd-agents/:id/status', requireCRM, requireAuth, requireRole(
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- G&B rotation --------------------------------------------------------------
+// G&B Management answers one phone number for all of its properties, so the same
+// person calling twice in a row reaches someone who just spoke to them.
+// Confirmed with Lyndsay 2026-08-31: four people, roughly fortnightly, chosen
+// randomly.
+//
+// Matched in JS rather than with an ILIKE filter: the literal is "G&B", and an
+// ampersand inside a PostgREST `or` string is a parameter separator. With 251
+// properties the whole column is cheaper to read than the bug would be to find.
+const GB_PATTERNS = ['g&b', 'g & b', 'gandb', 'g and b'];
+const gbNorm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+const isGbCompany = c => { const n = gbNorm(c); return !!n && GB_PATTERNS.some(p => n.includes(p)); };
+
+async function gbLoad(client) {
+  const [props, agents, history] = await Promise.all([
+    client.from('properties').select('id, property_name, address, management_company'),
+    // Membership is its own flag, not a filter on employment status: Lisa is a
+    // contractor sitting at status 'unknown', and whether she takes G&B calls is
+    // a different question from whether she is on staff. No names in code.
+    client.from('bd_agents').select('name, crm_alias').eq('in_gb_rotation', true).order('name'),
+    client.from('gb_rotation').select('*').order('assigned_at', { ascending: false }),
+  ]);
+  if (props.error) throw new Error(props.error.message);
+  if (agents.error) throw new Error(agents.error.message);
+  if (history.error) throw new Error(history.error.message);
+  return {
+    properties: (props.data || []).filter(p => isGbCompany(p.management_company)),
+    // The alias is what the rest of the CRM stores on a property; the full name
+    // is only a label.
+    agents: (agents.data || []).map(a => (a.crm_alias || a.name || '').trim()).filter(Boolean),
+    history: history.data || [],
+  };
+}
+
+// Newest first from the query, so the first row seen for a property is current.
+function gbCurrentByProperty(history) {
+  const cur = new Map();
+  for (const r of history) if (!cur.has(r.property_id)) cur.set(r.property_id, r);
+  return cur;
+}
+
+/**
+ * Who calls this property next.
+ *
+ * Never-called first, then longest-since-called, then fewest already handed out
+ * in this run, then random. The first two are the rotation Lyndsay described;
+ * the third keeps a first run — where every agent is equally new to every
+ * property — from landing six properties on one person by chance; the random
+ * tail is the "just randomly" she asked for, applied among candidates that are
+ * otherwise indistinguishable.
+ *
+ * The current holder is removed outright: not calling twice in a row is the
+ * whole point, and it outranks every other consideration.
+ */
+function gbPickAgent(agents, lastByAgent, current, runCounts) {
+  const pool = agents.filter(a => a !== current);
+  // One agent in the rotation and they already hold it: nobody else can take it.
+  if (!pool.length) return null;
+  const scored = pool.map(a => ({
+    agent: a,
+    last: lastByAgent.get(a) ?? null,
+    run: runCounts.get(a) || 0,
+    coin: Math.random(),
+  }));
+  scored.sort((x, y) => {
+    if ((x.last === null) !== (y.last === null)) return x.last === null ? -1 : 1;
+    if (x.last !== null && x.last !== y.last) return x.last - y.last;
+    if (x.run !== y.run) return x.run - y.run;
+    return x.coin - y.coin;
+  });
+  return scored[0].agent;
+}
+
+const GB_ROTATE_DAYS = 14;
+
+app.get('/api/crm/gb-rotation', requireCRM, requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { properties, agents, history } = await gbLoad(client);
+    const cur = gbCurrentByProperty(history);
+    const today = reportDateStr();
+    const rows = properties.map(p => {
+      const a = cur.get(p.id) || null;
+      return {
+        property_id: p.id,
+        property_name: p.property_name,
+        address: p.address,
+        management_company: p.management_company,
+        assigned_agent: a?.assigned_agent || null,
+        assigned_at: a?.assigned_at || null,
+        rotate_after: a?.rotate_after || null,
+        // Negative means overdue. Computed here so the badge does not depend on
+        // the reader's clock.
+        days_left: a?.rotate_after
+          ? Math.round((Date.parse(a.rotate_after + 'T00:00:00') - Date.parse(today + 'T00:00:00')) / 86400000)
+          : null,
+        notes: a?.notes || null,
+      };
+    }).sort((x, y) => String(x.property_name || '').localeCompare(String(y.property_name || '')));
+    res.json({ agents, rotateDays: GB_ROTATE_DAYS, properties: rows,
+               unassigned: rows.filter(r => !r.assigned_agent).length,
+               overdue: rows.filter(r => r.days_left != null && r.days_left < 0).length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/crm/gb-rotation/assign', requireCRM, requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const client = supabaseAdmin || supabasePublic;
+    const { properties, agents, history } = await gbLoad(client);
+    if (!agents.length) {
+      return res.status(400).json({ error: 'Nobody is in the G&B rotation. Tick in_gb_rotation on bd_agents.' });
+    }
+    if (!properties.length) {
+      return res.json({ ok: true, assigned: 0, message: 'No properties are managed by G&B.' });
+    }
+
+    // Last time each agent had each property, from the full history.
+    const lastByProperty = new Map();
+    for (const r of history) {
+      if (!lastByProperty.has(r.property_id)) lastByProperty.set(r.property_id, new Map());
+      const m = lastByProperty.get(r.property_id);
+      const t = Date.parse(r.assigned_at) || 0;
+      if (!m.has(r.assigned_agent) || t > m.get(r.assigned_agent)) m.set(r.assigned_agent, t);
+    }
+    const cur = gbCurrentByProperty(history);
+    const runCounts = new Map();
+    const now = new Date();
+    const rotateAfter = new Date(now); rotateAfter.setDate(rotateAfter.getDate() + GB_ROTATE_DAYS);
+
+    const rows = [];
+    for (const p of properties) {
+      const pick = gbPickAgent(agents, lastByProperty.get(p.id) || new Map(),
+                               cur.get(p.id)?.assigned_agent || null, runCounts);
+      if (!pick) continue;
+      runCounts.set(pick, (runCounts.get(pick) || 0) + 1);
+      rows.push({
+        property_id: p.id, assigned_agent: pick,
+        assigned_at: now.toISOString(), rotate_after: localDateStr(rotateAfter),
+        notes: req.body?.notes || null,
+      });
+    }
+    if (!rows.length) return res.json({ ok: true, assigned: 0, message: 'Nothing to rotate.' });
+
+    // Inserted, not upserted: the history is what proves nobody called twice in
+    // a row, so a run appends rather than replacing what came before.
+    const { error } = await client.from('gb_rotation').insert(rows);
+    if (error) return res.status(500).json({ error: error.message });
+
+    const per = {};
+    for (const r of rows) per[r.assigned_agent] = (per[r.assigned_agent] || 0) + 1;
+    res.json({ ok: true, assigned: rows.length, perAgent: per, rotateDays: GB_ROTATE_DAYS });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- GET /api/crm/team-performance ---------------------------------------------
 // Same guard as the roster read: this is per-person output, and operations is as
 // far down as it should go.
