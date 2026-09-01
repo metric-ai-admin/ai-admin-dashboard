@@ -1509,3 +1509,24 @@ tr.ca-sel { background: var(--accent-glow); }
 .acct-field { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; color: var(--text-muted); font-size: 0.85rem; }
 .acct-field .crm-input, .acct-field .crm-select { width: 100%; }
 .acct-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+
+/* ── SOPs library (grouped, collapsible) ──────────────────────────────────── */
+.sop-cat { margin-bottom: 10px; }
+.sop-cat-head {
+  cursor: pointer; padding: 9px 12px; border-radius: 8px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  font-weight: 600; user-select: none;
+}
+.sop-cat-head:hover { border-color: var(--border-accent); }
+.sop-cat-body { padding: 8px 2px 2px; }
+.sop-cat-body.hidden { display: none; }
+.sop-card { margin-bottom: 8px; }
+.sop-card.sop-archived { opacity: 0.55; }
+.sop-pill {
+  display: inline-block; font-size: 0.72rem; padding: 1px 8px; margin: 0 4px 4px 0;
+  border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.sop-content mark, .project-title mark, .sop-pill mark, .muted mark {
+  background: var(--warning); color: #1a1a1a; border-radius: 2px; padding: 0 1px;
+}

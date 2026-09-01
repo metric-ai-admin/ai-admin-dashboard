@@ -616,10 +616,16 @@ $$('#task-status-pills .pill').forEach(p => p.addEventListener('click', () => { 
 // SOPs — expandable cards with formatted content + Slab links
 // =====================================================================
 
-let sopCache = [];
-let sopCurrentList = [];
+// ── SOPs library — grouped by category, collapsible, archivable ────────────
+const SOP_CATEGORY_ORDER = ['Email Management', 'Calendar Management', 'Operations', 'Platform Build', 'SimpleVOIP / Call Analyzer', 'Technical Setup', 'Executive Operations'];
+const SOP_CAT_ICON = { 'Email Management': '📧', 'Calendar Management': '📅', 'Operations': '⚙️', 'Platform Build': '🏗️', 'SimpleVOIP / Call Analyzer': '📞', 'Technical Setup': '🔧', 'Executive Operations': '👑', '(Uncategorized)': '📄' };
+let sopAll = [];
 let openSopId = null;
+let sopQuery = '';
+let sopServerTextIds = new Set();
 const sopDetailCache = {};
+const sopCatCollapsed = {};        // category -> collapsed? (absent/true = collapsed by default)
+const sopIsAdmin = () => currentUser?.role === 'admin';
 
 // Renders ALL-CAPS "HEADER:" lines as section headers, "-" lines as bullets,
 // everything else as plain paragraphs.
@@ -647,78 +653,184 @@ function formatSopContent(text) {
   return html;
 }
 
+// esc + wrap query matches in <mark>. q is a lowercased plain string.
+function sopHighlight(text, q) {
+  const s = esc(String(text ?? ''));
+  if (!q) return s;
+  const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+  return s.replace(re, '<mark>$1</mark>');
+}
+
 async function loadSops() {
-  sopCache = await api('/api/sops');
-  sopCurrentList = sopCache;
+  const list = $('#sop-list');
+  if (!list) return;
+  // Fetch everything (archived included, each flagged) and filter client-side,
+  // so the "Show archived" toggle and search are instant. Wrapped so a failure
+  // shows a message instead of a blank page.
+  try {
+    sopAll = await api('/api/sops?include_archived=true');
+  } catch (err) {
+    list.innerHTML = `<p class="hint">Could not load SOPs: ${esc(err.message)}</p>`;
+    return;
+  }
   renderSops();
+}
+
+const sopCatOf = (s) => (s.category || '').trim() || '(Uncategorized)';
+const sopClientMatch = (s, q) =>
+  [s.title, s.source, (s.tags || []).join(' '), s.category].filter(Boolean).join(' ').toLowerCase().includes(q);
+
+function sopCardHtml(s, q, admin) {
+  const isOpen = s.id === openSopId;
+  const detail = sopDetailCache[s.id];
+  const tags = (s.tags || []).map(t => `<span class="sop-pill">${sopHighlight(t, q)}</span>`).join('');
+  const dateStr = s.uploadedAt ? new Date(s.uploadedAt).toLocaleDateString() : '';
+  const meta = [s.source ? sopHighlight(s.source, q) : '', dateStr].filter(Boolean).join(' · ');
+  return `<div class="sop-card project-card${isOpen ? ' open' : ''}${s.archived ? ' sop-archived' : ''}" data-id="${s.id}">
+    <div class="project-head" data-sop-toggle="${s.id}">
+      <div>
+        <div class="project-title">${sopHighlight(s.title, q)} ${s.archived ? '<span class="badge badge-gray">Archived</span>' : ''}</div>
+        ${meta ? `<div class="muted small" style="margin-top:3px">${meta}</div>` : ''}
+        ${tags ? `<div style="margin-top:5px">${tags}</div>` : ''}
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        ${admin ? `<button class="btn-sm sop-edit" data-id="${s.id}">Edit</button>
+                   <button class="btn-sm sop-archive" data-id="${s.id}">${s.archived ? 'Unarchive' : 'Archive'}</button>` : ''}
+        <span class="muted small">${s.chars}c</span>
+        <span class="project-toggle">▶</span>
+      </div>
+    </div>
+    <div class="project-body">
+      ${isOpen ? (detail ? `
+        ${s.slab_url ? `<a class="btn-sm primary slab-link" href="${esc(s.slab_url)}" target="_blank" rel="noopener">Open in Slab →</a>` : ''}
+        <div class="sop-content">${q ? sopHighlight(detail.text, q) : formatSopContent(detail.text)}</div>
+        <p class="muted small" style="margin-top:12px">Last updated: ${detail.uploadedAt ? new Date(detail.uploadedAt).toLocaleString() : '—'}</p>
+      ` : '<p class="muted small">Loading...</p>') : ''}
+    </div>
+  </div>`;
 }
 
 function renderSops() {
-  const list = sopCurrentList;
-  $('#sop-list').innerHTML = list.map(s => {
-    const isOpen = s.id === openSopId;
-    const detail = sopDetailCache[s.id];
-    return `
-      <div class="project-card ${isOpen ? 'open' : ''}" data-id="${s.id}">
-        <div class="project-head" data-toggle>
-          <div>
-            <div class="project-title">${esc(s.title)} ${s.category ? `<span class="badge badge-blue">${esc(s.category)}</span>` : ''}</div>
-            ${s.source ? `<div class="muted small" style="margin-top:4px">${esc(s.source)}</div>` : ''}
-          </div>
-          <div style="display:flex;align-items:center;gap:10px">
-            <span class="muted small">${s.chars} chars</span>
-            <span class="project-toggle">▶</span>
-          </div>
-        </div>
-        <div class="project-body">
-          ${isOpen ? (detail ? `
-            ${s.slab_url ? `<a class="btn-sm primary slab-link" href="${esc(s.slab_url)}" target="_blank" rel="noopener">Open in Slab →</a>` : ''}
-            <div class="sop-content">${formatSopContent(detail.text)}</div>
-            <p class="muted small" style="margin-top:12px">Last updated: ${detail.uploadedAt ? new Date(detail.uploadedAt).toLocaleString() : '—'}</p>
-          ` : '<p class="muted small">Loading...</p>') : ''}
-        </div>
-      </div>`;
-  }).join('') || '<p class="hint">No SOPs yet.</p>';
+  const list = $('#sop-list');
+  if (!list) return;
+  const showArchived = $('#sop-show-archived')?.checked;
+  const q = sopQuery.trim().toLowerCase();
 
-  $$('#sop-list .project-head').forEach(head => {
-    head.addEventListener('click', () => toggleSop(head.closest('.project-card').dataset.id));
-  });
+  $('#sop-total').textContent = sopAll.length;
+  let items = sopAll.slice();
+  if (!showArchived) items = items.filter(s => !s.archived);
+  if (q) items = items.filter(s => sopClientMatch(s, q) || sopServerTextIds.has(s.id));
+
+  // Category datalist for the edit modal.
+  const dl = $('#sop-cat-list');
+  if (dl) dl.innerHTML = [...new Set([...SOP_CATEGORY_ORDER, ...sopAll.map(sopCatOf)])]
+    .filter(c => c !== '(Uncategorized)').map(c => `<option value="${esc(c)}">`).join('');
+
+  if (!items.length) { list.innerHTML = `<p class="hint">${q ? 'No SOPs match your search.' : 'No SOPs yet.'}</p>`; return; }
+
+  const groups = new Map();
+  for (const s of items) { const c = sopCatOf(s); if (!groups.has(c)) groups.set(c, []); groups.get(c).push(s); }
+  const orderedCats = [
+    ...SOP_CATEGORY_ORDER.filter(c => groups.has(c)),
+    ...[...groups.keys()].filter(c => !SOP_CATEGORY_ORDER.includes(c) && c !== '(Uncategorized)').sort(),
+    ...(groups.has('(Uncategorized)') ? ['(Uncategorized)'] : []),
+  ];
+
+  const admin = sopIsAdmin();
+  list.innerHTML = orderedCats.map(cat => {
+    const sops = groups.get(cat).slice().sort((a, b) => (a.archived ? 1 : 0) - (b.archived ? 1 : 0)); // active first
+    const collapsed = q ? false : (sopCatCollapsed[cat] !== false);   // searching forces expand
+    const icon = SOP_CAT_ICON[cat] || '📄';
+    return `<div class="sop-cat">
+      <div class="sop-cat-head" data-cat-toggle="${esc(cat)}">
+        <span>${collapsed ? '▶' : '▼'} ${icon} ${esc(cat)} <span class="muted">(${sops.length})</span></span>
+      </div>
+      <div class="sop-cat-body${collapsed ? ' hidden' : ''}">
+        ${sops.map(s => sopCardHtml(s, q, admin)).join('')}
+      </div>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('[data-cat-toggle]').forEach(h => h.addEventListener('click', () => {
+    const cat = h.getAttribute('data-cat-toggle');
+    sopCatCollapsed[cat] = !(sopCatCollapsed[cat] !== false);   // flip; default (absent) = collapsed
+    renderSops();
+  }));
+  list.querySelectorAll('[data-sop-toggle]').forEach(h => h.addEventListener('click', (e) => {
+    if (e.target.closest('.sop-edit') || e.target.closest('.sop-archive')) return;   // buttons handle themselves
+    toggleSop(h.getAttribute('data-sop-toggle'));
+  }));
+  list.querySelectorAll('.sop-edit').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); sopEditModal(sopAll.find(s => s.id === b.dataset.id)); }));
+  list.querySelectorAll('.sop-archive').forEach(b => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const s = sopAll.find(x => x.id === b.dataset.id);
+    try {
+      await api(`/api/sops/${encodeURIComponent(s.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: !s.archived }) });
+      toast(s.archived ? 'Unarchived' : 'Archived', 'success');
+      loadSops();
+    } catch (err) { toast(err.message, 'error'); }
+  }));
 }
 
 async function toggleSop(id) {
-  if (openSopId === id) {
-    openSopId = null;
-    renderSops();
-    return;
-  }
+  if (openSopId === id) { openSopId = null; renderSops(); return; }
   openSopId = id;
   if (!sopDetailCache[id]) {
-    renderSops(); // show "Loading..." immediately
-    sopDetailCache[id] = await api(`/api/sops/${encodeURIComponent(id)}`);
+    renderSops();   // show "Loading..." immediately
+    try { sopDetailCache[id] = await api(`/api/sops/${encodeURIComponent(id)}`); }
+    catch (err) { toast(err.message, 'error'); return; }
   }
   renderSops();
 }
 
-$('#sop-search').addEventListener('input', async e => {
-  const q = e.target.value.trim();
-  if (!q) { sopCurrentList = sopCache; renderSops(); return; }
-  const { results } = await api(`/api/sops/search/${encodeURIComponent(q)}`);
-  const ids = new Set(results.map(r => r.id));
-  sopCurrentList = sopCache.filter(s => ids.has(s.id));
-  if (sopCurrentList.length) await toggleSopOpen(sopCurrentList[0].id);
-  else { openSopId = null; renderSops(); }
+// ── Search ──────────────────────────────────────────────────────────────────
+$('#sop-search')?.addEventListener('input', async (e) => {
+  sopQuery = e.target.value;
+  const q = sopQuery.trim();
+  // The list only carries title/source/tags/category; hit the server's
+  // full-text search too so the query also matches SOP body text.
+  if (q.length >= 2) {
+    try { const { results } = await api(`/api/sops/search/${encodeURIComponent(q)}`); sopServerTextIds = new Set((results || []).map(r => r.id)); }
+    catch { sopServerTextIds = new Set(); }
+  } else {
+    sopServerTextIds = new Set();
+  }
+  renderSops();
+});
+$('#sop-show-archived')?.addEventListener('change', renderSops);
+
+// ── Edit modal (admin) ────────────────────────────────────────────────────
+let sopEditId = null;
+function sopEditModal(s) {
+  if (!s) return;
+  sopEditId = s.id;
+  const f = $('#sop-edit-form');
+  f.elements.title.value = s.title || '';
+  f.elements.category.value = s.category || '';
+  f.elements.tags.value = (s.tags || []).join(', ');
+  $('#sop-edit-modal').classList.remove('hidden');
+}
+function sopEditClose() { $('#sop-edit-modal')?.classList.add('hidden'); sopEditId = null; }
+$('#sop-edit-close')?.addEventListener('click', sopEditClose);
+$('#sop-edit-cancel')?.addEventListener('click', sopEditClose);
+$('#sop-edit-overlay')?.addEventListener('click', sopEditClose);
+$('#sop-edit-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const payload = {
+    title: f.elements.title.value.trim(),
+    category: f.elements.category.value.trim() || null,
+    tags: f.elements.tags.value.split(',').map(t => t.trim()).filter(Boolean),
+  };
+  try {
+    await api(`/api/sops/${encodeURIComponent(sopEditId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    sopEditClose();
+    toast('SOP updated', 'success');
+    loadSops();
+  } catch (err) { toast(err.message, 'error'); }
 });
 
-// Opens a specific SOP (used by search auto-expand) without toggling closed if already open.
-async function toggleSopOpen(id) {
-  openSopId = id;
-  if (!sopDetailCache[id]) {
-    renderSops();
-    sopDetailCache[id] = await api(`/api/sops/${encodeURIComponent(id)}`);
-  }
-  renderSops();
-}
-
+// ── Add SOP (unchanged behavior) ────────────────────────────────────────────
 $('#sop-add-toggle').addEventListener('click', () => $('#sop-add-form').classList.toggle('hidden'));
 $('#sop-add-cancel').addEventListener('click', () => { $('#sop-add-form').classList.add('hidden'); $('#sop-add-form').reset(); });
 $('#sop-add-form').addEventListener('submit', async e => {

@@ -245,10 +245,15 @@
     <div class="view-head">
       <div>
         <h2>SOPs / Reference Library</h2>
-        <p class="muted small">Searchable knowledge base — how-tos, folder rules, calendar rules</p>
+        <p class="muted small"><span id="sop-total">0</span> SOPs · grouped by category — how-tos, folder rules, calendar rules</p>
+      </div>
+      <div class="view-actions">
+        <label class="small" style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="sop-show-archived"> Show archived
+        </label>
       </div>
     </div>
-    <input id="sop-search" placeholder="🔎 Search SOPs..." style="width:100%;margin-bottom:14px;">
+    <input id="sop-search" placeholder="🔎 Search title, text, tags, source..." style="width:100%;margin-bottom:14px;">
     <div id="sop-list"></div>
 
     <button id="sop-add-toggle" class="btn-sm" style="margin-top:8px;">+ Add SOP</button>
@@ -264,6 +269,25 @@
       </div>
     </form>
   </section>
+
+  <!-- SOP edit modal (admin) -->
+  <div id="sop-edit-modal" class="acct-modal hidden" role="dialog" aria-modal="true">
+    <div class="acct-modal-overlay" id="sop-edit-overlay"></div>
+    <div class="acct-modal-panel">
+      <div class="acct-modal-head"><h3>Edit SOP</h3>
+        <button id="sop-edit-close" class="crm-modal-close" aria-label="Close">✕</button></div>
+      <form id="sop-edit-form">
+        <label class="acct-field"><span>Title</span><input name="title" class="crm-input" required></label>
+        <label class="acct-field"><span>Category</span><input name="category" class="crm-input" list="sop-cat-list"></label>
+        <datalist id="sop-cat-list"></datalist>
+        <label class="acct-field"><span>Tags (comma-separated)</span><input name="tags" class="crm-input"></label>
+        <div class="acct-modal-actions">
+          <button type="button" class="btn-sm" id="sop-edit-cancel">Cancel</button>
+          <button type="submit" class="btn-sm primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <!-- ============ PLATFORM PROJECTS ============ -->
   <section id="tab-platform" class="tab">

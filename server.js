@@ -674,10 +674,41 @@ app.post('/api/tasks/bulk-import', async (req, res) => {
 
 app.get('/api/sops', requireMetricAccess, async (req, res) => {
   const index = await readJSON(SOPS_INDEX, []);
-  res.json(index.map(s => ({
+  // Archived SOPs are excluded by default; ?include_archived=true returns them
+  // too (each item carries its archived flag so the UI can style them).
+  const includeArchived = String(req.query.include_archived) === 'true';
+  const items = includeArchived ? index : index.filter(s => !s.archived);
+  res.json(items.map(s => ({
     id: s.id, title: s.title, tags: s.tags || [], uploadedAt: s.uploadedAt, chars: (s.text || '').length,
     source: s.source || null, category: s.category || null, slab_url: s.slab_url || null,
+    archived: !!s.archived,
   })));
+});
+
+// ---- PATCH /api/sops/:id — edit title/category/tags or archive/unarchive ----
+// requireMetricAdmin (not the spec's requireAuth): the edit/archive controls are
+// admin-only in the UI, and the other SOP writes (POST/DELETE) use this guard —
+// a bare requireAuth would let any logged-in user rewrite the knowledge base.
+app.patch('/api/sops/:id', requireMetricAdmin, async (req, res) => {
+  const index = await readJSON(SOPS_INDEX, []);
+  const i = index.findIndex(s => s.id === req.params.id);
+  if (i === -1) return res.status(404).json({ error: 'SOP not found' });
+  const { title, category, tags, archived } = req.body || {};
+  if (title !== undefined) {
+    if (!String(title).trim()) return res.status(400).json({ error: 'Title cannot be empty' });
+    index[i].title = String(title).trim();
+  }
+  if (category !== undefined) index[i].category = category === '' || category === null ? null : String(category).trim();
+  if (tags !== undefined) index[i].tags = Array.isArray(tags)
+    ? tags : String(tags).split(',').map(t => t.trim()).filter(Boolean);
+  if (archived !== undefined) index[i].archived = !!archived;
+  await writeJSON(SOPS_INDEX, index);
+  const s = index[i];
+  res.json({
+    id: s.id, title: s.title, tags: s.tags || [], category: s.category || null,
+    source: s.source || null, slab_url: s.slab_url || null, archived: !!s.archived,
+    chars: (s.text || '').length, uploadedAt: s.uploadedAt,
+  });
 });
 
 app.post('/api/sops', requireMetricAdmin, async (req, res) => {
