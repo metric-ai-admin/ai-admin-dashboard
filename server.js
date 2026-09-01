@@ -1574,7 +1574,7 @@ app.get('/api/email/all-folders-tracking', requireMetricAccess, async (req, res)
 
 // Manual trigger for the 8 AM CT Excel auto-fill job — lets Arturo (or a
 // verification run) confirm it writes correctly without waiting for the cron.
-app.post('/api/email/inbox-tracking/sync-excel', requireMetricAccess, async (req, res) => {
+app.post('/api/email/inbox-tracking/sync-excel', requireMetricAdmin, async (req, res) => {
   try {
     const result = await writeInboxTrackingToExcel();
     res.json({ ok: true, ...result });

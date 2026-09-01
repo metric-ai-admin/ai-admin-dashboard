@@ -818,6 +818,38 @@ $('#inbox-tracking-refresh-btn').addEventListener('click', async (e) => {
   loadInboxTracking();
 });
 
+// Writes today's unread counts into the SharePoint "Inbox Tracking" sheet.
+// Admin-only server-side (requireMetricAdmin); the result names how many rows
+// were written and which were skipped (label missing from column A, etc.).
+$('#inbox-tracking-sync-btn')?.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  const btn = $('#inbox-tracking-sync-btn');
+  const out = $('#inbox-tracking-sync-result');
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = '⏳ Syncing…';
+  if (out) out.textContent = '';
+  try {
+    const r = await api('/api/email/inbox-tracking/sync-excel', { method: 'POST' });
+    const results = r.results || [];
+    const written = results.filter(x => x.unread !== undefined && x.skipped === undefined && x.error === undefined);
+    const skipped = results.filter(x => x.skipped !== undefined);
+    const errored = results.filter(x => x.error !== undefined);
+    let msg = `✅ ${written.length} row${written.length === 1 ? '' : 's'} written to column ${esc(r.column || '?')}`;
+    if (skipped.length) msg += ` · ⏭️ ${skipped.length} skipped`;
+    if (errored.length) msg += ` · ⚠️ ${errored.length} errored`;
+    const detail = [...skipped, ...errored]
+      .map(x => `${esc(x.rowLabel || x.email || '?')}: ${esc(x.skipped || x.error)}`);
+    if (out) out.innerHTML = msg + (detail.length ? `<br><span class="muted">${detail.join('<br>')}</span>` : '');
+    loadInboxTracking();
+  } catch (err) {
+    if (out) out.innerHTML = `<span class="badge badge-red">Sync failed</span> ${esc(err.message)}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+});
+
 const inboxTrackingFolderCache = {};
 
 async function loadInboxTracking() {
