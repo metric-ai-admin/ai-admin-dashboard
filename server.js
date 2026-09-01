@@ -273,6 +273,14 @@ app.use(express.static(path.join(__dirname, 'public')));
 // `uptime` is seconds since this process started. A value that keeps resetting
 // means the instance is restarting — which is also what drops in-memory MCP
 // sessions, so it is the number to look at if those start failing repeatedly.
+// Liveness probe. No auth, responds immediately — for external keep-alive
+// pingers to confirm the server is back up after a restart/deploy. (Note: a
+// deploy always restarts the process and drops the in-memory MCP session; this
+// endpoint lets a pinger detect the restart, it does not prevent it.)
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
+});
+
 app.get('/ping', (req, res) => {
   res.json({ ok: true, ts: Date.now(), uptime: Math.round(process.uptime()) });
 });
@@ -5081,3 +5089,17 @@ app.listen(PORT, () => {
   logLine(`AI Admin Dashboard listening on http://localhost:${PORT}`);
   console.log(`AI Admin Dashboard running at http://localhost:${PORT}`);
 });
+
+// Keep-alive self-ping every 10 minutes. Only in production against the public
+// URL — skipped when APP_BASE_URL is localhost (dev). Caveats, stated plainly:
+// this cannot stop a deploy from restarting the process (which is what drops
+// the MCP session), and on Render's Starter plan the instance does not
+// hibernate, so there is nothing here to keep awake. An *external* pinger
+// hitting /health is the reliable anti-hibernation path; this internal ping is
+// added per request and is harmless.
+if (/^https:\/\//.test(APP_BASE_URL) && !/localhost|127\.0\.0\.1/.test(APP_BASE_URL)) {
+  setInterval(() => {
+    fetchFn(`${APP_BASE_URL}/health`).catch(err => logLine(`[keep-alive] ping failed: ${err.message}`));
+  }, 10 * 60 * 1000);
+  logLine(`[keep-alive] self-ping ${APP_BASE_URL}/health every 10 min`);
+}
