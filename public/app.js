@@ -668,7 +668,10 @@ async function loadSops() {
   // so the "Show archived" toggle and search are instant. Wrapped so a failure
   // shows a message instead of a blank page.
   try {
-    sopAll = await api('/api/sops?include_archived=true');
+    const resp = await api('/api/sops?include_archived=true');
+    // The endpoint returns a plain array. Coerce defensively so a wrapped shape
+    // ({sops:[...]}) or an empty non-array response can never leave the list at 0.
+    sopAll = Array.isArray(resp) ? resp : (resp?.sops || resp?.rows || []);
   } catch (err) {
     list.innerHTML = `<p class="hint">Could not load SOPs: ${esc(err.message)}</p>`;
     return;
