@@ -1552,3 +1552,19 @@ tr.ca-sel { background: var(--accent-glow); }
 /* Office Redirect flag on the calls list — a spot-it-at-a-glance badge. */
 .sv-row-flagged { background: var(--critical-bg); }
 .sv-flag-badge { cursor: help; }
+
+/* "Answered by" sub-row under a call that rang elsewhere — points the reviewer
+   at the agent who actually took it. */
+.sv-ae-row td { border-top: 0; padding-top: 0; }
+.sv-ae-cell { padding: 0 8px 8px 12px; }
+.sv-ae-chip {
+  display: inline-block; margin: 2px 2px 0; padding: 2px 8px;
+  font-size: 0.8rem; line-height: 1.5; border-radius: 12px;
+  border: 1px solid var(--accent); background: var(--accent-bg, transparent);
+  color: var(--accent); cursor: pointer;
+}
+.sv-ae-chip:hover { background: var(--accent); color: #fff; }
+.sv-ae-chip-static {
+  border-color: var(--border); color: var(--muted); cursor: help;
+}
+.sv-ae-chip-static:hover { background: transparent; color: var(--muted); }

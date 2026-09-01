@@ -164,6 +164,22 @@ async function fetchCallTranscript(userId, recordingId) {
  * where there is one, so a single call is a single line; the rows with no
  * recording — missed calls — stay separate, since each is its own attempt.
  */
+// The vendor sends the answered-elsewhere fields inconsistently — sometimes an
+// array, sometimes a comma/semicolon string, sometimes absent. Normalise to a
+// clean string array either way.
+function normList(v) {
+  if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean);
+  if (v == null || v === '') return [];
+  return String(v).split(/[,;]/).map(x => x.trim()).filter(Boolean);
+}
+// Union that preserves order and drops duplicates — used when ring-group legs
+// fold onto one row.
+function unionList(a, b) {
+  const out = [], seen = new Set();
+  for (const x of [...(a || []), ...(b || [])]) if (!seen.has(x)) { seen.add(x); out.push(x); }
+  return out;
+}
+
 function shapeCalls(calls) {
   const byRecording = new Map();
   const out = [];
@@ -183,6 +199,11 @@ function shapeCalls(calls) {
       status: c.status_label || c.status_key || null,
       has_transcript: !!(c.has_analysis && c.recording_id),
       has_recording: !!c.has_recording,
+      // Who actually answered when this leg didn't — lets the UI point the
+      // reviewer at that agent's day. Kept as parallel id/name arrays so the
+      // name is clickable and the id drives the dropdown switch.
+      answered_elsewhere_user_ids: normList(c.answered_elsewhere_user_ids),
+      answered_elsewhere_user_names: normList(c.answered_elsewhere_user_names),
     };
     if (!row.recording_id) { out.push(row); continue; }
     const seen = byRecording.get(row.recording_id);
@@ -191,6 +212,8 @@ function shapeCalls(calls) {
     // fact that someone answered.
     seen.duration = Math.max(seen.duration, row.duration);
     seen.has_transcript = seen.has_transcript || row.has_transcript;
+    seen.answered_elsewhere_user_ids = unionList(seen.answered_elsewhere_user_ids, row.answered_elsewhere_user_ids);
+    seen.answered_elsewhere_user_names = unionList(seen.answered_elsewhere_user_names, row.answered_elsewhere_user_names);
   }
   return out.sort((a, b) => (b.datetime || 0) - (a.datetime || 0));
 }

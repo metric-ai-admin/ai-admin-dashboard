@@ -4150,10 +4150,26 @@ function svRender(error) {
       + '<div class="empty-state">No calls found for this date.</div>';
     return;
   }
+  // The roster the dropdown actually offers — a name is only clickable-to-switch
+  // if its user_id is a real option; otherwise the agent isn't in the roster yet
+  // and switching would land nowhere, so it shows as a plain label.
+  const rosterIds = new Set([...($('#sv-user')?.options || [])].map(o => o.value));
+
   list.innerHTML = (error ? `<div class="banner banner-warn">Partial results — ${esc(error)}</div>` : '')
     + `<div style="overflow-x:auto"><table class="crm-table">
       <thead><tr><th>Time</th><th>Caller</th><th>Direction</th><th>Duration</th><th>Status</th><th></th></tr></thead>
-      <tbody>${svCalls.map(c => `<tr class="${c.office_redirect ? 'sv-row-flagged' : ''}">
+      <tbody>${svCalls.map(c => {
+        const names = c.answered_elsewhere_user_names || [];
+        const ids = c.answered_elsewhere_user_ids || [];
+        const aeRow = names.length ? `<tr class="sv-ae-row"><td colspan="6" class="sv-ae-cell">
+          <span class="muted small">→ Answered by:</span> ${names.map((nm, i) => {
+            const uid = ids[i] || '';
+            return uid && rosterIds.has(uid)
+              ? `<button class="sv-ae-chip" data-uid="${esc(uid)}" title="View ${esc(nm)}'s calls for this date">${esc(nm)}</button>`
+              : `<span class="sv-ae-chip sv-ae-chip-static" title="${esc(nm)} isn't in the roster dropdown yet">${esc(nm)}</span>`;
+          }).join(' ')}
+        </td></tr>` : '';
+        return `<tr class="${c.office_redirect ? 'sv-row-flagged' : ''}">
         <td class="mono small">${c.office_redirect
               ? '<span class="sv-flag-badge" title="Office Redirect policy violation — open transcript">🚨</span> ' : ''}${esc(svTime(c.datetime))}</td>
         <td>${esc(c.caller)}${c.caller_number && c.caller_number !== c.caller
@@ -4164,9 +4180,16 @@ function svRender(error) {
         <td>${c.has_transcript
               ? `<button class="btn-sm sv-view" data-id="${esc(c.recording_id)}">View Transcript</button>`
               : '<span class="muted small">no transcript</span>'}</td>
-      </tr>`).join('')}</tbody></table></div>`;
+      </tr>${aeRow}`;
+      }).join('')}</tbody></table></div>`;
 
   list.querySelectorAll('.sv-view').forEach(btn => btn.addEventListener('click', () => svOpen(btn)));
+  list.querySelectorAll('.sv-ae-chip[data-uid]').forEach(btn => btn.addEventListener('click', () => {
+    const sel = $('#sv-user');
+    if (!sel) return;
+    sel.value = btn.dataset.uid;   // same date is already held in svDate
+    loadCallAnalyzer();
+  }));
 }
 
 const SV_SENTIMENT_CLASS = { positive: 'badge-green', negative: 'badge-red', neutral: 'badge-gray' };
