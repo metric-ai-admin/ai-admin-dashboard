@@ -1421,27 +1421,39 @@ async function loadAutoMove() {
     $('#automove-status').innerHTML = `<span class="badge badge-red">Status unavailable</span> <span class="small muted">${esc(err.message)}</span>`;
   }
   autoMoveLoadLog();
-  amLoadRules();
+  amWireRules();
 }
 
 // ── Auto-Move Rules manager (Phase 2) ──────────────────────────────────────
 const AM_MATCH_TYPES = ['sender_exact', 'sender_domain', 'header', 'subject_contains', 'subject_startswith'];
 const AM_ACTIONS = ['move', 'move_read', 'archive', 'archive_read', 'move_unsubscribe'];
-let amRules = [], amRulesWired = false;
+let amRules = [], amRulesWired = false, amRulesLoaded = false;
+
+// Wires the collapsible section and its controls once. The rules table is not
+// fetched until the section is first expanded (default collapsed).
+function amWireRules() {
+  if (amRulesWired) return;
+  const toggle = $('#am-rules-toggle');
+  toggle?.addEventListener('click', () => {
+    const box = $('#am-rules-collapse');
+    const collapsed = box.classList.toggle('hidden');
+    $('#am-rules-caret').textContent = collapsed ? '▶' : '▼';
+    if (!collapsed && !amRulesLoaded) amLoadRules();   // load on first expand
+  });
+  $('#am-rule-add')?.addEventListener('click', () => amRuleModal());
+  $('#am-rules-refresh')?.addEventListener('click', amLoadRules);
+  $('#am-rule-modal-close')?.addEventListener('click', amRuleCloseModal);
+  $('#am-rule-cancel')?.addEventListener('click', amRuleCloseModal);
+  $('#am-rule-modal-overlay')?.addEventListener('click', amRuleCloseModal);
+  amRulesWired = true;
+}
 
 async function amLoadRules() {
   const body = $('#am-rules-body');
   if (!body) return;
-  if (!amRulesWired) {
-    $('#am-rule-add')?.addEventListener('click', () => amRuleModal());
-    $('#am-rules-refresh')?.addEventListener('click', amLoadRules);
-    $('#am-rule-modal-close')?.addEventListener('click', amRuleCloseModal);
-    $('#am-rule-cancel')?.addEventListener('click', amRuleCloseModal);
-    $('#am-rule-modal-overlay')?.addEventListener('click', amRuleCloseModal);
-    amRulesWired = true;
-  }
   try {
     amRules = (await api('/api/email/auto-move/rules')).rules || [];
+    amRulesLoaded = true;
   } catch (err) { body.innerHTML = `<tr><td colspan="9" class="small muted">${esc(err.message)}</td></tr>`; return; }
   amRenderRules();
 }
@@ -1601,11 +1613,12 @@ function amRenderRows(rows, append) {
     <td class="small">${esc(r.sender || '—')}</td>
     <td class="small">${esc((r.subject || '').slice(0, 60))}</td>
     <td class="small">${esc(r.action || '—')}</td>
+    <td class="small">${esc(r.target_folder || 'Archive')}</td>
     <td class="small">${r.dry_run ? '✓' : ''}</td>
     <td class="small">${r.error ? `<span class="badge badge-red">${esc(r.error.slice(0, 40))}</span>` : ''}</td>
   </tr>`).join('');
   if (append) body.insertAdjacentHTML('beforeend', html);
-  else body.innerHTML = html || `<tr><td colspan="6" class="small muted">No actions match these filters.</td></tr>`;
+  else body.innerHTML = html || `<tr><td colspan="7" class="small muted">No actions match these filters.</td></tr>`;
 }
 
 // reset=true starts a fresh query (offset 0, replaces rows); false appends the

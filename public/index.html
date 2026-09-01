@@ -427,7 +427,7 @@
 
       <div style="overflow-x:auto">
         <table class="crm-table" id="automove-log-table">
-          <thead><tr><th>Time</th><th>Sender</th><th>Subject</th><th>Action</th><th>Dry run</th><th>Error</th></tr></thead>
+          <thead><tr><th>Time</th><th>Sender</th><th>Subject</th><th>Action</th><th>Target Folder</th><th>Dry run</th><th>Error</th></tr></thead>
           <tbody id="automove-log-body"></tbody>
         </table>
       </div>
@@ -436,20 +436,22 @@
         <button class="btn-sm" id="am-load-more" style="display:none;margin-left:10px">Load more</button>
       </div>
 
-      <!-- Auto-Move Rules manager (Phase 2) -->
-      <div class="view-head" style="margin:18px 0 6px">
-        <h4 style="margin:0">Auto-Move Rules</h4>
-        <div class="view-actions">
+      <!-- Auto-Move Rules manager (Phase 2) — collapsible, default collapsed -->
+      <div class="view-head" style="margin:18px 0 6px; cursor:pointer" id="am-rules-toggle">
+        <h4 style="margin:0"><span id="am-rules-caret">▶</span> Auto-Move Rules</h4>
+      </div>
+      <div id="am-rules-collapse" class="hidden">
+        <div class="view-actions" style="margin-bottom:8px">
           <button class="btn-sm" id="am-rules-refresh">🔄 Refresh</button>
           <button class="btn-sm primary" id="am-rule-add">+ Add Rule</button>
         </div>
-      </div>
-      <p class="muted small" style="margin:0 0 8px">Rules are evaluated by priority (lower first), first match wins, then the legacy cold-outreach list. Lyndsay Review and other protected folders are never written.</p>
-      <div style="overflow-x:auto">
-        <table class="crm-table" id="am-rules-table">
-          <thead><tr><th>Prio</th><th>Match Type</th><th>Match Value</th><th>Action</th><th>Target Folder</th><th>Read</th><th>Active</th><th>Notes</th><th></th></tr></thead>
-          <tbody id="am-rules-body"></tbody>
-        </table>
+        <p class="muted small" style="margin:0 0 8px">Rules are evaluated by priority (lower first), first match wins, then the legacy cold-outreach list. Lyndsay Review and other protected folders are never written.</p>
+        <div style="overflow-x:auto">
+          <table class="crm-table" id="am-rules-table">
+            <thead><tr><th>Prio</th><th>Match Type</th><th>Match Value</th><th>Action</th><th>Target Folder</th><th>Read</th><th>Active</th><th>Notes</th><th></th></tr></thead>
+            <tbody id="am-rules-body"></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </section>
