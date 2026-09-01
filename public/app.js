@@ -54,7 +54,7 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions'],
+  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'accounting'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
   operations:  ['tasks', 'platform', 'email', 'eod', 'reports', 'sixpm', 'calls'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
@@ -66,6 +66,9 @@ const TAB_ACCESS = {
   regional_director:   ['maintenance', 'reports'],   // Rebekah Tuckner
   resident_success:    ['maintenance', 'reports'],   // Kara Garst
   collections_leasing: ['reports'],                  // Rocío Hunsberger
+  // Claudia Villalobos (Accounting/QC). No account in dashboard_users yet, so
+  // this sits inert until Arturo creates it — mirrors the three roles above.
+  accounting:  ['accounting'],
 };
 
 // Maintenance is read-only for these two: they consult the board, they do not
@@ -165,6 +168,7 @@ function loadTab(tab) {
   if (tab === 'sixpm') sixpmLoad();
   if (tab === 'calls') loadCallAnalyzer();
   if (tab === 'evictions') loadEvictions();
+  if (tab === 'accounting') loadAccounting();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -175,6 +179,194 @@ function loadTab(tab) {
 function loadEvictions() {
   const frame = $('#evictions-frame');
   if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/evictions/app');
+}
+
+// ── Accounting / Billing (Claudia) ─────────────────────────────────────────
+const acctState = { vendors: [], bills: [], tasks: [], vendorFilter: 'all', billFilter: 'all', wired: false };
+
+async function loadAccounting() {
+  if (!$('#acct-vendors-body')) return;
+  if (!acctState.wired) {
+    $('#acct-add-vendor')?.addEventListener('click', () => acctVendorModal());
+    $('#acct-add-bill')?.addEventListener('click', () => acctBillModal());
+    $('#acct-add-task')?.addEventListener('click', () => acctTaskModal());
+    $('#acct-vendor-filter')?.addEventListener('change', e => { acctState.vendorFilter = e.target.value; acctRenderVendors(); });
+    $('#acct-bill-filter')?.addEventListener('change', e => { acctState.billFilter = e.target.value; acctLoadBills(); });
+    $('#acct-modal-close')?.addEventListener('click', acctCloseModal);
+    $('#acct-modal-cancel')?.addEventListener('click', acctCloseModal);
+    $('#acct-modal-overlay')?.addEventListener('click', acctCloseModal);
+    acctState.wired = true;
+  }
+  await Promise.all([acctLoadVendors(), acctLoadBills(), acctLoadTasks()]);
+}
+
+const acctVendorName = id => acctState.vendors.find(v => v.id === id)?.name || '—';
+const W9_BADGE = { on_file: 'badge-green', missing: 'badge-red', outdated: 'badge-yellow' };
+const BILL_BADGE = { pending: 'badge-yellow', approved: 'badge-blue', paid: 'badge-green', disputed: 'badge-red' };
+const PRIO_BADGE = { urgent: 'badge-red', normal: 'badge-gray', low: 'badge-gray' };
+
+async function acctLoadVendors() {
+  try { acctState.vendors = (await api('/api/accounting/vendors')).vendors || []; }
+  catch (err) { $('#acct-vendors-body').innerHTML = `<tr><td colspan="8" class="small muted">${esc(err.message)}</td></tr>`; return; }
+  acctRenderVendors();
+}
+function acctRenderVendors() {
+  const body = $('#acct-vendors-body');
+  const rows = acctState.vendorFilter === 'all'
+    ? acctState.vendors : acctState.vendors.filter(v => v.w9_status === acctState.vendorFilter);
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="8" class="small muted">No vendors.</td></tr>'; return; }
+  body.innerHTML = rows.map(v => `<tr>
+    <td>${esc(v.name)}</td><td class="small">${esc(v.type || '—')}</td>
+    <td><span class="badge ${W9_BADGE[v.w9_status] || 'badge-gray'}">${esc(v.w9_status || '—')}</span></td>
+    <td class="small">${v.w9_year ?? '—'}</td>
+    <td class="small">${esc(v.email || '—')}</td><td class="small">${esc(v.phone || '—')}</td>
+    <td class="small">${esc((v.notes || '').slice(0, 50))}</td>
+    <td><button class="btn-sm acct-edit-vendor" data-id="${v.id}">Edit</button></td></tr>`).join('');
+  body.querySelectorAll('.acct-edit-vendor').forEach(b =>
+    b.addEventListener('click', () => acctVendorModal(acctState.vendors.find(v => v.id === b.dataset.id))));
+}
+
+async function acctLoadBills() {
+  const qs = acctState.billFilter === 'all' ? '' : `?status=${acctState.billFilter}`;
+  try { acctState.bills = (await api('/api/accounting/bills' + qs)).bills || []; }
+  catch (err) { $('#acct-bills-body').innerHTML = `<tr><td colspan="9" class="small muted">${esc(err.message)}</td></tr>`; return; }
+  acctRenderBills();
+}
+function acctRenderBills() {
+  const body = $('#acct-bills-body');
+  if (!acctState.bills.length) { body.innerHTML = '<tr><td colspan="9" class="small muted">No bills.</td></tr>'; return; }
+  const money = a => (a === null || a === undefined || a === '') ? '—' : '$' + Number(a).toLocaleString(undefined, { minimumFractionDigits: 2 });
+  body.innerHTML = acctState.bills.map(b => `<tr>
+    <td>${esc(acctVendorName(b.vendor_id))}</td><td class="small">${esc(b.property || '—')}</td>
+    <td class="small">${esc(b.work_order_ref || '—')}</td><td class="small">${money(b.amount)}</td>
+    <td><span class="badge ${BILL_BADGE[b.status] || 'badge-gray'}">${esc(b.status || '—')}</span></td>
+    <td class="small">${esc(b.due_date || '—')}</td><td class="small">${esc(b.paid_date || '—')}</td>
+    <td class="small">${esc((b.notes || '').slice(0, 40))}</td>
+    <td><button class="btn-sm acct-edit-bill" data-id="${b.id}">Edit</button></td></tr>`).join('');
+  body.querySelectorAll('.acct-edit-bill').forEach(btn =>
+    btn.addEventListener('click', () => acctBillModal(acctState.bills.find(b => b.id === btn.dataset.id))));
+}
+
+async function acctLoadTasks() {
+  try { acctState.tasks = (await api('/api/accounting/tasks')).tasks || []; }
+  catch (err) { $('#acct-tasks-board').innerHTML = `<p class="small muted">${esc(err.message)}</p>`; return; }
+  acctRenderTasks();
+}
+function acctRenderTasks() {
+  const board = $('#acct-tasks-board');
+  const cols = [['open', 'Open'], ['in_progress', 'In Progress'], ['done', 'Done']];
+  board.innerHTML = cols.map(([key, label]) => {
+    const items = acctState.tasks.filter(t => t.status === key);
+    return `<div class="acct-col"><div class="acct-col-head">${label} <span class="muted small">(${items.length})</span></div>
+      ${items.map(t => `<div class="acct-task-card">
+        <div class="acct-task-title">${esc(t.title)}</div>
+        <div class="acct-task-meta">
+          ${t.type ? `<span class="badge badge-gray">${esc(t.type)}</span>` : ''}
+          <span class="badge ${PRIO_BADGE[t.priority] || 'badge-gray'}">${esc(t.priority || 'normal')}</span>
+          <span class="muted small">${esc(t.assigned_to || '')}</span>
+          ${t.due_date ? `<span class="muted small">· due ${esc(t.due_date)}</span>` : ''}
+        </div>
+        ${t.notes ? `<div class="small muted" style="margin-top:4px">${esc(t.notes.slice(0, 80))}</div>` : ''}
+        <div class="acct-task-actions">
+          <button class="btn-sm acct-edit-task" data-id="${t.id}">Edit</button>
+          ${t.status !== 'done' ? `<button class="btn-sm acct-done-task" data-id="${t.id}">✓ Done</button>` : ''}
+        </div></div>`).join('') || '<p class="small muted">—</p>'}</div>`;
+  }).join('');
+  board.querySelectorAll('.acct-edit-task').forEach(b =>
+    b.addEventListener('click', () => acctTaskModal(acctState.tasks.find(t => t.id === b.dataset.id))));
+  board.querySelectorAll('.acct-done-task').forEach(b =>
+    b.addEventListener('click', async () => {
+      try { await api(`/api/accounting/tasks/${b.dataset.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'done' }) }); acctLoadTasks(); }
+      catch (err) { toast(err.message, 'error'); }
+    }));
+}
+
+// ── Shared modal ───────────────────────────────────────────────────────────
+// fields: [{ name, label, type:'text'|'number'|'date'|'select'|'textarea', options?, value? }]
+function acctModal(title, fields, onSave) {
+  $('#acct-modal-title').textContent = title;
+  $('#acct-modal-fields').innerHTML = fields.map(f => {
+    const v = f.value ?? '';
+    if (f.type === 'select') {
+      return `<label class="acct-field"><span>${esc(f.label)}</span>
+        <select name="${f.name}" class="crm-select">${f.options.map(o =>
+          `<option value="${esc(o)}"${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
+    }
+    if (f.type === 'textarea') {
+      return `<label class="acct-field"><span>${esc(f.label)}</span><textarea name="${f.name}" class="crm-input" rows="2">${esc(v)}</textarea></label>`;
+    }
+    return `<label class="acct-field"><span>${esc(f.label)}</span><input name="${f.name}" type="${f.type || 'text'}" class="crm-input" value="${esc(v)}"></label>`;
+  }).join('');
+  const form = $('#acct-modal-form');
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const payload = {};
+    for (const f of fields) {
+      let val = form.elements[f.name]?.value;
+      if (val === '') val = '';
+      payload[f.name] = f.type === 'number' && val !== '' ? Number(val) : val;
+    }
+    try { await onSave(payload); acctCloseModal(); }
+    catch (err) { toast(err.message, 'error'); }
+  };
+  $('#acct-modal').classList.remove('hidden');
+}
+function acctCloseModal() { $('#acct-modal')?.classList.add('hidden'); }
+
+function acctVendorModal(v) {
+  const edit = !!v;
+  acctModal(edit ? 'Edit Vendor' : 'Add Vendor', [
+    { name: 'name', label: 'Name', value: v?.name },
+    { name: 'type', label: 'Type', type: 'select', options: ['vendor', 'contractor', 'utility'], value: v?.type || 'vendor' },
+    { name: 'w9_status', label: 'W9 Status', type: 'select', options: ['missing', 'on_file', 'outdated'], value: v?.w9_status || 'missing' },
+    { name: 'w9_year', label: 'W9 Year', type: 'number', value: v?.w9_year },
+    { name: 'email', label: 'Email', value: v?.email },
+    { name: 'phone', label: 'Phone', value: v?.phone },
+    { name: 'notes', label: 'Notes', type: 'textarea', value: v?.notes },
+  ], async (payload) => {
+    const url = edit ? `/api/accounting/vendors/${v.id}` : '/api/accounting/vendors';
+    await api(url, { method: edit ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    acctLoadVendors();
+  });
+}
+
+function acctBillModal(b) {
+  const edit = !!b;
+  acctModal(edit ? 'Edit Bill' : 'Add Bill', [
+    { name: 'vendor_id', label: 'Vendor', type: 'select',
+      options: ['', ...acctState.vendors.map(v => v.id)], value: b?.vendor_id || '' },
+    { name: 'property', label: 'Property', value: b?.property },
+    { name: 'work_order_ref', label: 'WO Ref', value: b?.work_order_ref },
+    { name: 'amount', label: 'Amount', type: 'number', value: b?.amount },
+    { name: 'status', label: 'Status', type: 'select', options: ['pending', 'approved', 'paid', 'disputed'], value: b?.status || 'pending' },
+    { name: 'due_date', label: 'Due Date', type: 'date', value: b?.due_date },
+    { name: 'paid_date', label: 'Paid Date', type: 'date', value: b?.paid_date },
+    { name: 'notes', label: 'Notes', type: 'textarea', value: b?.notes },
+  ], async (payload) => {
+    const url = edit ? `/api/accounting/bills/${b.id}` : '/api/accounting/bills';
+    await api(url, { method: edit ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    acctLoadBills();
+  });
+  // The vendor select shows ids; relabel its options to names after render.
+  const sel = $('#acct-modal-form')?.elements['vendor_id'];
+  if (sel) Array.from(sel.options).forEach(o => { o.textContent = o.value ? acctVendorName(o.value) : '— none —'; });
+}
+
+function acctTaskModal(t) {
+  const edit = !!t;
+  acctModal(edit ? 'Edit Task' : 'Add Task', [
+    { name: 'title', label: 'Title', value: t?.title },
+    { name: 'type', label: 'Type', type: 'select', options: ['qc_review', 'vendor_payment', 'utility_billing', 'w9_followup', 'other'], value: t?.type || 'qc_review' },
+    { name: 'status', label: 'Status', type: 'select', options: ['open', 'in_progress', 'done'], value: t?.status || 'open' },
+    { name: 'priority', label: 'Priority', type: 'select', options: ['urgent', 'normal', 'low'], value: t?.priority || 'normal' },
+    { name: 'assigned_to', label: 'Assigned to', value: t?.assigned_to || 'Claudia' },
+    { name: 'due_date', label: 'Due Date', type: 'date', value: t?.due_date },
+    { name: 'notes', label: 'Notes', type: 'textarea', value: t?.notes },
+  ], async (payload) => {
+    const url = edit ? `/api/accounting/tasks/${t.id}` : '/api/accounting/tasks';
+    await api(url, { method: edit ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    acctLoadTasks();
+  });
 }
 
 // ---- Mobile sidebar toggle ----------------------------------------------------
@@ -5220,6 +5412,17 @@ function reportSectionBody(s) {
       : `<span class="muted small">Pending data from ${esc(s.owner || 'the team')}</span>`;
   }
   const c = s.content || {};
+
+  // Accounting roll-up (Claudia). Three counts; the badge comes from c.severity
+  // via reportSectionAutoBadge above.
+  if (c.accounting) {
+    const money = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 });
+    return `<div class="report-counts small muted">
+      <span>🗒️ Open tasks: <b>${(c.urgentTasks || 0) + (c.normalTasks || 0)}</b> (${c.urgentTasks || 0} urgent · ${c.normalTasks || 0} normal)</span>
+      <span>💵 Bills pending approval: <b>${c.pendingBills || 0}</b> · ${money(c.pendingAmount)}</span>
+      <span>📄 W9 issues: <b>${c.w9Issues || 0}</b> (missing + outdated)</span>
+    </div>`;
+  }
 
   // Three sources, each with its own subsection. They used to share one block
   // and overwrite each other, so the report showed whichever had been touched

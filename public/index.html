@@ -73,6 +73,7 @@
           <button data-maint-view="command-center">Command Center</button>
         </div>
       </div>
+      <button data-tab="accounting"><span class="nav-dot"></span>Accounting</button>
       <button data-tab="reports"><span class="nav-dot"></span>Daily Report</button>
       <button data-tab="crm"><span class="nav-dot"></span>BD CRM</button>
       <button data-tab="evictions"><span class="nav-dot"></span>Evictions</button>
@@ -1574,6 +1575,86 @@
     <iframe id="evictions-frame" title="Eviction Tracker"
             style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff"></iframe>
   </section>
+
+  <!-- ============ ACCOUNTING / BILLING (Claudia) ============ -->
+  <section id="tab-accounting" class="tab">
+    <div class="view-head"><h2>Accounting</h2><p class="muted small">Vendor billing · Work-order QC · Payment tracking</p></div>
+
+    <!-- Panel A — Vendor Registry -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="view-head" style="margin:0 0 8px">
+        <h3 style="margin:0">Vendor Registry</h3>
+        <div class="view-actions">
+          <label class="small">W9
+            <select id="acct-vendor-filter" class="crm-select">
+              <option value="all">All</option>
+              <option value="on_file">On file</option>
+              <option value="missing">Missing</option>
+              <option value="outdated">Outdated</option>
+            </select>
+          </label>
+          <button class="btn-sm primary" id="acct-add-vendor">+ Add Vendor</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="crm-table" id="acct-vendors-table">
+          <thead><tr><th>Name</th><th>Type</th><th>W9</th><th>Year</th><th>Email</th><th>Phone</th><th>Notes</th><th></th></tr></thead>
+          <tbody id="acct-vendors-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Panel B — Bills Tracker -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="view-head" style="margin:0 0 8px">
+        <h3 style="margin:0">Bills Tracker</h3>
+        <div class="view-actions">
+          <label class="small">Status
+            <select id="acct-bill-filter" class="crm-select">
+              <option value="all">All</option>
+              <option value="pending">Pending</option>
+              <option value="approved">Approved</option>
+              <option value="paid">Paid</option>
+              <option value="disputed">Disputed</option>
+            </select>
+          </label>
+          <button class="btn-sm primary" id="acct-add-bill">+ Add Bill</button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="crm-table" id="acct-bills-table">
+          <thead><tr><th>Vendor</th><th>Property</th><th>WO Ref</th><th>Amount</th><th>Status</th><th>Due</th><th>Paid</th><th>Notes</th><th></th></tr></thead>
+          <tbody id="acct-bills-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Panel C — Accounting Tasks -->
+    <div class="card">
+      <div class="view-head" style="margin:0 0 8px">
+        <h3 style="margin:0">Accounting Tasks</h3>
+        <div class="view-actions"><button class="btn-sm primary" id="acct-add-task">+ Add Task</button></div>
+      </div>
+      <div id="acct-tasks-board" class="acct-board"></div>
+    </div>
+  </section>
+
+  <!-- Accounting modal (shared form) -->
+  <div id="acct-modal" class="acct-modal hidden" role="dialog" aria-modal="true">
+    <div class="acct-modal-overlay" id="acct-modal-overlay"></div>
+    <div class="acct-modal-panel">
+      <div class="acct-modal-head">
+        <h3 id="acct-modal-title">Add</h3>
+        <button id="acct-modal-close" class="crm-modal-close" aria-label="Close">✕</button>
+      </div>
+      <form id="acct-modal-form"><div id="acct-modal-fields"></div>
+        <div class="acct-modal-actions">
+          <button type="button" class="btn-sm" id="acct-modal-cancel">Cancel</button>
+          <button type="submit" class="btn-sm primary" id="acct-modal-save">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
 </main>
 </div>
 

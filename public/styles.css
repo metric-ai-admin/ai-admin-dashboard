@@ -1488,3 +1488,24 @@ tr.ca-sel { background: var(--accent-glow); }
 }
 .automove-log-filters label { display: flex; flex-direction: column; gap: 3px; color: var(--text-muted); }
 .automove-log-filters input, .automove-log-filters select { min-width: 130px; }
+
+/* ── Accounting tab ────────────────────────────────────────────────────────── */
+.acct-board { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+@media (max-width: 900px) { .acct-board { grid-template-columns: 1fr; } }
+.acct-col { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+.acct-col-head { font-weight: 600; margin-bottom: 8px; }
+.acct-task-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+.acct-task-title { font-size: 0.9rem; margin-bottom: 4px; }
+.acct-task-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.acct-task-actions { display: flex; gap: 6px; margin-top: 8px; }
+
+.acct-modal { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.acct-modal.hidden { display: none; }
+.acct-modal-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.55); }
+.acct-modal-panel { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  width: min(460px, 92vw); max-height: 90vh; overflow-y: auto; padding: 18px; }
+.acct-modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.acct-modal-head h3 { margin: 0; }
+.acct-field { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; color: var(--text-muted); font-size: 0.85rem; }
+.acct-field .crm-input, .acct-field .crm-select { width: 100%; }
+.acct-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }

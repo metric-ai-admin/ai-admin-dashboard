@@ -3366,6 +3366,104 @@ app.get('/evictions/app', requireMetricAccess, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'evictions-app.html'));
 });
 
+// =====================================================================
+// ACCOUNTING / BILLING — Claudia Villalobos (Accounting/QC)
+// =====================================================================
+// Vendors, bills, and QC/payment tasks. All routes requireAuth; no role gate
+// yet (Arturo + Claudia). Writes accept only whitelisted columns so a stray
+// field cannot reach the table.
+const acctDb = () => supabaseAdmin || supabasePublic;
+
+// Keeps a request body to the columns that exist. Drops undefined so PATCH only
+// touches what was sent. Empty strings become null for the nullable text/number
+// columns so a cleared form field clears the cell rather than storing "".
+function acctPick(body, cols) {
+  const out = {};
+  for (const c of cols) {
+    if (body[c] === undefined) continue;
+    out[c] = body[c] === '' ? null : body[c];
+  }
+  return out;
+}
+const VENDOR_COLS = ['name', 'type', 'email', 'phone', 'w9_status', 'w9_year', 'notes'];
+const BILL_COLS   = ['vendor_id', 'property', 'work_order_ref', 'amount', 'status', 'due_date', 'paid_date', 'notes'];
+const TASK_COLS   = ['title', 'type', 'status', 'assigned_to', 'priority', 'due_date', 'notes'];
+
+// ---- Vendors ----
+app.get('/api/accounting/vendors', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const { data, error } = await acctDb().from('accounting_vendors').select('*').order('name');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ vendors: data || [] });
+});
+app.post('/api/accounting/vendors', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const row = acctPick(req.body || {}, VENDOR_COLS);
+  if (!row.name) return res.status(400).json({ error: 'name is required' });
+  const { data, error } = await acctDb().from('accounting_vendors').insert(row).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+app.patch('/api/accounting/vendors/:id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const row = acctPick(req.body || {}, VENDOR_COLS);
+  if (!Object.keys(row).length) return res.status(400).json({ error: 'No updatable fields sent' });
+  const { data, error } = await acctDb().from('accounting_vendors').update(row).eq('id', req.params.id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// ---- Bills ----
+app.get('/api/accounting/bills', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  let q = acctDb().from('accounting_bills').select('*').order('created_at', { ascending: false });
+  if (req.query.status && req.query.status !== 'all') q = q.eq('status', String(req.query.status));
+  const { data, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ bills: data || [] });
+});
+app.post('/api/accounting/bills', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const row = acctPick(req.body || {}, BILL_COLS);
+  const { data, error } = await acctDb().from('accounting_bills').insert(row).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+app.patch('/api/accounting/bills/:id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const row = acctPick(req.body || {}, BILL_COLS);
+  if (!Object.keys(row).length) return res.status(400).json({ error: 'No updatable fields sent' });
+  const { data, error } = await acctDb().from('accounting_bills').update(row).eq('id', req.params.id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// ---- Tasks ----
+app.get('/api/accounting/tasks', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  let q = acctDb().from('accounting_tasks').select('*').order('created_at', { ascending: false });
+  if (req.query.status && req.query.status !== 'all') q = q.eq('status', String(req.query.status));
+  const { data, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ tasks: data || [] });
+});
+app.post('/api/accounting/tasks', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const row = acctPick(req.body || {}, TASK_COLS);
+  if (!row.title) return res.status(400).json({ error: 'title is required' });
+  const { data, error } = await acctDb().from('accounting_tasks').insert(row).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+app.patch('/api/accounting/tasks/:id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const row = acctPick(req.body || {}, TASK_COLS);
+  if (!Object.keys(row).length) return res.status(400).json({ error: 'No updatable fields sent' });
+  const { data, error } = await acctDb().from('accounting_tasks').update(row).eq('id', req.params.id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
 
 // Middleware: require Supabase to be configured before serving CRM routes
 function requireCRM(req, res, next) {
@@ -4405,6 +4503,7 @@ const REPORT_SECTIONS = [
   { key: 'collections', icon: '💰', title: 'Collections',              owner: 'Rocío' },
   { key: 'kpi',         icon: '📊', title: 'KPI Results',              owner: 'Jay Manuel' },
   { key: 'pending',     icon: '⏳', title: 'Pending Items',            owner: 'Bekah' },
+  { key: 'accounting',  icon: '💵', title: 'Accounting',              owner: 'Claudia' },
   { key: 'other',       icon: '📝', title: 'Other',                    owner: 'Team' },
 ];
 
@@ -4582,7 +4681,39 @@ async function reportBuildSections(client) {
     try { sections[i] = await reportMaintenanceSection(); }
     catch (err) { console.error('[reports] maintenance section unavailable:', err.message); }
   }
+  const j = sections.findIndex(s => s.key === 'accounting');
+  if (j >= 0) {
+    try { sections[j] = await reportAccountingSection(); }
+    catch (err) { console.error('[reports] accounting section unavailable:', err.message); }
+  }
   return sections;
+}
+
+// Accounting roll-up for the Daily Report — read live from the three accounting
+// tables at generation time. Severity: red if any urgent open task, amber if
+// any bill is pending approval, green otherwise.
+async function reportAccountingSection() {
+  const client = supabaseAdmin || supabasePublic;
+  const [tasksR, billsR, vendorsR] = await Promise.all([
+    client.from('accounting_tasks').select('priority,status'),
+    client.from('accounting_bills').select('status,amount'),
+    client.from('accounting_vendors').select('w9_status'),
+  ]);
+  for (const r of [tasksR, billsR, vendorsR]) if (r.error) throw new Error(r.error.message);
+  const openTasks = (tasksR.data || []).filter(t => t.status !== 'done');
+  const urgentTasks = openTasks.filter(t => t.priority === 'urgent').length;
+  const normalTasks = openTasks.filter(t => t.priority === 'normal').length;
+  const pending = (billsR.data || []).filter(b => b.status === 'pending');
+  const pendingBills = pending.length;
+  const pendingAmount = pending.reduce((sum, b) => sum + (Number(b.amount) || 0), 0);
+  const w9Issues = (vendorsR.data || []).filter(v => v.w9_status === 'missing' || v.w9_status === 'outdated').length;
+  const severity = urgentTasks > 0 ? 'red' : (pendingBills > 0 ? 'amber' : 'green');
+  return {
+    key: 'accounting', icon: '💵', title: 'Accounting', owner: 'Claudia',
+    status: 'auto',
+    content: { accounting: true, severity, urgentTasks, normalTasks, pendingBills, pendingAmount, w9Issues },
+    last_updated: new Date().toISOString(),
+  };
 }
 
 // Generating twice in one day returns the existing report rather than a second
