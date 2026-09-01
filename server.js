@@ -4732,16 +4732,29 @@ app.post('/api/reports/daily/generate', requireAuth, async (req, res) => {
   const report_date = reportDateStr();
   const sections = await reportBuildSections(client);
   try {
-    const { data: existing } = await client.from('daily_reports').select('*').eq('report_date', report_date).maybeSingle();
-    if (existing) return res.json({ ...existing, created: false });
+    // Upsert by report_date. A unique index (daily_reports_date_key) allows one
+    // report per day, so "Generate" must UPDATE the existing row with freshly
+    // built sections rather than return it untouched — otherwise a report made
+    // before a section (e.g. Accounting) was added never picks it up, which is
+    // exactly the stuck-at-12:09 symptom.
+    const { data: existing } = await client.from('daily_reports')
+      .select('id').eq('report_date', report_date).maybeSingle();
+    if (existing) {
+      const { data: updated, error } = await client.from('daily_reports')
+        .update({ sections }).eq('id', existing.id).select().single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ ...updated, created: false, updated: true });
+    }
 
     const { data, error } = await client.from('daily_reports')
       .insert({ report_date, sections }).select().single();
-    // 23505 means someone else generated it between the check and the insert.
-    // Their report is as good as ours, so take it rather than failing.
+    // 23505 means someone else inserted between our check and insert. Update
+    // their row with our freshly-built sections so the result is still current.
     if (error && error.code === '23505') {
-      const { data: raced } = await client.from('daily_reports').select('*').eq('report_date', report_date).single();
-      return res.json({ ...raced, created: false });
+      const { data: raced } = await client.from('daily_reports').select('id').eq('report_date', report_date).single();
+      const { data: updated } = await client.from('daily_reports')
+        .update({ sections }).eq('id', raced.id).select().single();
+      return res.json({ ...updated, created: false, updated: true });
     }
     if (error) return res.status(500).json({ error: error.message });
     res.json({ ...data, created: true });

@@ -5539,7 +5539,7 @@ $('#report-generate')?.addEventListener('click', async () => {
   btn.disabled = true;
   try {
     const r = await api('/api/reports/daily/generate', { method: 'POST' });
-    toast(r.created ? 'Report generated' : 'Today’s report already exists', r.created ? 'success' : 'info');
+    toast(r.created ? 'Report generated' : 'Report regenerated', 'success');
     reportLoad();
   } catch (err) { toast(err.message, 'error'); }
   finally { btn.disabled = false; }
