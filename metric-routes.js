@@ -1001,10 +1001,25 @@ function registerMetricRoutes(app, db) {
     if (who.error) return res.status(403).json({ error: who.error });
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? req.query.date : todayStr();
     const { calls, error } = await simplevoip.fetchCallsForDate(who.userId, date);
+    const shaped = simplevoip.shapeCalls(calls);
+    // Compliance pre-scan for the list badge (Office Redirect, Lyndsay
+    // 2026-09-01). The flag lives in the transcript, which the list does not
+    // otherwise fetch — so calls that have a transcript are fetched here in
+    // parallel and scanned deterministically (no model call), and a boolean is
+    // attached so the row can show 🚨 without the reviewer opening each call.
+    // Failures are non-fatal: an unscanned call simply carries no badge.
+    await Promise.all(shaped
+      .filter(c => c.has_transcript && c.recording_id)
+      .map(async c => {
+        try {
+          const d = await simplevoip.fetchCallTranscript(who.userId, c.recording_id);
+          c.office_redirect = !!(d && simplevoip.detectOfficeRedirect(d.transcription || '').flagged);
+        } catch { /* leave unset — no badge */ }
+      }));
     // 200 with an error field rather than a 500: partial pages are still worth
     // showing, and the view can say what went wrong beside them.
     res.json({ configured: true, date, user: who.name, user_id: who.userId,
-               calls: simplevoip.shapeCalls(calls), error: error || null });
+               calls: shaped, error: error || null });
   });
 
   app.get('/api/simplevoip/calls/:recording_id/transcript', requireSession, async (req, res) => {

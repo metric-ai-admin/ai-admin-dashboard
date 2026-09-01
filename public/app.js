@@ -4153,8 +4153,9 @@ function svRender(error) {
   list.innerHTML = (error ? `<div class="banner banner-warn">Partial results — ${esc(error)}</div>` : '')
     + `<div style="overflow-x:auto"><table class="crm-table">
       <thead><tr><th>Time</th><th>Caller</th><th>Direction</th><th>Duration</th><th>Status</th><th></th></tr></thead>
-      <tbody>${svCalls.map(c => `<tr>
-        <td class="mono small">${esc(svTime(c.datetime))}</td>
+      <tbody>${svCalls.map(c => `<tr class="${c.office_redirect ? 'sv-row-flagged' : ''}">
+        <td class="mono small">${c.office_redirect
+              ? '<span class="sv-flag-badge" title="Office Redirect policy violation — open transcript">🚨</span> ' : ''}${esc(svTime(c.datetime))}</td>
         <td>${esc(c.caller)}${c.caller_number && c.caller_number !== c.caller
               ? ` <span class="muted small">${esc(c.caller_number)}</span>` : ''}</td>
         <td class="small muted">${esc(c.direction || '')}</td>
@@ -4267,7 +4268,7 @@ async function svOpen(btn) {
       ${sentiment}
       ${svSection('Summary', t.summary ? `<div class="sv-text">${esc(t.summary)}</div>`
                                        : '<i class="muted">No summary available.</i>')}
-      ${svSection('Transcript', svRenderTranscript(t.transcript_text))}
+      ${svSection('Transcript', `<div class="sv-transcript-scroll">${svRenderTranscript(t.transcript_text)}</div>`)}
       <div class="sv-foot muted small">${esc(meta)}</div>`;
     $('#sv-close')?.addEventListener('click', svClosePanel);
   } catch (err) {

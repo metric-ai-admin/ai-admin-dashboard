@@ -1539,3 +1539,16 @@ tr.ca-sel { background: var(--accent-glow); }
 .sv-compliance-flag { font-weight: 700; color: var(--critical); font-size: 0.95rem; }
 .sv-compliance-quote { margin: 6px 0; color: var(--text); font-style: italic; }
 .sv-compliance-action { font-size: 0.82rem; color: var(--critical); font-weight: 600; }
+
+/* Transcript scroll — keep the full transcript readable inside its own pane
+   instead of pushing the panel arbitrarily tall. */
+.sv-transcript-scroll {
+  max-height: min(55vh, 640px);
+  min-height: 400px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+/* Office Redirect flag on the calls list — a spot-it-at-a-glance badge. */
+.sv-row-flagged { background: var(--critical-bg); }
+.sv-flag-badge { cursor: help; }
