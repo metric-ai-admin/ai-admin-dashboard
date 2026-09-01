@@ -3626,6 +3626,15 @@ async function svLoadUsers() {
       sel.innerHTML = users.map(u =>
         `<option value="${esc(u.user_id)}"${u.user_id === d.defaultUserId ? ' selected' : ''}>${esc(u.name)}${
           u.role ? ` — ${esc(u.role)}` : ''}</option>`).join('');
+      // Default to the SIMPLEVOIP_USER_ID user (Rebekah), not whoever the roster
+      // sorts first (Danny, alphabetically — and he often has no calls, which
+      // read as an empty day). The `selected` attribute above should do this,
+      // but set the value explicitly so a browser quirk or a default id that
+      // sorts mid-list can't leave the first name showing. Fall back to the
+      // first option only if the default isn't in the roster.
+      if (d.defaultUserId && users.some(u => u.user_id === d.defaultUserId)) {
+        sel.value = d.defaultUserId;
+      }
       sel.addEventListener('change', loadCallAnalyzer);
     }
 
