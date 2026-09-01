@@ -42,16 +42,43 @@ const defaultUserId = () => USER_ID;
 
 const fetchFn = (...a) => (globalThis.fetch ? globalThis.fetch(...a) : Promise.reject(new Error('fetch unavailable')));
 
-// Local midnight, not UTC: a "day of calls" is the day the office worked, and
-// slicing on UTC would put the last few hours of an Austin evening into
-// tomorrow's report.
+// A "day of calls" is the day the Central-time office worked. The old code used
+// the SERVER's local midnight, which on Render (UTC) meant a Sept-1 window ran
+// 00:00–23:59 UTC = CT 19:00 Aug-31 → 18:59 Sep-1: it still caught business
+// hours (why a normal day looked fine) but shoved evening CT calls into the
+// wrong day. Anchor the window to America/Chicago instead, so Sep-1 CT is
+// 05:00Z Sep-1 → 05:00Z Sep-2 (CDT) — or an hour later under CST.
+const CT_TZ = 'America/Chicago';
+
+// Minutes CT is offset from UTC at a given instant (handles CST vs CDT). "GMT-5"
+// → -300. Returns 0 only if the platform gives no offset, which no modern one does.
+function ctOffsetMinutes(atUTC) {
+  const name = new Intl.DateTimeFormat('en-US', { timeZone: CT_TZ, timeZoneName: 'shortOffset' })
+    .formatToParts(atUTC).find(p => p.type === 'timeZoneName').value; // e.g. "GMT-5"
+  const m = name.match(/GMT([+-]\d+)(?::(\d+))?/);
+  if (!m) return 0;
+  const sign = m[1].startsWith('-') ? -1 : 1;
+  return parseInt(m[1], 10) * 60 + sign * (m[2] ? parseInt(m[2], 10) : 0);
+}
+
 function dayBounds(dateStr) {
-  const [y, m, d] = String(dateStr || '').split('-').map(Number);
-  const start = (y && m && d) ? new Date(y, m - 1, d) : new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setHours(23, 59, 59, 999);
-  return { start: Math.floor(start.getTime() / 1000), end: Math.floor(end.getTime() / 1000) };
+  let y, m, d;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ''))) {
+    [y, m, d] = dateStr.split('-').map(Number);
+  } else {
+    // "Today" in Central time, not in the server's timezone.
+    [y, m, d] = new Intl.DateTimeFormat('en-CA', { timeZone: CT_TZ }).format(new Date()).split('-').map(Number);
+  }
+  // CT midnight of that day, and CT midnight of the next day, each as a real UTC
+  // instant: the wall-clock reading minus CT's offset. Offset is resolved per
+  // boundary so a DST-transition day still bounds correctly.
+  const toUTC = (yy, mm, dd) => {
+    const wall = new Date(Date.UTC(yy, mm - 1, dd, 0, 0, 0));
+    return wall.getTime() - ctOffsetMinutes(wall) * 60000;
+  };
+  const startMs = toUTC(y, m, d);
+  const endMs = toUTC(y, m, d + 1) - 1000; // inclusive last second of the CT day
+  return { start: Math.floor(startMs / 1000), end: Math.floor(endMs / 1000) };
 }
 
 async function getJSON(url, timeoutMs = 20000) {
