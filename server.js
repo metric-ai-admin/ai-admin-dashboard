@@ -3293,41 +3293,36 @@ app.get('/api/bd-crm/export/csv', requireMetricAdmin, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'BD CRM not configured' });
   const db = supabaseAdmin || supabasePublic;
   try {
-    // Full rows now, not just property_id — the shop data is flattened into the
-    // CSV, so we need every column of the three related tables.
-    const [props, phones, onlines, dms] = await Promise.all([
+    // Every column of properties, plus the most recent entry of each related
+    // table with ALL of its columns — nothing omitted (Lyndsay 09/01). Column
+    // sets are dynamic (union of a known list + whatever the rows actually have)
+    // so a column added later still appears, and the known list keeps the
+    // headers present even when a table is empty.
+    const [props, phones, onlines, dms, follows, appts, insps] = await Promise.all([
       db.from('properties').select('*'),
       db.from('phone_shops').select('*'),
       db.from('online_shops').select('*'),
       db.from('dm_reviews').select('*'),
+      db.from('follow_ups').select('*'),
+      db.from('appointments').select('*'),
+      db.from('inspections').select('*'),
     ]);
-    for (const r of [props, phones, onlines, dms]) if (r.error) throw new Error(r.error.message);
+    for (const r of [props, phones, onlines, dms, follows, appts, insps]) if (r.error) throw new Error(r.error.message);
     const rows = props.data || [];
 
-    // Group the related rows by property.
     const groupBy = (arr) => {
       const m = new Map();
       for (const r of (arr || [])) { if (!m.has(r.property_id)) m.set(r.property_id, []); m.get(r.property_id).push(r); }
       return m;
     };
-    const phonesByProp = groupBy(phones.data);
-    const onlinesByProp = groupBy(onlines.data);
-    const dmsByProp = groupBy(dms.data);
+    const byPhone = groupBy(phones.data), byOnline = groupBy(onlines.data), byDm = groupBy(dms.data),
+          byFollow = groupBy(follows.data), byAppt = groupBy(appts.data), byInsp = groupBy(insps.data);
 
-    // shop_date is a plain DATE string (YYYY-MM-DD); lexical compare == date
-    // compare, nulls last. Phone calls read oldest→newest (call1 = first call).
-    const byDateAsc = (a, b) => (a.shop_date || '9999') < (b.shop_date || '9999') ? -1 : 1;
-    const byDateDesc = (a, b) => (a.shop_date || '') > (b.shop_date || '') ? -1 : 1;
-
-    // "Ready for Lyndsay" = 3 phone calls + >=1 online shop + a DM review.
+    // "Ready for Lyndsay" ranking, unchanged — the most complete property leads.
     const rankOf = (p) => {
-      const ph = (phonesByProp.get(p.id) || []).length;
-      const on = (onlinesByProp.get(p.id) || []).length;
-      const dm = (dmsByProp.get(p.id) || []).length;
+      const ph = (byPhone.get(p.id) || []).length, on = (byOnline.get(p.id) || []).length, dm = (byDm.get(p.id) || []).length;
       return { ready: ph >= 3 && on >= 1 && dm >= 1, tier: (ph >= 3 ? 1 : 0) + (on >= 1 ? 1 : 0) + (dm >= 1 ? 1 : 0), raw: ph + on + dm };
     };
-    // Ready first, then most complete — the leading row is the best example
-    // (Cannon South, currently). Not hardcoded: it wins on completeness.
     rows.sort((a, b) => {
       const ra = rankOf(a), rb = rankOf(b);
       if (ra.ready !== rb.ready) return ra.ready ? -1 : 1;
@@ -3335,65 +3330,69 @@ app.get('/api/bd-crm/export/csv', requireMetricAdmin, async (req, res) => {
       return rb.raw - ra.raw;
     });
 
-    // ── Flattened columns from the related tables ──────────────────────────
-    // agent is mapped with a fallback: online_shops/dm_reviews may or may not
-    // carry an agent column depending on how a row was written; a missing key
-    // is simply blank rather than an error.
-    const PHONE_FIELDS = ['date', 'agent', 'duration', 'score', 'greeting', 'product_knowledge', 'closing', 'notes'];
-    const phoneVal = (row, field) => {
-      if (!row) return null;
-      switch (field) {
-        case 'date': return row.shop_date;
-        case 'agent': return row.agent_name ?? row.agent ?? null;
-        case 'duration': return row.call_duration;
-        default: return row[field];   // score, greeting, product_knowledge, closing, notes
-      }
+    // Known columns per related table (header fallback when a table is empty);
+    // property_id is dropped as redundant with the property row.
+    const KNOWN = {
+      phone:       ['id', 'shop_date', 'agent_name', 'call_duration', 'score', 'greeting', 'product_knowledge', 'closing', 'notes', 'audio_url', 'created_at'],
+      online:      ['id', 'shop_date', 'platform', 'score', 'response_time_hrs', 'photos_quality', 'listing_accuracy', 'notes', 'created_at'],
+      dm:          ['id', 'reviewed_at', 'overall_score', 'ai_filled', 'audit_notes', 'website_scores', 'floorplan_scores', 'gbp_scores', 'facebook_scores', 'ils_scores', 'updated_at', 'created_at'],
+      followup:    ['id', 'follow_up_date', 'method', 'contact_name', 'outcome', 'next_action', 'next_action_date', 'completed', 'notes', 'created_at'],
+      appointment: ['id', 'appointment_at', 'status', 'outcome', 'notes', 'agent_name', 'created_at'],
+      inspection:  ['id', 'visited_date', 'building_condition', 'notes', 'created_at'],
     };
-    const phoneHeaders = [];
-    for (let n = 1; n <= 3; n++) for (const f of PHONE_FIELDS) phoneHeaders.push(`call${n}_${f}`);
+    const colsFor = (data, known) => {
+      const set = new Set(known);
+      for (const r of (data || [])) for (const k of Object.keys(r)) if (k !== 'property_id') set.add(k);
+      return [...set];
+    };
+    const phoneCols = colsFor(phones.data, KNOWN.phone);
+    const onlineCols = colsFor(onlines.data, KNOWN.online);
+    const dmCols = colsFor(dms.data, KNOWN.dm);
+    const followCols = colsFor(follows.data, KNOWN.followup);
+    const apptCols = colsFor(appts.data, KNOWN.appointment);
+    const inspCols = colsFor(insps.data, KNOWN.inspection);
 
-    const onlineHeaders = ['online_date', 'online_platform', 'online_agent', 'online_score',
-      'online_response_hrs', 'online_photos_quality', 'online_listing_accuracy', 'online_notes'];
-    const onlineVals = (o) => o ? [
-      o.shop_date, o.platform, o.agent_name ?? o.agent ?? null, o.score,
-      o.response_time_hrs, o.photos_quality, o.listing_accuracy, o.notes,
-    ] : new Array(onlineHeaders.length).fill(null);
+    // Most recent entry by a date field (desc, nulls last, created_at tiebreak).
+    const latestBy = (arr, field) => (arr || []).slice().sort((a, b) => {
+      const av = a[field] || '', bv = b[field] || '';
+      if (av !== bv) return av < bv ? 1 : -1;
+      return (b.created_at || '') < (a.created_at || '') ? -1 : 1;
+    })[0] || null;
+    // Phone calls read oldest -> newest, so call1 is the first call.
+    const phonesAsc = (arr) => (arr || []).slice().sort((a, b) => (a.shop_date || '9999') < (b.shop_date || '9999') ? -1 : 1);
 
-    const dmHeaders = ['dm_reviewed_at', 'dm_agent', 'dm_overall_score', 'dm_ai_filled', 'dm_audit_notes',
-      'dm_website_scores', 'dm_floorplan_scores', 'dm_gbp_scores', 'dm_facebook_scores', 'dm_ils_scores'];
-    const jsonCell = (v) => (v === null || v === undefined) ? null : (typeof v === 'string' ? v : JSON.stringify(v));
-    const dmVals = (d) => d ? [
-      d.reviewed_at, d.agent_name ?? d.agent ?? null, d.overall_score, d.ai_filled, d.audit_notes,
-      jsonCell(d.website_scores), jsonCell(d.floorplan_scores), jsonCell(d.gbp_scores),
-      jsonCell(d.facebook_scores), jsonCell(d.ils_scores),
-    ] : new Array(dmHeaders.length).fill(null);
-
-    // Base property columns first, then phone (call1/2/3), then online, then dm.
     const FALLBACK_COLS = ['id', 'property_name', 'address', 'city', 'state', 'zip', 'submarket', 'style', 'year_built', 'asset_class', 'units', 'vacancy_pct', 'avg_asking_unit', 'avg_unit_sf', 'management_company', 'management_type', 'owner_name', 'owner_contact_name', 'owner_phone', 'owner_email', 'owner_address', 'assigned_to', 'phone_assignee', 'phone_assignee3', 'online_dm_assignee', 'rop_status', 'lead_score_override', 'lyndsay_reviewed', 'notes', 'created_at', 'updated_at'];
     const baseCols = rows.length ? Object.keys(rows[0]) : FALLBACK_COLS;
-    const header = [...baseCols, ...phoneHeaders, ...onlineHeaders, ...dmHeaders];
+    const px = (prefix, cols) => cols.map(c => prefix + c);
+    const header = [
+      ...baseCols,
+      ...px('call1_', phoneCols), ...px('call2_', phoneCols), ...px('call3_', phoneCols),
+      ...px('online_', onlineCols),
+      ...px('dm_', dmCols),
+      ...px('followup_', followCols),
+      ...px('appointment_', apptCols),
+      ...px('inspection_', inspCols),
+    ];
 
     const cell = (v) => {
       if (v === null || v === undefined) return '';
       const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
       return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     };
+    const rowCells = (obj, cols) => cols.map(c => cell(obj ? obj[c] : null));
 
     const lines = [header.join(',')];
     for (const p of rows) {
-      const base = baseCols.map(c => cell(p[c]));
-
-      const calls = (phonesByProp.get(p.id) || []).slice().sort(byDateAsc).slice(0, 3);
-      const phoneCells = [];
-      for (let n = 0; n < 3; n++) for (const f of PHONE_FIELDS) phoneCells.push(cell(phoneVal(calls[n], f)));
-
-      const latestOnline = (onlinesByProp.get(p.id) || []).slice().sort(byDateDesc)[0] || null;
-      const onlineCells = onlineVals(latestOnline).map(cell);
-
-      const dm = (dmsByProp.get(p.id) || [])[0] || null;
-      const dmCells = dmVals(dm).map(cell);
-
-      lines.push([...base, ...phoneCells, ...onlineCells, ...dmCells].join(','));
+      const calls = phonesAsc(byPhone.get(p.id)).slice(0, 3);
+      lines.push([
+        ...baseCols.map(c => cell(p[c])),
+        ...rowCells(calls[0] || null, phoneCols), ...rowCells(calls[1] || null, phoneCols), ...rowCells(calls[2] || null, phoneCols),
+        ...rowCells(latestBy(byOnline.get(p.id), 'shop_date'), onlineCols),
+        ...rowCells((byDm.get(p.id) || [])[0] || null, dmCols),
+        ...rowCells(latestBy(byFollow.get(p.id), 'follow_up_date'), followCols),
+        ...rowCells(latestBy(byAppt.get(p.id), 'appointment_at'), apptCols),
+        ...rowCells(latestBy(byInsp.get(p.id), 'visited_date'), inspCols),
+      ].join(','));
     }
     // BOM so Excel reads UTF-8 — owner names carry accents.
     const csv = '﻿' + lines.join('\r\n');
