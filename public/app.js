@@ -1421,6 +1421,95 @@ async function loadAutoMove() {
     $('#automove-status').innerHTML = `<span class="badge badge-red">Status unavailable</span> <span class="small muted">${esc(err.message)}</span>`;
   }
   autoMoveLoadLog();
+  amLoadRules();
+}
+
+// ── Auto-Move Rules manager (Phase 2) ──────────────────────────────────────
+const AM_MATCH_TYPES = ['sender_exact', 'sender_domain', 'header', 'subject_contains', 'subject_startswith'];
+const AM_ACTIONS = ['move', 'move_read', 'archive', 'archive_read', 'move_unsubscribe'];
+let amRules = [], amRulesWired = false;
+
+async function amLoadRules() {
+  const body = $('#am-rules-body');
+  if (!body) return;
+  if (!amRulesWired) {
+    $('#am-rule-add')?.addEventListener('click', () => amRuleModal());
+    $('#am-rules-refresh')?.addEventListener('click', amLoadRules);
+    $('#am-rule-modal-close')?.addEventListener('click', amRuleCloseModal);
+    $('#am-rule-cancel')?.addEventListener('click', amRuleCloseModal);
+    $('#am-rule-modal-overlay')?.addEventListener('click', amRuleCloseModal);
+    amRulesWired = true;
+  }
+  try {
+    amRules = (await api('/api/email/auto-move/rules')).rules || [];
+  } catch (err) { body.innerHTML = `<tr><td colspan="9" class="small muted">${esc(err.message)}</td></tr>`; return; }
+  amRenderRules();
+}
+
+function amRenderRules() {
+  const body = $('#am-rules-body');
+  if (!amRules.length) { body.innerHTML = '<tr><td colspan="9" class="small muted">No rules yet.</td></tr>'; return; }
+  body.innerHTML = amRules.map(r => `<tr${r.active ? '' : ' style="opacity:.5"'}>
+    <td class="small">${r.priority}</td>
+    <td class="small">${esc(r.match_type)}</td>
+    <td class="small">${esc(r.match_value)}</td>
+    <td class="small">${esc(r.action)}</td>
+    <td class="small">${esc(r.target_folder || '—')}</td>
+    <td class="small">${r.mark_read ? '✓' : ''}</td>
+    <td><button class="btn-sm am-rule-toggle" data-id="${r.id}">${r.active ? '<span class="badge badge-green">Active</span>' : '<span class="badge badge-gray">Off</span>'}</button></td>
+    <td class="small">${esc((r.notes || '').slice(0, 40))}</td>
+    <td><button class="btn-sm am-rule-edit" data-id="${r.id}">Edit</button></td></tr>`).join('');
+  body.querySelectorAll('.am-rule-edit').forEach(b => b.addEventListener('click', () => amRuleModal(amRules.find(r => r.id === b.dataset.id))));
+  body.querySelectorAll('.am-rule-toggle').forEach(b => b.addEventListener('click', async () => {
+    const r = amRules.find(x => x.id === b.dataset.id);
+    try {
+      // Toggle: reactivating uses PATCH active:true; deactivating uses the soft-delete route.
+      if (r.active) await api(`/api/email/auto-move/rules/${r.id}`, { method: 'DELETE' });
+      else await api(`/api/email/auto-move/rules/${r.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: true }) });
+      amLoadRules();
+    } catch (err) { toast(err.message, 'error'); }
+  }));
+}
+
+function amRuleCloseModal() { $('#am-rule-modal')?.classList.add('hidden'); }
+
+function amRuleModal(rule) {
+  const edit = !!rule;
+  $('#am-rule-modal-title').textContent = edit ? 'Edit Rule' : 'Add Rule';
+  const field = (label, name, type, value, options) => {
+    if (type === 'select') return `<label class="acct-field"><span>${label}</span><select name="${name}" class="crm-select">${options.map(o => `<option value="${esc(o)}"${o === value ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
+    if (type === 'checkbox') return `<label class="acct-field" style="flex-direction:row;align-items:center;gap:8px"><input name="${name}" type="checkbox"${value ? ' checked' : ''}><span>${label}</span></label>`;
+    return `<label class="acct-field"><span>${label}</span><input name="${name}" type="${type}" class="crm-input" value="${esc(value ?? '')}"></label>`;
+  };
+  $('#am-rule-fields').innerHTML =
+    field('Priority (lower = first)', 'priority', 'number', rule?.priority ?? 50)
+    + field('Match Type', 'match_type', 'select', rule?.match_type || 'sender_domain', AM_MATCH_TYPES)
+    + field('Match Value', 'match_value', 'text', rule?.match_value)
+    + field('Action', 'action', 'select', rule?.action || 'move', AM_ACTIONS)
+    + field('Target Folder (blank for archive)', 'target_folder', 'text', rule?.target_folder)
+    + field('Mark read', 'mark_read', 'checkbox', rule?.mark_read)
+    + field('Active', 'active', 'checkbox', rule ? rule.active : true)
+    + field('Notes', 'notes', 'text', rule?.notes);
+  const form = $('#am-rule-form');
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const payload = {
+      priority: Number(form.elements.priority.value) || 50,
+      match_type: form.elements.match_type.value,
+      match_value: form.elements.match_value.value.trim(),
+      action: form.elements.action.value,
+      target_folder: form.elements.target_folder.value.trim() || null,
+      mark_read: form.elements.mark_read.checked,
+      active: form.elements.active.checked,
+      notes: form.elements.notes.value.trim() || null,
+    };
+    try {
+      const url = edit ? `/api/email/auto-move/rules/${rule.id}` : '/api/email/auto-move/rules';
+      await api(url, { method: edit ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      amRuleCloseModal(); amLoadRules();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  $('#am-rule-modal').classList.remove('hidden');
 }
 
 function autoMoveRenderState(s) {

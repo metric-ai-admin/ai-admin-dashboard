@@ -3013,8 +3013,8 @@ cron.schedule(`*/${EMAIL_REFRESH_MINUTES} * * * *`, async () => {
     const s = await runAutoMoveNow();
     if (s.scanned) {
       logLine(`[auto-move]${s.dryRun ? ' DRY RUN' : ''} scanned ${s.scanned}, `
-            + `archived ${s.archived}, unsubscribe ${s.unsubscribed}, `
-            + `left alone ${s.skipped}, already handled ${s.alreadyHandled}, errors ${s.errors}`);
+            + `moved ${s.moved ?? 0}, archived ${s.archived}, unsubscribe ${s.unsubscribed}, `
+            + `blocked ${s.blocked ?? 0}, left alone ${s.skipped}, already handled ${s.alreadyHandled}, errors ${s.errors}`);
     }
   } catch (err) {
     logLine(`[auto-move] ERROR: ${err.message}`);
@@ -3198,6 +3198,60 @@ app.post('/api/email/auto-move/toggle', requireMetricAdmin, async (req, res) => 
   applyAutoMoveConfig(cfg);
   logLine(`[auto-move] ${setting}=${value} set by admin via dashboard`);
   res.json({ ok: true, enabled: autoMove.autoMoveEnabled(), dryRun: autoMove.autoMoveDryRun() });
+});
+
+// ---- Auto-Move rules (Phase 2) — the config-driven routing table ----
+// requireAuth per spec; the rules decide where a CEO's mail goes, so any change
+// is admin-adjacent, but the endpoint follows the requested guard exactly.
+const AUTOMOVE_RULE_COLS = ['priority', 'match_type', 'match_value', 'action', 'target_folder', 'mark_read', 'active', 'confidence', 'notes'];
+const AUTOMOVE_MATCH_TYPES = ['sender_exact', 'sender_domain', 'header', 'subject_contains', 'subject_startswith'];
+const AUTOMOVE_ACTIONS = ['move', 'move_read', 'archive', 'archive_read', 'move_unsubscribe'];
+function autoMoveRulePick(body) {
+  const out = {};
+  for (const c of AUTOMOVE_RULE_COLS) if (body[c] !== undefined) out[c] = body[c] === '' ? null : body[c];
+  return out;
+}
+
+app.get('/api/email/auto-move/rules', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const db = supabaseAdmin || supabasePublic;
+  const { data, error } = await db.from('automove_rules').select('*').order('priority', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ rules: data || [] });
+});
+
+app.post('/api/email/auto-move/rules', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const row = autoMoveRulePick(req.body || {});
+  if (!row.match_type || !AUTOMOVE_MATCH_TYPES.includes(row.match_type)) return res.status(400).json({ error: 'match_type must be one of: ' + AUTOMOVE_MATCH_TYPES.join(', ') });
+  if (!row.match_value) return res.status(400).json({ error: 'match_value is required' });
+  if (!row.action || !AUTOMOVE_ACTIONS.includes(row.action)) return res.status(400).json({ error: 'action must be one of: ' + AUTOMOVE_ACTIONS.join(', ') });
+  const db = supabaseAdmin || supabasePublic;
+  const { data, error } = await db.from('automove_rules').insert(row).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.status(201).json(data);
+});
+
+app.patch('/api/email/auto-move/rules/:id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const row = autoMoveRulePick(req.body || {});
+  if (row.match_type && !AUTOMOVE_MATCH_TYPES.includes(row.match_type)) return res.status(400).json({ error: 'invalid match_type' });
+  if (row.action && !AUTOMOVE_ACTIONS.includes(row.action)) return res.status(400).json({ error: 'invalid action' });
+  if (!Object.keys(row).length) return res.status(400).json({ error: 'No updatable fields sent' });
+  const db = supabaseAdmin || supabasePublic;
+  const { data, error } = await db.from('automove_rules').update(row).eq('id', req.params.id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json(data);
+});
+
+// Soft delete — set active=false so the rule stops firing but its history in
+// auto_move_log (rule_id) stays resolvable.
+app.delete('/api/email/auto-move/rules/:id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const db = supabaseAdmin || supabasePublic;
+  const { data, error } = await db.from('automove_rules').update({ active: false }).eq('id', req.params.id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ ok: true, rule: data });
 });
 
 // ---- GET /api/bd-crm/export/csv — GoHighLevel export for John Hernandez ----

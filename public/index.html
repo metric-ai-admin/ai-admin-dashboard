@@ -435,8 +435,39 @@
         <span class="small muted" id="am-log-count"></span>
         <button class="btn-sm" id="am-load-more" style="display:none;margin-left:10px">Load more</button>
       </div>
+
+      <!-- Auto-Move Rules manager (Phase 2) -->
+      <div class="view-head" style="margin:18px 0 6px">
+        <h4 style="margin:0">Auto-Move Rules</h4>
+        <div class="view-actions">
+          <button class="btn-sm" id="am-rules-refresh">🔄 Refresh</button>
+          <button class="btn-sm primary" id="am-rule-add">+ Add Rule</button>
+        </div>
+      </div>
+      <p class="muted small" style="margin:0 0 8px">Rules are evaluated by priority (lower first), first match wins, then the legacy cold-outreach list. Lyndsay Review and other protected folders are never written.</p>
+      <div style="overflow-x:auto">
+        <table class="crm-table" id="am-rules-table">
+          <thead><tr><th>Prio</th><th>Match Type</th><th>Match Value</th><th>Action</th><th>Target Folder</th><th>Read</th><th>Active</th><th>Notes</th><th></th></tr></thead>
+          <tbody id="am-rules-body"></tbody>
+        </table>
+      </div>
     </div>
   </section>
+
+  <!-- Auto-Move rule modal -->
+  <div id="am-rule-modal" class="acct-modal hidden" role="dialog" aria-modal="true">
+    <div class="acct-modal-overlay" id="am-rule-modal-overlay"></div>
+    <div class="acct-modal-panel">
+      <div class="acct-modal-head"><h3 id="am-rule-modal-title">Add Rule</h3>
+        <button id="am-rule-modal-close" class="crm-modal-close" aria-label="Close">✕</button></div>
+      <form id="am-rule-form"><div id="am-rule-fields"></div>
+        <div class="acct-modal-actions">
+          <button type="button" class="btn-sm" id="am-rule-cancel">Cancel</button>
+          <button type="submit" class="btn-sm primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <!-- ============ BD CRM ============ -->
   <section id="tab-crm" class="tab">
