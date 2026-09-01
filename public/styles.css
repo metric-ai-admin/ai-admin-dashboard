@@ -1580,3 +1580,13 @@ tr.ca-sel { background: var(--accent-glow); }
   border-color: var(--border); color: var(--muted); cursor: help;
 }
 .sv-ae-chip-static:hover { background: transparent; color: var(--muted); }
+
+/* Calls-list filter bar — client-side, over the already-loaded day. */
+.sv-filterbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px;
+  margin: 4px 0 12px; }
+.sv-filter { display: flex; flex-direction: column; gap: 3px; }
+.sv-filter select, .sv-filter input {
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-surface); color: var(--text); font-size: 12.5px; }
+.sv-filter input[type="search"] { min-width: 170px; }
+.sv-count { margin-left: auto; align-self: center; white-space: nowrap; }

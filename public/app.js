@@ -3991,6 +3991,9 @@ wireAsanaEditing('erick');
 
 let svCalls = [];
 let svUsersLoaded = false;
+// Client-side filters over the already-loaded day. Persist across date/agent
+// changes so the reviewer keeps their view.
+let svFilters = { direction: 'all', status: 'all', phone: '' };
 
 // The roster comes from simplevoip_users. It is empty until the ids are pulled
 // from Kazoo, so the selector only appears once there is a choice to make —
@@ -4142,6 +4145,39 @@ async function loadCallAnalyzer() {
   }
 }
 
+// A name coming back from the ring-group data is sometimes a raw 32-hex user id
+// rather than a person — those don't identify an agent, so they read as unknown.
+function svIsIdLike(s) { return /^[0-9a-f]{16,}$/i.test(String(s || '').trim()); }
+
+// Coarse status buckets used by the filter and the sub-row labels. Kept tolerant
+// of both machine keys ("answered_elsewhere") and human labels ("Answered
+// Elsewhere") since the field is status_label || status_key.
+function svStatusCat(c) {
+  const st = String(c.status || '').toLowerCase();
+  if (st.includes('elsewhere')) return 'answered_elsewhere';
+  if (st.includes('missed') || st.includes('no answer') || st.includes('not answered')) return 'missed';
+  if (st.includes('answered') || (c.has_transcript && c.duration > 0)) return 'answered';
+  return 'other';
+}
+
+function svCallMatches(c) {
+  const f = svFilters;
+  if (f.direction !== 'all' && String(c.direction || '').toLowerCase() !== f.direction) return false;
+  if (f.status !== 'all') {
+    if (f.status === 'no_transcript') { if (c.has_transcript) return false; }
+    else if (svStatusCat(c) !== f.status) return false;
+  }
+  if (f.phone) {
+    const q = f.phone.trim().toLowerCase();
+    const qDigits = q.replace(/\D/g, '');
+    const hay = `${c.caller_number || ''} ${c.to_number || ''} ${c.caller || ''} ${c.to_name || ''}`.toLowerCase();
+    const hayDigits = `${c.caller_number || ''} ${c.to_number || ''}`.replace(/\D/g, '');
+    const ok = hay.includes(q) || (qDigits && hayDigits.includes(qDigits));
+    if (!ok) return false;
+  }
+  return true;
+}
+
 function svRender(error) {
   const list = $('#sv-list');
   if (!list) return;
@@ -4150,25 +4186,71 @@ function svRender(error) {
       + '<div class="empty-state">No calls found for this date.</div>';
     return;
   }
+
+  const sel = (id, label, opts, cur) => `<label class="sv-filter"><span class="muted small">${label}</span>
+    <select id="${id}">${opts.map(([v, t]) =>
+      `<option value="${v}"${v === cur ? ' selected' : ''}>${t}</option>`).join('')}</select></label>`;
+
+  list.innerHTML = (error ? `<div class="banner banner-warn">Partial results — ${esc(error)}</div>` : '')
+    + `<div class="sv-filterbar">
+        ${sel('sv-f-dir', 'Direction', [['all', 'All'], ['inbound', 'Inbound'], ['outbound', 'Outbound']], svFilters.direction)}
+        ${sel('sv-f-status', 'Status', [['all', 'All'], ['answered', 'Answered'], ['missed', 'Missed'],
+          ['answered_elsewhere', 'Answered Elsewhere'], ['no_transcript', 'No Transcript']], svFilters.status)}
+        <label class="sv-filter"><span class="muted small">Phone</span>
+          <input id="sv-f-phone" type="search" placeholder="number contains…" value="${esc(svFilters.phone)}"></label>
+        <span class="sv-count muted small" id="sv-count"></span>
+      </div>
+      <div id="sv-table-wrap"></div>`;
+
+  // Wire filters. The bar is rendered once; only the table + count re-render on
+  // change, so the phone input keeps focus while typing.
+  $('#sv-f-dir')?.addEventListener('change', e => { svFilters.direction = e.target.value; svApplyFilters(); });
+  $('#sv-f-status')?.addEventListener('change', e => { svFilters.status = e.target.value; svApplyFilters(); });
+  $('#sv-f-phone')?.addEventListener('input', e => { svFilters.phone = e.target.value; svApplyFilters(); });
+
+  svApplyFilters();
+}
+
+// Re-render just the rows and the count from the current filters, and re-bind
+// the per-row controls.
+function svApplyFilters() {
+  const wrap = $('#sv-table-wrap');
+  if (!wrap) return;
+  const rows = svCalls.filter(svCallMatches);
+  const count = $('#sv-count');
+  if (count) count.textContent = `Showing ${rows.length} of ${svCalls.length} call${svCalls.length === 1 ? '' : 's'}`;
+
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="empty-state">No calls match the filters.</div>';
+    return;
+  }
+
   // The roster the dropdown actually offers — a name is only clickable-to-switch
   // if its user_id is a real option; otherwise the agent isn't in the roster yet
   // and switching would land nowhere, so it shows as a plain label.
   const rosterIds = new Set([...($('#sv-user')?.options || [])].map(o => o.value));
 
-  list.innerHTML = (error ? `<div class="banner banner-warn">Partial results — ${esc(error)}</div>` : '')
-    + `<div style="overflow-x:auto"><table class="crm-table">
+  wrap.innerHTML = `<div style="overflow-x:auto"><table class="crm-table">
       <thead><tr><th>Time</th><th>Caller</th><th>Direction</th><th>Duration</th><th>Status</th><th></th></tr></thead>
-      <tbody>${svCalls.map(c => {
+      <tbody>${rows.map(c => {
         const names = c.answered_elsewhere_user_names || [];
         const ids = c.answered_elsewhere_user_ids || [];
-        const aeRow = names.length ? `<tr class="sv-ae-row"><td colspan="6" class="sv-ae-cell">
-          <span class="muted small">→ Answered by:</span> ${names.map((nm, i) => {
-            const uid = ids[i] || '';
-            return uid && rosterIds.has(uid)
-              ? `<button class="sv-ae-chip" data-uid="${esc(uid)}" title="View ${esc(nm)}'s calls for this date">${esc(nm)}</button>`
-              : `<span class="sv-ae-chip sv-ae-chip-static" title="${esc(nm)} isn't in the roster dropdown yet">${esc(nm)}</span>`;
-          }).join(' ')}
-        </td></tr>` : '';
+        // Drop id-looking "names" — they don't identify a person.
+        const pairs = names.map((nm, i) => ({ nm, uid: ids[i] || '' })).filter(p => p.nm && !svIsIdLike(p.nm));
+        const cat = svStatusCat(c);
+        let aeInner = '';
+        if (pairs.length) {
+          aeInner = `<span class="muted small">→ Answered by:</span> ${pairs.map(p =>
+            p.uid && rosterIds.has(p.uid)
+              ? `<button class="sv-ae-chip" data-uid="${esc(p.uid)}" title="View ${esc(p.nm)}'s calls for this date">${esc(p.nm)}</button>`
+              : `<span class="sv-ae-chip sv-ae-chip-static" title="${esc(p.nm)} isn't in the roster dropdown yet">${esc(p.nm)}</span>`
+          ).join(' ')}`;
+        } else if (cat === 'answered_elsewhere') {
+          aeInner = '<span class="muted small">→ Answered elsewhere (unknown agent)</span>';
+        } else if (cat === 'missed') {
+          aeInner = '<span class="muted small">→ Not answered</span>';
+        }
+        const aeRow = aeInner ? `<tr class="sv-ae-row"><td colspan="6" class="sv-ae-cell">${aeInner}</td></tr>` : '';
         return `<tr class="${c.office_redirect ? 'sv-row-flagged' : ''}">
         <td class="mono small">${c.office_redirect
               ? '<span class="sv-flag-badge" title="Office Redirect policy violation — open transcript">🚨</span> ' : ''}${esc(svTime(c.datetime))}</td>
@@ -4183,8 +4265,8 @@ function svRender(error) {
       </tr>${aeRow}`;
       }).join('')}</tbody></table></div>`;
 
-  list.querySelectorAll('.sv-view').forEach(btn => btn.addEventListener('click', () => svOpen(btn)));
-  list.querySelectorAll('.sv-ae-chip[data-uid]').forEach(btn => btn.addEventListener('click', () => {
+  wrap.querySelectorAll('.sv-view').forEach(btn => btn.addEventListener('click', () => svOpen(btn)));
+  wrap.querySelectorAll('.sv-ae-chip[data-uid]').forEach(btn => btn.addEventListener('click', () => {
     const sel = $('#sv-user');
     if (!sel) return;
     sel.value = btn.dataset.uid;   // same date is already held in svDate
