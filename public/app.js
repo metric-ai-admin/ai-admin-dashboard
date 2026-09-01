@@ -4291,7 +4291,10 @@ async function svOpen(btn) {
       ${sentiment}
       ${svSection('Summary', t.summary ? `<div class="sv-text">${esc(t.summary)}</div>`
                                        : '<i class="muted">No summary available.</i>')}
-      ${svSection('Transcript', `<div class="sv-transcript-scroll">${svRenderTranscript(t.transcript_text)}</div>`)}
+      <div class="sv-sec sv-sec-transcript">
+        <div class="sv-sec-title">Transcript</div>
+        <div class="sv-sec-body"><div class="sv-transcript-scroll">${svRenderTranscript(t.transcript_text)}</div></div>
+      </div>
       <div class="sv-foot muted small">${esc(meta)}</div>`;
     $('#sv-close')?.addEventListener('click', svClosePanel);
   } catch (err) {

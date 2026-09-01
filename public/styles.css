@@ -1416,10 +1416,22 @@ tr.ca-sel { background: var(--accent-glow); }
 .sv-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 60; }
 .sv-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 92vw);
   z-index: 61; border-left: 1px solid var(--border); border-radius: 0;
-  background: var(--bg-surface); padding: 16px 18px; overflow-y: auto;
+  background: var(--bg-surface); padding: 16px 18px; overflow: hidden;
   box-shadow: -12px 0 32px rgba(0,0,0,.35);
+  display: flex; flex-direction: column;
   transform: translateX(0); transition: transform .18s ease; }
 .sv-panel.hidden { display: none; }
+/* Fixed-height column: everything keeps its natural size except the transcript,
+   which takes the remaining space and scrolls inside itself. No pixel heights —
+   this adapts to any viewport / zoom. */
+.sv-panel > * { flex: 0 0 auto; }
+/* Transcript is a plain div, not a <details>: a <details> element does not pass
+   a definite height to its children, so a scroll container inside one cannot be
+   made to fill flex space. As a div, the flex height cascades normally. */
+.sv-panel > .sv-sec-transcript { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.sv-sec-transcript > .sv-sec-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.sv-sec-title { padding: 8px 12px; font-weight: 600; font-size: 12.5px;
+  border-bottom: 1px solid var(--border); }
 /* The grid no longer needs a second column — the panel floats above it. */
 .sv-split, .sv-split.has-panel { grid-template-columns: 1fr; }
 
@@ -1543,8 +1555,8 @@ tr.ca-sel { background: var(--accent-glow); }
 /* Transcript scroll — keep the full transcript readable inside its own pane
    instead of pushing the panel arbitrarily tall. */
 .sv-transcript-scroll {
-  max-height: min(55vh, 640px);
-  min-height: 400px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding-right: 6px;
 }
