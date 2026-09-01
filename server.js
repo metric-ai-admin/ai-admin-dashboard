@@ -1971,6 +1971,12 @@ async function writeInboxTrackingToExcel() {
     // Writing 18 cells in quick succession against the same Excel session
     // occasionally trips a transient 502/503 from Graph — retry those a
     // couple times with a short backoff before giving up on that cell.
+    // KNOWN ISSUE: only 502/503 are retried. 423 (workbook open/locked in
+    // SharePoint), 429 (throttling) and 504 slip through as a recorded {error}
+    // and show up as a partial write (e.g. 20/22). Visible on the manual Sync
+    // button; only in Render logs on the 8 AM cron. Fix plan (widen the retry
+    // set, honor Retry-After, surface the cron result): see
+    // docs/backlog/inbox-tracking-sync-partial-writes.md
     let writeRes, writeErrJson;
     for (let attempt = 0; attempt < 3; attempt++) {
       writeRes = await fetchFn(`${base}/range(address='${cell}')`, {
