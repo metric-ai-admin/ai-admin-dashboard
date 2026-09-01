@@ -1014,6 +1014,8 @@ function registerMetricRoutes(app, db) {
     const shaped = simplevoip.shapeTranscript(
       await simplevoip.fetchCallTranscript(who.userId, req.params.recording_id), req.params.recording_id);
     if (!shaped) return res.status(404).json({ error: 'No transcript for that recording.' });
+    // Whose calls these are — so the compliance follow-up names the agent.
+    shaped.agent_name = who.name || null;
     res.json(shaped);
   });
 

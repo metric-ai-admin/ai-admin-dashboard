@@ -4242,6 +4242,17 @@ async function svOpen(btn) {
       t.recording_id,
     ].filter(Boolean).join(' · ');
 
+    // Compliance — Office Redirect (Lyndsay 09/01). Shown prominently in red
+    // with the exact quote, and phrased as the policy-violation action item.
+    const or = t.compliance?.office_redirect;
+    const agent = t.agent_name || $('#sv-user')?.selectedOptions?.[0]?.textContent || 'the agent';
+    const compliance = or?.flagged ? `
+      <div class="sv-compliance">
+        <div class="sv-compliance-flag">🚨 Policy Violation — Office Redirect</div>
+        <div class="sv-compliance-quote">“${esc(or.quote || '')}”</div>
+        <div class="sv-compliance-action">POLICY VIOLATION: Agent directed resident/applicant to office — requires follow-up with ${esc(agent)}</div>
+      </div>` : '';
+
     panel.innerHTML = `
       <div class="sv-panel-head">
         <div>
@@ -4252,6 +4263,7 @@ async function svOpen(btn) {
         </div>
         <button class="btn-sm" id="sv-close" aria-label="Close">✕</button>
       </div>
+      ${compliance}
       ${sentiment}
       ${svSection('Summary', t.summary ? `<div class="sv-text">${esc(t.summary)}</div>`
                                        : '<i class="muted">No summary available.</i>')}

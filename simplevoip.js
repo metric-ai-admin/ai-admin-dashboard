@@ -209,10 +209,48 @@ function sentimentPct(label, score) {
   return Math.round(hit[1] * 100);
 }
 
+// Compliance — "Office Redirect" (Lyndsay 2026-09-01): no one may tell a
+// resident/applicant to just come to the office. SimpleVOIP's AI does the
+// summary/sentiment; this is our own deterministic scan of the transcript text
+// for the policy phrases, so it needs no model call and is reliable for a fixed
+// rule. It flags the phrase regardless of which speaker said it — the quote lets
+// a reviewer confirm — because the transcript's speaker labels cannot be mapped
+// to the agent with confidence.
+const OFFICE_REDIRECT_PATTERNS = [
+  /come\s+(?:in\s*to|into|down\s+to|by|to)\s+(?:the\s+|our\s+|the\s+leasing\s+)?office/i,
+  /come\s+in\s+person/i,
+  /come\s+on\s+in\b/i,
+  /just\s+come\s+(?:in|by|on\s+in)\b/i,
+  /stop\s+by\s+(?:the\s+|our\s+)?office/i,
+  /visit\s+(?:us\b|our\s+office|the\s+office)/i,
+  /go\s+(?:in\s*to|into|to)\s+(?:the\s+|our\s+)?office/i,
+];
+function detectOfficeRedirect(text) {
+  const t = String(text || '');
+  for (const re of OFFICE_REDIRECT_PATTERNS) {
+    const m = re.exec(t);
+    if (!m) continue;
+    const idx = m.index;
+    // The line containing the match — keeps a speaker label ("Participant 1: …")
+    // if the transcript has one, so a reviewer sees who said it.
+    const lineStart = t.lastIndexOf('\n', idx) + 1;
+    let lineEnd = t.indexOf('\n', idx); if (lineEnd === -1) lineEnd = t.length;
+    let quote = t.slice(lineStart, lineEnd).trim();
+    if (quote.length > 240) {
+      const rel = idx - lineStart, s = Math.max(0, rel - 90);
+      quote = (s > 0 ? '…' : '') + quote.slice(s, s + 240).trim() + (s + 240 < quote.length ? '…' : '');
+    }
+    return { flagged: true, quote, matched: m[0] };
+  }
+  return { flagged: false, quote: null };
+}
+
 function shapeTranscript(d, recordingId) {
   if (!d) return null;
   const sentiment = d.sentiment || null;
+  const officeRedirect = detectOfficeRedirect(d.transcription || '');
   return {
+    compliance: { office_redirect: officeRedirect },
     recording_id: d.recording_id || recordingId,
     caller: d.caller_id_name || d.caller_id_number || 'Unknown',
     caller_number: d.caller_id_number || null,
@@ -233,5 +271,5 @@ function shapeTranscript(d, recordingId) {
 module.exports = {
   isConfigured, defaultUserId, dayBounds,
   fetchCDRList, fetchTodaysCalls, fetchCallsForDate, fetchCallTranscript,
-  shapeCalls, shapeTranscript,
+  shapeCalls, shapeTranscript, detectOfficeRedirect,
 };

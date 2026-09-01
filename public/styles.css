@@ -1530,3 +1530,12 @@ tr.ca-sel { background: var(--accent-glow); }
 .sop-content mark, .project-title mark, .sop-pill mark, .muted mark {
   background: var(--warning); color: #1a1a1a; border-radius: 2px; padding: 0 1px;
 }
+
+/* ── Call Analyzer — compliance flag (Office Redirect) ────────────────────── */
+.sv-compliance {
+  margin: 4px 0 12px; padding: 10px 12px; border-radius: 8px;
+  background: var(--critical-bg); border: 1px solid var(--critical);
+}
+.sv-compliance-flag { font-weight: 700; color: var(--critical); font-size: 0.95rem; }
+.sv-compliance-quote { margin: 6px 0; color: var(--text); font-style: italic; }
+.sv-compliance-action { font-size: 0.82rem; color: var(--critical); font-weight: 600; }
