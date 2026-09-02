@@ -1,0 +1,1907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weekly Leasing Goal Board — Metric Property Management of Texas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<style>
+:root{
+  --bg:#EDF0F6; --card:#FFFFFF; --card2:#F7F9FC;
+  --navy:#0A1A30; --ink:#0E1F38; --muted:#5C6B82; --muted2:#8A97AC;
+  --line:#DCE2EC; --line2:#E8ECF3;
+  --gold:#B5891B; --gold-bright:#C9A227; --gold-dim:#FBF3D9;
+  --green:#1E9E5A; --green-bg:#E2F4EA; --amber:#D6A317; --amber-bg:#FBF1D6;
+  --red:#D14334; --red-bg:#FBE4E1; --blue:#2E7DB0; --blue-bg:#E4F0F8;
+  --r1:#B5891B; --r2:#2E7DB0; --r3:#7E57C2; --r4:#2E9E8F;
+  --shadow:0 1px 2px rgba(14,31,56,.06),0 6px 20px rgba(14,31,56,.06);
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Archivo,sans-serif;font-size:14px;}
+h1,h2,h3,.disp{font-family:Fraunces,serif;}
+.wrap{max-width:1180px;margin:0 auto;padding:18px 18px 60px;}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);}
+.btn{font-family:Archivo;font-weight:700;font-size:12.5px;letter-spacing:.2px;border-radius:9px;padding:9px 14px;border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer;}
+.btn:hover{border-color:var(--muted2);}
+.btn.dark{background:var(--navy);color:#fff;border-color:var(--navy);}
+.btn.gold{background:var(--gold);color:#fff;border-color:var(--gold);}
+.btn.ghost{background:#fff;}
+.btn.small{padding:6px 10px;font-size:11.5px;}
+input[type=text],input[type=number],input[type=date],input[type=url],select{
+  font-family:Archivo;font-size:13px;border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:#fff;color:var(--ink);
+}
+input:focus,select:focus{outline:2px solid var(--gold-bright);outline-offset:0;}
+/* header */
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 0;}
+.brand{display:flex;align-items:center;gap:12px;}
+.logo{width:42px;height:42px;border-radius:10px;background:var(--navy);color:var(--gold-bright);display:flex;align-items:center;justify-content:center;font-family:Fraunces;font-weight:700;font-size:22px;}
+.brand h1{font-size:21px;margin:0;color:var(--navy);}
+.brand .sub{font-size:12px;color:var(--muted);margin-top:1px;}
+.topbtns{display:flex;gap:8px;flex-wrap:wrap;}
+/* how panel */
+details.how{padding:0;}
+details.how>summary{cursor:pointer;padding:14px 18px;font-weight:700;color:var(--gold);font-size:13px;list-style:none;}
+details.how>summary::-webkit-details-marker{display:none;}
+details.how>summary::before{content:"▸ ";}
+details.how[open]>summary::before{content:"▾ ";}
+.how-body{padding:0 18px 16px;color:var(--muted);font-size:13px;line-height:1.6;}
+.how-body a{color:var(--blue);font-weight:700;text-decoration:none;}
+.how-body a:hover{text-decoration:underline;}
+.how-body b{color:var(--ink);}
+.section-gap{margin-top:16px;}
+/* narrative */
+.narrative{margin-top:14px;padding:18px 20px;border-left:4px solid var(--gold-bright);}
+.narrative-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;gap:12px;}
+.narrative-head .lab{font-size:11px;font-weight:800;letter-spacing:.4px;color:var(--gold);text-transform:uppercase;}
+.narrative-head-right{display:flex;align-items:center;gap:10px;}
+.narrative-head .asof{font-size:11px;color:var(--muted2);font-weight:700;white-space:nowrap;}
+.narrative-body{font-size:13.5px;line-height:1.75;color:var(--ink);border-radius:8px;padding:8px 10px;margin:0 -10px;transition:background .15s;}
+.narrative-body:hover{background:var(--card2);}
+.narrative-body:focus{outline:2px solid var(--gold-bright);outline-offset:0;background:#fff;}
+.narrative-body b{color:var(--navy);}
+.narrative-hint{font-size:10.5px;color:var(--muted2);font-style:italic;margin-top:8px;}
+/* nav */
+.nav{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;}
+.navbtn{border:1px solid var(--line);background:#fff;border-radius:9px;padding:9px 16px;font-weight:700;font-size:12.5px;cursor:pointer;color:var(--ink);}
+.navbtn.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+.navbtn.gold{border-color:var(--gold-bright);color:var(--gold);background:var(--gold-dim);}
+.backbtn{border:1px solid var(--line);background:#fff;border-radius:9px;padding:8px 14px;font-weight:700;font-size:12.5px;cursor:pointer;color:var(--muted);margin-top:14px;}
+/* controls */
+.controls{margin-top:16px;padding:18px;display:grid;grid-template-columns:1.4fr 1.4fr .8fr .8fr;gap:24px;align-items:start;}
+.ctl label.lbl{display:block;font-size:11px;font-weight:800;letter-spacing:.4px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;}
+.ctl .lbl .val{color:var(--gold);font-weight:800;}
+.ctl input[type=range]{width:100%;accent-color:var(--gold-bright);}
+.ctl input[type=number]{width:90px;}
+.unit{font-size:11px;color:var(--muted2);margin-left:6px;text-transform:uppercase;font-weight:700;}
+.adj{grid-column:1/-1;display:flex;gap:24px;margin-top:6px;}
+.adj label{font-size:11px;font-weight:800;letter-spacing:.3px;color:var(--muted);text-transform:uppercase;display:flex;gap:6px;align-items:center;cursor:pointer;}
+.adj input{accent-color:var(--gold-bright);width:15px;height:15px;}
+.adjlabel{grid-column:1/-1;font-size:11px;font-weight:800;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-top:8px;}
+/* rollup */
+table.rollup{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed;}
+table.rollup th{text-align:right;font-size:10px;font-weight:800;color:var(--muted2);text-transform:uppercase;letter-spacing:.2px;padding:6px 3px;border-bottom:2px solid var(--line);}
+table.rollup th:first-child,table.rollup td:first-child{text-align:left;position:sticky;left:0;background:var(--card);padding:6px 10px 6px 4px;}
+table.rollup td{text-align:right;padding:6px 3px;border-bottom:1px solid var(--line2);white-space:nowrap;overflow:hidden;}
+table.rollup td.name{font-weight:700;color:var(--ink);white-space:nowrap;}
+table.rollup tr.hold td{color:var(--muted2);font-style:italic;}
+table.rollup tr.total td{font-weight:800;color:var(--navy);border-top:2px solid var(--line);border-bottom:none;background:var(--card2);}
+table.rollup tr.total td.name{color:var(--navy);}
+table.rollup td.star{color:var(--gold);font-weight:800;}
+table.rollup th.diag{width:74px;white-space:normal;vertical-align:bottom;text-align:right;padding:6px 4px;}
+table.rollup th.plain{white-space:nowrap;text-align:left;}
+#rollupTable table th:first-child,#rollupTable table td:first-child{width:160px;}
+#agentRollupTable table th:nth-child(1),#agentRollupTable table td:nth-child(1){width:70px;}
+#agentRollupTable table th:nth-child(2),#agentRollupTable table td:nth-child(2){width:190px;}
+.rollup-note{font-size:11px;color:var(--muted2);margin-top:10px;font-style:italic;}
+.rollup-subhead{font-size:11px;font-weight:800;letter-spacing:.4px;color:#fff;background:var(--navy);text-transform:uppercase;padding:5px 12px;border-radius:6px;display:inline-block;margin-bottom:10px;}
+/* kpi band */
+.kpiband{display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr;gap:14px;margin-top:16px;}
+.kpi{padding:18px;border-left:4px solid var(--gold-bright);}
+.kpi.lead{background:var(--navy);color:#fff;border-left-color:var(--gold-bright);}
+.kpi .lab{font-size:11px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);}
+.kpi.lead .lab{color:#A9B6CC;}
+.kpi .big{font-family:Fraunces;font-size:34px;font-weight:600;margin-top:6px;color:var(--ink);}
+.kpi.lead .big{color:#fff;}
+.kpi .big .of{font-size:18px;color:var(--muted2);font-weight:500;}
+.kpi.lead .big .of{color:#7E8DA6;}
+.kpi .note{font-size:12px;color:var(--muted);margin-top:6px;}
+.kpi.lead .note{color:#B7C2D6;}
+/* team scorecard */
+.section-title{display:flex;align-items:baseline;justify-content:space-between;margin:26px 0 12px;}
+.section-title h2{font-size:19px;color:var(--navy);margin:0;}
+.section-title .hint{font-size:11px;font-weight:800;color:var(--gold);text-transform:uppercase;letter-spacing:.4px;}
+.section-sub{font-size:12.5px;color:var(--muted);margin:-6px 0 14px;line-height:1.5;}
+.scorecard{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
+.pcard{padding:16px;border-top:4px solid var(--r1);}
+.pcard .name{display:flex;align-items:center;justify-content:space-between;}
+.pcard .name b{font-size:15px;}
+.pcard .props{font-size:11.5px;color:var(--muted);margin:6px 0 12px;line-height:1.4;}
+.pcard .metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.mbox{background:var(--card2);border-radius:9px;padding:8px 10px;}
+.mbox-calls{grid-column:1/-1;background:var(--blue-bg);}
+.mbox-calls .lab{color:#1B4E70;}
+.mbox .lab{font-size:9.5px;font-weight:800;color:var(--muted2);text-transform:uppercase;letter-spacing:.3px;}
+.mbox .num{font-family:Fraunces;font-size:18px;font-weight:600;}
+/* pill */
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:99px;padding:4px 11px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.2px;}
+.pill .dot{width:7px;height:7px;border-radius:50%;}
+.st-on{background:var(--green-bg);color:var(--green);}
+.st-on .dot{background:var(--green);}
+.st-risk{background:var(--amber-bg);color:var(--amber);}
+.st-risk .dot{background:var(--amber);}
+.st-behind{background:var(--red-bg);color:var(--red);}
+.st-behind .dot{background:var(--red);}
+/* tags */
+.tag{display:inline-block;border-radius:99px;padding:4px 11px;font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.2px;margin-right:6px;margin-top:6px;}
+.tag-goal{background:var(--green-bg);color:var(--green);}
+.tag-traffic{background:var(--red-bg);color:var(--red);}
+.tag-lowconv{background:var(--amber-bg);color:var(--amber);}
+.tag-highvol{background:var(--blue-bg);color:var(--blue);}
+.tag-slowapp{background:#EFE7F8;color:var(--r3);cursor:help;border-bottom:1px dotted var(--r3);}
+/* marketing */
+.mkthead{margin-top:26px;display:flex;justify-content:space-between;align-items:flex-end;}
+.mkthead .lab{font-size:11px;font-weight:800;color:var(--gold);text-transform:uppercase;letter-spacing:.4px;}
+.mkthead h2{margin:2px 0 0;font-size:24px;color:var(--navy);}
+.weeksel{display:flex;flex-direction:column;align-items:flex-end;gap:4px;}
+.weeksel .lab{font-size:10.5px;color:var(--muted2);font-weight:800;text-transform:uppercase;}
+.focusbar{background:var(--navy);border-radius:12px;padding:14px 16px;margin-top:14px;display:flex;align-items:center;gap:14px;}
+.focusbar .flab{font-size:11px;font-weight:800;color:var(--gold-bright);text-transform:uppercase;letter-spacing:.4px;}
+.focusbar input{flex:1;background:#15294a;border:1px solid #25395c;color:#fff;border-radius:8px;padding:9px 11px;}
+.daygrid{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-top:14px;}
+.daycard{padding:12px;}
+.daycard .dname{font-weight:800;font-size:13px;color:var(--ink);}
+.daycard .ddate{font-size:11px;color:var(--muted2);margin-bottom:8px;}
+.actrow{margin-bottom:8px;}
+.actrow input[type=text]{width:100%;margin-bottom:5px;font-size:12px;padding:6px 8px;}
+.actrow .arow2{display:flex;gap:6px;align-items:center;}
+.actrow select{flex:1;font-size:11px;padding:5px 6px;}
+.actrow .donewrap{display:flex;align-items:center;gap:4px;font-size:10.5px;color:var(--muted);white-space:nowrap;}
+/* property cards */
+.propscol{display:flex;flex-direction:column;gap:18px;margin-top:14px;}
+.propcard{padding:20px;}
+.propcard .phead{display:flex;justify-content:space-between;align-items:flex-start;}
+.propcard h3{margin:0;font-size:20px;color:var(--navy);}
+.propcard .addr{font-size:12px;color:var(--muted);margin-top:2px;}
+.propcard .leadsel{display:flex;flex-direction:column;align-items:flex-end;gap:4px;}
+.propcard .leadsel .lab{font-size:10px;font-weight:800;color:var(--muted2);text-transform:uppercase;}
+.tagsrow{margin-top:10px;}
+.seasonline{background:var(--card2);border-radius:9px;padding:10px 13px;font-size:12.5px;color:var(--muted);margin-top:12px;}
+.seasonline b{color:var(--ink);}
+.seasonline .neg{color:var(--red);font-weight:800;}
+.notepanel{background:var(--gold-dim);border:1px solid #EFDFA8;border-radius:9px;padding:10px 13px;font-size:12px;color:#7A5C12;margin-top:10px;}
+.callstandard{background:var(--blue-bg);border:1px solid #C7DEEC;border-radius:9px;padding:10px 13px;font-size:12px;color:#1B4E70;margin-top:10px;}
+.callstandard b{color:#0E3A56;}
+.weeklychart{margin-top:16px;border:1px solid var(--line);border-radius:9px;padding:14px;background:var(--card2);}
+.weeklychart h4{margin:0 0 10px;font-size:12.5px;color:var(--ink);}
+.chartlegend{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:8px;font-size:10.5px;color:var(--muted);}
+.chartlegend .lg{display:flex;align-items:center;gap:5px;}
+.chartlegend .sw{width:10px;height:10px;border-radius:2px;display:inline-block;}
+.chartlegend .sw-line{width:14px;height:2.5px;border-radius:0;background:var(--navy);}
+.promorow{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px;}
+.promorow.promorow3{grid-template-columns:1fr 1fr 1fr;}
+.promorow label{display:block;font-size:10px;font-weight:800;color:var(--muted2);text-transform:uppercase;margin-bottom:5px;}
+.promorow input{width:100%;}
+table.grid{width:100%;border-collapse:collapse;margin-top:14px;font-size:12.5px;}
+table.grid th{text-align:left;font-size:10.5px;font-weight:800;color:var(--muted2);text-transform:uppercase;padding:8px 6px;border-bottom:2px solid var(--line);}
+table.grid th .wkdate{display:block;font-weight:600;text-transform:none;font-size:10px;color:var(--muted2);margin-top:2px;letter-spacing:0;}
+table.grid th .wkgoal{display:block;font-weight:800;text-transform:none;font-size:10px;color:var(--gold);margin-top:2px;letter-spacing:0;}
+table.grid th .wkactualocc{display:block;font-weight:700;text-transform:none;font-size:9.5px;color:var(--blue);margin-top:1px;letter-spacing:0;}
+table.grid td{padding:8px 6px;border-bottom:1px solid var(--line2);text-align:center;vertical-align:top;}
+table.grid td.lbl{text-align:left;}
+table.grid td.lbl b{display:block;font-size:13px;}
+table.grid td.lbl span{display:block;font-size:10.5px;color:var(--muted2);margin-top:1px;}
+table.grid .goalnum{font-size:12px;font-weight:700;color:var(--navy);display:block;margin-bottom:3px;}
+table.grid .goalnum.cnt{color:var(--muted2);font-weight:600;font-style:italic;text-transform:lowercase;font-size:10.5px;}
+table.grid input.actin{width:48px;text-align:center;padding:5px 2px;}
+table.grid input.actin.locked{background:var(--card2);color:var(--muted);cursor:default;border-color:var(--line2);}
+table.grid input.actin.locked:focus{outline:none;}
+table.grid td.leaseup{background:var(--gold-dim);font-weight:800;color:var(--gold);font-family:Fraunces;font-size:15px;}
+.ratebadge{display:inline-block;border-radius:99px;padding:3px 9px;font-size:11px;font-weight:800;}
+.ratebadge.g{background:var(--green-bg);color:var(--green);}
+.ratebadge.r{background:var(--red-bg);color:var(--red);}
+.actgreen{color:var(--green)!important;font-weight:700;}
+.actamber{color:var(--amber)!important;font-weight:700;}
+.actred{color:var(--red)!important;font-weight:700;}
+/* fb links */
+.fbsec{margin-top:16px;border:1px dashed var(--line);border-radius:9px;padding:13px;}
+.fbsec h4{margin:0 0 9px;font-size:12.5px;color:var(--ink);}
+.fbrow{display:flex;gap:8px;}
+.fbrow input[type=date]{width:140px;}
+.fbrow select.fb-by{width:120px;}
+.fbrow input[type=url]{flex:1;}
+.fblist{margin-top:10px;display:flex;flex-direction:column;gap:6px;}
+.fblist .fbitem{display:flex;align-items:center;gap:8px;font-size:12px;}
+.fblist .fbitem .fbdate{color:var(--muted2);font-weight:700;width:62px;}
+.fblist .fbitem .fbby{color:var(--gold);font-weight:700;width:70px;flex-shrink:0;}
+.fblist .fbitem a{color:var(--blue);text-decoration:none;word-break:break-all;}
+.fblist .fbitem .rm{cursor:pointer;color:var(--red);font-weight:800;margin-left:auto;}
+.fbempty{font-size:11.5px;color:var(--muted2);font-style:italic;margin-top:8px;}
+/* concessions */
+.conctab{padding:20px;margin-top:14px;}
+.concform{display:grid;grid-template-columns:repeat(5,1fr) auto;gap:10px;align-items:end;}
+.concform label{display:block;font-size:10px;font-weight:800;color:var(--muted2);text-transform:uppercase;margin-bottom:5px;}
+.concform input,.concform select{width:100%;}
+.conctop{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+table.conctable{width:100%;border-collapse:collapse;margin-top:18px;font-size:12.5px;}
+table.conctable th{text-align:left;font-size:10.5px;color:var(--muted2);text-transform:uppercase;border-bottom:2px solid var(--line);padding:8px 6px;}
+table.conctable td{padding:8px 6px;border-bottom:1px solid var(--line2);}
+table.conctable .rm{color:var(--red);cursor:pointer;font-weight:800;}
+/* footer */
+.vocab{margin-top:26px;padding:0;}
+.vocab>summary{cursor:pointer;padding:14px 18px;font-weight:700;color:var(--gold);font-size:13px;list-style:none;}
+.vocab>summary::-webkit-details-marker{display:none;}
+.vocab>summary::before{content:"▸ ";}
+.vocab[open]>summary::before{content:"▾ ";}
+.vocab-body{padding:0 18px 18px;font-size:12.5px;color:var(--muted);line-height:1.7;}
+.vocab-body dt{font-weight:800;color:var(--ink);margin-top:8px;}
+footer.foot{margin-top:18px;font-size:11.5px;color:var(--muted2);line-height:1.7;padding:0 4px;}
+footer.foot b{color:var(--gold);}
+/* print */
+@media print{
+  .topbtns,.nav,.backbtn,.controls,.how,details.how,.fbsec .fbrow,.fbsec .fbempty~.btn,.actrow .donewrap input,
+  .navbtn,.leadsel select,.promorow input::placeholder,#narrativeResetBtn,.narrative-hint{display:none!important;}
+  input{border:none!important;background:none!important;}
+  .fbsec .rm{display:none!important;}
+  #mktHead{page-break-before:always;}
+  #printConc{page-break-before:always;display:block!important;}
+  body{background:#fff;}
+  .card{box-shadow:none;border:1px solid #ddd;}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo">M</div>
+      <div>
+        <h1>Weekly Leasing Goal Board</h1>
+        <div class="sub">Metric Property Management of Texas · psychometrics-driven staffing</div>
+      </div>
+    </div>
+    <div class="topbtns">
+      <button class="btn dark" id="btnExcel">Export to Excel</button>
+      <button class="btn ghost" id="btnPrint">Print to PDF</button>
+      <button class="btn ghost" id="btnRaw">Export Raw Data</button>
+      <button class="btn ghost" id="btnClear">Clear</button>
+    </div>
+  </div>
+
+  <details class="card how" id="howPanel">
+    <summary>How to use this board</summary>
+    <div class="how-body">
+      Use this data file (<a href="https://netorgft5473895-my.sharepoint.com/:x:/g/personal/lyndsay_metricpropertymanagement_com/IQDDdK2gXpl1SbT0QQYp_yj8AQ2CWjrXQnQzxCZs6ygxbNQ?e=ccFZUc&nav=MTVfe0YyQ0Y1RUUxLTBDQUEtNDgwOS04OTE4LTQ2ODM1RkUxRjA2MX0" target="_blank" rel="noopener">Data File</a>), open the Excel Connect add-on, log in to AppFolio within Excel Connect, click Refresh, change the As Of date to the end of the period you want to report, and click Refresh All Sheets. Save and upload.
+    </div>
+  </details>
+
+  <div class="card narrative" id="narrativeCard">
+    <div class="narrative-head">
+      <span class="lab">Weekly Insights</span>
+      <div class="narrative-head-right">
+        <span class="asof">As of the week ending 8/8/2026</span>
+        <button class="btn ghost small" id="narrativeResetBtn" title="Discard your edits and restore Claude's drafted narrative">Reset to draft</button>
+      </div>
+    </div>
+    <div class="narrative-body" id="narrativeBody" contenteditable="true" spellcheck="false"></div>
+    <div class="narrative-hint">Editable — this is a drafted summary, not a live calculation. Edit freely; your changes are saved and won't be overwritten unless you reset it.</div>
+  </div>
+
+  <div id="dash">
+    <div class="nav" id="nav"></div>
+    <button class="backbtn" id="backBtn" style="display:none;">← Back to Portfolio</button>
+
+    <div class="card controls">
+      <div class="ctl">
+        <label class="lbl">Traffic → Tour <span class="val" id="ttourVal">25%</span></label>
+        <input type="range" id="ttourSlider" min="5" max="50" step="5" value="25">
+      </div>
+      <div class="ctl">
+        <label class="lbl">Tour → Application <span class="val" id="tappVal">80%</span></label>
+        <input type="range" id="tappSlider" min="20" max="100" step="5" value="80">
+      </div>
+      <div class="ctl">
+        <label class="lbl">Occupancy Goal</label>
+        <input type="number" id="tgtInput" min="50" max="100" value="85"><span class="unit">%</span>
+      </div>
+      <div class="ctl">
+        <label class="lbl">Lease-Up Length</label>
+        <input type="number" id="wkInput" min="1" max="26" value="10"><span class="unit">weeks</span>
+      </div>
+      <div class="adjlabel">Adjustments</div>
+      <div class="adj">
+        <label><input type="checkbox" id="backfillChk" checked> Backfill notices</label>
+        <label><input type="checkbox" id="fallbackChk" checked> Portfolio rate where data thin</label>
+      </div>
+    </div>
+
+    <div class="kpiband" id="kpiBand"></div>
+
+    <div class="section-title">
+      <h2 id="rollupTitle">Portfolio Roll-Up</h2>
+      <span class="hint">Raw data · company totals</span>
+    </div>
+    <div class="card" id="rollupTable" style="padding:16px;overflow-x:auto;"></div>
+
+    <div class="section-title">
+      <h2 id="scoreTitle">Agent Performance</h2>
+      <span class="hint">By lead</span>
+    </div>
+    <div class="section-sub" id="scoreSub"></div>
+    <div class="rollup-subhead">Season-to-Date (Cumulative, All Weeks)</div>
+    <div class="scorecard" id="scorecard"></div>
+    <div class="card" id="agentRollupTable" style="padding:16px;overflow-x:auto;margin-top:14px;"></div>
+
+    <div class="mkthead" id="mktHead">
+      <div>
+        <div class="lab">Marketing Plan</div>
+        <h2>This Week</h2>
+      </div>
+      <div class="weeksel">
+        <div class="lab">Week</div>
+        <select id="weekSelect"></select>
+      </div>
+    </div>
+    <div class="focusbar">
+      <span class="flab">Focus</span>
+      <input type="text" id="focusInput" placeholder="This week's leasing & marketing focus...">
+    </div>
+    <div class="daygrid card" id="dayGrid" style="padding:14px;display:grid;"></div>
+
+    <div class="section-title">
+      <h2 id="commTitle">Portfolio Communities</h2>
+      <span class="hint">Funnel &amp; quality boards</span>
+    </div>
+    <div class="propscol" id="propsList"></div>
+  </div>
+
+  <div class="card conctab" id="historyView" style="display:none;"></div>
+  <div class="card conctab" id="printConc" style="display:none;"></div>
+
+  <details class="card vocab">
+    <summary>Leasing vocabulary &amp; how to read the board</summary>
+    <div class="vocab-body">
+      <dl>
+        <dt>Traffic</dt><dd>Guest cards generated for the property in a given week.</dd>
+        <dt>Follow-Up Calls</dt><dd>5× traffic — a calculated outreach-volume estimate, not a logged call count. No real call-log data source is used anywhere on this board.</dd>
+        <dt>Tours</dt><dd>Same event as a completed Showing in AppFolio. Default goal is 25% of traffic (editable via the Traffic → Tour slider); actuals are pulled directly from completed showings.</dd>
+        <dt>Applications</dt><dd>Move-ins × 1.15 to cover cancellation/denial benchmarks; also = 80% of tours by default (editable via the Tour → Application slider).</dd>
+        <dt>Move-Ins</dt><dd>Completed leases that physically move in.</dd>
+        <dt>Lead→Lease</dt><dd>Approved applications ÷ trailing-12-month guest cards — conversion efficiency.</dd>
+        <dt>Cancellations</dt><dd>Goal &lt;5% of applications.</dd>
+        <dt>Denials</dt><dd>Goal ~10% of applications.</dd>
+        <dt>Maintain</dt><dd>Already at/above occupancy goal with ≤1 net move-in needed.</dd>
+        <dt>High-Volume Traffic Not Converting</dt><dd>Projected pace meets/exceeds the traffic target but occupancy is still below goal.</dd>
+        <dt>Low Conversion</dt><dd>Lead→lease conversion (or portfolio rate, when thin) is below the 10% benchmark.</dd>
+        <dt>Low Traffic</dt><dd>None of the above — traffic volume itself is the binding constraint.</dd>
+        <dt>Slow Application Processing</dt><dd>Cancellation rate ≥10% of applications, flagged separately from the primary diagnosis.</dd>
+        <dt>* thin data</dt><dd>Fewer than 10 applications or a lead→lease rate under 6% — diagnostics fall back to the portfolio conversion rate when enabled.</dd>
+        <dt>Call Volume Standard</dt><dd>Minimum outbound calls per week = 3 × active prospects (approximated as trailing 90-day guest cards). Shown per property; real call counts are logged in AppFolio, not this board.</dd>
+        <dt>Application Processing SLA</dt><dd>3 business days to decide an application. The Slow Application Processing tag's hover list flags any pending application past this SLA.</dd>
+      </dl>
+    </div>
+  </details>
+
+  <footer class="foot" id="footNote"></footer>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============ DATA ============ */
+const DATA=[
+ {p:"Ascent at Northgate",u:111,o:53,vr:3,nu:7,gc12:863,gc90:469,apps:29,appr:21,den:3,canc:1,prev:53,addr:"Austin, TX"},
+ {p:"Windy Hill Apartment",u:72,o:35,vr:0,nu:0,gc12:950,gc90:373,apps:64,appr:20,den:2,canc:17,prev:34,addr:"Georgetown, TX",
+   note:"Unit count is 72 total (Buildings 1–3, expanded scope). Occupied count is reconciled to the full 72-unit footprint via the boxscore move-in ledger (35/72 = 48.6%). AppFolio's occupancy summary report still shows only ~54 total units and hasn't been refreshed to the 72-unit scope, so its Vacant Rented/Notice Unrented figures aren't usable here."},
+ {p:"The Highlander",u:49,o:24,vr:0,nu:5,gc12:365,gc90:154,apps:11,appr:6,den:1,canc:3,prev:25,addr:"Austin, TX"},
+ {p:"Sunset Palms",u:36,o:25,vr:1,nu:3,gc12:204,gc90:96,apps:17,appr:12,den:2,canc:2,prev:24,addr:"Austin, TX"},
+ {p:"The Chateau",u:30,o:18,vr:2,nu:2,gc12:188,gc90:92,apps:11,appr:7,den:0,canc:2,prev:16,addr:"Austin, TX"},
+ {p:"Hyde Park Square",u:48,o:43,vr:2,nu:3,gc12:377,gc90:177,apps:21,appr:10,den:4,canc:4,prev:42,addr:"Austin, TX"},
+ {p:"The Sidney",u:40,o:33,vr:1,nu:4,gc12:409,gc90:121,apps:5,appr:3,den:0,canc:1,prev:34,addr:"Austin, TX"},
+ {p:"iConic Round Rock",u:32,o:30,vr:0,nu:3,gc12:423,gc90:74,apps:7,appr:4,den:2,canc:1,prev:31,addr:"Round Rock, TX"},
+ {p:"iConic Downtown",u:20,o:17,vr:0,nu:4,gc12:210,gc90:17,apps:1,appr:1,den:0,canc:0,prev:18,addr:"Round Rock, TX"}
+];
+const PREV_LABEL="8/1";
+// Real completed showings (= tours) per property, weeks 1-7, from the "showings" export.
+// Showings and tours are the same event in AppFolio, so these seed the Tours actuals directly.
+const SEED_TOURS={
+ "Ascent at Northgate":[7,3,7,5,6,5,2,4,5,5],
+ "Windy Hill Apartment":[7,6,3,7,3,3,11,14,10,6],
+ "The Highlander":[1,0,0,3,1,0,2,3,4,3],
+ "Sunset Palms":[2,0,2,1,2,1,1,1,2,3],
+ "The Chateau":[0,1,0,1,2,2,3,7,0,2],
+ "Hyde Park Square":[11,11,7,5,4,5,10,3,10,5],
+ "The Sidney":[4,1,1,2,0,1,1,3,0,1],
+ "iConic Round Rock":[2,1,0,0,2,1,0,1,1,1],
+ "iConic Downtown":[1,2,0,0,0,1,0,0,1,0]
+};
+
+// Most recently completed lease-up week (Mon 7/6/2026 - Sun 7/12/2026), pulled directly
+// from the guest cards and applications exports. Used for the Roll-Up's "Last Wk" columns.
+// Claude's drafted weekly narrative. Always shown as the starting point; the person can edit
+// it freely in the UI (contenteditable), and their edit is saved and takes precedence until
+// they hit "Reset to draft" to restore this text.
+const DEFAULT_NARRATIVE = `The guest cards report has finally arrived, so <b>Traffic and Follow-Up Calls are real for the first time back through Week 1</b> — no more frozen/estimated figures anywhere on this board. The numbers are bigger than what was being estimated before: <b>Ascent at Northgate (Yeni)</b> pulled 43 traffic last week alone (a 25 goal) and has run as high as 87 in a single week — real volume, but occupancy is still only 47.7% against an 85% goal (37.3 points behind), so most of that traffic isn't converting to tours or applications; this is now the clearest "fix the funnel, not the marketing" case in the portfolio. <b>The Highlander (Oscar)</b> has the widest gap — 49.0% against 85% (36.0 points) — with Traffic on pace (14 vs. a 14 goal) but zero applications last week. <b>Windy Hill (Sammy)</b> is at 48.6% against its 80% step goal (31.4 points, the goal stepped up from 66% to 80% on 8/1) — Traffic (30) and Applications (7) both beat pace last week, real momentum, but the Decision Pending backlog sits at 18 and needs active clearing, not just faster new submissions. <b>The Chateau (Rocio)</b> is at 60.0% against 85% (25.0 points) — steady, on-pace traffic and tours, but conversion through to move-ins remains the bottleneck. <b>Sunset Palms (Oscar)</b> continues to close ground — 69.4% now, only 15.6 points behind, the smallest gap of any off-pace property. <b>Hyde Park Square (Rocio)</b> has now passed its full goal outright — 89.6% against 85% — a real win worth calling out by name. <b>The Sidney (Rocio)</b> is close behind at 82.5% (2.5 points). <b>iConic Round Rock (Oscar)</b> remains just ahead of its 92% goal. <b>iConic Downtown (Oscar)</b> has fallen further behind — 85.0% against a 95% goal (10.0 points, the widest gap it's had all season) — and had zero traffic last week; this one needs attention now, not a "it'll recover on its own" assumption. <b>Windy Hill's Decision Pending backlog (18 applications) remains the single biggest operational risk in the portfolio</b> — several from early August still sitting untouched. <b>Ascent at Northgate also has 3 pending applications from 8/6–8/10.</b>`;
+
+const LASTWEEK_LABEL="8/2–8/8";
+const LASTWEEK={
+ "Ascent at Northgate":{traffic:43,tours:5,apps:4,appr:3,den:0,canc:0},
+ "Windy Hill Apartment":{traffic:30,tours:6,apps:7,appr:0,den:0,canc:0},
+ "The Highlander":{traffic:14,tours:3,apps:0,appr:0,den:0,canc:0},
+ "Sunset Palms":{traffic:6,tours:3,apps:0,appr:0,den:0,canc:0},
+ "The Chateau":{traffic:6,tours:2,apps:1,appr:0,den:0,canc:0},
+ "Hyde Park Square":{traffic:15,tours:5,apps:3,appr:0,den:1,canc:0},
+ "The Sidney":{traffic:11,tours:1,apps:0,appr:0,den:0,canc:0},
+ "iConic Round Rock":{traffic:5,tours:1,apps:0,appr:0,den:0,canc:0},
+ "iConic Downtown":{traffic:0,tours:0,apps:0,appr:0,den:0,canc:0}
+};
+
+// Real logged outbound calls, parsed directly from the "Notes" field on each guest card in the
+// guest cards report. Each call is logged there as its own dated entry in the format
+// "MM/DD/YYYY, Call" followed by a timestamp/property/note -- these are counted and bucketed
+// by actual call date into lease-up weeks 1-10 (through the week ending 8/8), now recomputed
+// from the real guest_card_inquiries all-time export under the corrected Sun-Sat boundary.
+const CALLS_BY_WEEK={
+ "Ascent at Northgate":[38,27,24,25,61,101,47,47,12,13],
+ "Windy Hill Apartment":[28,25,24,23,29,15,26,11,1,4],
+ "The Highlander":[16,9,6,9,16,11,12,6,11,16],
+ "Sunset Palms":[14,9,6,8,16,13,10,5,5,7],
+ "The Chateau":[12,10,7,7,18,8,7,20,18,8],
+ "Hyde Park Square":[11,19,9,20,42,13,25,15,6,14],
+ "The Sidney":[9,10,8,16,27,16,10,5,9,9],
+ "iConic Round Rock":[9,6,3,1,9,1,2,2,5,2],
+ "iConic Downtown":[2,4,1,0,4,0,1,6,3,3]
+};
+const LASTWEEK_CALLS={}, SEASON_CALLS={};
+Object.keys(CALLS_BY_WEEK).forEach(p=>{
+  const arr=CALLS_BY_WEEK[p];
+  LASTWEEK_CALLS[p]=arr[arr.length-1];
+  SEASON_CALLS[p]=arr.reduce((s,v)=>s+v,0);
+});
+
+// Fixed occupancy baseline as of the start of the lease-up program (week ending 6/7/2026).
+// This is a locked historical commitment: goal ramps straight-line from this baseline to
+// 85% occupancy by week 8, and is NOT affected by the Occupancy Goal / Lease-Up Length sliders.
+// Applications still sitting in Decision Pending (not yet approved/denied/canceled), with
+// applicant name and received date, from the applications export. Shown on hover over the
+// "Slow Application Processing" tag. Properties with no entry here have none on file.
+const PENDING_APPS={
+ "Windy Hill Apartment":[
+   {name:"Saryn K. Stringer",date:"05/29/2026"},
+   {name:"David S. Stringer (Co-signer for Saryn Stringer)",date:"05/29/2026"},
+   {name:"Judah R. Stringer",date:"05/29/2026"},
+   {name:"Jany Y. Fuentes",date:"05/30/2026"},
+   {name:"Edgar G. Perez",date:"05/31/2026"},
+   {name:"Tijean E. Chin-Sue",date:"06/02/2026"},
+   {name:"Syed T. Alam",date:"06/08/2026"},
+   {name:"Terry D. Mayfield",date:"07/08/2026"},
+   {name:"Oliver S. Kabazi (Co-signer for Oliver Kabazi)",date:"07/27/2026"},
+   {name:"Johnny D. Benavidez (Co-signer for Johnny Benavidez)",date:"07/30/2026"},
+   {name:"Markita T. Tucker",date:"08/01/2026"},
+   {name:"Markayla A. Tucker (Co-signer for Markayla Tucker)",date:"08/02/2026"},
+   {name:"Markita T. Tucker",date:"08/02/2026"},
+   {name:"David A. Garcia",date:"08/05/2026"},
+   {name:"Maria Zuniga",date:"08/05/2026"},
+   {name:"Jonathon L. Deboer",date:"08/06/2026"},
+   {name:"Zoei L. Alexander",date:"08/06/2026"},
+   {name:"Jennifer C. Byrnes",date:"08/10/2026"}
+ ],
+ "Ascent at Northgate":[
+   {name:"Roberto Catalan",date:"08/06/2026"},
+   {name:"Victor M. Palma",date:"08/10/2026"},
+   {name:"Juan C. Mercado",date:"08/10/2026"}
+ ]
+};
+const APP_PROCESSING_SLA_DAYS=3; // business days -- management standard for deciding an application
+function businessDaysSince(dateStr, asOf){
+  const start=new Date(dateStr);
+  let count=0;
+  const cur=new Date(start.getTime());
+  while(cur<asOf){
+    cur.setDate(cur.getDate()+1);
+    const day=cur.getDay();
+    if(day!==0 && day!==6) count++;
+  }
+  return count;
+}
+function pendingAppsTooltip(prop){
+  const list=PENDING_APPS[prop];
+  if(!list || list.length===0) return "No applications currently pending decision on file.";
+  const asOf=new Date(2026,7,11); // board's current "as of" date
+  const lines=list.map(x=>{
+    const bdays=businessDaysSince(x.date, asOf);
+    const overdue = bdays>APP_PROCESSING_SLA_DAYS ? ` [${bdays} business days -- OVERDUE, SLA is ${APP_PROCESSING_SLA_DAYS}]` : ` [${bdays} business days]`;
+    return `${x.name} — applied ${x.date}${overdue}`;
+  });
+  return `Pending decision (${list.length}) -- SLA is ${APP_PROCESSING_SLA_DAYS} business days:\n${lines.join("\n")}`;
+}
+
+// Facebook Marketplace posts shared by the team, from MPM's tracking sheet screenshot
+// plus the team's message log for July 2026 (matched by Marketplace item ID).
+const SEED_FB_LINKS={
+ "Ascent at Northgate":[
+   {date:"2025-07-09",url:"https://www.facebook.com/marketplace/item/1531986365040511/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2025-07-09",url:"https://www.facebook.com/marketplace/item/2948878542122847/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-14",url:"https://www.facebook.com/marketplace/item/4456511227957824/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-15",url:"https://www.facebook.com/marketplace/item/4456511227957824/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-15",url:"https://www.facebook.com/marketplace/item/4456511227957824/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-13",url:"https://www.facebook.com/marketplace/item/4456511227957824/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-08",url:"https://www.facebook.com/marketplace/item/2948878542122847/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-08",url:"https://www.facebook.com/marketplace/item/1531986365040511/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-02",url:"https://www.facebook.com/share/p/19HwN56CGy/?mibextid=wwXIfr",by:"Yeni"}
+ ],
+ "The Highlander":[
+   {date:"2026-07-14",url:"https://www.facebook.com/marketplace/item/848536841472994/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-15",url:"https://www.facebook.com/marketplace/item/2226867721398117/?mibextid=6ojiHh",by:"Oscar"},
+   {date:"2026-07-15",url:"https://www.facebook.com/marketplace/item/844012491876125/?mibextid=6ojiHh",by:"Oscar"},
+   {date:"2026-07-14",url:"https://www.facebook.com/marketplace/item/844012491876125/?mibextid=6ojiHh",by:"Oscar"},
+   {date:"2026-07-14",url:"https://www.facebook.com/marketplace/item/2226867721398117/?mibextid=6ojiHh",by:"Oscar"},
+   {date:"2026-07-13",url:"https://www.facebook.com/marketplace/item/848536841472994/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-02",url:"https://www.facebook.com/marketplace/item/844012491876125/?mibextid=6ojiHh",by:"Oscar"},
+   {date:"2026-07-02",url:"https://www.facebook.com/marketplace/item/2226867721398117/?mibextid=6ojiHh",by:"Oscar"},
+   {date:"2026-07-01",url:"https://www.facebook.com/marketplace/item/844012491876125/?mibextid=6ojiHh",by:"Oscar"},
+   {date:"2026-07-01",url:"https://www.facebook.com/marketplace/item/2226867721398117/?mibextid=6ojiHh",by:"Oscar"}
+ ],
+ "iConic Round Rock":[
+   {date:"2026-07-14",url:"https://www.facebook.com/marketplace/item/1578995937162425/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-13",url:"https://www.facebook.com/marketplace/item/1578995937162425/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-02",url:"https://www.facebook.com/share/17uAk6DKGg/?mibextid=wwXIfr",by:"Yeni"}
+ ],
+ "Sunset Palms":[
+   {date:"2025-07-09",url:"https://www.facebook.com/marketplace/item/1321721386275330/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-15",url:"https://www.facebook.com/marketplace/item/982981470792414/?mibextid=6ojiHh",by:"Oscar"},
+   {date:"2026-07-14",url:"https://www.facebook.com/marketplace/item/982981470792414/?mibextid=6ojiHh",by:"Oscar"},
+   {date:"2026-07-08",url:"https://www.facebook.com/marketplace/item/1321721386275330/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-02",url:"https://www.facebook.com/marketplace/item/1321721386275330/?mibextid=6ojiHh",by:"Yeni"},
+   {date:"2026-07-02",url:"https://www.facebook.com/share/p/1EVVvLNK6p/?mibextid=wwXIfr",by:"Yeni"}
+ ]
+};
+
+const OCC_GOAL_START_FRAC={
+ "Ascent at Northgate":51/111,
+ "Windy Hill Apartment":21/72,
+ "The Highlander":18/49,
+ "Sunset Palms":12/36,
+ "The Chateau":17/30,
+ "Hyde Park Square":40/48,
+ "The Sidney":34/40,
+ "iConic Round Rock":28/32,
+ "iConic Downtown":19/20
+};
+// Per-property occupancy goal override. Properties not listed use the adjustable
+// Occupancy Goal slider (settings.tgt, default 85%) like everyone else.
+const GOAL_OVERRIDE={"iConic Round Rock":0.92,"iConic Downtown":0.92,"Windy Hill Apartment":0.90};
+function goalFor(prop){ return GOAL_OVERRIDE[prop]!==undefined? GOAL_OVERRIDE[prop] : settings.tgt; }
+const OCC_GOAL_WEEKS=8; // fixed span of the commitment, independent of settings.wk
+
+// Windy Hill's occupancy goal is a management-set step schedule, not a linear ramp:
+// 66% through 7/31/2026, 80% from 8/1/2026, 90% from 8/15/2026. This overrides the
+// generic baseline-to-target ramp used for every other property.
+const OCC_GOAL_STEP_SCHEDULE={
+ "Windy Hill Apartment":[
+   {before:new Date(2026,7,1), pct:66},
+   {before:new Date(2026,7,15), pct:80},
+   {before:null, pct:90}
+ ]
+};
+function fixedWeekGoalPct(prop, weekIdx){
+  const stepSchedule = OCC_GOAL_STEP_SCHEDULE[prop];
+  if(stepSchedule){
+    const endDate = weekEndDate(weekIdx);
+    for(const step of stepSchedule){
+      if(step.before===null || endDate < step.before) return step.pct;
+    }
+  }
+  const base = OCC_GOAL_START_FRAC[prop];
+  if(base===undefined) return null;
+  const target = goalFor(prop);
+  const step = Math.min(weekIdx, OCC_GOAL_WEEKS-1) / (OCC_GOAL_WEEKS-1);
+  const frac = base + Math.max(0, target-base) * step;
+  return frac*100;
+}
+
+// Real historical occupied-unit counts by week (weeks 1-10, Saturdays 6/6 through 8/8 -- weeks
+// now run Sun-Sat to match AppFolio's own convention), derived from the boxscore move-in/move-out
+// ledger. Values are unchanged from the prior Mon-Sun bucketing since no move-in/move-out events
+// fell on the shifted boundary days; only the date labels moved.
+const HIST_OCC_UNITS={
+ "Ascent at Northgate":[47,47,50,50,51,51,52,51,53,53],
+ "Windy Hill Apartment":[21,21,21,21,23,23,23,25,34,35],
+ "The Highlander":[16,16,15,17,17,16,18,18,25,24],
+ "Sunset Palms":[11,12,12,12,13,16,20,22,24,25],
+ "The Chateau":[18,17,17,17,17,16,16,16,16,18],
+ "Hyde Park Square":[35,35,35,35,36,38,40,41,42,43],
+ "The Sidney":[34,34,34,34,34,35,35,35,34,33],
+ "iConic Round Rock":[28,29,30,30,30,30,30,30,31,30],
+ "iConic Downtown":[19,19,19,19,19,19,18,18,18,17]
+};
+function histOccPct(prop, weekIdx){
+  const arr=HIST_OCC_UNITS[prop];
+  if(!arr || weekIdx>=arr.length) return null;
+  const d=getD(prop);
+  if(!d || !d.u) return null;
+  return arr[weekIdx]/d.u*100;
+}
+
+/* ============ WEEK-OVER-WEEK CHART (Occupancy/Traffic/Tours/Apps/Move-Ins) ============ */
+function weeklyChartSvg(prop){
+  const d=getD(prop);
+  const occUnits = HIST_OCC_UNITS[prop]||[];
+  const traffic = SEED_TRAFFIC[prop]||[];
+  const tours = SEED_TOURS[prop]||[];
+  const apps = SEED_APPS[prop]||[];
+  const movein = SEED_MOVEIN[prop]||[];
+  const calls = CALLS_BY_WEEK[prop]||[];
+  const weeks = Math.min(occUnits.length, traffic.length, tours.length, apps.length, movein.length, calls.length) || 0;
+  if(weeks===0) return `<div style="color:var(--muted);font-size:12px;padding:8px 0;">No completed-week history yet for this chart.</div>`;
+  const occPct = occUnits.slice(0,weeks).map(o=> d.u? (o/d.u*100) : 0);
+
+  const W=680, H=240;
+  const ML=40, MR=40, MT=26, MB=32;
+  const PW=W-ML-MR, PH=H-MT-MB;
+  const series=[
+    {label:"Traffic",data:traffic.slice(0,weeks),color:"var(--gold-bright)"},
+    {label:"Tours",data:tours.slice(0,weeks),color:"var(--blue)"},
+    {label:"Applications",data:apps.slice(0,weeks),color:"var(--r3)"},
+    {label:"Move-Ins",data:movein.slice(0,weeks),color:"var(--green)"},
+    {label:"Calls",data:calls.slice(0,weeks),color:"var(--r4)"}
+  ];
+  const maxCount = Math.max(1, ...series.flatMap(s=>s.data));
+  const groupW = PW/weeks;
+  const barGap=2, barW=Math.max(2.5,(groupW-10)/series.length);
+
+  let bars="";
+  for(let i=0;i<weeks;i++){
+    const gx = ML + i*groupW + 5;
+    series.forEach((s,si)=>{
+      const v=s.data[i]||0;
+      const bh = (v/maxCount)*PH;
+      const bx = gx + si*(barW+barGap);
+      const by = MT + (PH-bh);
+      bars += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0,bh).toFixed(1)}" fill="${s.color}" rx="1.5"><title>${s.label} Wk${i+1}: ${v}</title></rect>`;
+    });
+  }
+
+  const occPoints=[];
+  for(let i=0;i<weeks;i++){
+    const cx = ML + i*groupW + groupW/2;
+    const cy = MT + (PH - (occPct[i]/100)*PH);
+    occPoints.push([cx,cy]);
+  }
+  const occLine = `<polyline points="${occPoints.map(p=>`${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ")}" fill="none" stroke="var(--navy)" stroke-width="2.5"/>`;
+  const occDots = occPoints.map((p,i)=>`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3.5" fill="var(--navy)"><title>Occupancy Wk${i+1}: ${occPct[i].toFixed(1)}%</title></circle>`).join("");
+
+  let gridlines="", leftLabels="", rightLabels="";
+  [0,0.5,1].forEach(f=>{
+    const y = MT + PH*(1-f);
+    gridlines += `<line x1="${ML}" y1="${y.toFixed(1)}" x2="${ML+PW}" y2="${y.toFixed(1)}" stroke="var(--line2)" stroke-width="1"/>`;
+    leftLabels += `<text x="${ML-6}" y="${(y+3).toFixed(1)}" font-size="9" text-anchor="end" fill="var(--muted2)">${Math.round(maxCount*f)}</text>`;
+    rightLabels += `<text x="${(ML+PW+6).toFixed(1)}" y="${(y+3).toFixed(1)}" font-size="9" text-anchor="start" fill="var(--navy)">${Math.round(100*f)}%</text>`;
+  });
+  const axisTitles = `<text x="${ML-6}" y="${(MT-12).toFixed(1)}" font-size="9" font-weight="700" text-anchor="end" fill="var(--muted2)">COUNT</text>
+    <text x="${(ML+PW+6).toFixed(1)}" y="${(MT-12).toFixed(1)}" font-size="9" font-weight="700" text-anchor="start" fill="var(--navy)">OCC %</text>`;
+
+  let xLabels="";
+  for(let i=0;i<weeks;i++){
+    const cx = ML + i*groupW + groupW/2;
+    xLabels += `<text x="${cx.toFixed(1)}" y="${(H-MB+14).toFixed(1)}" font-size="9.5" text-anchor="middle" fill="var(--muted2)">Wk${i+1} · ${weekEndMD(i)}</text>`;
+  }
+
+  const legend = `<div class="chartlegend">
+    ${series.map(s=>`<span class="lg"><span class="sw" style="background:${s.color}"></span>${s.label}</span>`).join("")}
+    <span class="lg"><span class="sw sw-line"></span>Occupancy % (right axis)</span>
+  </div>`;
+
+  return `${legend}<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;">
+    ${gridlines}
+    ${bars}
+    ${occLine}${occDots}
+    ${leftLabels}${rightLabels}${xLabels}${axisTitles}
+  </svg>`;
+}
+
+// Real weekly actuals, weeks 1-10 (through the week ending 8/8), from the actual guest cards
+// report (guest_card_inquiries, all-time, 4,664 real inquiries back to 2024). This closes the
+// gap that had frozen Traffic/Follow-Up at Week 8 -- Weeks 9-10 are now real, not estimated.
+const SEED_TRAFFIC={
+ "Ascent at Northgate":[21,20,25,63,32,55,34,87,25,43],
+ "Windy Hill Apartment":[30,32,29,39,25,24,26,27,37,30],
+ "The Highlander":[8,6,10,12,6,16,17,17,13,14],
+ "Sunset Palms":[5,5,9,5,4,14,5,8,10,6],
+ "The Chateau":[3,5,2,9,11,6,7,13,5,6],
+ "Hyde Park Square":[15,11,6,22,9,18,12,17,11,15],
+ "The Sidney":[6,7,8,12,4,16,3,13,5,11],
+ "iConic Round Rock":[8,10,2,2,4,5,5,9,8,5],
+ "iConic Downtown":[1,2,0,0,3,2,2,0,2,0]
+};
+const SEED_APPS={
+ "Ascent at Northgate":[2,1,4,4,0,2,1,1,1,4],
+ "Windy Hill Apartment":[5,7,2,9,2,1,9,5,8,7],
+ "The Highlander":[1,1,1,0,1,0,1,3,3,0],
+ "Sunset Palms":[2,1,0,1,2,5,1,2,0,0],
+ "The Chateau":[0,0,1,1,0,0,1,1,2,1],
+ "Hyde Park Square":[0,2,1,3,1,4,1,1,1,3],
+ "The Sidney":[1,0,0,0,0,0,0,1,0,0],
+ "iConic Round Rock":[1,1,1,0,0,1,0,1,0,0],
+ "iConic Downtown":[0,0,0,0,0,0,0,0,0,0]
+};
+const SEED_CANCEL={
+ "Ascent at Northgate":[0,0,0,0,0,0,0,0,0,0],
+ "Windy Hill Apartment":[2,3,1,7,0,0,2,0,0,0],
+ "The Highlander":[1,0,1,0,1,0,0,0,0,0],
+ "Sunset Palms":[1,0,0,0,1,0,0,0,0,0],
+ "The Chateau":[0,0,1,0,0,0,0,0,0,0],
+ "Hyde Park Square":[0,1,0,0,0,1,1,0,0,0],
+ "The Sidney":[1,0,0,0,0,0,0,0,0,0],
+ "iConic Round Rock":[0,0,0,0,0,0,0,1,0,0],
+ "iConic Downtown":[0,0,0,0,0,0,0,0,0,0]
+};
+const SEED_DENIAL={
+ "Ascent at Northgate":[0,0,0,0,0,1,0,0,0,0],
+ "Windy Hill Apartment":[0,0,0,0,1,0,1,0,0,0],
+ "The Highlander":[0,1,0,0,0,0,0,0,0,0],
+ "Sunset Palms":[0,0,0,0,0,0,0,0,0,0],
+ "The Chateau":[0,0,0,0,0,0,0,0,0,0],
+ "Hyde Park Square":[0,0,0,0,1,2,0,0,0,1],
+ "The Sidney":[0,0,0,0,0,0,0,0,0,0],
+ "iConic Round Rock":[0,0,1,0,0,0,0,0,0,0],
+ "iConic Downtown":[0,0,0,0,0,0,0,0,0,0]
+};
+const SEED_MOVEIN={
+ "Ascent at Northgate":[5,1,4,2,3,1,2,1,3,1],
+ "Windy Hill Apartment":[0,0,0,0,2,0,0,2,10,1],
+ "The Highlander":[0,0,0,2,0,1,2,0,8,0],
+ "Sunset Palms":[0,1,0,0,2,3,4,2,2,1],
+ "The Chateau":[1,0,1,0,2,0,0,0,2,2],
+ "Hyde Park Square":[0,0,2,0,1,3,3,1,3,2],
+ "The Sidney":[0,0,0,0,0,1,0,0,0,0],
+ "iConic Round Rock":[0,1,2,0,0,0,0,0,1,0],
+ "iConic Downtown":[0,0,0,0,0,0,0,0,0,0]
+};
+
+const PEOPLE=["Rocio","Oscar","Yeni","Sammy"];
+const PCOLOR={Rocio:"var(--r1)",Oscar:"var(--r2)",Yeni:"var(--r3)",Sammy:"var(--r4)"};
+let LEAD={
+ "The Chateau":"Rocio","Hyde Park Square":"Rocio","The Sidney":"Rocio",
+ "Sunset Palms":"Oscar","The Highlander":"Oscar","iConic Round Rock":"Oscar","iConic Downtown":"Oscar",
+ "Ascent at Northgate":"Yeni","Windy Hill Apartment":"Sammy"};
+const GROUPS=[
+ {name:"Greystone",props:["The Highlander","The Chateau","Hyde Park Square","Sunset Palms"]},
+ {name:"Round Rock",props:["iConic Round Rock","iConic Downtown"]}];
+const SINGLES=["Ascent at Northgate","Windy Hill Apartment","The Sidney"];
+const SINGLE_LABEL={"Ascent at Northgate":"Ascent","Windy Hill Apartment":"Windy Hill","The Sidney":"The Sidney"};
+
+const PORT_CONV=0.130, CONV_BENCH=0.10, CANC_BENCH=0.05, DEN_BENCH=0.10, SLOWAPP_FLAG=0.10;
+const START=new Date(2026,4,31); // Sunday -- weeks run Sun-Sat to match AppFolio's own reporting convention
+const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+
+const FUNNEL=[
+ {k:"traffic",label:"Traffic",sub:"Guest cards"},
+ {k:"followup",label:"Follow-Up Calls",sub:"Estimate: 5× traffic (not a logged count)",fu:true},
+ {k:"tours",label:"Tours",sub:"Showings · 25% of traffic goal"},
+ {k:"apps",label:"Applications",sub:"80% of tours · submitted"},
+ {k:"movein",label:"Move-Ins",sub:"Completed"}];
+const QUAL=[
+ {k:"cancel",label:"Cancellations",goal:0.05,base:d=>d.apps?d.canc/d.apps:0},
+ {k:"denial",label:"Denials",goal:0.10,base:d=>d.apps?d.den/d.apps:0}];
+const CORE=["traffic","tours","apps","movein"];
+
+/* ============ STATE ============ */
+let settings={tgt:0.85,wk:10,tapp:0.80,ttour:0.25,backfill:true,fallback:true};
+let actuals={};   // actuals[prop][metricKey] = [..]
+let promo={};     // promo[prop]={special,incentive}
+let mkt={};        // mkt[weekKey][dayIdx] = [{text,who,done}×3]
+let fbLinks={};    // fbLinks[prop]=[{date,url}]
+let CONC=[];        // [{date,prop,special,incentive,notes}]
+let VIEW={type:"portfolio",name:null};
+let curWeekKey=null;
+let saveTimer=null;
+let toursSeedApplied5=false;
+let historySeedApplied5=false;
+let wkMinAppliedV1=false;
+let week7CleanupApplied=false;
+let fbSeedApplied3=false;
+let narrativeText=null; // null = show DEFAULT_NARRATIVE; otherwise the person's edited version
+
+function activeProps(){ return DATA.map(d=>d.p); }
+function getD(p){ return DATA.find(x=>x.p===p); }
+
+function ensureActuals(p,k){
+  if(!actuals[p]) actuals[p]={};
+  if(!actuals[p][k]) actuals[p][k]=[];
+  return actuals[p][k];
+}
+function getPromo(p){ if(!promo[p]) promo[p]={special:"",incentive:"",sources:""}; return promo[p]; }
+function getFb(p){ if(!fbLinks[p]) fbLinks[p]=[]; return fbLinks[p]; }
+
+/* ============ STORAGE ============ */
+const STORE={
+ async get(k){
+   try{ if(window.storage){ const r=await window.storage.get(k); return r&&r.value?JSON.parse(r.value):null; } }catch(e){}
+   try{ const v=localStorage.getItem(k); return v?JSON.parse(v):null; }catch(e){ return null; }
+ },
+ async set(k,val){
+   const s=JSON.stringify(val);
+   try{ if(window.storage){ await window.storage.set(k,s); return; } }catch(e){}
+   try{ localStorage.setItem(k,s); }catch(e){}
+ }
+};
+const STORE_KEY='metricBoard';
+
+function snapshot(){
+  return {actuals,promo,mkt,fb:fbLinks,lead:LEAD,conc:CONC,toursSeedApplied5,historySeedApplied5,week7CleanupApplied,fbSeedApplied3,wkMinAppliedV1,narrativeText,settings:{tgt:settings.tgt,wk:settings.wk,tapp:settings.tapp,ttour:settings.ttour,backfill:settings.backfill,fallback:settings.fallback}};
+}
+function scheduleSave(){
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(()=>{ STORE.set(STORE_KEY, snapshot()); }, 350);
+}
+
+/* ============ MATH ============ */
+function compute(d){
+  const tgt=goalFor(d.p), weeks=settings.wk, tourToApp=settings.tapp, trafficToTour=settings.ttour, backfill=settings.backfill, fallback=settings.fallback;
+  const net=Math.max(0, Math.ceil(tgt*d.u)-d.o-d.vr+(backfill?d.nu:0));
+  const apps=Math.ceil(net*(1+CANC_BENCH+DEN_BENCH));
+  const tours=Math.ceil(apps/tourToApp);
+  const traffic=Math.ceil(tours/trafficToTour);
+  const followup=traffic*5;
+  const movein=net;
+  const goals={traffic,followup,tours,apps,movein};
+  const occ=d.o/d.u;
+  const conv=d.gc12? d.appr/d.gc12 : 0;
+  const leadLease=conv;
+  const projTraffic=(d.gc90/3)*(weeks*12/52);
+  const addl=Math.max(0, Math.ceil(traffic-projTraffic));
+  const addlPerWk=Math.ceil(addl/weeks);
+  const paceRatio=traffic? projTraffic/traffic : 0;
+  const cancRate=d.apps? d.canc/d.apps : 0;
+  const delta=d.o-d.prev;
+  const thin=(d.apps<10)||(leadLease<0.06);
+  const diagConv=(thin&&fallback)?PORT_CONV:conv;
+  let tag;
+  if(occ>=tgt && net<=1) tag={k:"goal",label:"Maintain"};
+  else if(paceRatio>=1 && occ<tgt) tag={k:"highvol",label:"High-Volume Traffic Not Converting"};
+  else if(diagConv<CONV_BENCH) tag={k:"lowconv",label:"Low Conversion"};
+  else tag={k:"traffic",label:"Low Traffic"};
+  const tags=[tag];
+  if(d.apps && cancRate>=SLOWAPP_FLAG) tags.push({k:"slowapp",label:"Slow Application Processing"});
+  return {net,apps,traffic,tours,followup,movein,goals,occ,conv,leadLease,projTraffic,addl,addlPerWk,paceRatio,cancRate,delta,thin,diagConv,tags};
+}
+
+function weekGoals(total, weeks, arr){
+  const base=Math.ceil(total/weeks)||0;
+  const locked=[];
+  let achieved=0;
+  for(let i=0;i<weeks;i++){
+    const a=arr[i];
+    const has=(a!==undefined && a!==null && a!=="");
+    locked[i]=has;
+    if(has) achieved+=base;
+  }
+  const remaining=Math.max(0, total-achieved);
+  const openCount=locked.filter(f=>!f).length || 1;
+  const openPer=Math.ceil(remaining/openCount);
+  const goals=[];
+  for(let i=0;i<weeks;i++) goals[i]= locked[i]? base : openPer;
+  return {goals, base};
+}
+
+function actClass(a,g){
+  if(a===undefined||a===null||a===""||isNaN(a)) return "";
+  g = g||1;
+  if(Number(a) >= g*0.95) return "actgreen";
+  if(Number(a) >= g*0.75) return "actamber";
+  return "actred";
+}
+
+function statusFor(props){
+  let sum=0,count=0;
+  props.forEach(p=>{
+    const d=getD(p); if(!d) return;
+    const c=compute(d);
+    CORE.forEach(k=>{
+      const total=c.goals[k];
+      if(!total) return; // nothing needed for this metric -- don't penalize a property that's already at/above goal
+      const arr=ensureActuals(p,k);
+      const {goals,base}=weekGoals(total, settings.wk, arr);
+      for(let i=0;i<settings.wk;i++){
+        const a=arr[i];
+        if(a!==undefined && a!==null && a!==""){
+          const g = goals[i]||base||1;
+          sum += Number(a)/g;
+          count++;
+        }
+      }
+    });
+  });
+  if(count===0) return "on";
+  const avg=sum/count;
+  if(avg>=0.95) return "on";
+  if(avg>=0.75) return "risk";
+  return "behind";
+}
+function pillHtml(status){
+  const map={on:["st-on","On Track"],risk:["st-risk","At Risk"],behind:["st-behind","Behind Goal"]};
+  const [cls,label]=map[status];
+  return `<span class="pill ${cls}"><span class="dot"></span>${label}</span>`;
+}
+function rollupTh(c, plain){
+  if(plain) return `<th class="plain">${c}</th>`;
+  const lines = Array.isArray(c)? c : [c];
+  return `<th class="diag">${lines.join("<br>")}</th>`;
+}
+
+/* ============ VIEW SCOPING ============ */
+function viewProps(){
+  if(VIEW.type==="group"){ const g=GROUPS.find(x=>x.name===VIEW.name); return g? g.props.slice() : []; }
+  if(VIEW.type==="prop"){ return [VIEW.name]; }
+  return activeProps();
+}
+function viewLabel(){
+  if(VIEW.type==="group") return VIEW.name;
+  if(VIEW.type==="prop") return SINGLE_LABEL[VIEW.name]||VIEW.name;
+  return "Portfolio";
+}
+
+/* ============ WEEK HELPERS ============ */
+function mondayOf(weekIdx){ const d=new Date(START.getTime()); d.setDate(d.getDate()+weekIdx*7); return d; } // returns the Sunday starting week `weekIdx` (name kept for minimal diff; START is now a Sunday)
+function weekEndDate(weekIdx){ const d=mondayOf(weekIdx); d.setDate(d.getDate()+6); return d; }
+function weekEndMD(weekIdx){ return fmtMD(weekEndDate(weekIdx)); }
+function isoOf(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,"0"), day=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}`; }
+function fmtMD(d){ return `${d.getMonth()+1}/${d.getDate()}`; }
+function weekKeyList(){
+  const n=Math.max(settings.wk,8);
+  const keys=[];
+  for(let i=0;i<n;i++) keys.push(isoOf(mondayOf(i)));
+  Object.keys(mkt).forEach(k=>{ if(!keys.includes(k)) keys.push(k); });
+  return keys;
+}
+function weekLabelForKey(key){
+  const n=Math.max(settings.wk,8);
+  for(let i=0;i<n;i++){ if(isoOf(mondayOf(i))===key) return `Week ${i+1} · ${fmtMD(mondayOf(i))}`; }
+  const d=new Date(key+"T00:00:00");
+  return `Week · ${fmtMD(d)}`;
+}
+function ensureMktWeek(key){
+  if(!mkt[key]) mkt[key]=Array.from({length:7},()=>([{text:"",who:"",done:false},{text:"",who:"",done:false},{text:"",who:"",done:false}]));
+  if(!mkt[key].focus) {}
+  return mkt[key];
+}
+function getFocus(key){ const m=ensureMktWeek(key); return m.focus||""; }
+function setFocus(key,val){ const m=ensureMktWeek(key); m.focus=val; }
+
+/* ============ RENDER: NAV ============ */
+function renderNav(){
+  const nav=document.getElementById("nav");
+  let html=`<button class="navbtn ${VIEW.type==='portfolio'?'active':''}" data-nav="portfolio">Portfolio</button>`;
+  GROUPS.forEach(g=>{
+    html+=`<button class="navbtn ${VIEW.type==='group'&&VIEW.name===g.name?'active':''}" data-nav="group:${g.name}">${g.name}</button>`;
+  });
+  SINGLES.forEach(p=>{
+    html+=`<button class="navbtn ${VIEW.type==='prop'&&VIEW.name===p?'active':''}" data-nav="prop:${p}">${SINGLE_LABEL[p]}</button>`;
+  });
+  html+=`<button class="navbtn gold ${VIEW.type==='history'?'active':''}" data-nav="history">Concessions &amp; Incentives Log</button>`;
+  nav.innerHTML=html;
+  nav.querySelectorAll("[data-nav]").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      const v=btn.getAttribute("data-nav");
+      if(v==="portfolio") VIEW={type:"portfolio",name:null};
+      else if(v==="history") VIEW={type:"history",name:null};
+      else if(v.startsWith("group:")) VIEW={type:"group",name:v.slice(6)};
+      else if(v.startsWith("prop:")) VIEW={type:"prop",name:v.slice(5)};
+      render();
+    });
+  });
+  document.getElementById("backBtn").style.display = (VIEW.type!=="portfolio")?"inline-block":"none";
+}
+
+/* ============ RENDER: CONTROLS ============ */
+function bindControlsOnce(){
+  document.getElementById("tappSlider").addEventListener("input",e=>{
+    settings.tapp=Number(e.target.value)/100;
+    document.getElementById("tappVal").textContent=e.target.value+"%";
+    softRender();
+  });
+  document.getElementById("ttourSlider").addEventListener("input",e=>{
+    settings.ttour=Number(e.target.value)/100;
+    document.getElementById("ttourVal").textContent=e.target.value+"%";
+    softRender();
+  });
+  document.getElementById("tgtInput").addEventListener("input",e=>{
+    let v=Number(e.target.value); if(isNaN(v)) v=85;
+    v=Math.max(50,Math.min(100,v));
+    settings.tgt=v/100;
+    softRender();
+  });
+  document.getElementById("wkInput").addEventListener("input",e=>{
+    let v=Number(e.target.value); if(isNaN(v)||v<1) v=1; if(v>26) v=26;
+    settings.wk=v;
+    render();
+  });
+  document.getElementById("backfillChk").addEventListener("change",e=>{ settings.backfill=e.target.checked; softRender(); });
+  document.getElementById("fallbackChk").addEventListener("change",e=>{ settings.fallback=e.target.checked; softRender(); });
+}
+function syncControls(){
+  document.getElementById("tappSlider").value=Math.round(settings.tapp*100);
+  document.getElementById("tappVal").textContent=Math.round(settings.tapp*100)+"%";
+  document.getElementById("ttourSlider").value=Math.round(settings.ttour*100);
+  document.getElementById("ttourVal").textContent=Math.round(settings.ttour*100)+"%";
+  document.getElementById("tgtInput").value=Math.round(settings.tgt*100);
+  document.getElementById("wkInput").value=settings.wk;
+  document.getElementById("backfillChk").checked=settings.backfill;
+  document.getElementById("fallbackChk").checked=settings.fallback;
+}
+
+/* ============ RENDER: KPI BAND ============ */
+function renderKpi(){
+  const band=document.getElementById("kpiBand");
+  const props=viewProps();
+  let occN=0,occD=0;
+  props.forEach(p=>{ const d=getD(p); occN+=d.o; occD+=d.u; });
+  const occLabel = VIEW.type==="portfolio" ? "Portfolio Occupancy" : `${viewLabel()} Occupancy`;
+  const occPct=occD? (occN/occD*100):0;
+  let netSum=0,trafficSum=0,addlSum=0,addlPerWkSum=0;
+  props.forEach(p=>{ const c=compute(getD(p)); netSum+=c.net; trafficSum+=c.traffic; addlSum+=c.addl; addlPerWkSum+=c.addlPerWk; });
+  band.innerHTML=`
+   <div class="kpi card lead">
+     <div class="lab">${occLabel}</div>
+     <div class="big">${occN}<span class="of">/${occD}</span></div>
+     <div class="note">${occPct.toFixed(1)}% occupied</div>
+   </div>
+   <div class="kpi card">
+     <div class="lab">Net Move-Ins Needed</div>
+     <div class="big">${netSum}</div>
+     <div class="note">to ${Math.round(settings.tgt*100)}% (92% for iConic RR/DT)</div>
+   </div>
+   <div class="kpi card">
+     <div class="lab">Lease-Up Traffic Target</div>
+     <div class="big">${trafficSum}</div>
+     <div class="note">guest cards over ${settings.wk} weeks</div>
+   </div>
+   <div class="kpi card">
+     <div class="lab">Additional Traffic Needed</div>
+     <div class="big">${addlSum}</div>
+     <div class="note">${addlPerWkSum} / week above current pace</div>
+   </div>`;
+}
+
+/* ============ RENDER: PORTFOLIO ROLL-UP ============ */
+function renderRollup(){
+  document.getElementById("rollupTitle").textContent = (VIEW.type==="portfolio" ? "Portfolio Roll-Up" : `${viewLabel()} Roll-Up`) + ` — Last Week Only (${LASTWEEK_LABEL})`;
+  const props=viewProps();
+  const el=document.getElementById("rollupTable");
+  const cols=["Community",["Units"],["Occupied"],["Occ","%"],["Vacant","Rented"],["Notice","Unrented"],
+    ["Traffic","Last Wk"],["Tours","Last Wk"],["Calls","Last Wk"],["Apps","Last Wk"],["Approved","Last Wk"],["Denied","Last Wk"],["Canceled","Last Wk"]];
+  let bodyRows="";
+  const totals={u:0,o:0,vr:0,nu:0,traffic:0,tours:0,calls:0,apps:0,appr:0,den:0,canc:0};
+  props.forEach(p=>{
+    const d=getD(p);
+    const c=compute(d);
+    const lw=LASTWEEK[p]||{traffic:0,tours:0,apps:0,appr:0,den:0,canc:0};
+    const calls=LASTWEEK_CALLS[p]||0;
+    const star=c.thin?'<span class="star">*</span>':"";
+    totals.u+=d.u; totals.o+=d.o; totals.vr+=d.vr; totals.nu+=d.nu;
+    totals.traffic+=lw.traffic; totals.tours+=lw.tours; totals.calls+=calls;
+    totals.apps+=lw.apps; totals.appr+=lw.appr; totals.den+=lw.den; totals.canc+=lw.canc;
+    bodyRows+=`<tr>
+      <td class="name">${d.p}${star}</td>
+      <td>${d.u}</td><td>${d.o}</td><td>${(c.occ*100).toFixed(1)}%</td>
+      <td>${d.vr}</td><td>${d.nu}</td>
+      <td>${lw.traffic}</td><td>${lw.tours}</td><td>${calls}</td>
+      <td>${lw.apps}</td><td>${lw.appr}</td><td>${lw.den}</td><td>${lw.canc}</td>
+    </tr>`;
+  });
+  const totalOccPct = totals.u? (totals.o/totals.u*100).toFixed(1) : "0.0";
+  const totalRow=`<tr class="total">
+    <td class="name">Total</td>
+    <td>${totals.u}</td><td>${totals.o}</td><td>${totalOccPct}%</td>
+    <td>${totals.vr}</td><td>${totals.nu}</td>
+    <td>${totals.traffic}</td><td>${totals.tours}</td><td>${totals.calls}</td>
+    <td>${totals.apps}</td><td>${totals.appr}</td><td>${totals.den}</td><td>${totals.canc}</td>
+  </tr>`;
+  el.innerHTML = `<table class="rollup">
+    <thead><tr>${cols.map((c,i)=>rollupTh(c,i===0)).join("")}</tr></thead>
+    <tbody>${bodyRows}${totalRow}</tbody>
+  </table>
+  <div class="rollup-note">Every column here is real, reported activity from ${LASTWEEK_LABEL} only (not cumulative, not derived/estimated). Calls is parsed directly from dated "Call" entries in each guest card's notes log — an actual per-week count, not a goal. For season-to-date totals against the full 8-week goal, see Agent Performance below.</div>`;
+}
+
+/* ============ RENDER: AGENT ROLL-UP ============ */
+function renderAgentRollup(){
+  const propsInView=new Set(viewProps());
+  const el=document.getElementById("agentRollupTable");
+  const cols=["Agent","Properties",["Units"],["Occupied"],["Occ","%"],
+    ["Traffic","Last Wk"],["Tours","Last Wk"],["Calls","Last Wk"],["Apps","Last Wk"],["Approved","Last Wk"],["Denied","Last Wk"],["Canceled","Last Wk"]];
+  let bodyRows="";
+  const totals={u:0,o:0,traffic:0,tours:0,calls:0,apps:0,appr:0,den:0,canc:0};
+  const agentsPresent=PEOPLE.filter(person=>Object.keys(LEAD).some(p=>LEAD[p]===person && propsInView.has(p)));
+  agentsPresent.forEach(person=>{
+    const myProps=Object.keys(LEAD).filter(p=>LEAD[p]===person && propsInView.has(p));
+    const a={u:0,o:0,traffic:0,tours:0,calls:0,apps:0,appr:0,den:0,canc:0};
+    myProps.forEach(p=>{
+      const d=getD(p);
+      const lw=LASTWEEK[p]||{traffic:0,tours:0,apps:0,appr:0,den:0,canc:0};
+      a.u+=d.u; a.o+=d.o;
+      a.traffic+=lw.traffic; a.tours+=lw.tours; a.calls+=(LASTWEEK_CALLS[p]||0);
+      a.apps+=lw.apps; a.appr+=lw.appr; a.den+=lw.den; a.canc+=lw.canc;
+    });
+    const occPct=a.u? (a.o/a.u*100).toFixed(1) : "0.0";
+    totals.u+=a.u; totals.o+=a.o;
+    totals.traffic+=a.traffic; totals.tours+=a.tours; totals.calls+=a.calls;
+    totals.apps+=a.apps; totals.appr+=a.appr; totals.den+=a.den; totals.canc+=a.canc;
+    bodyRows+=`<tr>
+      <td class="name">${person}</td>
+      <td style="text-align:left;font-weight:600;color:var(--muted);white-space:normal;max-width:220px;">${myProps.join(", ")}</td>
+      <td>${a.u}</td><td>${a.o}</td><td>${occPct}%</td>
+      <td>${a.traffic}</td><td>${a.tours}</td><td>${a.calls}</td>
+      <td>${a.apps}</td><td>${a.appr}</td><td>${a.den}</td><td>${a.canc}</td>
+    </tr>`;
+  });
+  const totalOccPct = totals.u? (totals.o/totals.u*100).toFixed(1) : "0.0";
+  const totalRow=`<tr class="total">
+    <td class="name">Total</td><td></td>
+    <td>${totals.u}</td><td>${totals.o}</td><td>${totalOccPct}%</td>
+    <td>${totals.traffic}</td><td>${totals.tours}</td><td>${totals.calls}</td>
+    <td>${totals.apps}</td><td>${totals.appr}</td><td>${totals.den}</td><td>${totals.canc}</td>
+  </tr>`;
+  if(agentsPresent.length===0){
+    el.innerHTML=`<div style="color:var(--muted);">No agents scoped to this view.</div>`;
+    return;
+  }
+  el.innerHTML = `<div class="rollup-subhead">Raw Data — Last Week Only (${LASTWEEK_LABEL})</div><table class="rollup">
+    <thead><tr>${cols.map((c,i)=>rollupTh(c,i<2)).join("")}</tr></thead>
+    <tbody>${bodyRows}${totalRow}</tbody>
+  </table>
+  <div class="rollup-note">Contrast with the cards above, which are season-to-date cumulative totals against the full 8-week goal — different time window, numbers will not match. Traffic/Tours/Applications/Approved/Denied/Canceled here are all NEW activity received during that single week only, summed from each agent's led properties. Calls is parsed directly from dated "Call" entries in each guest card's notes log — an actual per-week count, not a goal.</div>`;
+}
+
+/* ============ RENDER: TEAM SCORECARD ============ */
+function renderScorecard(){
+  const props=new Set(viewProps());
+  const people = PEOPLE.filter(person => Object.keys(LEAD).some(p=>LEAD[p]===person && props.has(p)));
+  document.getElementById("scoreTitle").textContent = VIEW.type==="portfolio" ? "Agent Performance" : `${viewLabel()} Agent Performance`;
+  document.getElementById("scoreSub").textContent =
+    `Each box is cumulative actual-to-date vs. the full ${settings.wk}-week lease-up goal for that metric (all weeks combined, not just last week) across that person's led communities.`;
+  const el=document.getElementById("scorecard");
+  if(people.length===0){ el.innerHTML=`<div class="card pcard" style="grid-column:1/-1;color:var(--muted);">No team members scoped to this view.</div>`; return; }
+  el.innerHTML = people.map(person=>{
+    const myProps = Object.keys(LEAD).filter(p=>LEAD[p]===person && props.has(p));
+    let traffic=0,tours=0,apps=0,movein=0;
+    myProps.forEach(p=>{ const c=compute(getD(p)); traffic+=c.goals.traffic; tours+=c.goals.tours; apps+=c.goals.apps; movein+=c.goals.movein; });
+    let aTraffic=0,aTours=0,aApps=0,aMove=0;
+    myProps.forEach(p=>{
+      aTraffic += sumActuals(p,"traffic"); aTours += sumActuals(p,"tours"); aApps += sumActuals(p,"apps"); aMove += sumActuals(p,"movein");
+    });
+    const seasonCalls = myProps.reduce((sum,p)=>sum+(SEASON_CALLS[p]||0),0);
+    const status=statusFor(myProps);
+    return `<div class="card pcard" style="border-top-color:${PCOLOR[person]}">
+      <div class="name"><b>${person}</b>${pillHtml(status)}</div>
+      <div class="props">${myProps.join(", ")}</div>
+      <div class="metrics">
+        <div class="mbox"><div class="lab">Traffic · 8-Wk Goal</div><div class="num">${aTraffic}/${traffic}</div></div>
+        <div class="mbox"><div class="lab">Tours · 8-Wk Goal</div><div class="num">${aTours}/${tours}</div></div>
+        <div class="mbox"><div class="lab">Apps · 8-Wk Goal</div><div class="num">${aApps}/${apps}</div></div>
+        <div class="mbox"><div class="lab">Move-Ins · 8-Wk Goal</div><div class="num">${aMove}/${movein}</div></div>
+        <div class="mbox mbox-calls"><div class="lab">Calls Logged · Season-to-Date (actual, no goal)</div><div class="num">${seasonCalls}</div></div>
+      </div>
+    </div>`;
+  }).join("");
+}
+function sumActuals(p,k){
+  const arr=ensureActuals(p,k);
+  let s=0;
+  for(let i=0;i<settings.wk;i++){ const v=arr[i]; if(v!==undefined&&v!==null&&v!=="") s+=Number(v); }
+  return s;
+}
+
+/* ============ RENDER: MARKETING ============ */
+function renderMarketing(){
+  if(!curWeekKey) curWeekKey=isoOf(mondayOf(0));
+  const sel=document.getElementById("weekSelect");
+  const keys=weekKeyList();
+  sel.innerHTML=keys.map(k=>`<option value="${k}" ${k===curWeekKey?"selected":""}>${weekLabelForKey(k)}</option>`).join("");
+  sel.onchange=()=>{ curWeekKey=sel.value; renderMarketing(); };
+
+  document.getElementById("focusInput").value=getFocus(curWeekKey);
+  document.getElementById("focusInput").oninput=(e)=>{ setFocus(curWeekKey,e.target.value); scheduleSave(); };
+
+  const monday=new Date(curWeekKey+"T00:00:00");
+  const grid=document.getElementById("dayGrid");
+  const weekData=ensureMktWeek(curWeekKey);
+  grid.style.gridTemplateColumns="repeat(7,1fr)";
+  grid.innerHTML = DAYS.map((dname,i)=>{
+    const dd=new Date(monday.getTime()); dd.setDate(dd.getDate()+i);
+    const items=weekData[i];
+    const rows = items.map((it,slot)=>{
+      const peopleOpts = `<option value="">Assign...</option>` + PEOPLE.map(pp=>`<option value="${pp}" ${it.who===pp?"selected":""}>${pp}</option>`).join("");
+      return `<div class="actrow">
+        <input type="text" data-day="${i}" data-slot="${slot}" data-f="text" value="${escAttr(it.text)}" placeholder="Action...">
+        <div class="arow2">
+          <select data-day="${i}" data-slot="${slot}" data-f="who">${peopleOpts}</select>
+          <label class="donewrap"><input type="checkbox" data-day="${i}" data-slot="${slot}" data-f="done" ${it.done?"checked":""}> Done</label>
+        </div>
+      </div>`;
+    }).join("");
+    return `<div class="card daycard">
+      <div class="dname">${dname}</div>
+      <div class="ddate">${fmtMD(dd)}</div>
+      ${rows}
+    </div>`;
+  }).join("");
+
+  grid.querySelectorAll("input,select").forEach(el=>{
+    el.addEventListener(el.type==="checkbox"||el.tagName==="SELECT"?"change":"input",()=>{
+      const day=Number(el.getAttribute("data-day")), slot=Number(el.getAttribute("data-slot")), f=el.getAttribute("data-f");
+      const item=ensureMktWeek(curWeekKey)[day][slot];
+      if(f==="text") item.text=el.value;
+      else if(f==="who") item.who=el.value;
+      else if(f==="done") item.done=el.checked;
+      scheduleSave();
+    });
+  });
+}
+function escAttr(s){ return String(s||"").replace(/"/g,"&quot;"); }
+function escHtml(s){ return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+/* ============ RENDER: PROPERTY CARDS ============ */
+function renderProperties(){
+  document.getElementById("commTitle").textContent = VIEW.type==="portfolio" ? "Portfolio Communities" : `${viewLabel()} Communities`;
+  const props=viewProps();
+  const el=document.getElementById("propsList");
+  el.innerHTML = props.map(p=>propCardHtml(p)).join("");
+  bindPropertyCardEvents(el);
+}
+
+function propCardHtml(p){
+  const d=getD(p);
+  const c=compute(d);
+  const status=statusFor([p]);
+  const occPct=(c.occ*100).toFixed(1);
+  const leadLeasePct=(c.conv*100).toFixed(1);
+  const star = c.thin? "*" : "";
+  const deltaTxt = c.delta!==0 ? ` <span class="${c.delta<0?'neg':''}">(${c.delta>0?'+':''}${c.delta} vs ${PREV_LABEL})</span>` : "";
+  const seasonLine = `Now <b>${occPct}%</b> · ${d.o}/${d.u} occ${deltaTxt} · <b>${c.net}</b> Move-Ins Needed to ${Math.round(goalFor(p)*100)}% · ${leadLeasePct}% lead→lease${star} · lease-up traffic target <b>${c.traffic}</b> · additional traffic <b>${c.addl}</b> (${c.addlPerWk}/wk)`;
+
+  const tagsHtml = c.tags.map(t=>{
+    const tip = t.k==="slowapp" ? ` title="${escAttr(pendingAppsTooltip(p))}"` : "";
+    return `<span class="tag tag-${t.k}"${tip}>${t.label}</span>`;
+  }).join("");
+
+  const leadSel = `<select class="leadsel-input" data-prop="${p}">${PEOPLE.map(pp=>`<option value="${pp}" ${LEAD[p]===pp?"selected":""}>${pp}</option>`).join("")}</select>`;
+
+  const promoV=getPromo(p);
+
+  const funnelRows = FUNNEL.map(row=>{
+    const total=c.goals[row.k];
+    const arr=ensureActuals(p,row.k);
+    const {goals,base}=weekGoals(total, settings.wk, arr);
+    let cells="";
+    for(let i=0;i<settings.wk;i++){
+      const g=goals[i]||base||0;
+      const raw=arr[i];
+      const hasData = raw!==undefined && raw!==null && raw!=="";
+      const a = hasData? raw : "";
+      const cls=actClass(a,g);
+      const locked=isReportLocked(p,row.k,i);
+      const lockAttrs = locked? ` readonly title="From report data — not editable"` : "";
+      const lockCls = locked? " locked" : "";
+      cells+=`<td><span class="goalnum">${g}</span><input type="number" class="actin${lockCls} ${cls}" data-prop="${p}" data-metric="${row.k}" data-week="${i}" value="${a}"${lockAttrs}></td>`;
+    }
+    return `<tr><td class="lbl"><b>${row.label}</b><span>${row.sub}</span></td>${cells}<td class="leaseup">${total}</td></tr>`;
+  }).join("");
+
+  const qualRows = QUAL.map(row=>{
+    const arr=ensureActuals(p,"q_"+row.k);
+    let cells="", sumCounts=0;
+    for(let i=0;i<settings.wk;i++){
+      const raw=arr[i];
+      const hasData = raw!==undefined && raw!==null && raw!=="";
+      const a = hasData? raw : "";
+      if(hasData&&!isNaN(a)) sumCounts+=Number(a);
+      const locked=isReportLocked(p,"q_"+row.k,i);
+      const lockAttrs = locked? ` readonly title="From report data — not editable"` : "";
+      const lockCls = locked? " locked" : "";
+      cells+=`<td><span class="goalnum cnt">count</span><input type="number" class="actin${lockCls}" data-prop="${p}" data-metric="q_${row.k}" data-week="${i}" value="${a}"${lockAttrs}></td>`;
+    }
+    const appsArr=ensureActuals(p,"apps");
+    let appsActualSum=0,hasAppsActual=false;
+    for(let i=0;i<settings.wk;i++){ const v=appsArr[i]; if(v!==undefined&&v!==null&&v!==""){ appsActualSum+=Number(v); hasAppsActual=true; } }
+    const denom = hasAppsActual? appsActualSum : c.goals.apps;
+    const rate = denom>0? sumCounts/denom : 0;
+    const badgeCls = rate<=row.goal? "g":"r";
+    const basePct=(row.base(d)*100).toFixed(1);
+    return `<tr><td class="lbl"><b>${row.label}</b><span>goal ${row.k==='cancel'?'<5%':'~10%'} · 12-mo ${basePct}%</span></td>${cells}<td class="leaseup" style="font-size:13px;"><span class="ratebadge ${badgeCls}">${(rate*100).toFixed(0)}%</span></td></tr>`;
+  }).join("");
+
+  const fbList = getFb(p);
+  const fbListHtml = fbList.length===0? `<div class="fbempty">No links yet — add today's Marketplace posts below.</div>` :
+    `<div class="fblist">${fbList.map((l,idx)=>{
+      const dd=new Date(l.date+"T00:00:00");
+      const byTag = l.by? `<span class="fbby">${escHtml(l.by)}</span>` : "";
+      return `<div class="fbitem"><span class="fbdate">${fmtMD(dd)}</span>${byTag}<a href="${escAttr(l.url)}" target="_blank" rel="noopener">${escHtml(l.url)}</a><span class="rm" data-prop="${p}" data-fbidx="${idx}">✕</span></div>`;
+    }).join("")}</div>`;
+
+  const today=isoOf(new Date());
+
+  return `<div class="card propcard" data-propcard="${p}">
+    <div class="phead">
+      <div>
+        <h3>${d.p}</h3>
+        <div class="addr">${d.addr||""}</div>
+      </div>
+      <div class="leadsel"><div class="lab">Lead</div>${leadSel}</div>
+    </div>
+    <div class="tagsrow">${pillHtml(status)} ${tagsHtml}</div>
+    <div class="seasonline">${seasonLine}</div>
+    ${d.note? `<div class="notepanel">${escHtml(d.note)}</div>` : ""}
+    <div class="callstandard">Call Volume Standard: minimum outbound calls/week = 3 × active prospects. Active prospects (trailing 90-day GC) = <b>${d.gc90}</b> → minimum <b>${d.gc90*3}</b> outbound calls/week logged in AppFolio.</div>
+    <div class="promorow promorow3">
+      <div><label>Move-In Special</label><input type="text" class="promo-input" data-prop="${p}" data-f="special" placeholder="e.g. 1 month free on 12-mo lease" value="${escAttr(promoV.special)}"></div>
+      <div><label>Team Incentives</label><input type="text" class="promo-input" data-prop="${p}" data-f="incentive" placeholder="e.g. $200 leasing bonus per signed lease" value="${escAttr(promoV.incentive)}"></div>
+      <div><label>Primary Lead Sources</label><input type="text" class="promo-input" data-prop="${p}" data-f="sources" placeholder="e.g. Facebook Marketplace, Zillow, referral" value="${escAttr(promoV.sources||"")}"></div>
+    </div>
+    <table class="grid">
+      <thead><tr><th>Metric</th>${Array.from({length:settings.wk},(_,i)=>{
+        const hist=histOccPct(d.p,i);
+        const histLine = hist!==null? `<br><span class="wkactualocc">Actual ${hist.toFixed(1)}%</span>` : "";
+        return `<th>Wk ${i+1}<br><span class="wkdate">${weekEndMD(i)}</span><br><span class="wkgoal">Goal ${fixedWeekGoalPct(d.p,i).toFixed(1)}%</span>${histLine}</th>`;
+      }).join("")}<th>Total Needed to<br>Lease Up to ${Math.round(goalFor(p)*100)}%</th></tr></thead>
+      <tbody>${funnelRows}${qualRows}</tbody>
+    </table>
+    <div class="weeklychart">
+      <h4>Week-Over-Week: Occupancy, Traffic, Tours, Applications, Move-Ins, Calls</h4>
+      ${weeklyChartSvg(p)}
+    </div>
+    <div class="fbsec">
+      <h4>Facebook Marketplace Links — add daily</h4>
+      <div class="fbrow">
+        <input type="date" class="fb-date" data-prop="${p}" value="${today}">
+        <select class="fb-by" data-prop="${p}"><option value="">Shared by...</option>${PEOPLE.map(pp=>`<option value="${pp}">${pp}</option>`).join("")}</select>
+        <input type="url" class="fb-url" data-prop="${p}" placeholder="https://facebook.com/marketplace/item/...">
+        <button class="btn gold small fb-add" data-prop="${p}">+ Add Link</button>
+      </div>
+      ${fbListHtml}
+    </div>
+  </div>`;
+}
+
+function bindPropertyCardEvents(root){
+  root.querySelectorAll(".leadsel-input").forEach(sel=>{
+    sel.addEventListener("change",e=>{
+      LEAD[sel.getAttribute("data-prop")]=sel.value;
+      scheduleSave();
+      render();
+    });
+  });
+  root.querySelectorAll(".promo-input").forEach(inp=>{
+    inp.addEventListener("input",e=>{
+      const p=inp.getAttribute("data-prop"), f=inp.getAttribute("data-f");
+      getPromo(p)[f]=inp.value;
+      scheduleSave();
+    });
+  });
+  root.querySelectorAll(".actin").forEach(inp=>{
+    inp.addEventListener("input",e=>{
+      const p=inp.getAttribute("data-prop"), metric=inp.getAttribute("data-metric"), week=Number(inp.getAttribute("data-week"));
+      const arr=ensureActuals(p,metric);
+      arr[week]= inp.value===""? "" : Number(inp.value);
+      scheduleSave();
+      scheduleSoftRender(inp);
+    });
+  });
+  root.querySelectorAll(".fb-add").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      const p=btn.getAttribute("data-prop");
+      const card=btn.closest(".propcard");
+      const dateEl=card.querySelector(".fb-date"), urlEl=card.querySelector(".fb-url"), byEl=card.querySelector(".fb-by");
+      if(!urlEl.value.trim()) return;
+      getFb(p).push({date:dateEl.value||isoOf(new Date()), url:urlEl.value.trim(), by:byEl?byEl.value:""});
+      scheduleSave();
+      renderProperties();
+    });
+  });
+  root.querySelectorAll(".rm[data-fbidx]").forEach(x=>{
+    x.addEventListener("click",()=>{
+      const p=x.getAttribute("data-prop"), idx=Number(x.getAttribute("data-fbidx"));
+      getFb(p).splice(idx,1);
+      scheduleSave();
+      renderProperties();
+    });
+  });
+}
+
+/* soft re-render preserving focus/caret on actual entry */
+let softTimer=null;
+function scheduleSoftRender(srcInput){
+  clearTimeout(softTimer);
+  const prop=srcInput.getAttribute("data-prop"), metric=srcInput.getAttribute("data-metric"), week=srcInput.getAttribute("data-week");
+  const selStart=srcInput.selectionStart, selEnd=srcInput.selectionEnd;
+  softTimer=setTimeout(()=>{
+    renderKpi(); renderRollup(); renderAgentRollup(); renderScorecard(); renderProperties();
+    const again=document.querySelector(`.actin[data-prop="${cssEsc(prop)}"][data-metric="${cssEsc(metric)}"][data-week="${cssEsc(week)}"]`);
+    if(again){ again.focus(); try{ again.setSelectionRange(selStart,selEnd); }catch(e){} }
+  }, 260);
+}
+function cssEsc(s){ return String(s).replace(/(["\\])/g,"\\$1"); }
+function softRender(){ renderKpi(); renderRollup(); renderAgentRollup(); renderScorecard(); renderProperties(); }
+
+/* ============ RENDER: HISTORY / CONCESSIONS ============ */
+function renderHistory(){
+  const el=document.getElementById("historyView");
+  const today=isoOf(new Date());
+  const propOpts=activeProps().map(p=>`<option value="${p}">${p}</option>`).join("");
+  el.innerHTML=`
+    <div class="conctop">
+      <h2 style="margin:0;color:var(--navy);font-size:20px;">Concessions &amp; Incentives Log</h2>
+      <button class="btn gold small" id="snapBtn">Snapshot Current Specials</button>
+    </div>
+    <div class="concform">
+      <div><label>Date</label><input type="date" id="cDate" value="${today}"></div>
+      <div><label>Community</label><select id="cProp">${propOpts}</select></div>
+      <div><label>Move-In Special</label><input type="text" id="cSpecial" placeholder="e.g. 1 month free"></div>
+      <div><label>Team Incentive</label><input type="text" id="cIncentive" placeholder="e.g. $200 bonus"></div>
+      <div><label>Notes</label><input type="text" id="cNotes" placeholder="Notes"></div>
+      <div><button class="btn dark" id="addConcBtn">+ Add to Log</button></div>
+    </div>
+    <table class="conctable">
+      <thead><tr><th>Date</th><th>Community</th><th>Move-In Special</th><th>Team Incentive</th><th>Notes</th><th></th></tr></thead>
+      <tbody id="concBody"></tbody>
+    </table>`;
+  document.getElementById("addConcBtn").addEventListener("click",()=>{
+    const date=document.getElementById("cDate").value||today;
+    const prop=document.getElementById("cProp").value;
+    const special=document.getElementById("cSpecial").value;
+    const incentive=document.getElementById("cIncentive").value;
+    const notes=document.getElementById("cNotes").value;
+    CONC.push({date,prop,special,incentive,notes});
+    scheduleSave();
+    renderHistory();
+  });
+  document.getElementById("snapBtn").addEventListener("click",()=>{
+    const d=isoOf(new Date());
+    activeProps().forEach(p=>{
+      const pv=getPromo(p);
+      CONC.push({date:d,prop:p,special:pv.special||"",incentive:pv.incentive||"",notes:"Snapshot of current specials"});
+    });
+    scheduleSave();
+    renderHistory();
+  });
+  renderConcBody();
+}
+function renderConcBody(){
+  const body=document.getElementById("concBody");
+  if(!body) return;
+  const rows=CONC.map((c,i)=>({c,i})).sort((a,b)=> b.c.date.localeCompare(a.c.date));
+  body.innerHTML = rows.map(({c,i})=>{
+    const dd=new Date(c.date+"T00:00:00");
+    return `<tr><td>${fmtMD(dd)}/${dd.getFullYear()}</td><td>${escHtml(c.prop)}</td><td>${escHtml(c.special)}</td><td>${escHtml(c.incentive)}</td><td>${escHtml(c.notes)}</td><td><span class="rm" data-idx="${i}">Delete</span></td></tr>`;
+  }).join("");
+  body.querySelectorAll(".rm").forEach(x=>{
+    x.addEventListener("click",()=>{
+      CONC.splice(Number(x.getAttribute("data-idx")),1);
+      scheduleSave();
+      renderConcBody();
+    });
+  });
+}
+
+function buildPrintConc(){
+  const el=document.getElementById("printConc");
+  if(VIEW.type==="history"){ el.style.display="none"; return; }
+  const rows=CONC.slice().sort((a,b)=>b.date.localeCompare(a.date));
+  el.innerHTML = `<h2 style="color:var(--navy);">Historical Concessions &amp; Incentives</h2>
+    <table class="conctable"><thead><tr><th>Date</th><th>Community</th><th>Move-In Special</th><th>Team Incentive</th><th>Notes</th></tr></thead>
+    <tbody>${rows.map(c=>{
+      const dd=new Date(c.date+"T00:00:00");
+      return `<tr><td>${fmtMD(dd)}/${dd.getFullYear()}</td><td>${escHtml(c.prop)}</td><td>${escHtml(c.special)}</td><td>${escHtml(c.incentive)}</td><td>${escHtml(c.notes)}</td></tr>`;
+    }).join("")}</tbody></table>`;
+  el.style.display="block";
+}
+
+/* ============ NARRATIVE (editable) ============ */
+function renderNarrative(){
+  const el=document.getElementById("narrativeBody");
+  const isFocused = document.activeElement===el;
+  if(!isFocused){
+    el.innerHTML = narrativeText!==null? narrativeText : DEFAULT_NARRATIVE;
+  }
+}
+function bindNarrativeOnce(){
+  const el=document.getElementById("narrativeBody");
+  el.addEventListener("input",()=>{
+    narrativeText = el.innerHTML;
+    scheduleSave();
+  });
+  document.getElementById("narrativeResetBtn").addEventListener("click",()=>{
+    if(!confirm("Discard your edits and restore Claude's drafted narrative?")) return;
+    narrativeText=null;
+    scheduleSave();
+    renderNarrative();
+  });
+}
+
+/* ============ FOOTER ============ */
+function renderFooter(){
+  document.getElementById("footNote").innerHTML =
+   `<b>How goals are set.</b> Per community, rounding up at each stage: net = ceil(goal × units) − occupied − vacant-rented (+ notices when backfill is on); applications = net × 1.15; tours = applications ÷ 80% (tour → application benchmark); traffic = tours ÷ 25% (traffic → tour benchmark); follow-up = traffic × 5; move-ins = net. Worked example: a 100-unit community needing 50 move-ins → 58 applications → 73 tours → 292 traffic. Weekly goals are the lease-up total spread evenly across the weeks; once a week's actual is logged it locks at its base goal and the shortfall re-spreads across the remaining weeks. Weeks run Sunday-Saturday, matching AppFolio's own reporting convention. Everything you type auto-saves and reloads. <b>Source reports: Guest Card Inquiries, Rental Applications, Showings, boxscore (tenant tickler), and Occupancy Summary all exported 08/11/2026, covering all-time history through the week ending 8/8. Every metric on this board is now real, current data — no more frozen or estimated figures.</b>`;
+}
+
+/* ============ MAIN RENDER ============ */
+function render(){
+  renderNav();
+  syncControls();
+  const dash=document.getElementById("dash");
+  const hist=document.getElementById("historyView");
+  if(VIEW.type==="history"){
+    dash.style.display="none";
+    hist.style.display="block";
+    renderHistory();
+  } else {
+    dash.style.display="block";
+    hist.style.display="none";
+    renderKpi();
+    renderRollup();
+    renderAgentRollup();
+    renderScorecard();
+    renderMarketing();
+    renderProperties();
+  }
+  const isPortfolio=VIEW.type==="portfolio";
+  document.getElementById("btnRaw").style.display = isPortfolio? "inline-block":"none";
+  document.getElementById("btnClear").style.display = isPortfolio? "inline-block":"none";
+  renderFooter();
+}
+
+/* ============ EXCEL EXPORT ============ */
+const COLORS={navy:"FF0A1A30",gold:"FFB5891B",goldDim:"FFFBF3D9",green:"FFE2F4EA",greenTxt:"FF1E9E5A",amber:"FFFBF1D6",amberTxt:"FFD6A317",red:"FFFBE4E1",redTxt:"FFD14334"};
+function titleRow(ws,text){
+  const row=ws.addRow([text]);
+  ws.mergeCells(row.number,1,row.number,8);
+  row.getCell(1).font={bold:true,color:{argb:"FFFFFFFF"},size:14,name:"Calibri"};
+  row.getCell(1).fill={type:"pattern",pattern:"solid",fgColor:{argb:COLORS.navy}};
+  row.height=22;
+  return row;
+}
+function hdrRow(ws,cells){
+  const row=ws.addRow(cells);
+  row.eachCell(c=>{ c.font={bold:true,color:{argb:"FFFFFFFF"}}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:COLORS.gold}}; });
+  return row;
+}
+function shadeFor(a,g){
+  if(a===undefined||a===null||a===""||isNaN(a)) return null;
+  g=g||1;
+  if(Number(a)>=g*0.95) return COLORS.green;
+  if(Number(a)>=g*0.75) return COLORS.amber;
+  return COLORS.red;
+}
+function writePropertySheet(wb,p){
+  const d=getD(p), c=compute(d);
+  const ws=wb.addWorksheet(p.substring(0,28));
+  titleRow(ws,`${d.p} — ${d.addr||""}`);
+  ws.addRow([`Occupancy: ${d.o}/${d.u} (${(c.occ*100).toFixed(1)}%)`, `Lead: ${LEAD[p]||""}`, `Special: ${getPromo(p).special||""}`, `Incentive: ${getPromo(p).incentive||""}`]);
+  ws.addRow([]);
+  const hdr=["Metric"]; for(let i=0;i<settings.wk;i++){ const g=fixedWeekGoalPct(p,i); hdr.push(`Wk ${i+1} (${weekEndMD(i)})${g!==null?` [Occ Goal ${g.toFixed(1)}%]`:""}`); } hdr.push("Lease-Up");
+  hdrRow(ws,hdr);
+  FUNNEL.forEach(row=>{
+    const total=c.goals[row.k];
+    const arr=ensureActuals(p,row.k);
+    const {goals,base}=weekGoals(total,settings.wk,arr);
+    const grow=[row.label+" (Goal)"]; for(let i=0;i<settings.wk;i++) grow.push(goals[i]||base); grow.push(total);
+    ws.addRow(grow);
+    const arow=[row.label+" (Actual)"]; const arowCells=[];
+    for(let i=0;i<settings.wk;i++){ arow.push(arr[i]!==undefined?arr[i]:""); }
+    arow.push("");
+    const r=ws.addRow(arow);
+    for(let i=0;i<settings.wk;i++){
+      const g=goals[i]||base||1; const a=arr[i];
+      const fill=shadeFor(a,g);
+      if(fill) r.getCell(i+2).fill={type:"pattern",pattern:"solid",fgColor:{argb:fill}};
+    }
+  });
+  QUAL.forEach(row=>{
+    const arr=ensureActuals(p,"q_"+row.k);
+    const crow=[row.label+" (count)"]; let sum=0;
+    for(let i=0;i<settings.wk;i++){ const v=arr[i]!==undefined?arr[i]:""; crow.push(v); if(v!=="") sum+=Number(v); }
+    const appsArr=ensureActuals(p,"apps"); let appsSum=0, hasApps=false;
+    for(let i=0;i<settings.wk;i++){ const v=appsArr[i]; if(v!==undefined&&v!==null&&v!==""){ appsSum+=Number(v); hasApps=true; } }
+    const denom=hasApps?appsSum:c.goals.apps;
+    const rate=denom>0?sum/denom:0;
+    crow.push((rate*100).toFixed(0)+"%");
+    const r=ws.addRow(crow);
+    const fill = rate<=row.goal? COLORS.green : COLORS.red;
+    r.getCell(settings.wk+2).fill={type:"pattern",pattern:"solid",fgColor:{argb:fill}};
+  });
+  ws.addRow([]);
+  ws.addRow(["Facebook Marketplace Links","","Shared By"]);
+  getFb(p).forEach(l=>{
+    const r=ws.addRow([l.date, l.url, l.by||""]);
+    r.getCell(2).value={text:l.url, hyperlink:l.url};
+    r.getCell(2).font={color:{argb:"FF2E7DB0"},underline:true};
+  });
+  ws.views=[{state:"frozen",ySplit:4}];
+  ws.columns.forEach(col=>{ col.width=14; });
+  ws.getColumn(1).width=26;
+}
+function writeSummarySheet(wb,name,props){
+  const ws=wb.addWorksheet(name.substring(0,28));
+  titleRow(ws,`${name} Summary`);
+  let occN=0,occD=0;
+  props.forEach(p=>{ const d=getD(p); occN+=d.o; occD+=d.u; });
+  ws.addRow([`Occupancy: ${occN}/${occD} (${occD?(occN/occD*100).toFixed(1):0}%)`]);
+  ws.addRow([]);
+  hdrRow(ws,["Community","Occ %","Net Move-Ins","Traffic Target","Issues","Special","Incentive"]);
+  props.forEach(p=>{
+    const d=getD(p), c=compute(d);
+    const issues=c.tags.map(t=>t.label).join("; ");
+    const star=c.thin?"*":"";
+    ws.addRow([d.p+star,(c.occ*100).toFixed(1)+"%",c.net,c.traffic,issues,getPromo(p).special||"",getPromo(p).incentive||""]);
+  });
+  ws.addRow([]);
+  ws.addRow(["Team Scorecard"]);
+  hdrRow(ws,["Person","Traffic","Tours","Apps","Move-Ins"]);
+  const propSet=new Set(props);
+  PEOPLE.forEach(person=>{
+    const my=Object.keys(LEAD).filter(p=>LEAD[p]===person && propSet.has(p));
+    if(my.length===0) return;
+    let traffic=0,tours=0,apps=0,movein=0;
+    my.forEach(p=>{ const c=compute(getD(p)); traffic+=c.goals.traffic; tours+=c.goals.tours; apps+=c.goals.apps; movein+=c.goals.movein; });
+    ws.addRow([person,traffic,tours,apps,movein]);
+  });
+  ws.columns.forEach(col=>{ col.width=16; });
+  ws.getColumn(1).width=24;
+}
+function writeMarketingSheet(wb){
+  const ws=wb.addWorksheet("Marketing");
+  titleRow(ws,"Marketing Plan");
+  weekKeyList().forEach(key=>{
+    ws.addRow([weekLabelForKey(key), "Focus:", getFocus(key)]);
+    hdrRow(ws,["Day","Date","Action","Assigned","Done"]);
+    const wd=ensureMktWeek(key);
+    const monday=new Date(key+"T00:00:00");
+    DAYS.forEach((dn,i)=>{
+      const dd=new Date(monday.getTime()); dd.setDate(dd.getDate()+i);
+      wd[i].forEach(item=>{
+        if(!item.text) return;
+        ws.addRow([dn, fmtMD(dd), item.text, item.who||"", item.done?"✓":"✗"]);
+      });
+    });
+    ws.addRow([]);
+  });
+  ws.columns.forEach(col=>{ col.width=18; });
+}
+function writeConcessionsSheet(wb){
+  const ws=wb.addWorksheet("Concessions Log");
+  titleRow(ws,"Concessions Log");
+  hdrRow(ws,["Date","Community","Move-In Special","Team Incentive","Notes"]);
+  CONC.slice().sort((a,b)=>b.date.localeCompare(a.date)).forEach(c=>{
+    ws.addRow([c.date,c.prop,c.special,c.incentive,c.notes]);
+  });
+  ws.columns.forEach(col=>{ col.width=20; });
+}
+async function exportExcel(){
+  const wb=new ExcelJS.Workbook();
+  if(VIEW.type==="portfolio"){
+    writeSummarySheet(wb,"Portfolio",activeProps());
+    writeMarketingSheet(wb);
+    GROUPS.forEach(g=>g.props.forEach(p=>writePropertySheet(wb,p)));
+    SINGLES.forEach(p=>writePropertySheet(wb,p));
+    writeConcessionsSheet(wb);
+  } else if(VIEW.type==="group"){
+    const g=GROUPS.find(x=>x.name===VIEW.name);
+    writeSummarySheet(wb,g.name,g.props);
+    writeMarketingSheet(wb);
+    g.props.forEach(p=>writePropertySheet(wb,p));
+  } else if(VIEW.type==="prop"){
+    writePropertySheet(wb,VIEW.name);
+    writeMarketingSheet(wb);
+  } else {
+    writeConcessionsSheet(wb);
+  }
+  const buf=await wb.xlsx.writeBuffer();
+  downloadBlob(buf, `MPM_Leasing_Goal_Board_${isoOf(new Date())}.xlsx`, "application/octet-stream");
+}
+function downloadBlob(buf,filename,mime){
+  const blob=new Blob([buf],{type:mime});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url; a.download=filename; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },1000);
+}
+
+/* ============ RAW DATA EXPORT ============ */
+async function exportRaw(){
+  const wb=new ExcelJS.Workbook();
+  const ws=wb.addWorksheet("Raw Data");
+  let occN=0,occD=0; activeProps().forEach(p=>{ const d=getD(p); occN+=d.o; occD+=d.u; });
+  let netSum=0,trafficSum=0; activeProps().forEach(p=>{ const c=compute(getD(p)); netSum+=c.net; trafficSum+=c.traffic; });
+  const header=["Export Date","Occupied","Units","Occ %","Net Move-Ins","Traffic Target"];
+  const values=[isoOf(new Date()),occN,occD,(occN/occD*100).toFixed(1)+"%",netSum,trafficSum];
+  activeProps().forEach(p=>{
+    const d=getD(p),c=compute(d);
+    header.push(`${p} Occ%`,`${p} Net`,`${p} Traffic`,`${p} Issues`,`${p} Special`,`${p} Incentive`);
+    values.push((c.occ*100).toFixed(1)+"%",c.net,c.traffic,c.tags.map(t=>t.label).join("; "),getPromo(p).special||"",getPromo(p).incentive||"");
+    CORE.forEach(k=>{
+      const total=c.goals[k]; const arr=ensureActuals(p,k); const {goals,base}=weekGoals(total,settings.wk,arr);
+      for(let i=0;i<settings.wk;i++){
+        header.push(`${p} ${k} Wk${i+1} Goal`,`${p} ${k} Wk${i+1} Actual`);
+        values.push(goals[i]||base, arr[i]!==undefined?arr[i]:"");
+      }
+    });
+    const cArr=ensureActuals(p,"q_cancel"), denArr=ensureActuals(p,"q_denial");
+    let cSum=0,denSum=0;
+    for(let i=0;i<settings.wk;i++){ if(cArr[i]!==undefined&&cArr[i]!==""){cSum+=Number(cArr[i]);} if(denArr[i]!==undefined&&denArr[i]!==""){denSum+=Number(denArr[i]);} }
+    const appsArr=ensureActuals(p,"apps"); let appsSum=0,hasApps=false;
+    for(let i=0;i<settings.wk;i++){ const v=appsArr[i]; if(v!==undefined&&v!==null&&v!==""){appsSum+=Number(v);hasApps=true;} }
+    const denom=hasApps?appsSum:c.goals.apps;
+    header.push(`${p} Cancel Count`,`${p} Cancel Rate`,`${p} Denial Count`,`${p} Denial Rate`);
+    values.push(cSum,denom?((cSum/denom)*100).toFixed(0)+"%":"0%",denSum,denom?((denSum/denom)*100).toFixed(0)+"%":"0%");
+  });
+  header.push("Marketing Focus (Week 1)");
+  values.push(getFocus(weekKeyList()[0]));
+  DAYS.forEach((dn,i)=>{
+    header.push(dn);
+    const wd=ensureMktWeek(weekKeyList()[0]);
+    values.push(wd[i].filter(it=>it.text).map(it=>`${it.text} [${it.who||""}] ${it.done?"✓":"✗"}`).join(" | "));
+  });
+  hdrRow(ws,header);
+  ws.addRow(values);
+  ws.columns.forEach(col=>{ col.width=16; });
+
+  const ws2=wb.addWorksheet("State (do not edit)");
+  ws2.addRow(["Re-upload this file to Claude and say: Rebuild the goal board from this raw file."]);
+  const json=JSON.stringify(snapshot());
+  const chunkSize=30000;
+  for(let i=0;i<json.length;i+=chunkSize){ ws2.addRow([json.substring(i,i+chunkSize)]); }
+  ws2.getColumn(1).width=80;
+
+  const buf=await wb.xlsx.writeBuffer();
+  downloadBlob(buf, `MPM_RawData_${isoOf(new Date())}.xlsx`, "application/octet-stream");
+}
+
+/* ============ PRINT ============ */
+function bindPrint(){
+  window.addEventListener("beforeprint", buildPrintConc);
+  document.getElementById("btnPrint").addEventListener("click",()=>{
+    buildPrintConc();
+    window.print();
+  });
+}
+
+/* ============ TOP BUTTONS ============ */
+function bindTopButtons(){
+  document.getElementById("btnExcel").addEventListener("click",exportExcel);
+  document.getElementById("btnRaw").addEventListener("click",exportRaw);
+  document.getElementById("btnClear").addEventListener("click",()=>{
+    if(!confirm("This will clear all actuals, promos, marketing plan, Facebook links, and the concessions log. Continue?")) return;
+    actuals={}; promo={}; mkt={}; fbLinks={}; CONC=[];
+    curWeekKey=isoOf(mondayOf(0));
+    scheduleSave();
+    render();
+  });
+}
+
+/* ============ SEED: showings = tours, plus full weekly history ============ */
+function seedTours(){
+  Object.keys(SEED_TOURS).forEach(p=>{
+    const arr=ensureActuals(p,"tours");
+    SEED_TOURS[p].forEach((v,i)=>{ arr[i]=v; });
+  });
+}
+// Which (property, metric, week) cells are backed by actual report data -- these lock as
+// read-only. Anything outside seeded coverage (e.g. Week 8, or before a metric's seed source
+// existed) stays a normal editable input, even once a value has been typed into it.
+const REPORT_SEED_MAP={traffic:SEED_TRAFFIC,followup:SEED_TRAFFIC,tours:SEED_TOURS,apps:SEED_APPS,movein:SEED_MOVEIN,q_cancel:SEED_CANCEL,q_denial:SEED_DENIAL};
+function isReportLocked(prop,metric,weekIdx){
+  const seed=REPORT_SEED_MAP[metric];
+  if(!seed) return false;
+  const arr=seed[prop];
+  if(!arr) return false;
+  return weekIdx < arr.length;
+}
+
+function seedHistory(){
+  Object.keys(SEED_TRAFFIC).forEach(p=>{
+    const arrT=ensureActuals(p,"traffic");
+    const arrF=ensureActuals(p,"followup");
+    SEED_TRAFFIC[p].forEach((v,i)=>{ arrT[i]=v; arrF[i]=v*5; });
+  });
+  Object.keys(SEED_APPS).forEach(p=>{
+    const arr=ensureActuals(p,"apps");
+    SEED_APPS[p].forEach((v,i)=>{ arr[i]=v; });
+  });
+  Object.keys(SEED_MOVEIN).forEach(p=>{
+    const arr=ensureActuals(p,"movein");
+    SEED_MOVEIN[p].forEach((v,i)=>{ arr[i]=v; });
+  });
+  Object.keys(SEED_CANCEL).forEach(p=>{
+    const arr=ensureActuals(p,"q_cancel");
+    SEED_CANCEL[p].forEach((v,i)=>{ arr[i]=v; });
+  });
+  Object.keys(SEED_DENIAL).forEach(p=>{
+    const arr=ensureActuals(p,"q_denial");
+    SEED_DENIAL[p].forEach((v,i)=>{ arr[i]=v; });
+  });
+}
+function seedFbLinks(){
+  Object.keys(SEED_FB_LINKS).forEach(p=>{
+    const list=getFb(p);
+    SEED_FB_LINKS[p].forEach(l=>{
+      const dup = list.some(x=>x.url===l.url && x.date===l.date);
+      if(!dup) list.push({date:l.date,url:l.url,by:l.by||""});
+    });
+  });
+}
+// One-time cleanup: earlier versions of this board seeded Week 7 (7/13-7/19) with partial
+// report data even though that week hadn't ended. Week 7 should have no actual data until
+// it's fully complete -- this strips any stale value at index 6 for the affected metrics.
+// Applies every week: whichever week is still in progress should never carry seeded data.
+function clearInProgressWeekStaleData(){
+  const metrics=["traffic","followup","tours","apps","movein","q_cancel","q_denial"];
+  Object.keys(actuals).forEach(p=>{
+    metrics.forEach(m=>{
+      if(actuals[p][m] && actuals[p][m].length>6){
+        actuals[p][m].splice(6);
+      } else if(actuals[p][m] && actuals[p][m][6]!==undefined){
+        delete actuals[p][m][6];
+      }
+    });
+  });
+}
+
+/* ============ INIT ============ */
+async function init(){
+  const saved=await STORE.get(STORE_KEY);
+  if(saved){
+    actuals=saved.actuals||{};
+    promo=saved.promo||{};
+    mkt=saved.mkt||{};
+    fbLinks=saved.fb||{};
+    CONC=saved.conc||[];
+    if(saved.lead) LEAD=Object.assign({},LEAD,saved.lead);
+    if(saved.settings) settings=Object.assign({},settings,saved.settings);
+    toursSeedApplied5=!!saved.toursSeedApplied5;
+    historySeedApplied5=!!saved.historySeedApplied5;
+    week7CleanupApplied=!!saved.week7CleanupApplied;
+    fbSeedApplied3=!!saved.fbSeedApplied3;
+    wkMinAppliedV1=!!saved.wkMinAppliedV1;
+    narrativeText = (saved.narrativeText!==undefined)? saved.narrativeText : null;
+  }
+  if(!wkMinAppliedV1){
+    // A previously-saved Lease-Up Length of 8 (from before Weeks 9-10 were added) would
+    // otherwise silently override the new default and hide real, already-loaded history.
+    if(settings.wk<10) settings.wk=10;
+    wkMinAppliedV1=true;
+    scheduleSave();
+  }
+  if(!toursSeedApplied5){
+    seedTours();
+    toursSeedApplied5=true;
+    scheduleSave();
+  }
+  if(!historySeedApplied5){
+    seedHistory();
+    historySeedApplied5=true;
+    scheduleSave();
+  }
+  week7CleanupApplied=true; // obsolete as of the 7/19/2026 refresh -- Week 7 is now real, complete data
+  if(!fbSeedApplied3){
+    seedFbLinks();
+    fbSeedApplied3=true;
+    scheduleSave();
+  }
+  curWeekKey=isoOf(mondayOf(0));
+  bindControlsOnce();
+  bindNarrativeOnce();
+  renderNarrative();
+  bindTopButtons();
+  bindPrint();
+  render();
+}
+init();
+
+})();
+</script>
+</body>
+</html>
