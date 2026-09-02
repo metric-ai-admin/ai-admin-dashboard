@@ -1943,6 +1943,18 @@ function amFilterParams() {
   return p;
 }
 
+// Move verification state. Dry-run rows made no move, so verification is N/A.
+// verified true = confirmed in the destination folder; false = landed elsewhere
+// (also carries an error); null = moved but the folder could not be confirmed
+// (and legacy rows from before verification existed).
+function amVerifiedCell(r) {
+  if (r.dry_run) return '<span class="muted">—</span>';
+  if (r.verified === true) return '<span class="badge badge-green" title="Confirmed in destination folder">✓ Verified</span>';
+  if (r.verified === false) return '<span class="badge badge-red" title="Landed in the wrong folder">✗ Unverified</span>';
+  if (r.error) return '';   // the Error column already explains it
+  return '<span class="badge badge-gray" title="Moved, folder not confirmed">? Unconfirmed</span>';
+}
+
 function amRenderRows(rows, append) {
   const body = $('#automove-log-body');
   if (!body) return;
@@ -1953,10 +1965,11 @@ function amRenderRows(rows, append) {
     <td class="small">${esc(r.action || '—')}</td>
     <td class="small">${esc(r.target_folder || 'Archive')}</td>
     <td class="small">${r.dry_run ? '✓' : ''}</td>
+    <td class="small">${amVerifiedCell(r)}</td>
     <td class="small">${r.error ? `<span class="badge badge-red">${esc(r.error.slice(0, 40))}</span>` : ''}</td>
   </tr>`).join('');
   if (append) body.insertAdjacentHTML('beforeend', html);
-  else body.innerHTML = html || `<tr><td colspan="7" class="small muted">No actions match these filters.</td></tr>`;
+  else body.innerHTML = html || `<tr><td colspan="8" class="small muted">No actions match these filters.</td></tr>`;
 }
 
 // reset=true starts a fresh query (offset 0, replaces rows); false appends the

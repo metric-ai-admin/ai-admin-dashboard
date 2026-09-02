@@ -3114,12 +3114,12 @@ app.get('/api/email/auto-move/log', requireMetricAdmin, async (req, res) => {
     // ── CSV export: the whole filtered set, no pagination ──────────────────
     if (String(req.query.format).toLowerCase() === 'csv') {
       let q = db.from('auto_move_log')
-        .select('executed_at,sender,subject,action,matched_on,target_folder,dry_run,error')
+        .select('executed_at,sender,subject,action,matched_on,target_folder,dry_run,verified,moved_email_id,error')
         .order('executed_at', { ascending: false }).limit(10000);
       q = applyAutoMoveFilters(q, req.query);
       const { data, error } = await q;
       if (error) throw new Error(error.message);
-      const cols = ['executed_at', 'sender', 'subject', 'action', 'matched_on', 'target_folder', 'dry_run', 'error'];
+      const cols = ['executed_at', 'sender', 'subject', 'action', 'matched_on', 'target_folder', 'dry_run', 'verified', 'moved_email_id', 'error'];
       const cell = (v) => {
         if (v === null || v === undefined) return '';
         const s = String(v);

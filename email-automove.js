@@ -134,12 +134,27 @@ async function resolveFolderId(ctx, name) {
 }
 
 // ── Graph mutations ─────────────────────────────────────────────────────────
+// Graph's /move returns 201 with the NEW message resource (new id +
+// parentFolderId in the destination). Return those so the caller can verify the
+// message actually landed where intended rather than trusting the 2xx alone.
 async function moveMessage(ctx, id, destination) {
   const r = await ctx.fetchFn(ctx.base + '/messages/' + encodeURIComponent(id) + '/move', {
     method: 'POST', headers: Object.assign({}, ctx.headers, { 'Content-Type': 'application/json' }),
     body: JSON.stringify({ destinationId: destination }),
   });
-  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error('move failed: ' + ((j.error && j.error.message) || r.status)); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { throw new Error('move failed: ' + ((j.error && j.error.message) || r.status)); }
+  return { newId: j.id || null, parentFolderId: j.parentFolderId || null };
+}
+
+// The real folder id behind a well-known name ('archive', 'inbox', …). Needed to
+// verify an archive move, since destinationId 'archive' is an alias but the move
+// response reports the folder's actual id.
+async function resolveWellKnownId(ctx, wellKnown) {
+  const r = await ctx.fetchFn(ctx.base + '/mailFolders/' + encodeURIComponent(wellKnown), { headers: ctx.headers });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error('resolve ' + wellKnown + ': ' + ((j.error && j.error.message) || r.status));
+  return j.id || null;
 }
 async function markRead(ctx, id) {
   const r = await ctx.fetchFn(ctx.base + '/messages/' + encodeURIComponent(id), {
@@ -165,6 +180,15 @@ async function claim(db, row, dryRun) {
 async function markError(db, id, message) {
   if (!db || !id) return;
   await db.from('auto_move_log').update({ error: String(message).slice(0, 500) }).eq('id', id);
+}
+// Records the move outcome: the reissued id and whether the landing folder was
+// positively confirmed (true), wrong (false) or undeterminable (null).
+async function markMoved(db, id, movedEmailId, verified) {
+  if (!db || !id) return;
+  await db.from('auto_move_log').update({
+    moved_email_id: movedEmailId || null,
+    verified,
+  }).eq('id', id);
 }
 
 const senderOf = (m) =>
@@ -280,14 +304,42 @@ async function runAutoMove(deps, opts) {
 
     try {
       let destId = 'archive';
+      // The folder id we expect the message to land in, for verification. For a
+      // named folder that is destId itself; for archive it is the real id behind
+      // the 'archive' alias (resolved once, cached). If we cannot determine it,
+      // it stays null and the move is recorded as verified=null (unknown), not a
+      // failure — a 2xx move with no confirmation is still treated as done.
+      let expectedFolderId = null;
       if (plan.kind === 'unsubscribe' || plan.kind === 'move') {
         destId = await resolveFolderId(ctx, plan.destName);
         if (!destId) { summary.errors++; await markError(db, rowId, `folder "${plan.destName}" not found`); log('[auto-move] folder not found: ' + plan.destName); continue; }
         summary.folderCreated = summary.folderCreated || !!ctx._folderCreated;
+        expectedFolderId = destId;
+      } else {
+        try {
+          if (ctx._archiveId === undefined) ctx._archiveId = await resolveWellKnownId(ctx, 'archive');
+          expectedFolderId = ctx._archiveId;
+        } catch { expectedFolderId = null; }   // verification unavailable, not fatal
       }
       // Read before move: Graph reissues the message id on a move.
       if (plan.markRead) await markRead(ctx, m.id);
-      await moveMessage(ctx, m.id, destId);
+      const res = await moveMessage(ctx, m.id, destId);
+
+      // Verify the message actually landed in the intended folder. Only a
+      // positive mismatch counts as a failure; missing data reads as unknown.
+      const landed = res.parentFolderId || null;
+      let verified = null;
+      if (expectedFolderId && landed) verified = (landed === expectedFolderId);
+
+      if (verified === false) {
+        summary.errors++;
+        await markMoved(db, rowId, res.newId, false);
+        await markError(db, rowId, `move unverified: landed in "${landed}", expected "${expectedFolderId}"`);
+        log('[auto-move] UNVERIFIED ' + action + ' ' + sender + ' → ' + landed + ' (expected ' + expectedFolderId + ')');
+        continue;   // do not count as a success
+      }
+
+      await markMoved(db, rowId, res.newId, verified);   // true or null
       bump();
     } catch (err) {
       summary.errors++;
