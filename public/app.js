@@ -4900,6 +4900,7 @@ function svgRender() {
   </div>`;
 
   el.querySelectorAll('[data-svg-grade]').forEach(b => b.addEventListener('click', () => { svgState.filters.grade = b.dataset.svgGrade; svgRender(); }));
+  el.querySelectorAll('[data-svg-dir]').forEach(b => b.addEventListener('click', () => { svgState.filters.direction = b.dataset.svgDir; svgRender(); }));
   el.querySelectorAll('[data-svg-mgmt]').forEach(b => b.addEventListener('click', () => { const m = b.dataset.svgMgmt; svgState.filters.management = svgState.filters.management === m ? null : m; svgRender(); }));
   $('#svg-f-agent')?.addEventListener('change', e => { svgState.filters.agent = e.target.value; svgRender(); });
   el.querySelectorAll('.cqa-row').forEach(r => r.addEventListener('click', () => svgSelect(r.dataset.rid)));
@@ -4927,12 +4928,17 @@ function svgFilterPillsHtml() {
   if (nsTotal) gradeDefs.push(['NS', 'Not Scoreable']);
   const gradePills = gradeDefs.map(([v, t]) =>
     `<button class="cqa-pill${v === 'NS' ? ' ns' : ''}${f.grade === v ? ' active' : ''}" data-svg-grade="${v}">${t}</button>`).join('');
+  const dirDefs = [['All', 'All'], ['inbound', 'Inbound'], ['outbound', 'Outbound']];
+  const dirPills = dirDefs.map(([v, t]) =>
+    `<button class="cqa-pill${f.direction === v ? ' active' : ''}" data-svg-dir="${v}">${t}</button>`).join('');
   const mgmtDefs = [['flagged', '🚩 Flagged', 'flag'], ['legal', 'Legal', 'legal'], ['fairhousing', 'Fair Housing', 'fair']];
   const mgmtPills = mgmtDefs.map(([v, t, cls]) =>
     `<button class="cqa-pill ${cls}${f.management === v ? ' active' : ''}" data-svg-mgmt="${v}">${t}</button>`).join('');
   const agents = ['All', ...Array.from(new Set(svgState.grades.map(g => g.agent_name || 'Unidentified'))).sort()];
   return `<div class="cqa-filters">
     ${gradePills}
+    <span class="cqa-pill-sep"></span>
+    ${dirPills}
     <span class="cqa-pill-sep"></span>
     ${mgmtPills}
     <select class="cqa-select" id="svg-f-agent" title="Filter by agent">${agents.map(a => `<option value="${esc(a)}"${f.agent === a ? ' selected' : ''}>${a === 'All' ? 'All agents' : esc(a)}</option>`).join('')}</select>
