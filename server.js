@@ -287,7 +287,15 @@ app.use(express.static(path.join(__dirname, 'public')));
 // deploy always restarts the process and drops the in-memory MCP session; this
 // endpoint lets a pinger detect the restart, it does not prevent it.)
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime() });
+  // grading_configured reports only WHETHER the outbound model key is set — never
+  // its value — so a deploy can be confirmed to have picked up ANTHROPIC_API_KEY
+  // without exposing the secret.
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    grading_configured: !!process.env.ANTHROPIC_API_KEY,
+    grading_model: process.env.CALL_GRADE_MODEL || 'claude-sonnet-4-6',
+  });
 });
 
 app.get('/ping', (req, res) => {
