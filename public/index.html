@@ -76,6 +76,7 @@
       <button data-tab="accounting"><span class="nav-dot"></span>Accounting</button>
       <button data-tab="reports"><span class="nav-dot"></span>Daily Report</button>
       <button data-tab="crm"><span class="nav-dot"></span>BD CRM</button>
+      <button data-tab="leasing"><span class="nav-dot"></span>Leasing</button>
       <button data-tab="evictions"><span class="nav-dot"></span>Evictions</button>
     </nav>
     <div class="sidebar-foot">
@@ -1616,6 +1617,47 @@
       </div>
     </div>
     <div id="eod-output"></div>
+  </section>
+
+  <!-- ============ LEASING — Weekly Goal Board (Katie) ============ -->
+  <!-- Panel B embeds Lyndsay's standalone tool in an iframe (same-origin, served
+       from /tools/). The "Submit to Dashboard" button reads the tool's own
+       snapshot()/compute() via contentWindow and POSTs to /api/leasing. src is
+       set lazily by loadLeasing() the first time the tab opens. -->
+  <section id="tab-leasing" class="tab">
+    <div class="view-head">
+      <div>
+        <h2>Leasing</h2>
+        <p class="muted small">Weekly Leasing Goal Board — Katie submits; Lyndsay / Kara / Bekah review.</p>
+      </div>
+    </div>
+
+    <!-- Panel A — Submission History -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="view-head" style="margin:0 0 8px">
+        <h3 style="margin:0">Submission History</h3>
+        <div class="view-actions">
+          <button class="btn-sm" id="leasing-refresh">Refresh</button>
+        </div>
+      </div>
+      <div id="leasing-history"><p class="small muted">Loading…</p></div>
+    </div>
+
+    <!-- Panel B — Submit Weekly Report -->
+    <div class="card">
+      <div class="view-head" style="margin:0 0 8px;align-items:flex-start">
+        <div>
+          <h3 style="margin:0">Submit Weekly Report</h3>
+          <p class="muted small" style="margin:2px 0 0">Import the AppFolio Excel, set goals, write the narrative, then submit. Week ending <b id="leasing-week">—</b>.</p>
+        </div>
+        <div class="view-actions">
+          <a class="btn-sm" href="/tools/weekly_leasing_goal_board.html" target="_blank" rel="noopener">Open full screen ↗</a>
+          <button class="btn-sm primary" id="leasing-submit">Submit to Dashboard</button>
+        </div>
+      </div>
+      <iframe id="leasing-frame" title="Weekly Leasing Goal Board"
+              style="width:100%;height:calc(100vh - 260px);border:1px solid var(--border);border-radius:10px;background:#fff"></iframe>
+    </div>
   </section>
 
   <!-- ============ EVICTION TRACKER (admin only) ============ -->

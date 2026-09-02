@@ -54,7 +54,7 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'accounting'],
+  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'accounting', 'leasing'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
   operations:  ['tasks', 'platform', 'email', 'eod', 'reports', 'sixpm', 'calls'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
@@ -69,6 +69,10 @@ const TAB_ACCESS = {
   // Claudia Villalobos (Accounting/QC). No account in dashboard_users yet, so
   // this sits inert until Arturo creates it — mirrors the three roles above.
   accounting:  ['accounting'],
+  // Katie — submits the Weekly Leasing Goal Board. Can submit but not
+  // review/approve (that gate is by role inside the Leasing tab). Lyndsay/Kara/
+  // Bekah get review access via their own roles once those accounts exist.
+  leasing:     ['leasing'],
 };
 
 // Maintenance is read-only for these two: they consult the board, they do not
@@ -169,6 +173,7 @@ function loadTab(tab) {
   if (tab === 'calls') loadCallAnalyzer();
   if (tab === 'evictions') loadEvictions();
   if (tab === 'accounting') loadAccounting();
+  if (tab === 'leasing') loadLeasing();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -179,6 +184,224 @@ function loadTab(tab) {
 function loadEvictions() {
   const frame = $('#evictions-frame');
   if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/evictions/app');
+}
+
+// ── Leasing — Weekly Goal Board (Katie) ─────────────────────────────────────
+// Panel A is the submission history (review/approve). Panel B embeds Lyndsay's
+// standalone tool in a same-origin iframe; "Submit to Dashboard" reads the
+// tool's own snapshot()/compute() through contentWindow and POSTs a snapshot.
+const leasingState = { subs: [], wired: false, expandedId: null, detail: {} };
+// Who may change status / add reviewer notes. Only admin today; Lyndsay, Kara
+// and Bekah get their own roles here once those accounts exist.
+const LEASING_REVIEW_ROLES = ['admin'];
+const leasingCanReview = () => LEASING_REVIEW_ROLES.includes(currentUser?.role);
+
+// The week this report covers — the upcoming Sunday (today if today is Sunday).
+function leasingNextSunday() {
+  const d = new Date();
+  d.setDate(d.getDate() + ((7 - d.getDay()) % 7));
+  const m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+function loadLeasing() {
+  if (!$('#leasing-history')) return;
+  if (!leasingState.wired) {
+    $('#leasing-refresh')?.addEventListener('click', leasingLoadHistory);
+    $('#leasing-submit')?.addEventListener('click', leasingSubmit);
+    const wk = $('#leasing-week'); if (wk) wk.textContent = leasingNextSunday();
+    leasingState.wired = true;
+  }
+  // Lazy-load the tool iframe (its ExcelJS/fonts aren't fetched until needed).
+  const frame = $('#leasing-frame');
+  if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/tools/weekly_leasing_goal_board.html');
+  leasingLoadHistory();
+}
+
+const LEASING_STATUS_BADGE = {
+  submitted: 'badge-blue', reviewed: 'badge-yellow', approved: 'badge-green',
+};
+function leasingStatusBadge(st) {
+  return `<span class="badge ${LEASING_STATUS_BADGE[st] || 'badge-gray'}">${esc(st || 'submitted')}</span>`;
+}
+
+async function leasingLoadHistory() {
+  const el = $('#leasing-history');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const d = await api('/api/leasing/submissions');
+    leasingState.subs = d.submissions || [];
+    leasingRenderHistory();
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+function leasingKpiCell(k) {
+  if (!k) return '<span class="muted small">—</span>';
+  const bits = [];
+  if (k.occupancy_pct != null) bits.push(`${k.occupancy_pct}% occ`);
+  if (k.traffic_target != null) bits.push(`${k.traffic_target} traffic`);
+  if (k.net_moveins_needed != null) bits.push(`${k.net_moveins_needed} net`);
+  return bits.length ? `<span class="small">${esc(bits.join(' · '))}</span>` : '<span class="muted small">—</span>';
+}
+
+function leasingRenderHistory() {
+  const el = $('#leasing-history');
+  if (!el) return;
+  if (!leasingState.subs.length) {
+    el.innerHTML = '<div class="empty-state">No submissions yet.</div>';
+    return;
+  }
+  const canReview = leasingCanReview();
+  el.innerHTML = `<div style="overflow-x:auto"><table class="crm-table">
+    <thead><tr><th>Week Ending</th><th>Submitted By</th><th>Submitted At</th><th>Status</th><th>KPI snapshot</th><th></th></tr></thead>
+    <tbody>${leasingState.subs.map(s => {
+      const expanded = leasingState.expandedId === s.id;
+      const statusCell = canReview
+        ? `<select class="crm-select leasing-status" data-id="${esc(s.id)}">
+             ${['submitted', 'reviewed', 'approved'].map(v =>
+               `<option value="${v}"${v === s.status ? ' selected' : ''}>${v}</option>`).join('')}
+           </select>`
+        : leasingStatusBadge(s.status);
+      return `<tr class="leasing-row${expanded ? ' expanded' : ''}" data-id="${esc(s.id)}">
+        <td class="mono small">${esc(s.week_ending || '')}</td>
+        <td>${esc(s.submitted_by || '')}</td>
+        <td class="small muted">${s.submitted_at ? new Date(s.submitted_at).toLocaleString() : ''}</td>
+        <td>${statusCell}</td>
+        <td>${leasingKpiCell(s.kpi_json)}</td>
+        <td><button class="btn-sm leasing-expand" data-id="${esc(s.id)}">${expanded ? 'Hide' : 'View'}</button></td>
+      </tr>${expanded ? `<tr class="leasing-detail-row"><td colspan="6"><div class="leasing-detail" id="leasing-detail-${esc(s.id)}"><p class="small muted">Loading…</p></div></td></tr>` : ''}`;
+    }).join('')}</tbody></table></div>`;
+
+  el.querySelectorAll('.leasing-expand').forEach(b =>
+    b.addEventListener('click', () => leasingToggle(b.dataset.id)));
+  el.querySelectorAll('.leasing-status').forEach(sel =>
+    sel.addEventListener('change', () => leasingSetStatus(sel.dataset.id, sel.value)));
+
+  if (leasingState.expandedId) leasingRenderDetail(leasingState.expandedId);
+}
+
+async function leasingToggle(id) {
+  leasingState.expandedId = leasingState.expandedId === id ? null : id;
+  leasingRenderHistory();
+  if (leasingState.expandedId === id && !leasingState.detail[id]) {
+    try {
+      const d = await api(`/api/leasing/submissions/${encodeURIComponent(id)}`);
+      leasingState.detail[id] = d.submission;
+    } catch (err) {
+      leasingState.detail[id] = { error: err.message };
+    }
+    leasingRenderDetail(id);
+  }
+}
+
+function leasingRenderDetail(id) {
+  const box = $(`#leasing-detail-${CSS.escape(id)}`);
+  if (!box) return;
+  const s = leasingState.detail[id];
+  if (!s) { box.innerHTML = '<p class="small muted">Loading…</p>'; return; }
+  if (s.error) { box.innerHTML = `<p class="small muted">Could not load: ${esc(s.error)}</p>`; return; }
+
+  const k = s.kpi_json || {};
+  const props = Array.isArray(k.properties) ? k.properties : [];
+  const rollup = props.length ? `<div style="overflow-x:auto"><table class="crm-table">
+      <thead><tr><th>Property</th><th>Units</th><th>Occupied</th><th>Occ %</th><th>Net Move-Ins</th><th>Traffic Target</th><th>Tours</th><th>Apps</th></tr></thead>
+      <tbody>${props.map(p => `<tr>
+        <td>${esc(p.property || '')}</td>
+        <td>${esc(p.units ?? '')}</td>
+        <td>${esc(p.occupied ?? '')}</td>
+        <td>${p.occ_pct != null ? esc(p.occ_pct) + '%' : ''}</td>
+        <td>${esc(p.net_moveins ?? '')}</td>
+        <td>${esc(p.traffic_target ?? '')}</td>
+        <td>${esc(p.tours ?? '')}</td>
+        <td>${esc(p.apps ?? '')}</td>
+      </tr>`).join('')}</tbody></table></div>`
+    : '<p class="small muted">No per-property KPI snapshot stored for this submission.</p>';
+
+  const portfolio = (k.occupied != null || k.traffic_target != null) ? `
+    <div class="leasing-kpis">
+      ${k.occupancy_pct != null ? `<div class="leasing-kpi"><span class="lab">Occupancy</span><b>${esc(k.occupancy_pct)}%</b><span class="muted small">${esc(k.occupied ?? '')}/${esc(k.units ?? '')}</span></div>` : ''}
+      ${k.net_moveins_needed != null ? `<div class="leasing-kpi"><span class="lab">Net Move-Ins Needed</span><b>${esc(k.net_moveins_needed)}</b></div>` : ''}
+      ${k.traffic_target != null ? `<div class="leasing-kpi"><span class="lab">Traffic Target</span><b>${esc(k.traffic_target)}</b></div>` : ''}
+      ${k.additional_traffic != null ? `<div class="leasing-kpi"><span class="lab">Additional Traffic</span><b>${esc(k.additional_traffic)}</b></div>` : ''}
+    </div>` : '';
+
+  const canReview = leasingCanReview();
+  const notes = canReview
+    ? `<div class="leasing-notes">
+         <label class="small muted">Reviewer notes</label>
+         <textarea id="leasing-notes-${esc(id)}" rows="3" class="crm-input" placeholder="Notes for Katie / the team…">${esc(s.notes || '')}</textarea>
+         <button class="btn-sm primary" id="leasing-save-notes-${esc(id)}">Save notes</button>
+       </div>`
+    : (s.notes ? `<div class="leasing-notes"><label class="small muted">Reviewer notes</label><div class="report-group">${esc(s.notes)}</div></div>` : '');
+
+  box.innerHTML = `
+    ${portfolio}
+    ${s.narrative ? `<div class="leasing-narrative"><label class="small muted">Narrative</label><div class="report-group">${esc(s.narrative)}</div></div>` : ''}
+    <div class="leasing-sub-title">Per-property roll-up</div>
+    ${rollup}
+    ${notes}`;
+
+  if (canReview) {
+    $(`#leasing-save-notes-${CSS.escape(id)}`)?.addEventListener('click', () => {
+      const val = $(`#leasing-notes-${CSS.escape(id)}`)?.value || '';
+      leasingSaveNotes(id, val);
+    });
+  }
+}
+
+async function leasingSetStatus(id, status) {
+  try {
+    await api(`/api/leasing/submissions/${encodeURIComponent(id)}`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+    const row = leasingState.subs.find(x => x.id === id); if (row) row.status = status;
+    toast('Status updated', 'success');
+  } catch (err) { toast(err.message, 'error'); leasingLoadHistory(); }
+}
+
+async function leasingSaveNotes(id, notes) {
+  try {
+    await api(`/api/leasing/submissions/${encodeURIComponent(id)}`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notes }) });
+    if (leasingState.detail[id]) leasingState.detail[id].notes = notes;
+    toast('Notes saved', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// Read the tool's live state through the same-origin iframe (its getLeasingPayload
+// bridge) and POST a snapshot for the current week.
+async function leasingSubmit() {
+  const frame = $('#leasing-frame');
+  const win = frame?.contentWindow;
+  if (!win || typeof win.getLeasingPayload !== 'function') {
+    toast('The board is still loading — give it a moment and try again.', 'error');
+    return;
+  }
+  const btn = $('#leasing-submit');
+  const original = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
+  try {
+    const captured = win.getLeasingPayload();
+    const payload = {
+      week_ending: leasingNextSunday(),
+      submitted_by: currentUser?.name || 'Katie',
+      narrative: captured.narrative || '',
+      goals_json: captured.goals_json || null,
+      data_json: captured.data_json || null,
+      kpi_json: captured.kpi_json || null,
+    };
+    await api('/api/leasing/submissions',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    toast('Weekly report submitted ✅', 'success');
+    leasingState.detail = {};
+    leasingLoadHistory();
+  } catch (err) {
+    toast('Submit failed: ' + err.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
 }
 
 // ── Accounting / Billing (Claudia) ─────────────────────────────────────────
@@ -5760,6 +5983,23 @@ function reportSectionBody(s) {
       <span>💵 Bills pending approval: <b>${c.pendingBills || 0}</b> · ${money(c.pendingAmount)}</span>
       <span>📄 W9 issues: <b>${c.w9Issues || 0}</b> (missing + outdated)</span>
     </div>`;
+  }
+
+  // Weekly Leasing Board (Katie). Freshness message + the latest KPI snapshot.
+  if (c.leasing_board) {
+    const l = c.latest;
+    if (!l) return `<p class="report-group">⚠️ ${esc(c.message || 'Not yet submitted this week')}</p>`;
+    return `<div class="report-group"><b>${esc(c.message || '')}</b></div>
+      <div class="report-counts small muted">
+        <span>📅 Week ending: <b>${esc(l.week_ending || '—')}</b></span>
+        <span>🙋 Submitted by: <b>${esc(l.submitted_by || '—')}</b></span>
+        <span>🏷️ Status: <b>${esc(l.status || '—')}</b></span>
+      </div>
+      <div class="report-counts small muted">
+        ${l.occupancy_pct != null ? `<span>🏠 Occupancy: <b>${esc(l.occupancy_pct)}%</b>${l.occupied != null ? ` (${esc(l.occupied)}/${esc(l.units)})` : ''}</span>` : ''}
+        ${l.net_moveins_needed != null ? `<span>📈 Net move-ins needed: <b>${esc(l.net_moveins_needed)}</b></span>` : ''}
+        ${l.traffic_target != null ? `<span>🎯 Traffic target: <b>${esc(l.traffic_target)}</b></span>` : ''}
+      </div>`;
   }
 
   // Three sources, each with its own subsection. They used to share one block

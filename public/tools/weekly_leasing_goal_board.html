@@ -1901,6 +1901,37 @@ async function init(){
 }
 init();
 
+/* ============ DASHBOARD BRIDGE (Metric AI Admin) ============ */
+/* Added for the online Leasing tab. The tool's own logic is untouched above;
+   this only exposes a read-only snapshot to the parent dashboard, which embeds
+   this file same-origin in an iframe. The parent calls getLeasingPayload() to
+   capture the current narrative, goals, full state and a computed KPI snapshot,
+   then POSTs it to /api/leasing/submissions. Everything referenced here
+   (snapshot/activeProps/getD/compute) is in scope inside this IIFE. */
+window.getLeasingPayload = function(){
+  const snap = snapshot();
+  const props = (activeProps() || []);
+  let occN=0, occD=0, netSum=0, trafficSum=0, addlSum=0;
+  const rows = props.map(function(p){
+    const d = getD(p), c = compute(d);
+    occN += d.o; occD += d.u; netSum += c.net; trafficSum += c.traffic; addlSum += c.addl;
+    return { property:p, units:d.u, occupied:d.o, occ_pct:+(c.occ*100).toFixed(1),
+      net_moveins:c.net, traffic_target:c.traffic, tours:c.tours, apps:c.apps,
+      addl:c.addl, addl_per_wk:c.addlPerWk };
+  });
+  return {
+    narrative: snap.narrativeText || '',
+    goals_json: snap.settings || null,
+    data_json: snap,
+    kpi_json: {
+      occupied: occN, units: occD,
+      occupancy_pct: occD ? +(occN/occD*100).toFixed(1) : 0,
+      net_moveins_needed: netSum, traffic_target: trafficSum, additional_traffic: addlSum,
+      properties: rows, generated_at: new Date().toISOString()
+    }
+  };
+};
+
 })();
 </script>
 </body>

@@ -263,6 +263,14 @@ app.get(['/', '/index.html'], (req, res) => {
   }
 });
 
+// The leasing goal board carries portfolio occupancy data, so it is gated with
+// a session like the evictions app rather than served openly by express.static
+// below. Registered ahead of static so this wins for the path. Same-origin, so
+// the Leasing tab's iframe request carries the dashboardToken cookie.
+app.get('/tools/weekly_leasing_goal_board.html', requireAuth, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'tools', 'weekly_leasing_goal_board.html'));
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---- Health check ----------------------------------------------------------
@@ -3459,6 +3467,110 @@ app.get('/evictions/app', requireMetricAccess, (req, res) => {
 });
 
 // =====================================================================
+// LEASING — Weekly Leasing Goal Board (Katie -> Lyndsay/Kara/Bekah)
+// =====================================================================
+// Katie fills out the goal board (public/tools/weekly_leasing_goal_board.html,
+// embedded in the Leasing tab) each week and submits a snapshot here. One row
+// per week_ending; a re-submit upserts. All routes requireAuth — the tool is
+// served statically but the data lives behind the session cookie. Reviewers
+// (Lyndsay/Kara/Bekah) PATCH status/notes.
+//
+// Columns kept out of the list payload (data_json, goals_json, narrative) so the
+// history table stays light; the row-expand fetches the full record by id.
+const LEASING_LIST_COLS = 'id,week_ending,submitted_by,submitted_at,status,kpi_json,notes,created_at';
+const LEASING_STATUSES = ['submitted', 'reviewed', 'approved'];
+
+// List all submissions, newest first.
+app.get('/api/leasing/submissions', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ submissions: [] });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('leasing_submissions')
+      .select(LEASING_LIST_COLS).order('week_ending', { ascending: false });
+    if (error) throw new Error(error.message);
+    res.json({ submissions: data || [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Most recent submission (full record). Registered before /:id so "latest" is
+// not swallowed by the id param.
+app.get('/api/leasing/submissions/latest', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ submission: null });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('leasing_submissions')
+      .select('*').order('week_ending', { ascending: false }).limit(1).maybeSingle();
+    if (error) throw new Error(error.message);
+    res.json({ submission: data || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// One full submission by id.
+app.get('/api/leasing/submissions/:id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('leasing_submissions')
+      .select('*').eq('id', req.params.id).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return res.status(404).json({ error: 'Submission not found' });
+    res.json({ submission: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Create/upsert by week_ending. Katie's submit sends the full snapshot.
+app.post('/api/leasing/submissions', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const b = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.week_ending || ''))) {
+    return res.status(400).json({ error: 'week_ending (YYYY-MM-DD) is required' });
+  }
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const row = {
+      week_ending:  b.week_ending,
+      submitted_by: b.submitted_by || req.user?.name || req.user?.username || 'Katie',
+      submitted_at: new Date().toISOString(),
+      status:       'submitted',
+      narrative:    typeof b.narrative === 'string' ? b.narrative : null,
+      goals_json:   b.goals_json ?? null,
+      data_json:    b.data_json ?? null,
+      kpi_json:     b.kpi_json ?? null,
+    };
+    // Upsert on the week key — re-submitting a week replaces its data but a
+    // reviewer's existing notes are preserved (not sent by Katie's submit).
+    const { data, error } = await db.from('leasing_submissions')
+      .upsert(row, { onConflict: 'week_ending' })
+      .select(LEASING_LIST_COLS).single();
+    if (error) throw new Error(error.message);
+    res.status(201).json({ ok: true, submission: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Reviewer update — status and/or notes only (Lyndsay/Kara/Bekah).
+app.patch('/api/leasing/submissions/:id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const b = req.body || {};
+  const patch = {};
+  if (b.status !== undefined) {
+    if (!LEASING_STATUSES.includes(b.status)) {
+      return res.status(400).json({ error: `status must be one of ${LEASING_STATUSES.join(', ')}` });
+    }
+    patch.status = b.status;
+  }
+  if (b.notes !== undefined) patch.notes = typeof b.notes === 'string' ? b.notes : null;
+  if (!Object.keys(patch).length) return res.status(400).json({ error: 'Nothing to update (status or notes)' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('leasing_submissions')
+      .update(patch).eq('id', req.params.id).select(LEASING_LIST_COLS).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return res.status(404).json({ error: 'Submission not found' });
+    res.json({ ok: true, submission: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// =====================================================================
 // ACCOUNTING / BILLING — Claudia Villalobos (Accounting/QC)
 // =====================================================================
 // Vendors, bills, and QC/payment tasks. All routes requireAuth; no role gate
@@ -4591,6 +4703,9 @@ app.post('/api/crm/bulk-import', async (req, res) => {
 const REPORT_SECTIONS = [
   { key: 'urgent',      icon: '🚨', title: 'Urgent / Needs Attention', owner: 'Jay Manuel' },
   { key: 'leasing',     icon: '🏠', title: 'Leasing & Applications',   owner: 'Rocío' },
+  // Auto-generated from the Weekly Leasing Goal Board (Katie's submission).
+  // Distinct from the manual 'leasing' section above.
+  { key: 'leasing_board', icon: '🎯', title: 'Weekly Leasing Board',   owner: 'Katie' },
   { key: 'maintenance', icon: '🔧', title: 'Maintenance',              owner: 'Erick Frey' },
   { key: 'collections', icon: '💰', title: 'Collections',              owner: 'Rocío' },
   { key: 'kpi',         icon: '📊', title: 'KPI Results',              owner: 'Jay Manuel' },
@@ -4778,7 +4893,57 @@ async function reportBuildSections(client) {
     try { sections[j] = await reportAccountingSection(); }
     catch (err) { console.error('[reports] accounting section unavailable:', err.message); }
   }
+  const k = sections.findIndex(s => s.key === 'leasing_board');
+  if (k >= 0) {
+    try { sections[k] = await reportLeasingSection(); }
+    catch (err) { console.error('[reports] leasing board section unavailable:', err.message); }
+  }
   return sections;
+}
+
+// Weekly Leasing Board roll-up for the Daily Report — reads the latest
+// submission. Freshness drives the badge: green if it covers the current week,
+// amber if last week, red if two or more weeks stale (or never submitted).
+async function reportLeasingSection() {
+  const client = supabaseAdmin || supabasePublic;
+  const { data, error } = await client.from('leasing_submissions')
+    .select('week_ending,submitted_by,status,kpi_json,submitted_at')
+    .order('week_ending', { ascending: false }).limit(1).maybeSingle();
+  if (error) throw new Error(error.message);
+
+  const base = { key: 'leasing_board', icon: '🎯', title: 'Weekly Leasing Board', owner: 'Katie',
+    status: 'auto', last_updated: new Date().toISOString() };
+
+  // Current week's ending Sunday (today if today is Sunday), as YYYY-MM-DD.
+  const now = new Date();
+  const cur = new Date(now); cur.setDate(now.getDate() + ((7 - now.getDay()) % 7));
+  const curWeek = cur.toISOString().slice(0, 10);
+
+  if (!data) {
+    return { ...base, content: { leasing_board: true, severity: 'red',
+      message: 'Not yet submitted this week', latest: null } };
+  }
+
+  // Whole weeks between the submission's week and the current week.
+  const weeksBehind = Math.round(
+    (Date.parse(curWeek) - Date.parse(data.week_ending)) / (7 * 24 * 3600 * 1000));
+  const severity = weeksBehind <= 0 ? 'green' : (weeksBehind === 1 ? 'amber' : 'red');
+  const message = weeksBehind <= 0 ? 'Submitted this week'
+    : weeksBehind === 1 ? 'Last submission was last week'
+    : `No submission for ${weeksBehind} weeks`;
+
+  const k = data.kpi_json || {};
+  return { ...base, content: { leasing_board: true, severity, message,
+    latest: {
+      week_ending: data.week_ending,
+      submitted_by: data.submitted_by,
+      status: data.status,
+      occupancy_pct: k.occupancy_pct ?? null,
+      occupied: k.occupied ?? null,
+      units: k.units ?? null,
+      net_moveins_needed: k.net_moveins_needed ?? null,
+      traffic_target: k.traffic_target ?? null,
+    } } };
 }
 
 // Accounting roll-up for the Daily Report — read live from the three accounting
