@@ -1415,6 +1415,14 @@ tr.ca-sel { background: var(--accent-glow); }
    it was so the row you clicked is still where you left it. */
 .sv-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 60; }
 .sv-panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 92vw);
+  /* Explicit viewport height, not just top/bottom:0. The Calls tab runs
+     `animation: fade` whose keyframes carry a transform, and a transformed
+     ancestor becomes the containing block for this position:fixed panel — so
+     top/bottom:0 would resolve against the tab's full content height, leaving the
+     flex column unbounded and the transcript unable to scroll. Viewport units are
+     immune to the containing block, so the panel is always exactly one screen
+     tall and the transcript scrolls inside it. */
+  height: 100vh; height: 100dvh;
   z-index: 61; border-left: 1px solid var(--border); border-radius: 0;
   background: var(--bg-surface); padding: 16px 18px; overflow: hidden;
   box-shadow: -12px 0 32px rgba(0,0,0,.35);
