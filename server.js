@@ -5398,13 +5398,55 @@ async function sixPmMeetings() {
   return out;
 }
 
+// Action items for the 6PM report — extracted by Claude (ANTHROPIC_API_KEY) from
+// the day's categorized meetings. Transcripts are still out of reach (a Graph
+// permission gap), so the model works from each meeting's subject, category,
+// attendees and calendar body-preview; when there is no meeting content, or the
+// key is unset, it returns nothing with the reason stated. Returns items shaped
+// { action, owner, due, meeting } to match the report table.
+async function sixPmActionItems(meetings) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return { items: [], reason: 'ANTHROPIC_API_KEY is not set on the server.' };
+  }
+  const usable = (meetings || []).filter(m => (m.subject && m.subject !== '(no subject)') || m.preview);
+  if (!usable.length) {
+    return { items: [], reason: 'No categorized meetings with content today to extract from.' };
+  }
+  const system = 'You extract concrete action items and follow-ups from a property-management '
+    + "team's day of meetings at Metric Property Management. Respond ONLY with valid JSON, no "
+    + 'markdown: {"action_items":[{"action":"imperative action","owner":"person name or null",'
+    + '"due":"YYYY-MM-DD or null","meeting":"the meeting subject it came from"}]}. Include only '
+    + 'real, actionable follow-ups that the material actually implies. If there are none, return '
+    + 'an empty array. Note: you are given meeting subjects and short calendar previews, not full '
+    + 'transcripts, so do not invent detail that is not present.';
+  const user = "Today's categorized meetings:\n\n" + usable.map((m, i) =>
+    `${i + 1}. [${m.category}] ${m.subject}\n`
+    + `   Attendees: ${(m.attendees || []).join(', ') || 'n/a'}\n`
+    + `   Preview: ${m.preview || '(none)'}`).join('\n\n');
+  try {
+    const parsed = await callGrading.anthropicJson({ system, user, maxTokens: 1500 });
+    const raw = Array.isArray(parsed?.action_items) ? parsed.action_items
+      : (Array.isArray(parsed) ? parsed : []);
+    const items = raw.map(a => ({
+      action: String(a.action || a.text || '').trim(),
+      owner: a.owner || null,
+      due: a.due || null,
+      meeting: a.meeting || a.source || null,
+    })).filter(a => a.action);
+    return { items, reason: null };
+  } catch (err) {
+    return { items: [], reason: err.message };
+  }
+}
+
 async function sixPmBuild() {
   const cal = await sixPmMeetings();
   const inbox = refreshState.inboxCounts || null;
+  const ai = await sixPmActionItems(cal.meetings);
   return {
     report_date: reportDateStr(),
     meetings: cal.meetings,
-    action_items: [],
+    action_items: ai.items,
     inbox_snapshot: inbox ? { lyndsay: inbox.lyndsay ?? null, lastChecked: inbox.lastChecked ?? null } : {},
     sources: {
       meetings: cal.error ? 'error' : 'ok',
@@ -5415,8 +5457,8 @@ async function sixPmBuild() {
       // Stated rather than left to be inferred from an empty array.
       transcripts: 'unavailable',
       transcripts_reason: 'Needs OnlineMeetingTranscript.Read.All (application) with admin consent and a Teams application access policy for Lyndsay.',
-      action_items: 'unavailable',
-      action_items_reason: 'Needs an Anthropic API key the server can call out with. COPILOT_API_KEY is an inbound guard, not that.',
+      action_items: ai.reason ? 'unavailable' : 'ok',
+      action_items_reason: ai.reason,
       inbox: inbox ? 'ok' : 'unavailable',
     },
     generated_at: new Date().toISOString(),

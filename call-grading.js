@@ -21,17 +21,13 @@ function parseModelJson(text) {
   return JSON.parse(clean);
 }
 
-// Grades one transcript. Returns the parsed rubric object (the same shape the
-// tool renders). Throws on missing key, API error, or unparseable output.
-async function gradeTranscript({ callType, agent, duration, transcript }) {
+// Generic "ask Claude for JSON" call — the single outbound Anthropic path,
+// reused by call grading and the 6PM action-item extraction. Throws on a missing
+// key (message says "not configured" so callers can tell it apart), an API
+// error, or unparseable output.
+async function anthropicJson({ system, user, maxTokens = 2000, model }) {
   const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error('Grading is not configured: set ANTHROPIC_API_KEY on the server.');
-  if (!transcript || !String(transcript).trim()) throw new Error('No transcript to grade.');
-
-  const userContent = 'Call Type: ' + (callType || 'unknown')
-    + '\nAgent: ' + (agent || 'unknown')
-    + '\nDuration: ' + (duration || 'unknown') + ' seconds'
-    + '\n\nTRANSCRIPT:\n' + transcript;
+  if (!key) throw new Error('Anthropic is not configured: set ANTHROPIC_API_KEY on the server.');
 
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -41,10 +37,10 @@ async function gradeTranscript({ callType, agent, duration, transcript }) {
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: GRADE_MODEL,
-      max_tokens: 4000,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userContent }],
+      model: model || GRADE_MODEL,
+      max_tokens: maxTokens,
+      system,
+      messages: [{ role: 'user', content: user }],
     }),
   });
 
@@ -61,4 +57,15 @@ async function gradeTranscript({ callType, agent, duration, transcript }) {
   return parseModelJson(textBlock.text);
 }
 
-module.exports = { SYSTEM_PROMPT, gradeTranscript, GRADE_MODEL };
+// Grades one transcript. Returns the parsed rubric object (the same shape the
+// tool renders). Throws on missing key, API error, or unparseable output.
+async function gradeTranscript({ callType, agent, duration, transcript }) {
+  if (!transcript || !String(transcript).trim()) throw new Error('No transcript to grade.');
+  const userContent = 'Call Type: ' + (callType || 'unknown')
+    + '\nAgent: ' + (agent || 'unknown')
+    + '\nDuration: ' + (duration || 'unknown') + ' seconds'
+    + '\n\nTRANSCRIPT:\n' + transcript;
+  return anthropicJson({ system: SYSTEM_PROMPT, user: userContent, maxTokens: 4000 });
+}
+
+module.exports = { SYSTEM_PROMPT, gradeTranscript, anthropicJson, GRADE_MODEL };
