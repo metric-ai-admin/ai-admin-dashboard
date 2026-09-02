@@ -4819,7 +4819,13 @@ function svGradeFeedbackHtml(g) {
 }
 
 // ── Grades dashboard (the "Grades" sub-view) ────────────────────────────────
-const svgState = { grades: [], filters: { agent: 'All', grade: 'All', direction: 'All', flagged: false }, wired: false, loaded: false };
+// ── Grades dashboard (the "Grades" sub-view) ────────────────────────────────
+// Styled to match Lyndsay's Call Quality Analyzer (public/tools/
+// call-quality-analyzer.html): a cream two-panel layout (call list + detail),
+// her KPI row, filter pills, and detail design. All markup is namespaced under
+// .svg-tool / .cqa-* so it is fully isolated from the rest of the dashboard —
+// the Calls list and transcript panel are untouched.
+const svgState = { grades: [], filters: { agent: 'All', grade: 'All', direction: 'All', management: null }, selectedId: null, detailCache: {}, loaded: false };
 
 function svSetView(view) {
   $$('#sv-view-toggle .sv-vt-btn').forEach(b => b.classList.toggle('active', b.dataset.svView === view));
@@ -4853,7 +4859,9 @@ function svgFiltered() {
     else if (f.grade === 'DF') { if (ns || !['D', 'F'].includes(g.overall_grade)) return false; }
     else if (['A', 'B', 'C'].includes(f.grade)) { if (ns || g.overall_grade !== f.grade) return false; }
     if (f.direction !== 'All' && (g.call_direction || '') !== f.direction) return false;
-    if (f.flagged && !svgIsFlagged(g)) return false;
+    if (f.management === 'flagged' && !svgIsFlagged(g)) return false;
+    if (f.management === 'legal' && !g.legal_violation) return false;
+    if (f.management === 'fairhousing' && !g.fair_housing_flag) return false;
     return true;
   });
 }
@@ -4879,97 +4887,172 @@ function svgRender() {
   const el = $('#sv-view-grades');
   if (!el) return;
   const list = svgFiltered();
+  el.innerHTML = `<div class="svg-tool">
+    ${svgKpiRowHtml(list)}
+    ${svgFilterPillsHtml()}
+    <div class="cqa-grid">
+      <div class="cqa-panel">
+        <div class="cqa-panel-head"><span>Calls</span><span class="cqa-count">${list.length} of ${svgState.grades.length}</span></div>
+        <div class="cqa-list">${svgCallListHtml(list)}</div>
+      </div>
+      ${svgDetailHtml()}
+    </div>
+  </div>`;
+
+  el.querySelectorAll('[data-svg-grade]').forEach(b => b.addEventListener('click', () => { svgState.filters.grade = b.dataset.svgGrade; svgRender(); }));
+  el.querySelectorAll('[data-svg-mgmt]').forEach(b => b.addEventListener('click', () => { const m = b.dataset.svgMgmt; svgState.filters.management = svgState.filters.management === m ? null : m; svgRender(); }));
+  $('#svg-f-agent')?.addEventListener('change', e => { svgState.filters.agent = e.target.value; svgRender(); });
+  el.querySelectorAll('.cqa-row').forEach(r => r.addEventListener('click', () => svgSelect(r.dataset.rid)));
+}
+
+function svgKpiRowHtml(list) {
   const k = svgKpis(list);
   const maxMix = Math.max(1, k.mix.A, k.mix.B, k.mix.C, k.mix.D, k.mix.F);
   const bars = ['A', 'B', 'C', 'D', 'F'].map(g =>
-    `<div class="svg-bar" style="height:${Math.round((k.mix[g] / maxMix) * 34) + 2}px;background:${svgGradeColor(g)}"></div>`).join('');
+    `<div class="cqa-bar" style="height:${Math.round((k.mix[g] / maxMix) * 34) + 2}px;background:${svgGradeColor(g)}"></div>`).join('');
+  return `<div class="cqa-kpis">
+    <div class="cqa-kpi"><div class="cqa-kpi-lab">Avg Score</div><div class="cqa-kpi-val">${k.avg}</div><div class="cqa-kpi-sub">${k.n} scored${k.notScoreable ? ` · ${k.notScoreable} not scoreable` : ''}</div></div>
+    <div class="cqa-kpi"><div class="cqa-kpi-lab">A-Grade %</div><div class="cqa-kpi-val">${k.aPct}%</div><div class="cqa-kpi-sub">${k.aCount} A grade${k.aCount === 1 ? '' : 's'}</div></div>
+    <div class="cqa-kpi"><div class="cqa-kpi-lab">Coaching</div><div class="cqa-kpi-val">${k.coaching}</div><div class="cqa-kpi-sub">C / D / F grades</div></div>
+    <div class="cqa-kpi"><div class="cqa-kpi-lab">Flagged</div><div class="cqa-kpi-val">${k.flagged}</div><div class="cqa-kpi-sub">Quality concerns</div></div>
+    <div class="cqa-kpi"><div class="cqa-kpi-lab">Grade Mix</div><div class="cqa-bars">${bars}</div>
+      <div class="cqa-bar-labels"><span>A</span><span>B</span><span>C</span><span>D</span><span>F</span></div></div>
+  </div>`;
+}
 
-  const agents = ['All', ...Array.from(new Set(svgState.grades.map(g => g.agent_name || 'Unidentified'))).sort()];
+function svgFilterPillsHtml() {
+  const f = svgState.filters;
   const nsTotal = svgState.grades.filter(svgNotScoreable).length;
-  const pillDefs = [['All', 'All'], ['A', 'A'], ['B', 'B'], ['C', 'C'], ['DF', 'D/F']];
-  if (nsTotal) pillDefs.push(['NS', 'Not Scoreable']);
-  const gradePills = pillDefs.map(([v, t]) =>
-    `<button class="svg-pill${v === 'NS' ? ' ns' : ''}${svgState.filters.grade === v ? ' active' : ''}" data-svg-grade="${v}">${t}</button>`).join('');
-
-  el.innerHTML = `
-    <div class="svg-kpis">
-      <div class="svg-kpi"><div class="svg-kpi-lab">Avg Score</div><div class="svg-kpi-val">${k.avg}</div><div class="svg-kpi-sub">${k.n} scored${k.notScoreable ? ` · ${k.notScoreable} not scoreable` : ''}</div></div>
-      <div class="svg-kpi"><div class="svg-kpi-lab">A-Grade %</div><div class="svg-kpi-val">${k.aPct}%</div><div class="svg-kpi-sub">${k.aCount} A grade${k.aCount === 1 ? '' : 's'}</div></div>
-      <div class="svg-kpi"><div class="svg-kpi-lab">Coaching</div><div class="svg-kpi-val">${k.coaching}</div><div class="svg-kpi-sub">C / D / F</div></div>
-      <div class="svg-kpi"><div class="svg-kpi-lab">Flagged</div><div class="svg-kpi-val">${k.flagged}</div><div class="svg-kpi-sub">Quality concerns</div></div>
-      <div class="svg-kpi"><div class="svg-kpi-lab">Grade Mix</div><div class="svg-bars">${bars}</div>
-        <div class="svg-bar-labels"><span>A</span><span>B</span><span>C</span><span>D</span><span>F</span></div></div>
-    </div>
-    <div class="svg-filters">
-      ${gradePills}
-      <button class="svg-pill flag${svgState.filters.flagged ? ' active' : ''}" data-svg-flagged>🚩 Flagged</button>
-      <select class="crm-select" id="svg-f-agent">${agents.map(a => `<option value="${esc(a)}"${svgState.filters.agent === a ? ' selected' : ''}>${a === 'All' ? 'All agents' : esc(a)}</option>`).join('')}</select>
-      <select class="crm-select" id="svg-f-dir">${[['All', 'All directions'], ['inbound', 'Inbound'], ['outbound', 'Outbound']].map(([v, t]) => `<option value="${v}"${svgState.filters.direction === v ? ' selected' : ''}>${t}</option>`).join('')}</select>
-      <span class="muted small" style="margin-left:auto">${list.length} of ${svgState.grades.length}</span>
-    </div>
-    <div class="svg-list">${svgListHtml(list)}</div>`;
-
-  el.querySelectorAll('[data-svg-grade]').forEach(b => b.addEventListener('click', () => { svgState.filters.grade = b.dataset.svgGrade; svgRender(); }));
-  el.querySelector('[data-svg-flagged]')?.addEventListener('click', () => { svgState.filters.flagged = !svgState.filters.flagged; svgRender(); });
-  $('#svg-f-agent')?.addEventListener('change', e => { svgState.filters.agent = e.target.value; svgRender(); });
-  $('#svg-f-dir')?.addEventListener('change', e => { svgState.filters.direction = e.target.value; svgRender(); });
-  el.querySelectorAll('.svg-row').forEach(r => r.addEventListener('click', () => svgOpenDetail(r.dataset.rid)));
+  const gradeDefs = [['All', 'All'], ['A', 'A'], ['B', 'B'], ['C', 'C'], ['DF', 'D/F']];
+  if (nsTotal) gradeDefs.push(['NS', 'Not Scoreable']);
+  const gradePills = gradeDefs.map(([v, t]) =>
+    `<button class="cqa-pill${v === 'NS' ? ' ns' : ''}${f.grade === v ? ' active' : ''}" data-svg-grade="${v}">${t}</button>`).join('');
+  const mgmtDefs = [['flagged', '🚩 Flagged', 'flag'], ['legal', 'Legal', 'legal'], ['fairhousing', 'Fair Housing', 'fair']];
+  const mgmtPills = mgmtDefs.map(([v, t, cls]) =>
+    `<button class="cqa-pill ${cls}${f.management === v ? ' active' : ''}" data-svg-mgmt="${v}">${t}</button>`).join('');
+  const agents = ['All', ...Array.from(new Set(svgState.grades.map(g => g.agent_name || 'Unidentified'))).sort()];
+  return `<div class="cqa-filters">
+    ${gradePills}
+    <span class="cqa-pill-sep"></span>
+    ${mgmtPills}
+    <select class="cqa-select" id="svg-f-agent" title="Filter by agent">${agents.map(a => `<option value="${esc(a)}"${f.agent === a ? ' selected' : ''}>${a === 'All' ? 'All agents' : esc(a)}</option>`).join('')}</select>
+  </div>`;
 }
 
-function svgListHtml(list) {
-  if (!list.length) return '<div class="empty-state">No graded calls match these filters.</div>';
-  return list.map(g => { const ns = svgNotScoreable(g); return `<div class="svg-row${ns ? ' ns' : ''}" data-rid="${esc(g.recording_id)}">
-    <div class="svg-row-badge${ns ? ' ns' : ''}" style="background:${svgBadgeColor(g)}">${esc(svgBadgeText(g))}</div>
-    <div class="svg-row-body">
-      <div class="svg-row-agent">${esc(g.agent_name || 'Unidentified')}${ns ? '' : (svgIsFlagged(g) ? ' 🚩' : '')}</div>
-      <div class="svg-row-meta">
-        ${ns ? '<span class="svg-ns-tag">Not Scoreable</span> · ' : ''}
-        ${g.call_direction ? `<span class="small muted">${esc(g.call_direction)}</span> · ` : ''}
-        <span class="small muted">${esc(g.call_date || '')}</span>
-        ${g.duration_seconds != null ? ` · <span class="small muted">${svDuration(g.duration_seconds)}</span>` : ''}
-        ${g.property_name && g.property_name !== 'Unidentified' ? ` · <span class="small muted">📍 ${esc(g.property_name)}</span>` : ''}
+function svgCallListHtml(list) {
+  if (!list.length) return '<div class="cqa-empty-list">No graded calls match these filters yet.</div>';
+  return list.map(g => {
+    const ns = svgNotScoreable(g);
+    return `<div class="cqa-row${svgState.selectedId === g.recording_id ? ' selected' : ''}" data-rid="${esc(g.recording_id)}">
+      <div class="cqa-badge${ns ? ' ns' : ''}" style="background:${svgBadgeColor(g)}">${esc(svgBadgeText(g))}</div>
+      <div class="cqa-row-body">
+        <div class="cqa-row-agent">${esc(g.agent_name || 'Unidentified')}</div>
+        <div class="cqa-row-meta">
+          ${ns ? '<span class="cqa-ns-tag">Not Scoreable</span>' : ''}
+          ${g.call_date ? `<span>${esc(g.call_date)}</span>` : ''}
+          ${g.call_direction ? `<span>· ${esc(g.call_direction)}</span>` : ''}
+          ${g.duration_seconds != null ? `<span>· ${svDuration(g.duration_seconds)}</span>` : ''}
+          ${g.property_name && g.property_name !== 'Unidentified' ? `<span>· 📍 ${esc(g.property_name)}</span>` : ''}
+          ${!ns && svgIsFlagged(g) ? '<span>🚩</span>' : ''}
+        </div>
       </div>
-    </div>
-    <div class="svg-row-score">${ns ? '' : (g.overall_score != null ? g.overall_score : '')}</div>
-  </div>`; }).join('');
+      <div class="cqa-row-score">${ns ? '' : (g.overall_score != null ? g.overall_score : '')}</div>
+    </div>`;
+  }).join('');
 }
 
-async function svgOpenDetail(recordingId) {
-  try {
-    const d = await api(`/api/calls/grades/${encodeURIComponent(recordingId)}`);
-    if (!d.grade) { toast('Grade not found', 'error'); return; }
-    svgShowModal(d.grade);
-  } catch (err) { toast(err.message, 'error'); }
-}
-
-function svgShowModal(g) {
-  let ov = $('#svg-modal');
-  if (!ov) {
-    ov = document.createElement('div');
-    ov.id = 'svg-modal';
-    ov.className = 'svg-modal-overlay';
-    document.body.appendChild(ov);
-    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+async function svgSelect(id) {
+  svgState.selectedId = id;
+  if (!svgState.detailCache[id]) {
+    svgRender();   // mark the row selected + show a loading detail while we fetch
+    try {
+      const d = await api(`/api/calls/grades/${encodeURIComponent(id)}`);
+      svgState.detailCache[id] = d.grade || { error: 'Grade not found' };
+    } catch (err) {
+      svgState.detailCache[id] = { error: err.message };
+    }
   }
+  svgRender();
+}
+
+function svgDetailHtml() {
+  const id = svgState.selectedId;
+  if (!id) return `<div class="cqa-panel cqa-detail"><div class="cqa-empty-detail">
+    <div class="cqa-empty-icon">★</div>
+    <div>Select a call to view the grade</div>
+  </div></div>`;
+  const g = svgState.detailCache[id];
+  if (!g) return `<div class="cqa-panel cqa-detail"><div class="cqa-loading"><span class="sv-spinner"></span> Loading grade…</div></div>`;
+  if (g.error) return `<div class="cqa-panel cqa-detail"><div class="cqa-empty-detail"><div>Could not load: ${esc(g.error)}</div></div></div>`;
+  const ns = svgNotScoreable(g);
   const metaLine = [g.agent_name, g.call_date, g.call_direction,
     g.duration_seconds != null ? svDuration(g.duration_seconds) : null,
     g.property_name && g.property_name !== 'Unidentified' ? '📍 ' + g.property_name : null].filter(Boolean).join(' · ');
-  const ns = svgNotScoreable(g);
-  ov.innerHTML = `<div class="svg-modal-card">
-    <div class="svg-modal-head" style="background:${svgBadgeColor(g)}">
-      <div style="display:flex;align-items:center;gap:12px">
-        <div class="svg-grade-box" style="background:rgba(0,0,0,.18)">
-          <div class="svg-grade-letter">${esc(svgBadgeText(g))}</div>
-          ${ns ? '' : `<div class="svg-grade-score">${g.overall_score != null ? g.overall_score : ''}/100</div>`}
-        </div>
-        <div><div style="font-weight:700;font-size:15px">${esc(g.agent_name || 'Unidentified')}</div>
-          <div style="font-size:12px;opacity:.9">${esc(metaLine)}</div></div>
+  return `<div class="cqa-panel cqa-detail">
+    <div class="cqa-detail-header">
+      <div class="cqa-detail-gradebox${ns ? ' ns' : ''}" style="background:${svgBadgeColor(g)}">
+        <div class="cqa-detail-letter">${esc(svgBadgeText(g))}</div>
+        ${ns ? '' : `<div class="cqa-detail-score">${g.overall_score != null ? g.overall_score : ''}/100</div>`}
       </div>
-      <button class="svg-modal-close" id="svg-modal-close">✕</button>
+      <div class="cqa-detail-info">
+        <div class="cqa-detail-agent">${esc(g.agent_name || 'Unidentified')}</div>
+        <div class="cqa-detail-meta">${esc(metaLine)}</div>
+      </div>
     </div>
-    <div class="svg-modal-body svg-fb">${svGradeFeedbackHtml(g)}</div>
+    ${svgFeedbackHtml(g)}
   </div>`;
-  $('#svg-modal-close')?.addEventListener('click', () => ov.remove());
+}
+
+// Ported from Lyndsay's renderFeedbackBody — alerts, summary, outcome, flags,
+// scorecard, coaching, key moments. Namespaced under .cqa-*.
+function svgFeedbackHtml(g) {
+  let html = '';
+  if (svgNotScoreable(g)) html += `<div class="cqa-alert ns">🚫 <b>Not Scoreable</b> — this transcript doesn't reflect the listed agent's call (wrong call / no scoreable criteria). Excluded from the average and grade distribution.</div>`;
+  if (g.legal_violation) html += `<div class="cqa-alert legal">⚖️ Legal / liability language detected. Do not engage further without supervisor guidance — escalate to management immediately.</div>`;
+  if (g.fair_housing_flag) html += `<div class="cqa-alert amber">🏠 Possible Fair Housing concern detected on this call. Review required.</div>`;
+  if (g.liability_flag && !g.legal_violation) html += `<div class="cqa-alert amber">⚠️ Liability flag raised — threat of legal action or attorney mention. Escalate to management.</div>`;
+
+  html += `<div class="cqa-section"><div class="cqa-section-title">Summary</div><div class="cqa-text">${esc(g.summary || '—')}</div></div>`;
+  html += `<div class="cqa-section"><div class="cqa-section-title">Outcome</div><div class="cqa-text">${esc(g.outcome || '—')}</div></div>`;
+
+  if (Array.isArray(g.flags) && g.flags.length) {
+    html += `<div class="cqa-section"><div class="cqa-section-title">Flags</div>${g.flags.map(f => `<span class="cqa-flag-chip">${esc(f)}</span>`).join('')}</div>`;
+  }
+
+  if (Array.isArray(g.categories) && g.categories.length) {
+    html += `<div class="cqa-section"><div class="cqa-section-title">Scorecard</div>`;
+    g.categories.forEach(cat => {
+      html += `<div class="cqa-cat"><div class="cqa-cat-head"><span>${esc(cat.name)}</span>
+        <span class="cqa-cat-weight">Weight ${cat.weight != null ? cat.weight : '—'}% · Score ${cat.score != null ? cat.score : '—'}/10</span></div>`;
+      (cat.items || []).forEach(item => {
+        const s = Number(item.score) || 0;
+        html += `<div class="cqa-item">
+          <span class="cqa-item-label">${esc(item.label)}</span>
+          <span class="cqa-item-track"><span class="cqa-item-fill" style="width:${Math.min(100, s * 10)}%;background:${svgScoreColor(s)}"></span></span>
+          <span class="cqa-item-num">${s}/10</span>
+          <span class="cqa-item-note">${esc(item.note || '')}</span></div>`;
+      });
+      html += `</div>`;
+    });
+    html += `</div>`;
+  }
+
+  if (Array.isArray(g.coaching) && g.coaching.length) {
+    html += `<div class="cqa-section"><div class="cqa-section-title">Coaching Notes</div>`;
+    g.coaching.forEach(co => {
+      html += `<div class="cqa-coach">
+        <div class="cqa-coach-cat">${esc(co.category || '')}</div>
+        <div class="cqa-coach-row strength">💚 <b>Strength:</b> ${esc(co.strength || '')}</div>
+        <div class="cqa-coach-row improve">🔴 <b>Improve:</b> ${esc(co.improve || '')}</div></div>`;
+    });
+    html += `</div>`;
+  }
+
+  if (Array.isArray(g.key_moments) && g.key_moments.length) {
+    html += `<div class="cqa-section"><div class="cqa-section-title">Key Moments</div>
+      <ul class="cqa-moments">${g.key_moments.map(m => `<li>${esc(m)}</li>`).join('')}</ul></div>`;
+  }
+  return html;
 }
 
 // Clicking away closes it. Bound once to a backdrop rather than to document, so
