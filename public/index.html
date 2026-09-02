@@ -177,13 +177,22 @@
     <div class="view-head" id="sv-roster-note-wrap" style="padding-top:0">
       <p class="muted small" id="sv-roster-note"></p>
     </div>
-    <div class="sv-split">
-      <div id="sv-list"></div>
-      <div id="sv-panel" class="sv-panel hidden"></div>
+    <!-- Calls | Grades sub-view toggle. Calls is the existing view (unchanged);
+         Grades shows the call-quality dashboard. -->
+    <div class="sv-view-toggle" id="sv-view-toggle">
+      <button class="sv-vt-btn active" data-sv-view="calls">Calls</button>
+      <button class="sv-vt-btn" data-sv-view="grades">Grades</button>
     </div>
-    <!-- Backdrop for click-away. Bound to this rather than to document, so a
-         click inside the panel cannot bubble out and close it mid-read. -->
-    <div id="sv-overlay" class="sv-overlay hidden"></div>
+    <div id="sv-view-calls">
+      <div class="sv-split">
+        <div id="sv-list"></div>
+        <div id="sv-panel" class="sv-panel hidden"></div>
+      </div>
+      <!-- Backdrop for click-away. Bound to this rather than to document, so a
+           click inside the panel cannot bubble out and close it mid-read. -->
+      <div id="sv-overlay" class="sv-overlay hidden"></div>
+    </div>
+    <div id="sv-view-grades" class="hidden"></div>
   </section>
 
   <!-- ============ DAILY 6 PM REPORT ============ -->

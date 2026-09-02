@@ -4595,26 +4595,11 @@ async function svOpen(btn) {
         <div class="sv-compliance-action">POLICY VIOLATION: Agent directed resident/applicant to office — requires follow-up with ${esc(agent)}</div>
       </div>` : '';
 
-    panel.innerHTML = `
-      <div class="sv-panel-head">
-        <div>
-          <h4 style="margin:0">${esc(t.caller || row.caller || 'Call')}</h4>
-          <p class="muted small" style="margin:2px 0 0">
-            ${esc(row.datetime ? svTime(row.datetime) : '')}${row.duration ? ` · ${esc(svDuration(row.duration))}` : ''}
-          </p>
-        </div>
-        <button class="btn-sm" id="sv-close" aria-label="Close">✕</button>
-      </div>
-      ${compliance}
-      ${sentiment}
-      ${svSection('Summary', t.summary ? `<div class="sv-text">${esc(t.summary)}</div>`
-                                       : '<i class="muted">No summary available.</i>')}
-      <div class="sv-sec sv-sec-transcript">
-        <div class="sv-sec-title">Transcript</div>
-        <div class="sv-sec-body"><div class="sv-transcript-scroll">${svRenderTranscript(t.transcript_text)}</div></div>
-      </div>
-      <div class="sv-foot muted small">${esc(meta)}</div>`;
-    $('#sv-close')?.addEventListener('click', svClosePanel);
+    // Keep everything the transcript view needs so the panel can switch between
+    // the transcript and the grade result without re-fetching.
+    svPanelState = { t, row, agent, meta, compliance, sentiment, grade: null };
+    svRenderTranscriptPanel();
+    svLoadExistingGrade(t.recording_id || id);   // non-blocking: reveals a "View grade" chip if one exists
   } catch (err) {
     panel.innerHTML = `<div class="sv-panel-head"><span class="small muted">Could not load that transcript: ${esc(err.message)}</span>
       <button class="btn-sm" id="sv-close">✕</button></div>`;
@@ -4622,9 +4607,346 @@ async function svOpen(btn) {
   } finally { btn.disabled = false; btn.textContent = original; }
 }
 
+// ── Call grading (Lyndsay's Call Quality Analyzer, server-side) ─────────────
+// Holds the currently-open transcript so the panel can flip between the
+// transcript and its grade without re-fetching.
+let svPanelState = null;
+
+const SVG_GRADE_COLORS = { A: '#16A34A', B: '#1D4ED8', C: '#A16207', D: '#C2410C', F: '#DC2626' };
+const svgGradeColor = g => SVG_GRADE_COLORS[g] || '#8A8578';
+function svgScoreColor(s) { s = Number(s) || 0; return s >= 8 ? '#2ECC8A' : s >= 6 ? '#4A90D9' : s >= 4 ? '#F5A623' : '#E8455A'; }
+const svgIsFlagged = g => !!(g && (g.legal_violation || g.fair_housing_flag || g.liability_flag || (Array.isArray(g.flags) && g.flags.length)));
+
+// The transcript panel — identical to before, plus a Grade button in the header
+// and a slot for an existing-grade chip. Rendered from svPanelState so "← Transcript"
+// from the grade view can restore it without a refetch.
+function svRenderTranscriptPanel() {
+  const panel = $('#sv-panel');
+  if (!panel || !svPanelState) return;
+  const { t, row, compliance, sentiment, meta } = svPanelState;
+  panel.innerHTML = `
+    <div class="sv-panel-head">
+      <div>
+        <h4 style="margin:0">${esc(t.caller || row.caller || 'Call')}</h4>
+        <p class="muted small" style="margin:2px 0 0">
+          ${esc(row.datetime ? svTime(row.datetime) : '')}${row.duration ? ` · ${esc(svDuration(row.duration))}` : ''}
+        </p>
+      </div>
+      <div class="sv-head-actions">
+        <button class="btn-sm primary" id="sv-grade-btn">⭐ Grade This Call</button>
+        <button class="btn-sm" id="sv-close" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div id="sv-grade-chip"></div>
+    ${compliance}
+    ${sentiment}
+    ${svSection('Summary', t.summary ? `<div class="sv-text">${esc(t.summary)}</div>`
+                                     : '<i class="muted">No summary available.</i>')}
+    <div class="sv-sec sv-sec-transcript">
+      <div class="sv-sec-title">Transcript</div>
+      <div class="sv-sec-body"><div class="sv-transcript-scroll">${svRenderTranscript(t.transcript_text)}</div></div>
+    </div>
+    <div class="sv-foot muted small">${esc(meta)}</div>`;
+  $('#sv-close')?.addEventListener('click', svClosePanel);
+  $('#sv-grade-btn')?.addEventListener('click', svGradeCurrent);
+  svRenderGradeChip();
+}
+
+function svRenderGradeChip() {
+  const chip = $('#sv-grade-chip');
+  if (!chip) return;
+  const g = svPanelState?.grade;
+  if (!g) { chip.innerHTML = ''; return; }
+  chip.innerHTML = `<button class="sv-grade-chip" id="sv-view-grade">
+    <span class="sv-grade-chip-badge" style="background:${svgGradeColor(g.overall_grade)}">${esc(g.overall_grade || '?')}</span>
+    Graded ${g.overall_score != null ? g.overall_score + '/100' : ''} · view →</button>`;
+  $('#sv-view-grade')?.addEventListener('click', () => svShowGrade(svPanelState.grade));
+}
+
+async function svLoadExistingGrade(recordingId) {
+  if (!recordingId) return;
+  try {
+    const d = await api(`/api/calls/grades/${encodeURIComponent(recordingId)}`);
+    if (d.grade && svPanelState && (svPanelState.t.recording_id === recordingId || svPanelState.row.recording_id === recordingId)) {
+      svPanelState.grade = d.grade;
+      svRenderGradeChip();
+    }
+  } catch { /* no existing grade / not configured — leave the chip empty */ }
+}
+
+async function svGradeCurrent() {
+  if (!svPanelState) return;
+  const panel = $('#sv-panel');
+  const { t, row } = svPanelState;
+  const recordingId = t.recording_id || row.recording_id;
+  if (!recordingId) { toast('No recording id for this call', 'error'); return; }
+  const transcript = t.transcript_text || '';
+  if (!transcript.trim()) { toast('This call has no transcript to grade', 'error'); return; }
+
+  const agent = t.agent_name
+    || ($('#sv-user')?.selectedOptions?.[0]?.textContent || '').split('—')[0].trim()
+    || null;
+
+  // Grade view swaps in while we wait, so the click has immediate feedback.
+  panel.innerHTML = `<div class="sv-panel-head">
+      <div><h4 style="margin:0">Grading call…</h4></div>
+      <button class="btn-sm" id="sv-close">✕</button>
+    </div>
+    <div class="sv-loading" style="flex:1 1 auto"><span class="sv-spinner"></span> Grading with Claude — this can take ~20s…</div>`;
+  $('#sv-close')?.addEventListener('click', svClosePanel);
+
+  try {
+    const d = await api('/api/calls/grade', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recording_id: recordingId,
+        agent_name: agent,
+        call_date: svDate || null,
+        call_direction: row.direction || null,
+        duration_seconds: row.duration || null,
+        transcript,
+      }),
+    });
+    svPanelState.grade = d.grade;
+    svShowGrade(d.grade);
+  } catch (err) {
+    toast('Grading failed: ' + err.message, 'error');
+    svRenderTranscriptPanel();   // restore the transcript view
+  }
+}
+
+// The grade result, shown in the same panel with a back button. Reuses the
+// transcript section's flex:1 scroll region so it scrolls to any length.
+function svShowGrade(g) {
+  const panel = $('#sv-panel');
+  if (!panel || !g) return;
+  const { row } = svPanelState || {};
+  const metaLine = [
+    g.agent_name || (svPanelState?.t?.agent_name),
+    g.call_date, row?.direction,
+    (g.duration_seconds != null ? svDuration(g.duration_seconds) : (row?.duration ? svDuration(row.duration) : null)),
+    g.property_name && g.property_name !== 'Unidentified' ? '📍 ' + g.property_name : null,
+  ].filter(Boolean).join(' · ');
+  panel.innerHTML = `
+    <div class="sv-panel-head">
+      <div style="display:flex;align-items:center;gap:12px;min-width:0">
+        <div class="svg-grade-box" style="background:${svgGradeColor(g.overall_grade)}">
+          <div class="svg-grade-letter">${esc(g.overall_grade || '?')}</div>
+          <div class="svg-grade-score">${g.overall_score != null ? g.overall_score : ''}/100</div>
+        </div>
+        <div style="min-width:0">
+          <h4 style="margin:0">Call Grade</h4>
+          <p class="muted small" style="margin:2px 0 0">${esc(metaLine)}</p>
+        </div>
+      </div>
+      <div class="sv-head-actions">
+        <button class="btn-sm" id="sv-grade-back">← Transcript</button>
+        <button class="btn-sm" id="sv-close" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div class="sv-sec sv-sec-transcript">
+      <div class="sv-sec-body"><div class="sv-transcript-scroll svg-fb">${svGradeFeedbackHtml(g)}</div></div>
+    </div>`;
+  $('#sv-close')?.addEventListener('click', svClosePanel);
+  $('#sv-grade-back')?.addEventListener('click', svRenderTranscriptPanel);
+}
+
+// Ported from Lyndsay's renderFeedbackBody — alerts, summary, outcome, flags,
+// scorecard, coaching, key moments. Namespaced under .svg-fb.
+function svGradeFeedbackHtml(g) {
+  let html = '';
+  if (g.legal_violation) html += `<div class="svg-alert legal">⚖️ Legal / liability language detected. Do not engage further without supervisor guidance — escalate to management immediately.</div>`;
+  if (g.fair_housing_flag) html += `<div class="svg-alert amber">🏠 Possible Fair Housing concern detected on this call. Review required.</div>`;
+  if (g.liability_flag && !g.legal_violation) html += `<div class="svg-alert amber">⚠️ Liability flag raised — threat of legal action or attorney mention. Escalate to management.</div>`;
+
+  html += `<div class="svg-sec"><div class="svg-sec-title">Summary</div><div class="svg-text">${esc(g.summary || '—')}</div></div>`;
+  html += `<div class="svg-sec"><div class="svg-sec-title">Outcome</div><div class="svg-text">${esc(g.outcome || '—')}</div></div>`;
+
+  if (Array.isArray(g.flags) && g.flags.length) {
+    html += `<div class="svg-sec"><div class="svg-sec-title">Flags</div>${g.flags.map(f => `<span class="svg-flag-chip">${esc(f)}</span>`).join('')}</div>`;
+  }
+
+  if (Array.isArray(g.categories) && g.categories.length) {
+    html += `<div class="svg-sec"><div class="svg-sec-title">Scorecard</div>`;
+    g.categories.forEach(cat => {
+      html += `<div class="svg-cat"><div class="svg-cat-head"><span>${esc(cat.name)}</span>
+        <span class="svg-cat-weight">Weight ${cat.weight != null ? cat.weight : '—'}% · Score ${cat.score != null ? cat.score : '—'}/10</span></div>`;
+      (cat.items || []).forEach(item => {
+        const s = Number(item.score) || 0;
+        html += `<div class="svg-item">
+          <span class="svg-item-label">${esc(item.label)}</span>
+          <span class="svg-item-track"><span class="svg-item-fill" style="width:${Math.min(100, s * 10)}%;background:${svgScoreColor(s)}"></span></span>
+          <span class="svg-item-num">${s}/10</span>
+          <span class="svg-item-note">${esc(item.note || '')}</span></div>`;
+      });
+      html += `</div>`;
+    });
+    html += `</div>`;
+  }
+
+  if (Array.isArray(g.coaching) && g.coaching.length) {
+    html += `<div class="svg-sec"><div class="svg-sec-title">Coaching Notes</div>`;
+    g.coaching.forEach(co => {
+      html += `<div class="svg-coach">
+        <div class="svg-coach-cat">${esc(co.category || '')}</div>
+        <div class="svg-coach-row strength">✅ <b>Strength:</b> ${esc(co.strength || '')}</div>
+        <div class="svg-coach-row improve">🎯 <b>Improve:</b> ${esc(co.improve || '')}</div></div>`;
+    });
+    html += `</div>`;
+  }
+
+  if (Array.isArray(g.key_moments) && g.key_moments.length) {
+    html += `<div class="svg-sec"><div class="svg-sec-title">Key Moments</div>
+      <ul class="svg-moments">${g.key_moments.map(m => `<li>${esc(m)}</li>`).join('')}</ul></div>`;
+  }
+  return html || '<div class="svg-sec"><span class="muted small">No grading detail.</span></div>';
+}
+
+// ── Grades dashboard (the "Grades" sub-view) ────────────────────────────────
+const svgState = { grades: [], filters: { agent: 'All', grade: 'All', direction: 'All', flagged: false }, wired: false, loaded: false };
+
+function svSetView(view) {
+  $$('#sv-view-toggle .sv-vt-btn').forEach(b => b.classList.toggle('active', b.dataset.svView === view));
+  $('#sv-view-calls')?.classList.toggle('hidden', view !== 'calls');
+  $('#sv-view-grades')?.classList.toggle('hidden', view !== 'grades');
+  if (view === 'grades') svgLoad();
+}
+
+async function svgLoad() {
+  const el = $('#sv-view-grades');
+  if (!el) return;
+  if (!svgState.loaded) el.innerHTML = '<p class="small muted">Loading grades…</p>';
+  try {
+    const d = await api('/api/calls/grades');
+    svgState.grades = d.grades || [];
+    svgState.loaded = true;
+    svgRender();
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+function svgFiltered() {
+  const f = svgState.filters;
+  return svgState.grades.filter(g => {
+    if (f.agent !== 'All' && (g.agent_name || 'Unidentified') !== f.agent) return false;
+    if (f.grade === 'DF' && !['D', 'F'].includes(g.overall_grade)) return false;
+    else if (['A', 'B', 'C'].includes(f.grade) && g.overall_grade !== f.grade) return false;
+    if (f.direction !== 'All' && (g.call_direction || '') !== f.direction) return false;
+    if (f.flagged && !svgIsFlagged(g)) return false;
+    return true;
+  });
+}
+
+function svgKpis(list) {
+  const n = list.length;
+  const avg = n ? Math.round(list.reduce((s, c) => s + (Number(c.overall_score) || 0), 0) / n) : 0;
+  const aCount = list.filter(c => c.overall_grade === 'A').length;
+  const mix = { A: 0, B: 0, C: 0, D: 0, F: 0 };
+  list.forEach(c => { if (mix[c.overall_grade] !== undefined) mix[c.overall_grade]++; });
+  return {
+    n, avg, aCount, aPct: n ? Math.round(aCount / n * 100) : 0,
+    coaching: list.filter(c => ['C', 'D', 'F'].includes(c.overall_grade)).length,
+    flagged: list.filter(svgIsFlagged).length, mix,
+  };
+}
+
+function svgRender() {
+  const el = $('#sv-view-grades');
+  if (!el) return;
+  const list = svgFiltered();
+  const k = svgKpis(list);
+  const maxMix = Math.max(1, k.mix.A, k.mix.B, k.mix.C, k.mix.D, k.mix.F);
+  const bars = ['A', 'B', 'C', 'D', 'F'].map(g =>
+    `<div class="svg-bar" style="height:${Math.round((k.mix[g] / maxMix) * 34) + 2}px;background:${svgGradeColor(g)}"></div>`).join('');
+
+  const agents = ['All', ...Array.from(new Set(svgState.grades.map(g => g.agent_name || 'Unidentified'))).sort()];
+  const gradePills = [['All', 'All'], ['A', 'A'], ['B', 'B'], ['C', 'C'], ['DF', 'D/F']].map(([v, t]) =>
+    `<button class="svg-pill${svgState.filters.grade === v ? ' active' : ''}" data-svg-grade="${v}">${t}</button>`).join('');
+
+  el.innerHTML = `
+    <div class="svg-kpis">
+      <div class="svg-kpi"><div class="svg-kpi-lab">Avg Score</div><div class="svg-kpi-val">${k.avg}</div><div class="svg-kpi-sub">${k.n} call${k.n === 1 ? '' : 's'}</div></div>
+      <div class="svg-kpi"><div class="svg-kpi-lab">A-Grade %</div><div class="svg-kpi-val">${k.aPct}%</div><div class="svg-kpi-sub">${k.aCount} A grade${k.aCount === 1 ? '' : 's'}</div></div>
+      <div class="svg-kpi"><div class="svg-kpi-lab">Coaching</div><div class="svg-kpi-val">${k.coaching}</div><div class="svg-kpi-sub">C / D / F</div></div>
+      <div class="svg-kpi"><div class="svg-kpi-lab">Flagged</div><div class="svg-kpi-val">${k.flagged}</div><div class="svg-kpi-sub">Quality concerns</div></div>
+      <div class="svg-kpi"><div class="svg-kpi-lab">Grade Mix</div><div class="svg-bars">${bars}</div>
+        <div class="svg-bar-labels"><span>A</span><span>B</span><span>C</span><span>D</span><span>F</span></div></div>
+    </div>
+    <div class="svg-filters">
+      ${gradePills}
+      <button class="svg-pill flag${svgState.filters.flagged ? ' active' : ''}" data-svg-flagged>🚩 Flagged</button>
+      <select class="crm-select" id="svg-f-agent">${agents.map(a => `<option value="${esc(a)}"${svgState.filters.agent === a ? ' selected' : ''}>${a === 'All' ? 'All agents' : esc(a)}</option>`).join('')}</select>
+      <select class="crm-select" id="svg-f-dir">${[['All', 'All directions'], ['inbound', 'Inbound'], ['outbound', 'Outbound']].map(([v, t]) => `<option value="${v}"${svgState.filters.direction === v ? ' selected' : ''}>${t}</option>`).join('')}</select>
+      <span class="muted small" style="margin-left:auto">${list.length} of ${svgState.grades.length}</span>
+    </div>
+    <div class="svg-list">${svgListHtml(list)}</div>`;
+
+  el.querySelectorAll('[data-svg-grade]').forEach(b => b.addEventListener('click', () => { svgState.filters.grade = b.dataset.svgGrade; svgRender(); }));
+  el.querySelector('[data-svg-flagged]')?.addEventListener('click', () => { svgState.filters.flagged = !svgState.filters.flagged; svgRender(); });
+  $('#svg-f-agent')?.addEventListener('change', e => { svgState.filters.agent = e.target.value; svgRender(); });
+  $('#svg-f-dir')?.addEventListener('change', e => { svgState.filters.direction = e.target.value; svgRender(); });
+  el.querySelectorAll('.svg-row').forEach(r => r.addEventListener('click', () => svgOpenDetail(r.dataset.rid)));
+}
+
+function svgListHtml(list) {
+  if (!list.length) return '<div class="empty-state">No graded calls match these filters.</div>';
+  return list.map(g => `<div class="svg-row" data-rid="${esc(g.recording_id)}">
+    <div class="svg-row-badge" style="background:${svgGradeColor(g.overall_grade)}">${esc(g.overall_grade || '?')}</div>
+    <div class="svg-row-body">
+      <div class="svg-row-agent">${esc(g.agent_name || 'Unidentified')}${svgIsFlagged(g) ? ' 🚩' : ''}</div>
+      <div class="svg-row-meta">
+        ${g.call_direction ? `<span class="small muted">${esc(g.call_direction)}</span> · ` : ''}
+        <span class="small muted">${esc(g.call_date || '')}</span>
+        ${g.duration_seconds != null ? ` · <span class="small muted">${svDuration(g.duration_seconds)}</span>` : ''}
+        ${g.property_name && g.property_name !== 'Unidentified' ? ` · <span class="small muted">📍 ${esc(g.property_name)}</span>` : ''}
+      </div>
+    </div>
+    <div class="svg-row-score">${g.overall_score != null ? g.overall_score : ''}</div>
+  </div>`).join('');
+}
+
+async function svgOpenDetail(recordingId) {
+  try {
+    const d = await api(`/api/calls/grades/${encodeURIComponent(recordingId)}`);
+    if (!d.grade) { toast('Grade not found', 'error'); return; }
+    svgShowModal(d.grade);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function svgShowModal(g) {
+  let ov = $('#svg-modal');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'svg-modal';
+    ov.className = 'svg-modal-overlay';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+  }
+  const metaLine = [g.agent_name, g.call_date, g.call_direction,
+    g.duration_seconds != null ? svDuration(g.duration_seconds) : null,
+    g.property_name && g.property_name !== 'Unidentified' ? '📍 ' + g.property_name : null].filter(Boolean).join(' · ');
+  ov.innerHTML = `<div class="svg-modal-card">
+    <div class="svg-modal-head" style="background:${svgGradeColor(g.overall_grade)}">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div class="svg-grade-box" style="background:rgba(0,0,0,.18)">
+          <div class="svg-grade-letter">${esc(g.overall_grade || '?')}</div>
+          <div class="svg-grade-score">${g.overall_score != null ? g.overall_score : ''}/100</div>
+        </div>
+        <div><div style="font-weight:700;font-size:15px">${esc(g.agent_name || 'Unidentified')}</div>
+          <div style="font-size:12px;opacity:.9">${esc(metaLine)}</div></div>
+      </div>
+      <button class="svg-modal-close" id="svg-modal-close">✕</button>
+    </div>
+    <div class="svg-modal-body svg-fb">${svGradeFeedbackHtml(g)}</div>
+  </div>`;
+  $('#svg-modal-close')?.addEventListener('click', () => ov.remove());
+}
+
 // Clicking away closes it. Bound once to a backdrop rather than to document, so
 // a click inside the panel cannot bubble out and shut it mid-read.
 $('#sv-overlay')?.addEventListener('click', svClosePanel);
+$$('#sv-view-toggle .sv-vt-btn').forEach(b => b.addEventListener('click', () => svSetView(b.dataset.svView)));
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !$('#sv-panel')?.classList.contains('hidden')) svClosePanel();
 });

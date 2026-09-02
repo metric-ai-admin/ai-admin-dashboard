@@ -52,6 +52,7 @@ const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
 const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
+const callGrading = require('./call-grading.js');
 const crmEngine = require('./crm-task-engine.js');
 const XLSX        = require('xlsx');
 const multer      = require('multer');
@@ -3567,6 +3568,112 @@ app.patch('/api/leasing/submissions/:id', requireAuth, async (req, res) => {
     if (error) throw new Error(error.message);
     if (!data) return res.status(404).json({ error: 'Submission not found' });
     res.json({ ok: true, submission: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// =====================================================================
+// CALL GRADING — Call Quality Analyzer (Lyndsay's rubric, server-side)
+// =====================================================================
+// Grades a call transcript against Metric's rubric via Anthropic (key held in
+// ANTHROPIC_API_KEY, never in the browser) and stores the result in call_grades.
+// requireAuth: the Call Analyzer tab is admin-gated on the client and these are
+// costed, mutating calls, so a session is required.
+
+// Columns kept out of the list payload (categories/coaching/key_moments) so the
+// Grades dashboard stays light; a row-expand fetches the full record.
+const CALL_GRADE_LIST_COLS = 'id,recording_id,agent_name,call_date,call_direction,'
+  + 'duration_seconds,property_name,overall_score,overall_grade,legal_violation,'
+  + 'fair_housing_flag,liability_flag,summary,outcome,flags,graded_by,graded_at';
+
+// Shapes a parsed grade + call metadata into a call_grades row.
+function callGradeRow(parsed, meta) {
+  return {
+    recording_id:      meta.recording_id,
+    agent_name:        meta.agent_name || null,
+    call_date:         /^\d{4}-\d{2}-\d{2}$/.test(String(meta.call_date || '')) ? meta.call_date : null,
+    call_direction:    meta.call_direction || null,
+    duration_seconds:  Number.isFinite(+meta.duration_seconds) ? Math.round(+meta.duration_seconds) : null,
+    property_name:     (parsed.property_name && String(parsed.property_name).trim()) || meta.property_name || 'Unidentified',
+    overall_score:     Number.isFinite(+parsed.overall_score) ? Math.round(+parsed.overall_score) : null,
+    overall_grade:     parsed.overall_grade || null,
+    legal_violation:   !!parsed.legal_violation,
+    fair_housing_flag: !!parsed.fair_housing_flag,
+    liability_flag:    !!parsed.liability_flag,
+    summary:           parsed.summary || null,
+    outcome:           parsed.outcome || null,
+    flags:             Array.isArray(parsed.flags) ? parsed.flags : [],
+    categories:        Array.isArray(parsed.categories) ? parsed.categories : [],
+    coaching:          Array.isArray(parsed.coaching) ? parsed.coaching : [],
+    key_moments:       Array.isArray(parsed.key_moments) ? parsed.key_moments : [],
+    graded_by:         'AI',
+    graded_at:         new Date().toISOString(),
+  };
+}
+
+// Grade the given transcript and save. One grade per recording_id: a re-grade
+// replaces the prior row (schema has no unique key, so delete-then-insert).
+app.post('/api/calls/grade', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const b = req.body || {};
+  if (!b.recording_id) return res.status(400).json({ error: 'recording_id is required' });
+  if (!b.transcript || !String(b.transcript).trim()) return res.status(400).json({ error: 'transcript is required' });
+  try {
+    const parsed = await callGrading.gradeTranscript({
+      callType: b.call_direction || b.call_type,
+      agent: b.agent_name,
+      duration: b.duration_seconds,
+      transcript: b.transcript,
+    });
+    const row = callGradeRow(parsed, b);
+    const db = supabaseAdmin || supabasePublic;
+    await db.from('call_grades').delete().eq('recording_id', row.recording_id);
+    const { data, error } = await db.from('call_grades').insert(row).select('*').single();
+    if (error) throw new Error(error.message);
+    res.status(201).json({ ok: true, grade: data });
+  } catch (err) {
+    // 502 for a model/API failure so the client can tell "not configured" and
+    // upstream errors apart from a bad request.
+    const status = /not configured/i.test(err.message) ? 503 : 502;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// List grades (light columns), newest first, with optional filters.
+app.get('/api/calls/grades', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ grades: [] });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    let q = db.from('call_grades').select(CALL_GRADE_LIST_COLS)
+      .order('graded_at', { ascending: false }).limit(2000);
+    if (req.query.agent && req.query.agent !== 'All') q = q.eq('agent_name', req.query.agent);
+    if (req.query.grade && req.query.grade !== 'All') {
+      if (req.query.grade === 'DF') q = q.in('overall_grade', ['D', 'F']);
+      else q = q.eq('overall_grade', req.query.grade);
+    }
+    if (req.query.direction && req.query.direction !== 'All') q = q.eq('call_direction', req.query.direction);
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    let grades = data || [];
+    // "flagged" spans four boolean/array conditions, so filter it in app code.
+    if (req.query.flagged === 'true') {
+      grades = grades.filter(g => g.legal_violation || g.fair_housing_flag || g.liability_flag
+        || (Array.isArray(g.flags) && g.flags.length));
+    }
+    res.json({ grades });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Full grade for one recording (the transcript panel checks this to show an
+// existing grade, and the Grades dashboard fetches it on row-expand).
+app.get('/api/calls/grades/:recording_id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ grade: null });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('call_grades')
+      .select('*').eq('recording_id', req.params.recording_id)
+      .order('graded_at', { ascending: false }).limit(1).maybeSingle();
+    if (error) throw new Error(error.message);
+    res.json({ grade: data || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
