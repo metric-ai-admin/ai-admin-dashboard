@@ -73,6 +73,11 @@ const TAB_ACCESS = {
   // review/approve (that gate is by role inside the Leasing tab). Lyndsay/Kara/
   // Bekah get review access via their own roles once those accounts exist.
   leasing:     ['leasing'],
+  // Katie's actual account — Leasing tab + BD CRM, nothing else. The BD CRM tab
+  // key is 'crm' (not 'bd_crm'): the nav button is data-tab="crm" and every other
+  // role uses 'crm'. She gets normal BD CRM access minus the internal staff
+  // roster (admin/operations only — see CRM_ROSTER_ROLES).
+  leasing_bd:  ['leasing', 'crm'],
 };
 
 // Maintenance is read-only for these two: they consult the board, they do not
@@ -140,7 +145,7 @@ function roleLabelFor(role) {
     admin: 'AI Admin', ceo: 'CEO', operations: 'Operations Manager',
     maintenance: 'Maintenance Coordinator', bd_agent: 'BD Agent',
     regional_director: 'Regional Director', resident_success: 'Resident Success',
-    collections_leasing: 'Collections & Leasing',
+    collections_leasing: 'Collections & Leasing', leasing_bd: 'Leasing & BD',
   }[role] || role;
 }
 
