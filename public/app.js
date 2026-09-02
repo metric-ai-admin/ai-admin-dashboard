@@ -4613,9 +4613,22 @@ async function svOpen(btn) {
 let svPanelState = null;
 
 const SVG_GRADE_COLORS = { A: '#16A34A', B: '#1D4ED8', C: '#A16207', D: '#C2410C', F: '#DC2626' };
+const SVG_NS_COLOR = '#6B7280';   // neutral gray — not a grade
 const svgGradeColor = g => SVG_GRADE_COLORS[g] || '#8A8578';
 function svgScoreColor(s) { s = Number(s) || 0; return s >= 8 ? '#2ECC8A' : s >= 6 ? '#4A90D9' : s >= 4 ? '#F5A623' : '#E8455A'; }
 const svgIsFlagged = g => !!(g && (g.legal_violation || g.fair_housing_flag || g.liability_flag || (Array.isArray(g.flags) && g.flags.length)));
+
+// "Not Scoreable" — the AI flags a transcript that isn't the listed agent's call
+// (a support call, a different speaker, no scoreable criteria). It comes back as
+// F/low with a flag; we treat it as its own status so it doesn't read as a real F
+// or pollute agent metrics. Detected from the stored flags — no re-grade needed.
+const SVG_NS_PATTERNS = [/wrong\s*call/i, /no\s*scoreable\s*criteria\s*met/i];
+function svgNotScoreable(g) {
+  return Array.isArray(g?.flags) && g.flags.some(f => SVG_NS_PATTERNS.some(re => re.test(String(f || ''))));
+}
+// Badge letter and colour, honouring Not Scoreable.
+const svgBadgeText = g => svgNotScoreable(g) ? 'N/S' : (g.overall_grade || '?');
+const svgBadgeColor = g => svgNotScoreable(g) ? SVG_NS_COLOR : svgGradeColor(g.overall_grade);
 
 // The transcript panel — identical to before, plus a Grade button in the header
 // and a slot for an existing-grade chip. Rendered from svPanelState so "← Transcript"
@@ -4657,9 +4670,10 @@ function svRenderGradeChip() {
   if (!chip) return;
   const g = svPanelState?.grade;
   if (!g) { chip.innerHTML = ''; return; }
+  const ns = svgNotScoreable(g);
   chip.innerHTML = `<button class="sv-grade-chip" id="sv-view-grade">
-    <span class="sv-grade-chip-badge" style="background:${svgGradeColor(g.overall_grade)}">${esc(g.overall_grade || '?')}</span>
-    Graded ${g.overall_score != null ? g.overall_score + '/100' : ''} · view →</button>`;
+    <span class="sv-grade-chip-badge" style="background:${svgBadgeColor(g)}">${esc(svgBadgeText(g))}</span>
+    ${ns ? 'Not Scoreable' : ('Graded ' + (g.overall_score != null ? g.overall_score + '/100' : ''))} · view →</button>`;
   $('#sv-view-grade')?.addEventListener('click', () => svShowGrade(svPanelState.grade));
 }
 
@@ -4727,15 +4741,16 @@ function svShowGrade(g) {
     (g.duration_seconds != null ? svDuration(g.duration_seconds) : (row?.duration ? svDuration(row.duration) : null)),
     g.property_name && g.property_name !== 'Unidentified' ? '📍 ' + g.property_name : null,
   ].filter(Boolean).join(' · ');
+  const ns = svgNotScoreable(g);
   panel.innerHTML = `
     <div class="sv-panel-head">
       <div style="display:flex;align-items:center;gap:12px;min-width:0">
-        <div class="svg-grade-box" style="background:${svgGradeColor(g.overall_grade)}">
-          <div class="svg-grade-letter">${esc(g.overall_grade || '?')}</div>
-          <div class="svg-grade-score">${g.overall_score != null ? g.overall_score : ''}/100</div>
+        <div class="svg-grade-box${ns ? ' ns' : ''}" style="background:${svgBadgeColor(g)}">
+          <div class="svg-grade-letter">${esc(svgBadgeText(g))}</div>
+          ${ns ? '' : `<div class="svg-grade-score">${g.overall_score != null ? g.overall_score : ''}/100</div>`}
         </div>
         <div style="min-width:0">
-          <h4 style="margin:0">Call Grade</h4>
+          <h4 style="margin:0">${ns ? 'Not Scoreable' : 'Call Grade'}</h4>
           <p class="muted small" style="margin:2px 0 0">${esc(metaLine)}</p>
         </div>
       </div>
@@ -4755,6 +4770,7 @@ function svShowGrade(g) {
 // scorecard, coaching, key moments. Namespaced under .svg-fb.
 function svGradeFeedbackHtml(g) {
   let html = '';
+  if (svgNotScoreable(g)) html += `<div class="svg-alert ns">🚫 <b>Not Scoreable</b> — this transcript doesn't reflect the listed agent's call (wrong call / no scoreable criteria). It's excluded from the agent's average and grade distribution.</div>`;
   if (g.legal_violation) html += `<div class="svg-alert legal">⚖️ Legal / liability language detected. Do not engage further without supervisor guidance — escalate to management immediately.</div>`;
   if (g.fair_housing_flag) html += `<div class="svg-alert amber">🏠 Possible Fair Housing concern detected on this call. Review required.</div>`;
   if (g.liability_flag && !g.legal_violation) html += `<div class="svg-alert amber">⚠️ Liability flag raised — threat of legal action or attorney mention. Escalate to management.</div>`;
@@ -4830,24 +4846,32 @@ function svgFiltered() {
   const f = svgState.filters;
   return svgState.grades.filter(g => {
     if (f.agent !== 'All' && (g.agent_name || 'Unidentified') !== f.agent) return false;
-    if (f.grade === 'DF' && !['D', 'F'].includes(g.overall_grade)) return false;
-    else if (['A', 'B', 'C'].includes(f.grade) && g.overall_grade !== f.grade) return false;
+    const ns = svgNotScoreable(g);
+    // Grade filters never surface Not Scoreable (it isn't a real grade); the
+    // dedicated 'NS' filter shows only those, and 'All' shows everything.
+    if (f.grade === 'NS') { if (!ns) return false; }
+    else if (f.grade === 'DF') { if (ns || !['D', 'F'].includes(g.overall_grade)) return false; }
+    else if (['A', 'B', 'C'].includes(f.grade)) { if (ns || g.overall_grade !== f.grade) return false; }
     if (f.direction !== 'All' && (g.call_direction || '') !== f.direction) return false;
     if (f.flagged && !svgIsFlagged(g)) return false;
     return true;
   });
 }
 
+// KPIs are computed over SCOREABLE calls only — Not Scoreable calls are counted
+// separately so they never move the average, distribution, or coaching totals.
 function svgKpis(list) {
-  const n = list.length;
-  const avg = n ? Math.round(list.reduce((s, c) => s + (Number(c.overall_score) || 0), 0) / n) : 0;
-  const aCount = list.filter(c => c.overall_grade === 'A').length;
+  const scoreable = list.filter(c => !svgNotScoreable(c));
+  const notScoreable = list.length - scoreable.length;
+  const n = scoreable.length;
+  const avg = n ? Math.round(scoreable.reduce((s, c) => s + (Number(c.overall_score) || 0), 0) / n) : 0;
+  const aCount = scoreable.filter(c => c.overall_grade === 'A').length;
   const mix = { A: 0, B: 0, C: 0, D: 0, F: 0 };
-  list.forEach(c => { if (mix[c.overall_grade] !== undefined) mix[c.overall_grade]++; });
+  scoreable.forEach(c => { if (mix[c.overall_grade] !== undefined) mix[c.overall_grade]++; });
   return {
-    n, avg, aCount, aPct: n ? Math.round(aCount / n * 100) : 0,
-    coaching: list.filter(c => ['C', 'D', 'F'].includes(c.overall_grade)).length,
-    flagged: list.filter(svgIsFlagged).length, mix,
+    n, avg, aCount, aPct: n ? Math.round(aCount / n * 100) : 0, notScoreable,
+    coaching: scoreable.filter(c => ['C', 'D', 'F'].includes(c.overall_grade)).length,
+    flagged: scoreable.filter(svgIsFlagged).length, mix,
   };
 }
 
@@ -4861,12 +4885,15 @@ function svgRender() {
     `<div class="svg-bar" style="height:${Math.round((k.mix[g] / maxMix) * 34) + 2}px;background:${svgGradeColor(g)}"></div>`).join('');
 
   const agents = ['All', ...Array.from(new Set(svgState.grades.map(g => g.agent_name || 'Unidentified'))).sort()];
-  const gradePills = [['All', 'All'], ['A', 'A'], ['B', 'B'], ['C', 'C'], ['DF', 'D/F']].map(([v, t]) =>
-    `<button class="svg-pill${svgState.filters.grade === v ? ' active' : ''}" data-svg-grade="${v}">${t}</button>`).join('');
+  const nsTotal = svgState.grades.filter(svgNotScoreable).length;
+  const pillDefs = [['All', 'All'], ['A', 'A'], ['B', 'B'], ['C', 'C'], ['DF', 'D/F']];
+  if (nsTotal) pillDefs.push(['NS', 'Not Scoreable']);
+  const gradePills = pillDefs.map(([v, t]) =>
+    `<button class="svg-pill${v === 'NS' ? ' ns' : ''}${svgState.filters.grade === v ? ' active' : ''}" data-svg-grade="${v}">${t}</button>`).join('');
 
   el.innerHTML = `
     <div class="svg-kpis">
-      <div class="svg-kpi"><div class="svg-kpi-lab">Avg Score</div><div class="svg-kpi-val">${k.avg}</div><div class="svg-kpi-sub">${k.n} call${k.n === 1 ? '' : 's'}</div></div>
+      <div class="svg-kpi"><div class="svg-kpi-lab">Avg Score</div><div class="svg-kpi-val">${k.avg}</div><div class="svg-kpi-sub">${k.n} scored${k.notScoreable ? ` · ${k.notScoreable} not scoreable` : ''}</div></div>
       <div class="svg-kpi"><div class="svg-kpi-lab">A-Grade %</div><div class="svg-kpi-val">${k.aPct}%</div><div class="svg-kpi-sub">${k.aCount} A grade${k.aCount === 1 ? '' : 's'}</div></div>
       <div class="svg-kpi"><div class="svg-kpi-lab">Coaching</div><div class="svg-kpi-val">${k.coaching}</div><div class="svg-kpi-sub">C / D / F</div></div>
       <div class="svg-kpi"><div class="svg-kpi-lab">Flagged</div><div class="svg-kpi-val">${k.flagged}</div><div class="svg-kpi-sub">Quality concerns</div></div>
@@ -4891,19 +4918,20 @@ function svgRender() {
 
 function svgListHtml(list) {
   if (!list.length) return '<div class="empty-state">No graded calls match these filters.</div>';
-  return list.map(g => `<div class="svg-row" data-rid="${esc(g.recording_id)}">
-    <div class="svg-row-badge" style="background:${svgGradeColor(g.overall_grade)}">${esc(g.overall_grade || '?')}</div>
+  return list.map(g => { const ns = svgNotScoreable(g); return `<div class="svg-row${ns ? ' ns' : ''}" data-rid="${esc(g.recording_id)}">
+    <div class="svg-row-badge${ns ? ' ns' : ''}" style="background:${svgBadgeColor(g)}">${esc(svgBadgeText(g))}</div>
     <div class="svg-row-body">
-      <div class="svg-row-agent">${esc(g.agent_name || 'Unidentified')}${svgIsFlagged(g) ? ' 🚩' : ''}</div>
+      <div class="svg-row-agent">${esc(g.agent_name || 'Unidentified')}${ns ? '' : (svgIsFlagged(g) ? ' 🚩' : '')}</div>
       <div class="svg-row-meta">
+        ${ns ? '<span class="svg-ns-tag">Not Scoreable</span> · ' : ''}
         ${g.call_direction ? `<span class="small muted">${esc(g.call_direction)}</span> · ` : ''}
         <span class="small muted">${esc(g.call_date || '')}</span>
         ${g.duration_seconds != null ? ` · <span class="small muted">${svDuration(g.duration_seconds)}</span>` : ''}
         ${g.property_name && g.property_name !== 'Unidentified' ? ` · <span class="small muted">📍 ${esc(g.property_name)}</span>` : ''}
       </div>
     </div>
-    <div class="svg-row-score">${g.overall_score != null ? g.overall_score : ''}</div>
-  </div>`).join('');
+    <div class="svg-row-score">${ns ? '' : (g.overall_score != null ? g.overall_score : '')}</div>
+  </div>`; }).join('');
 }
 
 async function svgOpenDetail(recordingId) {
@@ -4926,12 +4954,13 @@ function svgShowModal(g) {
   const metaLine = [g.agent_name, g.call_date, g.call_direction,
     g.duration_seconds != null ? svDuration(g.duration_seconds) : null,
     g.property_name && g.property_name !== 'Unidentified' ? '📍 ' + g.property_name : null].filter(Boolean).join(' · ');
+  const ns = svgNotScoreable(g);
   ov.innerHTML = `<div class="svg-modal-card">
-    <div class="svg-modal-head" style="background:${svgGradeColor(g.overall_grade)}">
+    <div class="svg-modal-head" style="background:${svgBadgeColor(g)}">
       <div style="display:flex;align-items:center;gap:12px">
         <div class="svg-grade-box" style="background:rgba(0,0,0,.18)">
-          <div class="svg-grade-letter">${esc(g.overall_grade || '?')}</div>
-          <div class="svg-grade-score">${g.overall_score != null ? g.overall_score : ''}/100</div>
+          <div class="svg-grade-letter">${esc(svgBadgeText(g))}</div>
+          ${ns ? '' : `<div class="svg-grade-score">${g.overall_score != null ? g.overall_score : ''}/100</div>`}
         </div>
         <div><div style="font-weight:700;font-size:15px">${esc(g.agent_name || 'Unidentified')}</div>
           <div style="font-size:12px;opacity:.9">${esc(metaLine)}</div></div>

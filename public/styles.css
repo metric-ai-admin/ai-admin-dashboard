@@ -1694,3 +1694,12 @@ tr.ca-sel { background: var(--accent-glow); }
 .svg-modal-close { background: rgba(255,255,255,.18); border: none; color: #fff; border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 14px; }
 .svg-modal-close:hover { background: rgba(255,255,255,.3); }
 .svg-modal-body { padding: 6px 20px 20px; overflow-y: auto; }
+
+/* ── Not Scoreable (call doesn't reflect the listed agent) ────────────────── */
+.svg-grade-box.ns .svg-grade-letter { font-size: 15px; }
+.sv-grade-chip-badge { font-size: 11px; }
+.svg-fb .svg-alert.ns { background: var(--bg-elevated); color: var(--text-secondary); border: 1px solid var(--border); }
+.svg-pill.ns.active { background: #6B7280; border-color: #6B7280; color: #fff; }
+.svg-ns-tag { display: inline-block; font-size: 10px; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .04em; color: #fff; background: #6B7280; padding: 1px 6px; border-radius: 5px; }
+.svg-row.ns .svg-row-agent { color: var(--text-secondary); }
