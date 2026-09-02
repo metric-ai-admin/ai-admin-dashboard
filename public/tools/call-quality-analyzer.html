@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Metric Property Management — Call Quality Analyzer</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+
+:root{
+  --navy:#1B2A4A;
+  --navy-light:#27395f;
+  --gold:#F5A623;
+  --cream:#F8F4EE;
+  --cream-mid:#EDE7DC;
+  --green:#2ECC8A;
+  --red:#E8455A;
+  --blue:#4A90D9;
+  --muted:#8A8578;
+  --line:#E4DDD0;
+  --grade-a:#16A34A;
+  --grade-b:#1D4ED8;
+  --grade-c:#A16207;
+  --grade-d:#C2410C;
+  --grade-f:#DC2626;
+}
+*{box-sizing:border-box;}
+body{margin:0;font-family:'DM Sans',sans-serif;background:var(--cream);color:var(--navy);}
+#app{display:flex;min-height:100vh;}
+
+/* ---------- SIDEBAR ---------- */
+.sidebar{width:232px;flex-shrink:0;background:var(--navy);color:#d7deec;display:flex;flex-direction:column;min-height:100vh;font-size:13px;}
+.sidebar-header{padding:22px 20px 16px;border-bottom:1px solid rgba(255,255,255,.09);}
+.brand-name{font-family:'DM Serif Display',serif;font-size:18px;color:#fff;line-height:1.25;}
+.brand-eyebrow{color:var(--gold);font-size:10.5px;letter-spacing:.09em;font-weight:700;margin-top:7px;}
+.nav-scroll{flex:1;overflow-y:auto;padding-bottom:10px;}
+.nav-section-label{padding:0 20px;font-size:10px;letter-spacing:.09em;color:#6c7aa0;margin:16px 0 6px;font-weight:700;}
+.nav-item{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 20px;cursor:pointer;color:#dbe1ee;transition:background .12s;}
+.nav-item:hover{background:rgba(255,255,255,.07);}
+.nav-item.active{background:var(--gold);color:var(--navy);font-weight:700;}
+.nav-item .role-tag{font-size:10.5px;color:#8b97b8;white-space:nowrap;flex-shrink:0;}
+.nav-item.active .role-tag{color:rgba(27,42,74,.65);}
+.nav-item .nav-label{display:flex;align-items:center;gap:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.nav-item.mgmt.flagged.active{background:var(--red);color:#fff;}
+.nav-item.mgmt.legal.active{background:var(--red);color:#fff;}
+.nav-item.mgmt.fairhousing.active{background:#F5A623;color:var(--navy);}
+.nav-item.mgmt.liability.active{background:#F5A623;color:var(--navy);}
+.nav-item.mgmt .role-tag{color:#8b97b8;}
+.sidebar-footer{padding:12px 20px;font-size:10.5px;color:#5c6a8c;border-top:1px solid rgba(255,255,255,.09);}
+
+/* ---------- MAIN ---------- */
+.main{flex:1;min-width:0;padding:26px 30px 40px;}
+.main-header{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:16px;}
+.main-title{font-family:'DM Serif Display',serif;font-size:25px;}
+.tabs-pill{display:inline-flex;background:var(--cream-mid);border-radius:999px;padding:4px;gap:3px;}
+.tab-btn{padding:8px 16px;border-radius:999px;font-size:13px;font-weight:700;cursor:pointer;border:none;background:transparent;color:var(--navy);font-family:inherit;}
+.tab-btn.active{background:var(--navy);color:#fff;}
+
+.filter-pills{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;}
+.pill-btn{padding:6px 15px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:12.5px;font-weight:700;color:var(--navy);cursor:pointer;font-family:inherit;}
+.pill-btn.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+.pill-btn.flagpill.active{background:var(--red);border-color:var(--red);color:#fff;}
+
+.kpi-row{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:20px;}
+@media (max-width:980px){.kpi-row{grid-template-columns:repeat(2,1fr);}}
+.kpi-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
+.kpi-label{font-size:10.5px;letter-spacing:.06em;font-weight:700;color:var(--muted);text-transform:uppercase;}
+.kpi-value{font-family:'DM Mono',monospace;font-size:25px;font-weight:700;margin-top:5px;color:var(--navy);}
+.kpi-sub{font-size:11px;color:var(--muted);margin-top:2px;}
+.gradechart-bars{display:flex;align-items:flex-end;gap:5px;height:38px;margin-top:8px;}
+.gradechart-bars .bar{width:12px;border-radius:3px 3px 0 0;min-height:2px;}
+.gradechart-labels{display:flex;gap:5px;margin-top:3px;}
+.gradechart-labels span{width:12px;text-align:center;font-size:9px;color:var(--muted);font-weight:700;}
+
+.content-grid{display:grid;grid-template-columns:minmax(290px,420px) 1fr;gap:18px;align-items:start;}
+@media (max-width:900px){.content-grid{grid-template-columns:1fr;}}
+
+.panel{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;}
+.panel-header{display:flex;justify-content:space-between;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line);font-weight:700;font-size:13px;}
+.panel-header .count{color:var(--muted);font-weight:600;font-size:12px;}
+.panel-header .header-right{display:flex;align-items:center;gap:10px;}
+.sort-select{font-family:inherit;font-size:11.5px;font-weight:600;color:var(--navy);border:1px solid var(--line);border-radius:6px;padding:4px 7px;background:var(--cream);}
+
+.call-list{max-height:740px;overflow-y:auto;}
+.call-row{display:flex;gap:11px;align-items:flex-start;padding:12px 16px;border-bottom:1px solid var(--cream-mid);cursor:pointer;position:relative;}
+.call-row:hover{background:var(--cream);}
+.call-row.selected{background:var(--cream-mid);}
+.call-badge{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-family:'DM Serif Display',serif;font-weight:700;color:#fff;flex-shrink:0;font-size:15px;}
+.call-row-body{flex:1;min-width:0;}
+.call-row-agent{font-weight:700;font-size:13.5px;}
+.call-row-meta{display:flex;gap:6px;align-items:center;font-size:11px;color:var(--muted);margin-top:4px;flex-wrap:wrap;}
+.call-type-tag{padding:2px 8px;border-radius:6px;font-size:10px;font-weight:700;white-space:nowrap;}
+.call-row-score{font-family:'DM Mono',monospace;font-weight:700;font-size:16px;margin-left:auto;flex-shrink:0;padding-top:2px;}
+.call-row-delete{position:absolute;top:10px;right:10px;opacity:0;transition:opacity .15s;background:none;border:none;cursor:pointer;color:var(--muted);font-size:13px;padding:4px;}
+.call-row:hover .call-row-delete{opacity:1;}
+.call-row-delete:hover{color:var(--red);}
+.empty-list{padding:40px 20px;text-align:center;color:var(--muted);font-size:13px;}
+
+.detail-panel{min-height:300px;}
+.detail-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;min-height:420px;color:var(--muted);gap:10px;}
+.detail-empty .icon{width:56px;height:56px;border-radius:50%;background:var(--cream-mid);display:flex;align-items:center;justify-content:center;font-size:22px;color:var(--gold);}
+
+.detail-header{background:var(--navy);color:#fff;padding:20px 22px;display:flex;gap:16px;align-items:center;}
+.detail-grade-box{width:56px;height:56px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0;}
+.detail-grade-box .letter{font-family:'DM Serif Display',serif;font-size:24px;font-weight:700;line-height:1;}
+.detail-grade-box .score{font-family:'DM Mono',monospace;font-size:10px;opacity:.9;margin-top:1px;}
+.detail-header-info{min-width:0;}
+.detail-header-info .agent{font-size:17px;font-weight:700;}
+.detail-header-info .meta{font-size:12px;opacity:.8;margin-top:3px;}
+.detail-header-delete{margin-left:auto;background:rgba(255,255,255,.12);border:none;color:#fff;border-radius:8px;padding:8px 10px;cursor:pointer;font-size:13px;flex-shrink:0;}
+.detail-header-delete:hover{background:rgba(255,255,255,.22);}
+
+.alert-banner{padding:12px 22px;font-size:12.5px;font-weight:600;display:flex;gap:8px;align-items:flex-start;border-bottom:1px solid var(--line);}
+.alert-banner.legal{background:#FDECEC;color:#B91C2C;}
+.alert-banner.amber{background:#FEF3DC;color:#92620A;}
+
+.detail-section{padding:18px 22px;border-bottom:1px solid var(--cream-mid);}
+.detail-section:last-child{border-bottom:none;}
+.detail-section-title{font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--muted);margin-bottom:9px;}
+.detail-text{font-size:13.5px;line-height:1.55;}
+
+.flag-chip{display:inline-block;background:#FDECEC;color:#B91C2C;padding:5px 11px;border-radius:6px;font-size:12px;margin:0 6px 6px 0;}
+
+.category-block{margin-bottom:16px;}
+.category-block:last-child{margin-bottom:0;}
+.category-head{display:flex;justify-content:space-between;align-items:baseline;font-weight:700;font-size:13px;margin-bottom:8px;}
+.category-head .weight{font-size:11px;color:var(--muted);font-weight:600;}
+.score-item{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:12.5px;}
+.score-item-label{flex:0 0 150px;color:var(--navy);}
+.score-bar-track{flex:1;height:7px;background:var(--cream-mid);border-radius:4px;overflow:hidden;}
+.score-bar-fill{height:100%;border-radius:4px;}
+.score-item-num{flex:0 0 30px;font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);text-align:right;}
+.score-item-note{flex:0 0 auto;max-width:220px;color:var(--muted);font-size:11px;}
+
+.coaching-card{background:var(--cream);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:10px;}
+.coaching-card:last-child{margin-bottom:0;}
+.coaching-cat{font-weight:700;font-size:12.5px;margin-bottom:7px;}
+.coaching-row{font-size:12px;margin-bottom:5px;line-height:1.4;}
+.coaching-row b{font-weight:700;}
+.coaching-row.strength b{color:#15803D;}
+.coaching-row.improve b{color:#B91C2C;}
+
+.key-moments{margin:0;padding-left:18px;}
+.key-moments li{font-size:12.5px;margin-bottom:7px;line-height:1.4;}
+
+/* ---------- GRADE NEW CALL TAB ---------- */
+.grade-grid{display:grid;grid-template-columns:380px 1fr;gap:18px;align-items:start;}
+@media (max-width:980px){.grade-grid{grid-template-columns:1fr;}}
+.form-card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;}
+.form-row{margin-bottom:14px;}
+.form-row label{display:block;font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em;}
+.form-row select,.form-row input,.form-row textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font-family:'DM Sans',sans-serif;font-size:13px;background:var(--cream);color:var(--navy);}
+.form-row textarea{min-height:230px;resize:vertical;font-family:'DM Mono',monospace;font-size:12px;line-height:1.55;}
+.form-row-split{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.btn-primary{background:var(--navy);color:#fff;border:none;padding:11px 20px;border-radius:8px;font-weight:700;font-size:13.5px;cursor:pointer;width:100%;font-family:inherit;}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed;}
+.btn-secondary{background:var(--green);color:#fff;border:none;padding:11px 20px;border-radius:8px;font-weight:700;font-size:13.5px;cursor:pointer;width:100%;margin-top:10px;font-family:inherit;}
+.hint{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.4;}
+.error-box{background:#FDECEC;color:#B91C2C;padding:11px 14px;border-radius:8px;font-size:12.5px;margin-bottom:14px;}
+.loading-box{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;padding:40px 20px;justify-content:center;}
+.spinner{width:16px;height:16px;border:2px solid var(--cream-mid);border-top-color:var(--navy);border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.results-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:420px;color:var(--muted);gap:10px;text-align:center;padding:20px;}
+.results-empty .icon{width:56px;height:56px;border-radius:50%;background:var(--cream-mid);display:flex;align-items:center;justify-content:center;font-size:22px;color:var(--gold);}
+.modal-backdrop{position:fixed;inset:0;background:rgba(27,42,74,.55);display:flex;align-items:center;justify-content:center;z-index:100;padding:24px;}
+.modal-card{background:#fff;border-radius:14px;max-width:720px;width:100%;max-height:86vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3);}
+.modal-header{position:sticky;top:0;background:var(--navy);color:#fff;padding:18px 22px;display:flex;justify-content:space-between;align-items:center;border-radius:14px 14px 0 0;}
+.modal-header h2{font-family:'DM Serif Display',serif;font-size:19px;font-weight:400;margin:0;}
+.modal-close{background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:8px;padding:6px 10px;cursor:pointer;font-size:14px;}
+.modal-close:hover{background:rgba(255,255,255,.28);}
+.modal-body{padding:20px 22px;}
+.grading-rule{margin-bottom:16px;}
+.grading-rule:last-child{margin-bottom:0;}
+.grading-rule h3{font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:0 0 6px;font-weight:700;}
+.grading-rule p{font-size:13.5px;line-height:1.6;margin:0;color:var(--navy);}
+.grading-rule ul{margin:4px 0 0;padding-left:18px;font-size:13.5px;line-height:1.6;color:var(--navy);}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* ============================================================
+   DATA / CONSTANTS
+   ============================================================ */
+const AGENTS = [
+  {name:"Danny",  role:"Reception"},
+  {name:"Enma",   role:"Leasing+Reception"},
+  {name:"Oscar",  role:"Leasing"},
+  {name:"Rocio",  role:"Leasing"},
+  {name:"Teresa", role:"Leasing"},
+  {name:"Yeni",   role:"Leasing"},
+  {name:"Karla",  role:"Collections"},
+  {name:"Alexia", role:"Collections"},
+  {name:"Jay",    role:"Collections Mgr"},
+  {name:"Eddy",   role:"Maintenance"},
+];
+
+const CALL_TYPES = [
+  {key:"Inbound Routing",               label:"In Routing",      group:"routing"},
+  {key:"Outbound Voicemail",            label:"Voicemail",       group:"voicemail"},
+  {key:"Inbound Leasing",               label:"In Leasing",      group:"leasing"},
+  {key:"Outbound Leasing Follow-Up",    label:"Out Leasing FU",  group:"leasing"},
+  {key:"Applicant Questions",           label:"Applicant",       group:"leasing"},
+  {key:"Move-in Coordination",          label:"Move-In",         group:"leasing"},
+  {key:"Outbound Renewal",              label:"Out Renewal",     group:"leasing"},
+  {key:"Inbound Renewal Questions",     label:"In Renewal",      group:"leasing"},
+  {key:"Outbound Collections",          label:"Out Collections", group:"collections"},
+  {key:"Inbound Account / Collections Return", label:"Acct Return", group:"collections"},
+  {key:"Inbound Maintenance",           label:"Maintenance",     group:"maintenance"},
+  {key:"Outbound Vendor",               label:"Vendor",          group:"vendor"},
+];
+
+const TAG_COLORS = {
+  routing:     {bg:"#E6EAF2", fg:"#1B2A4A"},
+  voicemail:   {bg:"#EDE3FB", fg:"#5B3AA8"},
+  leasing:     {bg:"#E6F0FB", fg:"#1D5FA8"},
+  collections: {bg:"#FCEFD7", fg:"#92620A"},
+  maintenance: {bg:"#E2F8EE", fg:"#15803D"},
+  vendor:      {bg:"#EFEBE3", fg:"#5C5346"},
+};
+
+const GRADE_COLORS = {A:"#16A34A", B:"#1D4ED8", C:"#A16207", D:"#C2410C", F:"#DC2626"};
+
+const SYSTEM_PROMPT = "You are a call quality analyst for Metric Property Management, a property management company in Austin, TX.\n\nPROPERTY IDENTIFICATION: Identify which property is being discussed from context clues in the transcript (property name, address, or community name mentioned by the agent or the resident/prospect). Return the detected property in the 'property_name' field. If not identifiable, return 'Unidentified'.\n\nAPPROVED GREETINGS: 'Thank you for calling/choosing Metric Property Management, this is [name], how can I help/assist you?' Full company name required, own name required, help/assist question required.\n\nDEPARTMENT TERMINOLOGY: Always 'leasing department' or 'leasing team.' NEVER 'listing department.'\n\nHANDOFF: Must mention department at minimum. No need to name a specific person.\n\nOUTBOUND: All outbound calls must include 'Metric Property Management.'\n\nVOICEMAIL: Must include (1) own name (2) full company name (3) property name (4) callback number.\n\nMAINTENANCE INBOUND: Ask if reported on portal. If first report, direct to maintenance phone option or resident portal. Educate if resident shows no portal awareness.\n\nCOLLECTIONS OUTBOUND: Verify identity before disclosure. State balance. Offer resources (401K, family, assistance). Get specific PTP date and amount. Call hours compliance.\n\nCOLLECTIONS INBOUND: Remind portal is best contact method, same-day reply commitment. Explain credit bureau impact. Set 7-day deadline.\n\nLEASING: Create a sense of urgency (e.g. limited availability, current specials, move-in incentives). Demonstrate the value of the community and the specific unit. Ask for the prospect's name early and use it throughout the call. Ask who the home is for (household size) using fair-housing-safe phrasing \u2014 never ask about children or family status directly. Ask when they need to move in. Ask if they have any pets. Invite them to tour the property in person. Ask if they've already seen the website; if not, give them the website. Ask for their phone number and email address. Ask how they heard about us. Offer to schedule a specific appointment time. Never encourage prospects to come to the office just to fill out an application \u2014 the application itself should be self-serve online; touring the property in person is a different, encouraged step.\n\nAPPLICANT: Focus on educating the applicant on exactly what's required to apply: proof of income (such as pay stubs), photo identification, and payment of the application fee \u2014 required for every adult applicant. When items are missing, clearly explain what's still needed and why submitting complete documentation promptly is critical to avoid delays in processing.\n\nFAIR HOUSING: Never ask about children, family status, national origin, religion, race, sex, disability. Use 'How many people will be living in the home?' not 'How many children do you have?'\n\nLIABILITY: Any threat of lawsuit triggers liability_flag=true.\n\nWHISPER NOTES: 'Metrics' vs 'Metric', name mishears, 'assess' for 'assist' \u2014 note as 'verify on playback' not automatic deductions.\n\nRespond ONLY with valid JSON, no markdown, no explanation. Format:\n{\"property_name\":\"detected property or Unidentified\",\"overall_score\":0-100,\"overall_grade\":\"A/B/C/D/F\",\"legal_violation\":false,\"fair_housing_flag\":false,\"liability_flag\":false,\"summary\":\"2 sentence summary\",\"outcome\":\"1 sentence\",\"flags\":[\"flag text\"],\"categories\":[{\"name\":\"Category\",\"weight\":0,\"score\":0,\"items\":[{\"label\":\"criterion\",\"score\":0,\"note\":\"brief note\"}]}],\"coaching\":[{\"category\":\"name\",\"strength\":\"what they did well\",\"improve\":\"specific improvement\"}],\"key_moments\":[\"moment 1\",\"moment 2\"]}";
+
+/* ============================================================
+   STATE
+   ============================================================ */
+let calls = [];
+let activeTab = "dashboard";
+let filters = {agent:"All", management:null, grade:"All", callType:"All"};
+let selectedCallId = null;
+let gradeResult = null;
+let gradeError = null;
+let isGrading = false;
+let formState = {agent:AGENTS[0].name, callType:CALL_TYPES[0].key, callDate:new Date().toISOString().slice(0,10), duration:"", apiKey:"", transcript:"", detectedProperty:""};
+let sortBy = "date";
+let showGradingInfo = false;
+
+/* ============================================================
+   STORAGE
+   ============================================================ */
+async function loadCalls(){
+  try{
+    const res = await window.storage.get('call-records', false);
+    calls = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){
+    calls = [];
+  }
+}
+async function persistCalls(){
+  try{
+    await window.storage.set('call-records', JSON.stringify(calls), false);
+  }catch(e){
+    console.error('Storage save failed', e);
+  }
+}
+
+/* ============================================================
+   HELPERS
+   ============================================================ */
+function escapeHtml(str){
+  if(str === null || str === undefined) return "";
+  return String(str)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+function scoreColor10(score){
+  const s = Number(score) || 0;
+  if(s >= 8) return "#2ECC8A";
+  if(s >= 6) return "#4A90D9";
+  if(s >= 4) return "#F5A623";
+  return "#E8455A";
+}
+function gradeColor(letter){ return GRADE_COLORS[letter] || "#8A8578"; }
+function callTypeMeta(key){
+  return CALL_TYPES.find(c => c.key === key) || {label:key, group:"routing"};
+}
+function isFlagged(call){
+  return !!(call.legal_violation || call.fair_housing_flag || call.liability_flag || (call.flags && call.flags.length));
+}
+function fmtDuration(sec){
+  sec = Number(sec) || 0;
+  const m = Math.floor(sec/60), s = sec%60;
+  return m + ":" + String(s).padStart(2,"0");
+}
+function fmtDate(d){
+  if(!d) return "";
+  const dt = new Date(d + "T00:00:00");
+  if(isNaN(dt)) return d;
+  return dt.toLocaleDateString('en-US', {month:'short', day:'numeric'});
+}
+function uid(){ return 'call_' + Date.now() + '_' + Math.random().toString(36).slice(2,8); }
+
+/* ============================================================
+   FILTERING / KPIs
+   ============================================================ */
+function passesFilters(c){
+  if(filters.agent !== "All" && c.agent_name !== filters.agent) return false;
+  if(filters.callType !== "All" && c.call_type !== filters.callType) return false;
+  if(filters.grade === "A" && c.overall_grade !== "A") return false;
+  if(filters.grade === "B" && c.overall_grade !== "B") return false;
+  if(filters.grade === "C" && c.overall_grade !== "C") return false;
+  if(filters.grade === "DF" && !["D","F"].includes(c.overall_grade)) return false;
+  if(filters.management === "flagged" && !isFlagged(c)) return false;
+  if(filters.management === "legal" && !c.legal_violation) return false;
+  if(filters.management === "fairhousing" && !c.fair_housing_flag) return false;
+  if(filters.management === "liability" && !c.liability_flag) return false;
+  return true;
+}
+function filteredCalls(){
+  const list = calls.filter(passesFilters);
+  const byDateDesc = (a,b) => (b.call_date||"").localeCompare(a.call_date||"") || (b.id||"").localeCompare(a.id||"");
+  if(sortBy === "agent"){
+    return list.sort((a,b) => (a.agent_name||"Unidentified").localeCompare(b.agent_name||"Unidentified") || byDateDesc(a,b));
+  }
+  if(sortBy === "property"){
+    return list.sort((a,b) => (a.property_name||"Unidentified").localeCompare(b.property_name||"Unidentified") || byDateDesc(a,b));
+  }
+  return list.sort(byDateDesc);
+}
+function computeKPIs(list){
+  const n = list.length;
+  const avg = n ? Math.round(list.reduce((s,c)=>s+(Number(c.overall_score)||0),0)/n) : 0;
+  const aCount = list.filter(c=>c.overall_grade==="A").length;
+  const aPct = n ? Math.round(aCount/n*100) : 0;
+  const coaching = list.filter(c=>["C","D","F"].includes(c.overall_grade)).length;
+  const flagged = list.filter(isFlagged).length;
+  const mix = {A:0,B:0,C:0,D:0,F:0};
+  list.forEach(c => { if(mix[c.overall_grade] !== undefined) mix[c.overall_grade]++; });
+  return {n, avg, aPct, aCount, coaching, flagged, mix};
+}
+
+/* ============================================================
+   RENDER: SIDEBAR
+   ============================================================ */
+function renderSidebar(){
+  const agentItemsFixed = AGENTS.map(a => {
+    const active = filters.agent === a.name;
+    return `<div class="nav-item${active?' active':''}" data-action="filter-agent" data-agent="${escapeHtml(a.name)}">
+      <span class="nav-label">${escapeHtml(a.name)}</span>
+      <span class="role-tag">${escapeHtml(a.role)}</span>
+    </div>`;
+  }).join("");
+
+  const mgmtDefs = [
+    {key:"flagged", label:"Flagged", icon:"🚩"},
+    {key:"legal", label:"Legal Violations", icon:"⚖️"},
+    {key:"fairhousing", label:"Fair Housing", icon:"🏠"},
+    {key:"liability", label:"Liability", icon:"⚠️"},
+  ];
+  const mgmtItems = mgmtDefs.map(m => {
+    const active = filters.management === m.key;
+    return `<div class="nav-item mgmt ${m.key}${active?' active':''}" data-action="filter-mgmt" data-mgmt="${m.key}">
+      <span class="nav-label">${m.icon} ${escapeHtml(m.label)}</span>
+    </div>`;
+  }).join("");
+
+  const typeItems = CALL_TYPES.map(t => {
+    const active = filters.callType === t.key;
+    return `<div class="nav-item${active?' active':''}" data-action="filter-type" data-type="${escapeHtml(t.key)}">
+      <span class="nav-label">${escapeHtml(t.label)}</span>
+    </div>`;
+  }).join("");
+
+  const allActive = filters.agent==="All" && !filters.management && filters.grade==="All" && filters.callType==="All";
+
+  return `
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="brand-name">Metric Property<br/>Management</div>
+      <div class="brand-eyebrow">CALL ANALYZER</div>
+    </div>
+    <div class="nav-scroll">
+      <div class="nav-section-label">Analysis</div>
+      <div class="nav-item${allActive?' active':''}" data-action="reset-filters">
+        <span class="nav-label">📋 All Calls</span>
+      </div>
+      <div class="nav-section-label">Agents</div>
+      ${agentItemsFixed}
+      <div class="nav-section-label">Management</div>
+      ${mgmtItems}
+      <div class="nav-section-label">Call Types</div>
+      ${typeItems}
+    </div>
+    <div class="sidebar-footer">Metric PM · Call Analyzer</div>
+  </aside>`;
+}
+
+/* ============================================================
+   RENDER: KPI ROW
+   ============================================================ */
+function renderKpiRow(list){
+  const k = computeKPIs(list);
+  const maxMix = Math.max(1, k.mix.A, k.mix.B, k.mix.C, k.mix.D, k.mix.F);
+  const bars = ["A","B","C","D","F"].map(g => {
+    const h = Math.round((k.mix[g]/maxMix)*36) + 2;
+    return `<div class="bar" style="height:${h}px;background:${gradeColor(g)}"></div>`;
+  }).join("");
+  return `
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-label">Avg Score</div>
+      <div class="kpi-value">${k.avg}</div>
+      <div class="kpi-sub">${k.n} call${k.n===1?'':'s'}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">A-Grade %</div>
+      <div class="kpi-value">${k.aPct}%</div>
+      <div class="kpi-sub">${k.aCount} A grade${k.aCount===1?'':'s'}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Coaching</div>
+      <div class="kpi-value">${k.coaching}</div>
+      <div class="kpi-sub">C / D / F grades</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Flagged</div>
+      <div class="kpi-value">${k.flagged}</div>
+      <div class="kpi-sub">Quality concerns</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Grade Mix</div>
+      <div class="gradechart-bars">${bars}</div>
+      <div class="gradechart-labels"><span>A</span><span>B</span><span>C</span><span>D</span><span>F</span></div>
+    </div>
+  </div>`;
+}
+
+/* ============================================================
+   RENDER: FILTER PILLS
+   ============================================================ */
+function renderFilterPills(){
+  const pills = [
+    {key:"All", label:"All"},
+    {key:"A", label:"A"},
+    {key:"B", label:"B"},
+    {key:"C", label:"C"},
+    {key:"DF", label:"D/F"},
+  ];
+  const gradePills = pills.map(p => `<button class="pill-btn${filters.grade===p.key?' active':''}" data-action="filter-grade" data-grade="${p.key}">${p.label}</button>`).join("");
+  const flagActive = filters.management === "flagged";
+  return `<div class="filter-pills">
+    ${gradePills}
+    <button class="pill-btn flagpill${flagActive?' active':''}" data-action="filter-mgmt" data-mgmt="flagged">🚩 Flagged</button>
+  </div>`;
+}
+
+/* ============================================================
+   RENDER: CALL LIST
+   ============================================================ */
+function renderCallList(list){
+  if(!list.length){
+    return `<div class="empty-list">No calls match these filters yet.</div>`;
+  }
+  return list.map(c => {
+    const tm = callTypeMeta(c.call_type);
+    const tagColor = TAG_COLORS[tm.group] || TAG_COLORS.routing;
+    const flagIcon = isFlagged(c) ? ' 🚩' : '';
+    return `<div class="call-row${selectedCallId===c.id?' selected':''}" data-action="select-call" data-id="${escapeHtml(c.id)}">
+      <div class="call-badge" style="background:${gradeColor(c.overall_grade)}">${escapeHtml(c.overall_grade||'?')}</div>
+      <div class="call-row-body">
+        <div class="call-row-agent">${escapeHtml(c.agent_name||'Unidentified')}</div>
+        <div class="call-row-meta">
+          <span class="call-type-tag" style="background:${tagColor.bg};color:${tagColor.fg}">${escapeHtml(tm.label)}</span>
+          <span>${escapeHtml(fmtDate(c.call_date))}</span>
+          <span>·</span>
+          <span>${fmtDuration(c.duration)}</span>
+          ${c.property_name ? `<span>·</span><span>📍 ${escapeHtml(c.property_name)}</span>` : ''}
+          <span>${flagIcon}</span>
+        </div>
+      </div>
+      <div class="call-row-score">${c.overall_score!==undefined?c.overall_score:''}</div>
+      <button class="call-row-delete" data-action="delete-call" data-id="${escapeHtml(c.id)}" title="Delete">🗑</button>
+    </div>`;
+  }).join("");
+}
+
+/* ============================================================
+   RENDER: SHARED CALL FEEDBACK BLOCK (used in detail + grade result)
+   ============================================================ */
+function renderFeedbackBody(data){
+  let html = "";
+
+  if(data.legal_violation){
+    html += `<div class="alert-banner legal">⚖️ <span>Legal / liability language detected. Do not engage further without supervisor guidance — escalate to management immediately.</span></div>`;
+  }
+  if(data.fair_housing_flag){
+    html += `<div class="alert-banner amber">🏠 <span>Possible Fair Housing concern detected on this call. Review required.</span></div>`;
+  }
+  if(data.liability_flag && !data.legal_violation){
+    html += `<div class="alert-banner amber">⚠️ <span>Liability flag raised — threat of legal action or attorney mention. Escalate to management.</span></div>`;
+  }
+
+  html += `<div class="detail-section">
+    <div class="detail-section-title">Summary</div>
+    <div class="detail-text">${escapeHtml(data.summary || "—")}</div>
+  </div>`;
+
+  html += `<div class="detail-section">
+    <div class="detail-section-title">Outcome</div>
+    <div class="detail-text">${escapeHtml(data.outcome || "—")}</div>
+  </div>`;
+
+  if(data.flags && data.flags.length){
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Flags</div>
+      ${data.flags.map(f => `<span class="flag-chip">${escapeHtml(f)}</span>`).join("")}
+    </div>`;
+  }
+
+  if(data.categories && data.categories.length){
+    html += `<div class="detail-section"><div class="detail-section-title">Scorecard</div>`;
+    data.categories.forEach(cat => {
+      html += `<div class="category-block">
+        <div class="category-head">
+          <span>${escapeHtml(cat.name)}</span>
+          <span class="weight">Weight ${cat.weight!==undefined?cat.weight:'—'}% · Score ${cat.score!==undefined?cat.score:'—'}/10</span>
+        </div>`;
+      (cat.items || []).forEach(item => {
+        const s = Number(item.score) || 0;
+        html += `<div class="score-item">
+          <span class="score-item-label">${escapeHtml(item.label)}</span>
+          <span class="score-bar-track"><span class="score-bar-fill" style="width:${Math.min(100,s*10)}%;background:${scoreColor10(s)}"></span></span>
+          <span class="score-item-num">${s}/10</span>
+          <span class="score-item-note">${escapeHtml(item.note || "")}</span>
+        </div>`;
+      });
+      html += `</div>`;
+    });
+    html += `</div>`;
+  }
+
+  if(data.coaching && data.coaching.length){
+    html += `<div class="detail-section"><div class="detail-section-title">Coaching Notes</div>`;
+    data.coaching.forEach(co => {
+      html += `<div class="coaching-card">
+        <div class="coaching-cat">${escapeHtml(co.category)}</div>
+        <div class="coaching-row strength">✅ <b>Strength:</b> ${escapeHtml(co.strength)}</div>
+        <div class="coaching-row improve">🎯 <b>Improve:</b> ${escapeHtml(co.improve)}</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  if(data.key_moments && data.key_moments.length){
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Key Moments</div>
+      <ul class="key-moments">${data.key_moments.map(m => `<li>${escapeHtml(m)}</li>`).join("")}</ul>
+    </div>`;
+  }
+
+  return html;
+}
+
+/* ============================================================
+   RENDER: DETAIL PANEL
+   ============================================================ */
+function renderDetailPanel(){
+  const call = calls.find(c => c.id === selectedCallId);
+  if(!call){
+    return `<div class="panel detail-panel">
+      <div class="detail-empty">
+        <div class="icon">📞</div>
+        <div>Select a call to view feedback</div>
+      </div>
+    </div>`;
+  }
+  const tm = callTypeMeta(call.call_type);
+  return `<div class="panel detail-panel">
+    <div class="detail-header">
+      <div class="detail-grade-box" style="background:${gradeColor(call.overall_grade)}">
+        <div class="letter">${escapeHtml(call.overall_grade||'?')}</div>
+        <div class="score">${call.overall_score!==undefined?call.overall_score:''}/100</div>
+      </div>
+      <div class="detail-header-info">
+        <div class="agent">${escapeHtml(call.agent_name||'Unidentified')}</div>
+        <div class="meta">${escapeHtml(tm.label)} · ${escapeHtml(fmtDate(call.call_date))} · ${fmtDuration(call.duration)}${call.property_name ? ' · 📍 ' + escapeHtml(call.property_name) : ''}</div>
+      </div>
+      <button class="detail-header-delete" data-action="delete-call" data-id="${escapeHtml(call.id)}">🗑 Delete</button>
+    </div>
+    ${renderFeedbackBody(call)}
+  </div>`;
+}
+
+/* ============================================================
+   RENDER: DASHBOARD TAB
+   ============================================================ */
+function renderDashboardTab(){
+  const list = filteredCalls();
+  return `
+    <div class="main-header">
+      <div class="main-title">All Calls</div>
+      ${renderTabsPill()}
+    </div>
+    ${renderFilterPills()}
+    ${renderKpiRow(list)}
+    <div class="content-grid">
+      <div class="panel">
+        <div class="panel-header">
+        <span>Calls</span>
+        <span class="header-right">
+          <select class="sort-select" id="sort-select" data-action="set-sort">
+            <option value="date" ${sortBy==='date'?'selected':''}>Sort: Newest</option>
+            <option value="agent" ${sortBy==='agent'?'selected':''}>Sort: Agent</option>
+            <option value="property" ${sortBy==='property'?'selected':''}>Sort: Property</option>
+          </select>
+          <span class="count">${list.length} call${list.length===1?'':'s'}</span>
+        </span>
+      </div>
+        <div class="call-list">${renderCallList(list)}</div>
+      </div>
+      ${renderDetailPanel()}
+    </div>
+  `;
+}
+
+function renderTabsPill(){
+  return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <div class="tabs-pill">
+      <button class="tab-btn${activeTab==='dashboard'?' active':''}" data-action="set-tab" data-tab="dashboard">📋 Dashboard</button>
+      <button class="tab-btn${activeTab==='grade'?' active':''}" data-action="set-tab" data-tab="grade">★ Grade New Call</button>
+    </div>
+    <button class="pill-btn" data-action="show-grading-info" type="button">ℹ️ How are calls graded?</button>
+  </div>`;
+}
+
+/* ============================================================
+   RENDER: GRADE NEW CALL TAB
+   ============================================================ */
+function renderGradeTab(){
+  const agentOptions = AGENTS.map(a => `<option value="${escapeHtml(a.name)}" ${formState.agent===a.name?'selected':''}>${escapeHtml(a.name)} — ${escapeHtml(a.role)}</option>`).join("");
+  const typeOptions = CALL_TYPES.map(t => `<option value="${escapeHtml(t.key)}" ${formState.callType===t.key?'selected':''}>${escapeHtml(t.key)}</option>`).join("");
+
+  let resultsHtml;
+  if(isGrading){
+    resultsHtml = `<div class="panel"><div class="loading-box"><div class="spinner"></div> Grading call with Claude…</div></div>`;
+  } else if(gradeError){
+    resultsHtml = `<div class="panel" style="padding:20px;"><div class="error-box">${escapeHtml(gradeError)}</div></div>`;
+  } else if(gradeResult){
+    resultsHtml = `<div class="panel">
+      <div class="detail-header">
+        <div class="detail-grade-box" style="background:${gradeColor(gradeResult.overall_grade)}">
+          <div class="letter">${escapeHtml(gradeResult.overall_grade||'?')}</div>
+          <div class="score">${gradeResult.overall_score!==undefined?gradeResult.overall_score:''}/100</div>
+        </div>
+        <div class="detail-header-info">
+          <div class="agent">${escapeHtml(formState.agent)}</div>
+          <div class="meta">${escapeHtml(callTypeMeta(formState.callType).label)} · ${escapeHtml(fmtDate(formState.callDate))} · ${fmtDuration(formState.duration)}</div>
+        </div>
+      </div>
+      <div class="detail-section" style="padding-bottom:0;">
+        <div class="detail-section-title">Property Detected From Transcript</div>
+        <input type="text" id="f-detected-property" value="${escapeHtml(formState.detectedProperty)}" placeholder="Unidentified" style="width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font-family:'DM Sans',sans-serif;font-size:13.5px;font-weight:700;background:var(--cream);color:var(--navy);" />
+        <div class="hint">Auto-detected from context in the call. Correct it here if it's wrong before saving.</div>
+      </div>
+      ${renderFeedbackBody(gradeResult)}
+      <div class="detail-section">
+        <button class="btn-secondary" data-action="save-call">Save to Dashboard</button>
+      </div>
+    </div>`;
+  } else {
+    resultsHtml = `<div class="panel"><div class="results-empty">
+      <div class="icon">★</div>
+      <div>Fill out the form and click <b>Grade This Call</b> to run the analysis.</div>
+    </div></div>`;
+  }
+
+  return `
+    <div class="main-header">
+      <div class="main-title">Grade New Call</div>
+      ${renderTabsPill()}
+    </div>
+    <div class="grade-grid">
+      <div class="form-card">
+        <div class="form-row">
+          <label>Agent</label>
+          <select id="f-agent">${agentOptions}</select>
+        </div>
+        <div class="form-row">
+          <label>Call Type</label>
+          <select id="f-calltype">${typeOptions}</select>
+        </div>
+        <div class="form-row-split">
+          <div class="form-row">
+            <label>Call Date</label>
+            <input type="date" id="f-date" value="${escapeHtml(formState.callDate)}" />
+          </div>
+          <div class="form-row">
+            <label>Duration (sec)</label>
+            <input type="number" id="f-duration" min="0" value="${escapeHtml(formState.duration)}" placeholder="e.g. 184" />
+          </div>
+        </div>
+        <div class="form-row">
+          <label>Anthropic API Key</label>
+          <input type="password" id="f-apikey" value="${escapeHtml(formState.apiKey)}" placeholder="sk-ant-..." autocomplete="off" />
+          <div class="hint">Used only for this session to call the Anthropic API directly from your browser. Never stored or saved.</div>
+        </div>
+        <div class="form-row">
+          <label>Transcript</label>
+          <textarea id="f-transcript" placeholder="Paste the call transcript here...">${escapeHtml(formState.transcript)}</textarea>
+        </div>
+        <button class="btn-primary" data-action="grade-call" ${isGrading?'disabled':''}>${isGrading?'Grading…':'Grade This Call'}</button>
+      </div>
+      ${resultsHtml}
+    </div>
+  `;
+}
+
+/* ============================================================
+   MASTER RENDER
+   ============================================================ */
+function renderGradingModal(){
+  if(!showGradingInfo) return "";
+  return `<div class="modal-backdrop" data-action="close-grading-info">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h2>How calls are graded</h2>
+        <button class="modal-close" data-action="close-grading-info">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="grading-rule">
+          <h3>Overview</h3>
+          <p>Every graded call is sent to Claude along with a fixed rubric for Metric Property Management. The model returns an overall score (0–100), a letter grade, category-level scores, coaching notes, and any compliance flags. Nothing is scored by hardcoded rules in the app itself — the model applies the standards below to the transcript.</p>
+        </div>
+        <div class="grading-rule">
+          <h3>Greeting</h3>
+          <p>Must include the full company name "Metric Property Management," the agent's own name, and a help/assist question. Missing any of these is a flag.</p>
+        </div>
+        <div class="grading-rule">
+          <h3>Department terminology</h3>
+          <p>"Leasing department" or "leasing team" only — "listing department" is always scored as an error.</p>
+        </div>
+        <div class="grading-rule">
+          <h3>Property identification</h3>
+          <p>The model identifies which property is being discussed from context in the transcript (property name, address, or community name mentioned) and returns it automatically — no manual entry needed.</p>
+        </div>
+        <div class="grading-rule">
+          <h3>Handoffs / transfers</h3>
+          <p>Must mention the department at minimum. No need to name a specific person.</p>
+        </div>
+        <div class="grading-rule">
+          <h3>Outbound calls & voicemail</h3>
+          <p>Outbound calls must state "Metric Property Management." Voicemails must include the agent's name, full company name, property name, and a callback number — missing any one is a flag.</p>
+        </div>
+        <div class="grading-rule">
+          <h3>Leasing calls</h3>
+          <ul>
+            <li>Create a sense of urgency and demonstrate the value of the community/unit</li>
+            <li>Get the prospect's name early and use it throughout the call</li>
+            <li>Ask who the home is for, using fair-housing-safe phrasing</li>
+            <li>Ask move-in timing and about pets</li>
+            <li>Invite them to tour in person</li>
+            <li>Confirm they've seen the website — share it if not</li>
+            <li>Get phone number and email, ask how they heard about us</li>
+            <li>Offer a specific appointment time</li>
+            <li>Never push a prospect to visit the office just to apply — applications are self-serve online</li>
+          </ul>
+        </div>
+        <div class="grading-rule">
+          <h3>Applicant questions</h3>
+          <p>Agents should clearly educate applicants on exactly what's required: proof of income (pay stubs), photo ID, and the application fee for every adult applicant — with clear explanation of what's still missing when documents are incomplete.</p>
+        </div>
+        <div class="grading-rule">
+          <h3>Maintenance calls</h3>
+          <p>Agents should confirm whether the issue was already submitted via the resident portal. First-time requests get directed to the maintenance phone option or the portal; already-escalated issues can be handled directly.</p>
+        </div>
+        <div class="grading-rule">
+          <h3>Collections</h3>
+          <p><b>Outbound:</b> verify identity before disclosing anything, state the balance clearly, offer payment resources, and get a specific promise-to-pay date and amount — vague commitments don't count.</p>
+          <p style="margin-top:6px;"><b>Inbound:</b> promote the portal as the best contact method, explain the same-day reply commitment, cover credit bureau impact, and set a 7-day deadline before escalation.</p>
+        </div>
+        <div class="grading-rule">
+          <h3>Fair housing &amp; liability (critical)</h3>
+          <p>Any question that could be construed as a fair housing violation (children, family status, national origin, religion, race, sex, disability) triggers a fair housing flag. Any mention of a lawsuit or attorney by the caller triggers a liability flag. Both surface as alert banners on the call record.</p>
+        </div>
+        <div class="grading-rule">
+          <h3>Transcription noise</h3>
+          <p>Likely mis-transcriptions (e.g. "Metrics" vs "Metric," misheard names, "assess" for "assist") are noted as "verify on playback" rather than counted as automatic errors.</p>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function render(){
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    ${renderSidebar()}
+    <main class="main">
+      ${activeTab === 'dashboard' ? renderDashboardTab() : renderGradeTab()}
+    </main>
+    ${renderGradingModal()}
+  `;
+}
+
+/* ============================================================
+   ACTIONS
+   ============================================================ */
+async function deleteCall(id){
+  calls = calls.filter(c => c.id !== id);
+  if(selectedCallId === id) selectedCallId = null;
+  await persistCalls();
+  render();
+}
+
+function syncFormFromDOM(){
+  const a = document.getElementById('f-agent');
+  const t = document.getElementById('f-calltype');
+  const d = document.getElementById('f-date');
+  const dur = document.getElementById('f-duration');
+  const k = document.getElementById('f-apikey');
+  const tr = document.getElementById('f-transcript');
+  const dp = document.getElementById('f-detected-property');
+  if(a) formState.agent = a.value;
+  if(t) formState.callType = t.value;
+  if(d) formState.callDate = d.value;
+  if(dur) formState.duration = dur.value;
+  if(k) formState.apiKey = k.value;
+  if(tr) formState.transcript = tr.value;
+  if(dp) formState.detectedProperty = dp.value;
+}
+
+function parseModelJson(text){
+  let clean = text.trim();
+  clean = clean.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "");
+  return JSON.parse(clean);
+}
+
+async function gradeCall(){
+  syncFormFromDOM();
+  gradeError = null;
+
+  if(!formState.apiKey || !formState.apiKey.trim()){
+    gradeError = "Please enter your Anthropic API key.";
+    render();
+    return;
+  }
+  if(!formState.transcript || !formState.transcript.trim()){
+    gradeError = "Please paste a transcript to grade.";
+    render();
+    return;
+  }
+
+  isGrading = true;
+  gradeResult = null;
+  render();
+
+  const userContent = "Call Type: " + formState.callType + "\nAgent: " + formState.agent + "\nDuration: " + (formState.duration || "unknown") + " seconds\n\nTRANSCRIPT:\n" + formState.transcript;
+
+  try{
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": formState.apiKey.trim(),
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 4000,
+        system: SYSTEM_PROMPT,
+        messages: [{role: "user", content: userContent}],
+      }),
+    });
+
+    if(!response.ok){
+      const errText = await response.text();
+      let msg = "API request failed (" + response.status + ").";
+      try{
+        const errJson = JSON.parse(errText);
+        if(errJson.error && errJson.error.message) msg = errJson.error.message;
+      }catch(e){}
+      throw new Error(msg);
+    }
+
+    const data = await response.json();
+    const textBlock = (data.content || []).find(b => b.type === "text");
+    if(!textBlock) throw new Error("No text response from model.");
+    const parsed = parseModelJson(textBlock.text);
+    gradeResult = parsed;
+    formState.detectedProperty = parsed.property_name && parsed.property_name.trim() ? parsed.property_name.trim() : "Unidentified";
+  }catch(err){
+    gradeError = "Grading failed: " + (err.message || String(err));
+  }finally{
+    isGrading = false;
+    render();
+  }
+}
+
+async function saveCall(){
+  if(!gradeResult) return;
+  syncFormFromDOM();
+  const record = {
+    id: uid(),
+    agent_name: formState.agent,
+    property_name: (formState.detectedProperty && formState.detectedProperty.trim()) ? formState.detectedProperty.trim() : "Unidentified",
+    call_type: formState.callType,
+    call_date: formState.callDate,
+    duration: Number(formState.duration) || 0,
+    overall_score: gradeResult.overall_score,
+    overall_grade: gradeResult.overall_grade,
+    legal_violation: !!gradeResult.legal_violation,
+    fair_housing_flag: !!gradeResult.fair_housing_flag,
+    liability_flag: !!gradeResult.liability_flag,
+    summary: gradeResult.summary || "",
+    outcome: gradeResult.outcome || "",
+    flags: gradeResult.flags || [],
+    coaching: gradeResult.coaching || [],
+    key_moments: gradeResult.key_moments || [],
+    categories: gradeResult.categories || [],
+  };
+  calls.push(record);
+  await persistCalls();
+
+  // reset form + go to dashboard, select the new record
+  gradeResult = null;
+  gradeError = null;
+  formState.transcript = "";
+  formState.duration = "";
+  formState.detectedProperty = "";
+  selectedCallId = record.id;
+  activeTab = "dashboard";
+  filters = {agent:"All", management:null, grade:"All", callType:"All"};
+  render();
+}
+
+/* ============================================================
+   EVENT DELEGATION
+   ============================================================ */
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-action]');
+  if(!el) return;
+  const action = el.getAttribute('data-action');
+
+  if(action === 'set-tab'){
+    syncFormFromDOM();
+    activeTab = el.getAttribute('data-tab');
+    render();
+  } else if(action === 'reset-filters'){
+    filters = {agent:"All", management:null, grade:"All", callType:"All"};
+    render();
+  } else if(action === 'filter-agent'){
+    const agent = el.getAttribute('data-agent');
+    filters.agent = filters.agent === agent ? "All" : agent;
+    render();
+  } else if(action === 'filter-type'){
+    const type = el.getAttribute('data-type');
+    filters.callType = filters.callType === type ? "All" : type;
+    render();
+  } else if(action === 'filter-mgmt'){
+    const mgmt = el.getAttribute('data-mgmt');
+    filters.management = filters.management === mgmt ? null : mgmt;
+    render();
+  } else if(action === 'filter-grade'){
+    filters.grade = el.getAttribute('data-grade');
+    render();
+  } else if(action === 'select-call'){
+    selectedCallId = el.getAttribute('data-id');
+    render();
+  } else if(action === 'delete-call'){
+    e.stopPropagation();
+    await deleteCall(el.getAttribute('data-id'));
+  } else if(action === 'grade-call'){
+    await gradeCall();
+  } else if(action === 'save-call'){
+    await saveCall();
+  } else if(action === 'show-grading-info'){
+    showGradingInfo = true;
+    render();
+  } else if(action === 'close-grading-info'){
+    showGradingInfo = false;
+    render();
+  }
+});
+
+document.addEventListener('change', (e) => {
+  if(e.target && e.target.id === 'sort-select'){
+    sortBy = e.target.value;
+    render();
+  }
+});
+
+/* ============================================================
+   INIT
+   ============================================================ */
+(async function init(){
+  await loadCalls();
+  render();
+})();
+</script>
+</body>
+</html>
