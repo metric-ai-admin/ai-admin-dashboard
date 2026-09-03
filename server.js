@@ -5420,6 +5420,10 @@ const MEETING_CAPTURE_KEYWORDS = (process.env.MEETING_CAPTURE_KEYWORDS
 const MEETING_EXCLUDE_KEYWORDS = (process.env.MEETING_EXCLUDE_KEYWORDS || 'client')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 
+// Lyndsay's Azure AD Object ID, resolved once from her UPN and cached (see the
+// capture job). Not hardcoded — looked up at first run.
+let meetingOrganizerId = null;
+
 function meetingIsCapturable(m) {
   const hay = `${m.subject || ''} ${(m.categories || []).join(' ')}`.toLowerCase();
   if (MEETING_EXCLUDE_KEYWORDS.some(k => hay.includes(k))) return false;
@@ -5487,7 +5491,15 @@ async function captureMeetingTranscripts() {
   let appToken;
   try { appToken = await graphMailToken(); }
   catch (err) { out.error = 'app token: ' + err.message; return out; }
-  const userId = MAILBOX_LYNDSAY;
+
+  // The onlineMeetings endpoint needs Lyndsay's Object ID (GUID), not her UPN.
+  // Resolve it once from the UPN and cache it (an optional MEETING_ORGANIZER_ID
+  // env short-circuits the lookup — never hardcoded).
+  if (!meetingOrganizerId) {
+    try { meetingOrganizerId = process.env.MEETING_ORGANIZER_ID || await teams.resolveUserId(fetchFn, appToken, MAILBOX_LYNDSAY); }
+    catch (err) { out.error = 'resolve organizer Object ID: ' + err.message; return out; }
+  }
+  const userId = meetingOrganizerId;
 
   for (const m of meetings) {
     if (!meetingIsCapturable(m)) { out.skipped++; continue; }

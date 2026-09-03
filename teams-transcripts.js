@@ -21,6 +21,19 @@ async function graphGet(fetchFn, token, url, asText) {
   return j;
 }
 
+// The onlineMeetings endpoint is one of the few Graph endpoints that insists on
+// the user's Azure AD Object ID (GUID) — a UPN returns "not a valid GUID". Most
+// other endpoints (calendar, mail) accept the UPN, which is why the calendar read
+// works and these don't. Resolve UPN -> Object ID via GET /users/{upn}. If the
+// value is already a GUID it's returned as-is. Needs User.Read.All (application).
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+async function resolveUserId(fetchFn, token, upnOrId) {
+  if (GUID_RE.test(String(upnOrId || '').trim())) return upnOrId;
+  const j = await graphGet(fetchFn, token, `${BASE}/users/${encodeURIComponent(upnOrId)}?$select=id`);
+  if (!j.id) throw new Error('no Object ID returned for ' + upnOrId);
+  return j.id;
+}
+
 // Resolve a calendar event's Teams join URL to its onlineMeeting object (we need
 // its id to reach the transcripts). Returns the object (with .id) or null.
 async function resolveOnlineMeeting(fetchFn, token, userId, joinUrl) {
@@ -70,4 +83,4 @@ function parseVtt(vtt) {
     .join('\n');
 }
 
-module.exports = { resolveOnlineMeeting, listTranscripts, fetchTranscriptVtt, parseVtt };
+module.exports = { resolveUserId, resolveOnlineMeeting, listTranscripts, fetchTranscriptVtt, parseVtt };
