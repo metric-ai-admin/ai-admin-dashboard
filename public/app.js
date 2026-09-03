@@ -3892,6 +3892,8 @@ $('#crm-bdimport-run')?.addEventListener('click', async () => {
   resultEl.innerHTML = '<p class="small muted">Importing… parsing all sheets, this may take a moment.</p>';
   const form = new FormData();
   form.append('file', fileInput.files[0]);
+  const agent = $('#crm-bdimport-agent')?.value.trim();
+  if (agent) form.append('agent', agent);
   try {
     const r = await fetch('/api/crm/import', { method: 'POST', body: form });
     const data = await r.json();

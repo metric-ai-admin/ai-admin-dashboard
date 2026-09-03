@@ -4401,6 +4401,20 @@ app.post('/api/crm/import', requireAuth, requireRole('admin'), multerMemory.sing
       return ws ? XLSX.utils.sheet_to_json(ws, { defval: '' }) : [];
     };
 
+    // The export owner. DM Reviews and Property Edits have no Agent column but are
+    // keyed by (property, agent), so the agent comes from the "agent" form field
+    // or, failing that, the most common Agent in the Phone Shops sheet (each
+    // export is one agent's). Needed non-null for the composite upsert to dedupe.
+    let exportAgent = bdStr(req.body && req.body.agent);
+    if (!exportAgent) {
+      const counts = {};
+      for (const raw of readSheet(BD_SHEET_ALIASES.phone)) {
+        const a = bdStr(bdPick(bdRowLookup(raw), ['agent']));
+        if (a) counts[a] = (counts[a] || 0) + 1;
+      }
+      exportAgent = Object.entries(counts).sort((x, y) => y[1] - x[1])[0]?.[0] || null;
+    }
+
     // Phone Shops
     {
       const batch = [];
@@ -4450,22 +4464,23 @@ app.post('/api/crm/import', requireAuth, requireRole('admin'), multerMemory.sing
       imported.online_shops = await upsertBatch('bd_online_shops', bdDedupe(batch, 'external_id'), 'external_id');
     }
 
-    // DM Reviews (no ID column — keyed by property)
+    // DM Reviews (no ID column — keyed by (property, agent))
     {
       const batch = [];
       for (const raw of readSheet(BD_SHEET_ALIASES.dm)) {
         const lk = bdRowLookup(raw);
         const property = bdStr(bdPick(lk, ['property', 'propertyname']));
-        if (!property) { skipped++; continue; }
+        const agent = bdStr(bdPick(lk, ['agent'])) || exportAgent;
+        if (!property || !agent) { skipped++; continue; }   // agent is part of the unique key
         batch.push({
-          property, property_id: matchProp(property),
+          property, agent, property_id: matchProp(property),
           overall_score: bdNum(bdPick(lk, ['overall', 'overallscore'])),
           complete: bdStr(bdPick(lk, ['complete'])),
           last_updated: bdStr(bdPick(lk, ['lastupdated', 'updated'])),
           updated_at: now(),
         });
       }
-      imported.dm_reviews = await upsertBatch('bd_dm_reviews', bdDedupe(batch, 'property'), 'property');
+      imported.dm_reviews = await upsertBatch('bd_dm_reviews', bdDedupe(batch, 'property'), 'property,agent');
     }
 
     // Follow-Ups
@@ -4494,9 +4509,10 @@ app.post('/api/crm/import', requireAuth, requireRole('admin'), multerMemory.sing
       for (const raw of readSheet(BD_SHEET_ALIASES.edits)) {
         const lk = bdRowLookup(raw);
         const property = bdStr(bdPick(lk, ['property', 'propertyname']));
-        if (!property) { skipped++; continue; }
+        const agent = bdStr(bdPick(lk, ['agent'])) || exportAgent;
+        if (!property || !agent) { skipped++; continue; }   // agent is part of the unique key
         batch.push({
-          property, property_id: matchProp(property),
+          property, agent, property_id: matchProp(property),
           mgmt_co: bdStr(bdPick(lk, ['mgmtco', 'managementcompany', 'mgmtcompany'])),
           mgmt_type: bdStr(bdPick(lk, ['mgmttype', 'managementtype'])),
           owner: bdStr(bdPick(lk, ['owner', 'ownername'])),
@@ -4508,7 +4524,7 @@ app.post('/api/crm/import', requireAuth, requireRole('admin'), multerMemory.sing
           updated_at: now(),
         });
       }
-      imported.property_edits = await upsertBatch('bd_property_edits', bdDedupe(batch, 'property'), 'property');
+      imported.property_edits = await upsertBatch('bd_property_edits', bdDedupe(batch, 'property'), 'property,agent');
     }
 
     res.json({ ok: true, imported, skipped, errors });
