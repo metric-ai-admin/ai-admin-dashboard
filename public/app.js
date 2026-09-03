@@ -3703,10 +3703,10 @@ async function crmLoadCompleted() {
   if (to) qs.set('to', to);
   try {
     const data = await crmFetch('/api/crm/completed' + (qs.toString() ? '?' + qs : ''));
-    // Reflect the resolved default range in the pickers if they were blank.
-    if ($('#crm-completed-from') && !from) $('#crm-completed-from').value = data.from;
+    // Reflect the resolved upper bound; leave From blank when the default is
+    // all-time (data.from is null) so the picker reads as "no lower bound".
     if ($('#crm-completed-to') && !to) $('#crm-completed-to').value = data.to;
-    status.textContent = `${data.total} completed · ${data.from} → ${data.to}`;
+    status.textContent = `${data.total} completed · ${data.from ? data.from + ' → ' : 'all time through '}${data.to}`;
     kpis.innerHTML = (data.perAgent || []).length
       ? data.perAgent.map(a => `<div class="crm-kpi"><b>${a.count}</b>${esc(a.agent)}<span class="muted">completed</span></div>`).join('')
       : '<div class="crm-kpi"><b>0</b><span class="muted">No completed tasks in range</span></div>';

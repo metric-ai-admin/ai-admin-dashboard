@@ -4618,43 +4618,66 @@ app.get('/api/crm/tasks', requireCRM, requireAuth, async (req, res) => {
 // ---- GET /api/crm/completed ----------------------------------------------------
 // "Completed tasks" per agent. The queue is derived, so there is no task-done
 // record — the logged activity IS the completion (see the note on team-performance).
-// This counts the activity rows each agent created, in a date range: phone_shops,
-// online_shops, follow_ups, dm_reviews (all carry agent_name). Filterable by agent
-// and from/to. Same guard as the queue itself so anyone who sees it sees this.
+// Counts activity rows each agent created, from BOTH the live tables (agent_name)
+// AND the imported bd_* archive tables (agent) — the historical BD Progress data
+// lives only in the archive. Nothing is moved; both sources are read and merged.
+// Filterable by agent and from/to. Default range is all-time through today so the
+// historical archive shows up immediately; set From to narrow it.
 app.get('/api/crm/completed', requireCRM, requireAuth, async (req, res) => {
   const client = supabaseAdmin || supabasePublic;
   const dstr = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
   const to = isDate(req.query.to) ? req.query.to : dstr(new Date());
-  const defFrom = new Date(); defFrom.setDate(defFrom.getDate() - 29);
-  const from = isDate(req.query.from) ? req.query.from : dstr(defFrom);
+  const from = isDate(req.query.from) ? req.query.from : null;   // null = all-time
   const toTs = to + 'T23:59:59.999Z';
+  const fromTs = from ? from + 'T00:00:00.000Z' : null;
   const agent = String(req.query.agent || '').trim();
+  const agentLc = agent.toLowerCase();
+
+  // Apply the (optional) lower bound + upper bound to a table date column.
+  const range = (q, col, ts) => {
+    q = q.lte(col, ts ? toTs : to);
+    if (from) q = q.gte(col, ts ? fromTs : from);
+    return q.limit(10000);
+  };
   try {
-    const [phone, online, fups, dms] = await Promise.all([
-      client.from('phone_shops').select('agent_name, shop_date, property_id').gte('shop_date', from).lte('shop_date', to),
-      client.from('online_shops').select('agent_name, shop_date, property_id').gte('shop_date', from).lte('shop_date', to),
-      client.from('follow_ups').select('agent_name, follow_up_date, property_id').gte('follow_up_date', from).lte('follow_up_date', to),
-      client.from('dm_reviews').select('agent_name, updated_at, property_id').gte('updated_at', from).lte('updated_at', toTs),
+    const [phone, online, fups, dms, bphone, bonline, bfups, bdms] = await Promise.all([
+      range(client.from('phone_shops').select('agent_name, shop_date, property_id'), 'shop_date'),
+      range(client.from('online_shops').select('agent_name, shop_date, property_id'), 'shop_date'),
+      range(client.from('follow_ups').select('agent_name, follow_up_date, property_id'), 'follow_up_date'),
+      range(client.from('dm_reviews').select('agent_name, updated_at, property_id'), 'updated_at', true),
+      range(client.from('bd_phone_shops').select('agent, shop_date, property, property_id'), 'shop_date'),
+      range(client.from('bd_online_shops').select('agent, shop_date, property, property_id'), 'shop_date'),
+      range(client.from('bd_follow_ups').select('agent, follow_up_date, property, property_id'), 'follow_up_date'),
+      range(client.from('bd_dm_reviews').select('agent, last_updated, updated_at, property, property_id'), 'updated_at', true),
     ]);
-    for (const r of [phone, online, fups, dms]) if (r.error) throw new Error(r.error.message);
+    for (const r of [phone, online, fups, dms, bphone, bonline, bfups, bdms]) if (r.error) throw new Error(r.error.message);
 
     const { data: props } = await client.from('properties').select('id, property_name').limit(5000);
     const nameOf = {}; (props || []).forEach(p => { nameOf[p.id] = p.property_name; });
 
     const items = [];
-    const agentLc = agent.toLowerCase();
-    const add = (rows, type, dateKey) => (rows || []).forEach(r => {
-      const a = String(r.agent_name || '').trim();
+    // agentKey: 'agent_name' (live) or 'agent' (bd_). dateKey: a column name or a
+    // fn(row). propField: the archive's own property-name column, else look it up.
+    const add = (rows, type, agentKey, dateKey, propField) => (rows || []).forEach(r => {
+      const a = String(r[agentKey] || '').trim();
       if (!a) return;   // only agent-attributed rows count as "completed by agent"
       if (agent && !a.toLowerCase().includes(agentLc)) return;
-      items.push({ type, agent: a, date: String(r[dateKey] || '').slice(0, 10),
-        property_id: r.property_id || null, property_name: nameOf[r.property_id] || null });
+      const dv = typeof dateKey === 'function' ? dateKey(r) : r[dateKey];
+      items.push({ type, agent: a, date: String(dv || '').slice(0, 10),
+        property_id: r.property_id || null,
+        property_name: (propField && r[propField]) ? r[propField] : (nameOf[r.property_id] || null) });
     });
-    add(phone.data, 'phone', 'shop_date');
-    add(online.data, 'online', 'shop_date');
-    add(fups.data, 'follow_up', 'follow_up_date');
-    add(dms.data, 'dm', 'updated_at');
+    // Live tables
+    add(phone.data, 'phone', 'agent_name', 'shop_date');
+    add(online.data, 'online', 'agent_name', 'shop_date');
+    add(fups.data, 'follow_up', 'agent_name', 'follow_up_date');
+    add(dms.data, 'dm', 'agent_name', 'updated_at');
+    // Imported archive (bd_*): agent + property columns
+    add(bphone.data, 'phone', 'agent', 'shop_date', 'property');
+    add(bonline.data, 'online', 'agent', 'shop_date', 'property');
+    add(bfups.data, 'follow_up', 'agent', 'follow_up_date', 'property');
+    add(bdms.data, 'dm', 'agent', r => r.last_updated || r.updated_at, 'property');
     items.sort((x, y) => String(y.date).localeCompare(String(x.date)));
 
     const perMap = {};
