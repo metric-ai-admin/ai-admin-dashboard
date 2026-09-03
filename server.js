@@ -4342,6 +4342,181 @@ app.post('/api/crm/import-costar', requireCRM, multerMemory.single('file'), asyn
   }
 });
 
+// ---- POST /api/crm/import — BD Progress historical migration (admin only) -------
+// Parses the 5-sheet BD Progress export from Lyndsay's CRM tool into dedicated
+// archive tables (bd_*), upserting by the export's own ID so re-running the same
+// file never duplicates. Fully additive — the live CRM tables are untouched.
+const BD_SHEET_ALIASES = {
+  phone:  ['phoneshops', 'phoneshop', 'phone'],
+  online: ['onlineshops', 'onlineshop', 'online'],
+  dm:     ['dmreviews', 'dmreview', 'dm'],
+  follow: ['followups', 'followup', 'follows'],
+  edits:  ['propertyedits', 'propertyedit', 'edits'],
+};
+const bdNorm = s => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');
+const bdRowLookup = row => { const m = {}; for (const k of Object.keys(row)) m[bdNorm(k)] = row[k]; return m; };
+const bdPick = (lk, aliases) => { for (const a of aliases) if (lk[a] !== undefined && lk[a] !== '') return lk[a]; return null; };
+const bdStr = v => { if (v == null) return null; const s = String(v).trim(); return s === '' ? null : s; };
+const bdNum = v => { if (v == null || v === '') return null; const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : null; };
+const bdDate = v => {
+  if (v == null || v === '') return null;
+  if (v instanceof Date && !isNaN(v)) return v.toISOString().slice(0, 10);
+  const d = new Date(v); return isNaN(d) ? null : d.toISOString().slice(0, 10);
+};
+// One row per conflict key (last wins) — a single upsert cannot touch the same
+// conflict target twice.
+const bdDedupe = (rows, key) => { const m = new Map(); for (const r of rows) if (r[key] != null) m.set(r[key], r); return [...m.values()]; };
+const bdFindSheet = (wb, aliases) => {
+  for (const name of wb.SheetNames) if (aliases.includes(bdNorm(name))) return wb.Sheets[name];
+  return null;
+};
+
+app.post('/api/crm/import', requireAuth, requireRole('admin'), multerMemory.single('file'), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'BD CRM not configured' });
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded. Send as multipart field "file".' });
+  try {
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
+    const client = supabaseAdmin || supabasePublic;
+
+    // Fuzzy property index (same normalisation as the CoStar import).
+    const { data: allProps, error: pErr } = await client.from('properties').select('id, property_name').limit(5000);
+    if (pErr) throw new Error(pErr.message);
+    const propIndex = {};
+    for (const p of (allProps || [])) propIndex[bdNorm(p.property_name)] = p.id;
+    const matchProp = name => (name ? (propIndex[bdNorm(name)] || null) : null);
+
+    const imported = { phone_shops: 0, online_shops: 0, dm_reviews: 0, follow_ups: 0, property_edits: 0 };
+    let skipped = 0;
+    const errors = [];
+    const now = () => new Date().toISOString();
+
+    const upsertBatch = async (table, rows, conflict) => {
+      if (!rows.length) return 0;
+      const { error } = await client.from(table).upsert(rows, { onConflict: conflict }).select('id');
+      if (error) { errors.push(`${table}: ${error.message}`); return 0; }
+      return rows.length;
+    };
+    const readSheet = (aliases) => {
+      const ws = bdFindSheet(wb, aliases);
+      return ws ? XLSX.utils.sheet_to_json(ws, { defval: '' }) : [];
+    };
+
+    // Phone Shops
+    {
+      const batch = [];
+      for (const raw of readSheet(BD_SHEET_ALIASES.phone)) {
+        const lk = bdRowLookup(raw);
+        const external_id = bdStr(bdPick(lk, ['id', 'callid', 'shopid']));
+        if (!external_id) { skipped++; continue; }
+        const property = bdStr(bdPick(lk, ['property', 'propertyname']));
+        batch.push({
+          external_id, property, property_id: matchProp(property),
+          shop_date: bdDate(bdPick(lk, ['date', 'shopdate'])),
+          shop_time: bdStr(bdPick(lk, ['time'])),
+          agent: bdStr(bdPick(lk, ['agent'])),
+          caller: bdStr(bdPick(lk, ['caller'])),
+          connection: bdStr(bdPick(lk, ['connection'])),
+          appt_set: bdStr(bdPick(lk, ['apptset', 'appointmentset'])),
+          appt_datetime: bdStr(bdPick(lk, ['apptdatetime', 'apptdate', 'appointmentdatetime'])),
+          appt_follow_up: bdStr(bdPick(lk, ['apptfollowup', 'appointmentfollowup'])),
+          recording: bdStr(bdPick(lk, ['recording'])),
+          call_score: bdNum(bdPick(lk, ['callscore', 'score'])),
+          notes: bdStr(bdPick(lk, ['notes'])),
+          updated_at: now(),
+        });
+      }
+      imported.phone_shops = await upsertBatch('bd_phone_shops', bdDedupe(batch, 'external_id'), 'external_id');
+    }
+
+    // Online Shops
+    {
+      const batch = [];
+      for (const raw of readSheet(BD_SHEET_ALIASES.online)) {
+        const lk = bdRowLookup(raw);
+        const external_id = bdStr(bdPick(lk, ['id', 'shopid']));
+        if (!external_id) { skipped++; continue; }
+        const property = bdStr(bdPick(lk, ['property', 'propertyname']));
+        batch.push({
+          external_id, property, property_id: matchProp(property),
+          shop_date: bdDate(bdPick(lk, ['date', 'shopdate'])),
+          shop_time: bdStr(bdPick(lk, ['time'])),
+          website: bdStr(bdPick(lk, ['website'])),
+          contact_type: bdStr(bdPick(lk, ['contacttype'])),
+          score: bdNum(bdPick(lk, ['score'])),
+          notes: bdStr(bdPick(lk, ['notes'])),
+          updated_at: now(),
+        });
+      }
+      imported.online_shops = await upsertBatch('bd_online_shops', bdDedupe(batch, 'external_id'), 'external_id');
+    }
+
+    // DM Reviews (no ID column — keyed by property)
+    {
+      const batch = [];
+      for (const raw of readSheet(BD_SHEET_ALIASES.dm)) {
+        const lk = bdRowLookup(raw);
+        const property = bdStr(bdPick(lk, ['property', 'propertyname']));
+        if (!property) { skipped++; continue; }
+        batch.push({
+          property, property_id: matchProp(property),
+          overall_score: bdNum(bdPick(lk, ['overall', 'overallscore'])),
+          complete: bdStr(bdPick(lk, ['complete'])),
+          last_updated: bdStr(bdPick(lk, ['lastupdated', 'updated'])),
+          updated_at: now(),
+        });
+      }
+      imported.dm_reviews = await upsertBatch('bd_dm_reviews', bdDedupe(batch, 'property'), 'property');
+    }
+
+    // Follow-Ups
+    {
+      const batch = [];
+      for (const raw of readSheet(BD_SHEET_ALIASES.follow)) {
+        const lk = bdRowLookup(raw);
+        const external_id = bdStr(bdPick(lk, ['id', 'followupid']));
+        if (!external_id) { skipped++; continue; }
+        const property = bdStr(bdPick(lk, ['property', 'propertyname']));
+        batch.push({
+          external_id, property, property_id: matchProp(property),
+          follow_up_date: bdDate(bdPick(lk, ['date', 'followupdate'])),
+          type: bdStr(bdPick(lk, ['type'])),
+          outcome: bdStr(bdPick(lk, ['outcome'])),
+          updated_at: now(),
+        });
+      }
+      imported.follow_ups = await upsertBatch('bd_follow_ups', bdDedupe(batch, 'external_id'), 'external_id');
+    }
+
+    // Property Edits (no ID column — keyed by property; archived, not applied to
+    // the live properties table)
+    {
+      const batch = [];
+      for (const raw of readSheet(BD_SHEET_ALIASES.edits)) {
+        const lk = bdRowLookup(raw);
+        const property = bdStr(bdPick(lk, ['property', 'propertyname']));
+        if (!property) { skipped++; continue; }
+        batch.push({
+          property, property_id: matchProp(property),
+          mgmt_co: bdStr(bdPick(lk, ['mgmtco', 'managementcompany', 'mgmtcompany'])),
+          mgmt_type: bdStr(bdPick(lk, ['mgmttype', 'managementtype'])),
+          owner: bdStr(bdPick(lk, ['owner', 'ownername'])),
+          overridden_fields: bdStr(bdPick(lk, ['overriddenfields', 'overridden'])),
+          notes: bdStr(bdPick(lk, ['notes'])),
+          mutual_connection: bdStr(bdPick(lk, ['mutualconnection', 'mutual'])),
+          reviewed_by_lyndsay: bdStr(bdPick(lk, ['reviewedbylyndsay', 'lyndsayreviewed', 'reviewed'])),
+          owner_responded: bdStr(bdPick(lk, ['ownerresponded', 'responded'])),
+          updated_at: now(),
+        });
+      }
+      imported.property_edits = await upsertBatch('bd_property_edits', bdDedupe(batch, 'property'), 'property');
+    }
+
+    res.json({ ok: true, imported, skipped, errors });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---- GET /api/crm/tasks --------------------------------------------------------
 // Derives tasks from properties in Supabase — no separate tasks table.
 // requireAuth is not optional here: tasks expose every property's activity and

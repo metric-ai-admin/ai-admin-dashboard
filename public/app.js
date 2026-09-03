@@ -2486,6 +2486,7 @@ function crmApplyUserRole() {
   // Admin only — one step tighter than the assignment panel above it.
   if (crmIsAdmin()) $('#crm-gb-panel')?.classList.remove('hidden');
   if (crmIsAdmin()) $('#crm-ghl-panel')?.classList.remove('hidden');
+  if (crmIsAdmin()) $('#crm-bdimport-panel')?.classList.remove('hidden');
 
   const lockedRoles = ['bd_agent', 'maintenance'];
   if (!lockedRoles.includes(currentUser.role) || !currentUser.agentName) return;
@@ -3881,6 +3882,34 @@ $('#crm-costar-import').addEventListener('click', async () => {
       ${unmatched.length ? `<details style="margin-top:8px;"><summary class="small muted pointer">Show unmatched (${unmatched.length})</summary><ul class="small" style="margin-top:4px;padding-left:18px;">${unmatched.map(n => `<li>${esc(n)}</li>`).join('')}</ul></details>` : ''}`;
     if (updated > 0) crmLoadProperties();
   } catch (err) { resultEl.innerHTML = `<p class="small" style="color:red;">❌ ${esc(err.message)}</p>`; }
+});
+
+// BD Progress import (admin only)
+$('#crm-bdimport-run')?.addEventListener('click', async () => {
+  const fileInput = $('#crm-bdimport-file');
+  const resultEl = $('#crm-bdimport-result');
+  if (!fileInput.files.length) { resultEl.innerHTML = '<p class="small muted">Select a .xlsx file first.</p>'; return; }
+  resultEl.innerHTML = '<p class="small muted">Importing… parsing all sheets, this may take a moment.</p>';
+  const form = new FormData();
+  form.append('file', fileInput.files[0]);
+  try {
+    const r = await fetch('/api/crm/import', { method: 'POST', body: form });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    const im = data.imported || {};
+    const rows = [
+      ['Phone Shops', im.phone_shops], ['Online Shops', im.online_shops],
+      ['DM Reviews', im.dm_reviews], ['Follow-Ups', im.follow_ups], ['Property Edits', im.property_edits],
+    ];
+    resultEl.innerHTML = `
+      <div class="crm-import-result">
+        ${rows.map(([label, n]) => `<div class="crm-import-stat ${n ? 'crm-import-ok' : ''}">${esc(label)}: <b>${n || 0}</b></div>`).join('')}
+        <div class="crm-import-stat">⏭ Skipped (no id/property): <b>${data.skipped || 0}</b></div>
+        <div class="crm-import-stat ${(data.errors || []).length ? 'crm-import-warn' : ''}">${(data.errors || []).length ? '⚠️' : '✅'} Errors: <b>${(data.errors || []).length}</b></div>
+      </div>
+      ${(data.errors || []).length ? `<details style="margin-top:8px"><summary class="small muted pointer">Show errors</summary><ul class="small" style="margin-top:4px;padding-left:18px">${data.errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></details>` : ''}`;
+    toast('BD Progress imported', 'success');
+  } catch (err) { resultEl.innerHTML = `<p class="small" style="color:red">❌ ${esc(err.message)}</p>`; }
 });
 
 // ── Filter/search wiring ──────────────────────────────────────────────────────

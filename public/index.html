@@ -728,6 +728,16 @@
         <p class="muted small" style="margin:8px 0 0">Send to john@writecode.ninja once downloaded.</p>
       </div>
 
+      <!-- Import BD Progress. Admin only; hidden by crmApplyUserRole. -->
+      <div class="card hidden" id="crm-bdimport-panel" style="margin-bottom:16px">
+        <h4 style="margin:0 0 4px">Import BD Progress</h4>
+        <p class="muted small" style="margin:0 0 4px">Upload a BD Progress export (.xlsx) from Lyndsay&rsquo;s CRM tool to migrate historical data. Reads the sheets: <em>Phone Shops, Online Shops, DM Reviews, Follow-Ups, Property Edits</em>.</p>
+        <p class="muted small" style="margin:0 0 10px">Idempotent &mdash; re-uploading the same file updates rows in place, never duplicates. Archived to dedicated tables; the live CRM data is untouched.</p>
+        <input id="crm-bdimport-file" type="file" accept=".xlsx,.xls" style="display:block">
+        <button id="crm-bdimport-run" class="btn-sm primary" style="margin-top:8px">Import BD Progress</button>
+        <div id="crm-bdimport-result" style="margin-top:12px"></div>
+      </div>
+
       <!-- Property Assignments. Admin/operations only; hidden by crmApplyUserRole. -->
       <div class="card hidden" id="crm-assign-panel" style="margin-bottom:16px">
         <h4 style="margin-top:0">Property Assignments</h4>
