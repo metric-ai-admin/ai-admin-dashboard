@@ -4615,6 +4615,56 @@ app.get('/api/crm/tasks', requireCRM, requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- GET /api/crm/completed ----------------------------------------------------
+// "Completed tasks" per agent. The queue is derived, so there is no task-done
+// record — the logged activity IS the completion (see the note on team-performance).
+// This counts the activity rows each agent created, in a date range: phone_shops,
+// online_shops, follow_ups, dm_reviews (all carry agent_name). Filterable by agent
+// and from/to. Same guard as the queue itself so anyone who sees it sees this.
+app.get('/api/crm/completed', requireCRM, requireAuth, async (req, res) => {
+  const client = supabaseAdmin || supabasePublic;
+  const dstr = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+  const to = isDate(req.query.to) ? req.query.to : dstr(new Date());
+  const defFrom = new Date(); defFrom.setDate(defFrom.getDate() - 29);
+  const from = isDate(req.query.from) ? req.query.from : dstr(defFrom);
+  const toTs = to + 'T23:59:59.999Z';
+  const agent = String(req.query.agent || '').trim();
+  try {
+    const [phone, online, fups, dms] = await Promise.all([
+      client.from('phone_shops').select('agent_name, shop_date, property_id').gte('shop_date', from).lte('shop_date', to),
+      client.from('online_shops').select('agent_name, shop_date, property_id').gte('shop_date', from).lte('shop_date', to),
+      client.from('follow_ups').select('agent_name, follow_up_date, property_id').gte('follow_up_date', from).lte('follow_up_date', to),
+      client.from('dm_reviews').select('agent_name, updated_at, property_id').gte('updated_at', from).lte('updated_at', toTs),
+    ]);
+    for (const r of [phone, online, fups, dms]) if (r.error) throw new Error(r.error.message);
+
+    const { data: props } = await client.from('properties').select('id, property_name').limit(5000);
+    const nameOf = {}; (props || []).forEach(p => { nameOf[p.id] = p.property_name; });
+
+    const items = [];
+    const agentLc = agent.toLowerCase();
+    const add = (rows, type, dateKey) => (rows || []).forEach(r => {
+      const a = String(r.agent_name || '').trim();
+      if (!a) return;   // only agent-attributed rows count as "completed by agent"
+      if (agent && !a.toLowerCase().includes(agentLc)) return;
+      items.push({ type, agent: a, date: String(r[dateKey] || '').slice(0, 10),
+        property_id: r.property_id || null, property_name: nameOf[r.property_id] || null });
+    });
+    add(phone.data, 'phone', 'shop_date');
+    add(online.data, 'online', 'shop_date');
+    add(fups.data, 'follow_up', 'follow_up_date');
+    add(dms.data, 'dm', 'updated_at');
+    items.sort((x, y) => String(y.date).localeCompare(String(x.date)));
+
+    const perMap = {};
+    for (const i of items) perMap[i.agent] = (perMap[i.agent] || 0) + 1;
+    const perAgent = Object.entries(perMap).map(([agent, count]) => ({ agent, count })).sort((a, b) => b.count - a.count);
+
+    res.json({ from, to, total: items.length, perAgent, items });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- Targeted management companies ---------------------------------------------
 // Worth +150 in the task engine. This list previously lived in each person's
 // browser localStorage, so it was per-user and the server could never see it.

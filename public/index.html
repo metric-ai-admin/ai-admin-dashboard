@@ -610,6 +610,10 @@
       <div class="view-head">
         <div><h3>Task Queue</h3><p class="muted small" id="crm-tasks-status">Loading…</p></div>
         <div class="view-actions">
+          <div class="crm-task-modes" id="crm-task-modes">
+            <button class="crm-task-mode active" data-task-mode="active">Active</button>
+            <button class="crm-task-mode" data-task-mode="completed">Completed</button>
+          </div>
           <select id="crm-task-agent-filter" class="crm-select">
             <option value="">All Agents</option>
             <option value="Erick">Erick</option>
@@ -626,14 +630,19 @@
             <option value="dm">📈 Digital Marketing</option>
             <option value="appt_check">⏰ Missed Tour Follow-up</option>
           </select>
-          <label class="small muted" style="display:flex;align-items:center;gap:5px">
+          <label class="small muted" id="crm-task-overdue-wrap" style="display:flex;align-items:center;gap:5px">
             <input type="checkbox" id="crm-task-overdue-only"> Overdue only
           </label>
+          <span class="crm-completed-range hidden" id="crm-completed-range">
+            <label class="small muted">From <input type="date" id="crm-completed-from" class="crm-input"></label>
+            <label class="small muted">To <input type="date" id="crm-completed-to" class="crm-input"></label>
+          </span>
           <button id="crm-tasks-refresh" class="btn-sm">🔄</button>
         </div>
       </div>
       <div id="crm-task-kpis" class="crm-task-kpis"></div>
       <div id="crm-tasks-body"></div>
+      <div id="crm-completed-body" class="hidden"></div>
     </div>
 
     <!-- ══════════════ VIEW: OUTREACH DRAFTS ══════════════ -->

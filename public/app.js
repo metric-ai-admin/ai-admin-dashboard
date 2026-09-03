@@ -2418,7 +2418,7 @@ function crmSetView(view) {
   $$('.crm-view').forEach(el => el.classList.add('hidden'));
   $(`#crm-view-${view}`)?.classList.remove('hidden');
   $$('.crm-nav-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.crmView === view));
-  if (view === 'tasks') crmLoadTasks();
+  if (view === 'tasks') crmReloadTaskView();
   if (view === 'drafts') crmLoadDraftsList();
   if (view === 'settings') {
     crmLoadTargeted();
@@ -3671,6 +3671,58 @@ const crmScoreClass = s =>
   : s >= 6 ? { cls: 'score-med',  bg: '#ea580c' }
   : { cls: 'score-low', bg: '#2563eb' };
 
+// Active queue vs. Completed (logged activities). Toggled in the Task Queue header.
+let crmTaskMode = 'active';
+const CRM_COMPLETED_TYPE = { phone: '📞 Phone shop', online: '📧 Online shop', dm: '📈 DM review', follow_up: '📅 Follow-up' };
+
+function crmReloadTaskView() { return crmTaskMode === 'completed' ? crmLoadCompleted() : crmLoadTasks(); }
+
+function crmSetTaskMode(mode) {
+  crmTaskMode = mode;
+  $$('#crm-task-modes .crm-task-mode').forEach(b => b.classList.toggle('active', b.dataset.taskMode === mode));
+  const completed = mode === 'completed';
+  // Active-only controls hide in Completed; the date range shows only in Completed.
+  $('#crm-task-type-filter')?.classList.toggle('hidden', completed);
+  $('#crm-task-overdue-wrap')?.classList.toggle('hidden', completed);
+  $('#crm-completed-range')?.classList.toggle('hidden', !completed);
+  $('#crm-tasks-body')?.classList.toggle('hidden', completed);
+  $('#crm-completed-body')?.classList.toggle('hidden', !completed);
+  crmReloadTaskView();
+}
+
+// Completed tasks = logged activities per agent, in a date range.
+async function crmLoadCompleted() {
+  const status = $('#crm-tasks-status'), kpis = $('#crm-task-kpis'), body = $('#crm-completed-body');
+  if (!body) return;
+  status.textContent = 'Loading…';
+  const qs = new URLSearchParams();
+  const agent = $('#crm-task-agent-filter').value;
+  const from = $('#crm-completed-from')?.value, to = $('#crm-completed-to')?.value;
+  if (agent) qs.set('agent', agent);
+  if (from) qs.set('from', from);
+  if (to) qs.set('to', to);
+  try {
+    const data = await crmFetch('/api/crm/completed' + (qs.toString() ? '?' + qs : ''));
+    // Reflect the resolved default range in the pickers if they were blank.
+    if ($('#crm-completed-from') && !from) $('#crm-completed-from').value = data.from;
+    if ($('#crm-completed-to') && !to) $('#crm-completed-to').value = data.to;
+    status.textContent = `${data.total} completed · ${data.from} → ${data.to}`;
+    kpis.innerHTML = (data.perAgent || []).length
+      ? data.perAgent.map(a => `<div class="crm-kpi"><b>${a.count}</b>${esc(a.agent)}<span class="muted">completed</span></div>`).join('')
+      : '<div class="crm-kpi"><b>0</b><span class="muted">No completed tasks in range</span></div>';
+    body.innerHTML = (data.items || []).length
+      ? `<div style="overflow-x:auto"><table class="crm-table">
+          <thead><tr><th>Date</th><th>Type</th><th>Property</th><th>Agent</th></tr></thead>
+          <tbody>${data.items.map(i => `<tr>
+            <td class="small mono">${esc(i.date || '')}</td>
+            <td class="small">${CRM_COMPLETED_TYPE[i.type] || esc(i.type)}</td>
+            <td>${esc(i.property_name || '—')}</td>
+            <td class="small">${esc(i.agent || '—')}</td>
+          </tr>`).join('')}</tbody></table></div>`
+      : '<p class="muted small" style="padding:20px;">No completed tasks match the current filters.</p>';
+  } catch (err) { status.textContent = '❌ ' + err.message; }
+}
+
 async function crmLoadTasks() {
   $('#crm-tasks-status').textContent = 'Loading…';
   const agentFilter  = $('#crm-task-agent-filter').value;
@@ -3735,10 +3787,13 @@ async function crmLoadTasks() {
   } catch (err) { $('#crm-tasks-status').textContent = '❌ ' + err.message; }
 }
 
-$('#crm-tasks-refresh').addEventListener('click', crmLoadTasks);
+$$('#crm-task-modes .crm-task-mode').forEach(b => b.addEventListener('click', () => crmSetTaskMode(b.dataset.taskMode)));
+$('#crm-tasks-refresh').addEventListener('click', crmReloadTaskView);
 $('#crm-task-overdue-only')?.addEventListener('change', crmLoadTasks);
-$('#crm-task-agent-filter').addEventListener('change', crmLoadTasks);
+$('#crm-task-agent-filter').addEventListener('change', crmReloadTaskView);
 $('#crm-task-type-filter').addEventListener('change', crmLoadTasks);
+$('#crm-completed-from')?.addEventListener('change', crmLoadCompleted);
+$('#crm-completed-to')?.addEventListener('change', crmLoadCompleted);
 
 // ── Outreach Drafts view ──────────────────────────────────────────────────────
 async function crmLoadDraftsList() {
