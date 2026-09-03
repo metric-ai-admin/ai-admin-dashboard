@@ -3686,6 +3686,79 @@ app.get('/api/calls/grades/:recording_id', requireAuth, async (req, res) => {
 });
 
 // =====================================================================
+// SOP REVIEW — Lyndsay's SOP Review Tracker (sop_review table)
+// =====================================================================
+// The operational SOP library (89 records). SEPARATE from the file-based 'sops'
+// knowledge base (/api/sops), which is untouched. Reads require a session;
+// writes are admin-only (everyone else gets a read-only view on the client).
+
+// Light columns for the list — the two big text fields (full_text,
+// recommendation, original_recommendation) load per-record on Review.
+const SOP_REVIEW_LIST_COLS = 'id,file,title,proposed_title,title_status,category,'
+  + 'tags,status,resman,merge,merge_pair_id,merge_decision,recommendation_status,'
+  + 'source_note,pending,archived,updated_at,updated_by';
+// Only these may be PATCHed — never id/full_text/original_* etc.
+const SOP_REVIEW_EDITABLE = ['status', 'title_status', 'recommendation_status',
+  'merge_decision', 'tags', 'category', 'resman', 'merge', 'merge_pair_id',
+  'proposed_title', 'title', 'pending', 'archived', 'previous_status', 'updated_by'];
+
+app.get('/api/sop-review', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ sops: [] });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    // full=1 returns every column (used by "Download My Edits"); the default is
+    // the light column set for the list.
+    const cols = req.query.full === '1' ? '*' : SOP_REVIEW_LIST_COLS;
+    let q = db.from('sop_review').select(cols).order('id', { ascending: true });
+    for (const f of ['category', 'status', 'resman', 'merge']) {
+      if (req.query[f] && req.query[f] !== 'All') q = q.eq(f, req.query[f]);
+    }
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    let rows = data || [];
+    // Search spans title, category and tags (a jsonb array), so it runs here.
+    if (req.query.search) {
+      const s = String(req.query.search).toLowerCase();
+      rows = rows.filter(r => (r.title || '').toLowerCase().includes(s)
+        || (r.category || '').toLowerCase().includes(s)
+        || (Array.isArray(r.tags) && r.tags.some(t => String(t).toLowerCase().includes(s))));
+    }
+    res.json({ sops: rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/sop-review/:id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('sop_review').select('*').eq('id', req.params.id).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return res.status(404).json({ error: 'SOP not found' });
+    res.json({ sop: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin-only write — everyone else has a read-only view on the client, and this
+// is the server half of that gate.
+app.patch('/api/sop-review/:id', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const b = req.body || {};
+  const patch = {};
+  for (const k of SOP_REVIEW_EDITABLE) if (k in b) patch[k] = b[k];
+  if (b.tags !== undefined && !Array.isArray(b.tags)) return res.status(400).json({ error: 'tags must be an array' });
+  if (!Object.keys(patch).length) return res.status(400).json({ error: 'No editable fields provided' });
+  patch.updated_at = new Date().toISOString();
+  if (!patch.updated_by) patch.updated_by = req.user?.name || req.user?.username || null;
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('sop_review').update(patch).eq('id', req.params.id).select('*').maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return res.status(404).json({ error: 'SOP not found' });
+    res.json({ ok: true, sop: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// =====================================================================
 // ACCOUNTING / BILLING — Claudia Villalobos (Accounting/QC)
 // =====================================================================
 // Vendors, bills, and QC/payment tasks. All routes requireAuth; no role gate

@@ -52,7 +52,7 @@
     </div>
     <nav class="sidebar-nav" id="tabs">
       <button data-tab="tasks" class="active"><span class="nav-dot"></span>Tasks</button>
-      <button data-tab="sops"><span class="nav-dot"></span>SOPs</button>
+      <button data-tab="sops"><span class="nav-dot"></span>SOP Review</button>
       <button data-tab="platform"><span class="nav-dot"></span>Projects</button>
       <button data-tab="email"><span class="nav-dot"></span>Email / Cal<span id="reminder-badge" class="reminder-badge hidden">0</span></button>
       <button data-tab="eod"><span class="nav-dot"></span>End of Day</button>
@@ -254,32 +254,26 @@
 
   <!-- ============ SOPs ============ -->
   <section id="tab-sops" class="tab">
-    <div class="view-head">
-      <div>
-        <h2>SOPs / Reference Library</h2>
-        <p class="muted small"><span id="sop-total">0</span> SOPs · grouped by category — how-tos, folder rules, calendar rules</p>
+    <div class="sopr-tool">
+      <div class="sopr-header">
+        <div>
+          <h2 class="sopr-title">SOP Review Tracker</h2>
+          <p class="sopr-sub">Metric Property Management — operational SOP library</p>
+        </div>
+        <div class="sopr-header-actions">
+          <label class="sopr-editas">Editing as <input id="sopr-editor" placeholder="your name"></label>
+          <button class="sopr-btn" id="sopr-download">⬇ Download My Edits (JSON)</button>
+        </div>
       </div>
-      <div class="view-actions">
-        <label class="small" style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" id="sop-show-archived"> Show archived
-        </label>
+      <div class="sopr-subtabs">
+        <button class="sopr-subtab active" data-sopr-tab="readme">Read Me</button>
+        <button class="sopr-subtab" data-sopr-tab="structure">Category Structure</button>
+        <button class="sopr-subtab" data-sopr-tab="tracker">SOP Tracker</button>
       </div>
+      <div id="sopr-readme" class="sopr-pane"></div>
+      <div id="sopr-structure" class="sopr-pane hidden"></div>
+      <div id="sopr-tracker" class="sopr-pane hidden"></div>
     </div>
-    <input id="sop-search" placeholder="🔎 Search title, text, tags, source..." style="width:100%;margin-bottom:14px;">
-    <div id="sop-list"></div>
-
-    <button id="sop-add-toggle" class="btn-sm" style="margin-top:8px;">+ Add SOP</button>
-    <form id="sop-add-form" class="quick-add hidden" style="flex-direction:column;align-items:stretch;margin-top:10px;">
-      <input name="title" placeholder="Title" required>
-      <input name="category" placeholder="Category (e.g. Email Management)">
-      <input name="source" placeholder="Source (e.g. Jay Manuel — 08/14/2026)">
-      <input name="slab_url" placeholder="Slab URL (optional)">
-      <textarea name="text" placeholder="Full content..." rows="8" required></textarea>
-      <div class="card-actions">
-        <button type="submit" class="primary">Save SOP</button>
-        <button type="button" id="sop-add-cancel">Cancel</button>
-      </div>
-    </form>
   </section>
 
   <!-- SOP edit modal (admin) -->

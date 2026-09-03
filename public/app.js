@@ -844,238 +844,407 @@ $$('#task-status-pills .pill').forEach(p => p.addEventListener('click', () => { 
 // SOPs — expandable cards with formatted content + Slab links
 // =====================================================================
 
-// ── SOPs library — grouped by category, collapsible, archivable ────────────
-const SOP_CATEGORY_ORDER = ['Email Management', 'Calendar Management', 'Operations', 'Platform Build', 'SimpleVOIP / Call Analyzer', 'Technical Setup', 'Executive Operations'];
-const SOP_CAT_ICON = { 'Email Management': '📧', 'Calendar Management': '📅', 'Operations': '⚙️', 'Platform Build': '🏗️', 'SimpleVOIP / Call Analyzer': '📞', 'Technical Setup': '🔧', 'Executive Operations': '👑', '(Uncategorized)': '📄' };
-let sopAll = [];
-let openSopId = null;
-let sopQuery = '';
-let sopServerTextIds = new Set();
-const sopDetailCache = {};
-const sopCatCollapsed = {};        // category -> collapsed? (absent/true = collapsed by default)
-const sopIsAdmin = () => currentUser?.role === 'admin';
-
-// Renders ALL-CAPS "HEADER:" lines as section headers, "-" lines as bullets,
-// everything else as plain paragraphs.
-function formatSopContent(text) {
-  const lines = String(text || '').split('\n');
-  let html = '';
-  let inList = false;
-  const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line) { closeList(); continue; }
-    const isHeading = line.endsWith(':') && line === line.toUpperCase() && /[A-Z]/.test(line);
-    if (isHeading) {
-      closeList();
-      html += `<div class="sop-heading">${esc(line)}</div>`;
-    } else if (line.startsWith('-')) {
-      if (!inList) { html += '<ul class="sop-list">'; inList = true; }
-      html += `<li>${esc(line.slice(1).trim())}</li>`;
-    } else {
-      closeList();
-      html += `<p class="sop-p">${esc(line)}</p>`;
-    }
-  }
-  closeList();
-  return html;
-}
-
-// esc + wrap query matches in <mark>. q is a lowercased plain string.
-function sopHighlight(text, q) {
-  const s = esc(String(text ?? ''));
-  if (!q) return s;
-  const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
-  return s.replace(re, '<mark>$1</mark>');
-}
+// ── SOP Review Tracker (Lyndsay's SOP Review Tool) ──────────────────────────
+// Replaces the old AI-Admin SOPs tab. The file-based AI-Admin knowledge base
+// (/api/sops) is surfaced here read-only as its own category. Admin edits;
+// everyone else gets a read-only view (server enforces the same).
+const SOPR_STATUSES = ['Keep As-Is', 'Update Needed', 'Pending Review', 'Merge Candidate', 'Awaiting File', 'Archive'];
+const SOPR_STATUS_CLASS = {
+  'Keep As-Is': 'sopr-st-green', 'Update Needed': 'sopr-st-orange',
+  'Pending Review': 'sopr-st-gray', 'Merge Candidate': 'sopr-st-purple',
+  'Awaiting File': 'sopr-st-gray', 'Archive': 'sopr-st-red',
+};
+const SOPR_KB_CATEGORY = 'AI Admin Knowledge Base';
+const soprState = { rows: [], kb: [], filters: { quick: 'All', category: 'All', search: '' },
+  selectedId: null, detailCache: {}, editor: '', wired: false, loaded: false, subtab: 'readme' };
+const soprCanEdit = () => currentUser?.role === 'admin';
+const soprEsc = esc;
 
 async function loadSops() {
-  const list = $('#sop-list');
-  if (!list) return;
-  // Fetch everything (archived included, each flagged) and filter client-side,
-  // so the "Show archived" toggle and search are instant. Wrapped so a failure
-  // shows a message instead of a blank page.
-  try {
-    const resp = await api('/api/sops?include_archived=true');
-    // The endpoint returns a plain array. Coerce defensively so a wrapped shape
-    // ({sops:[...]}) or an empty non-array response can never leave the list at 0.
-    sopAll = Array.isArray(resp) ? resp : (resp?.sops || resp?.rows || []);
-  } catch (err) {
-    list.innerHTML = `<p class="hint">Could not load SOPs: ${esc(err.message)}</p>`;
-    return;
+  const tool = $('.sopr-tool');
+  if (!tool) return;
+  if (!soprState.wired) {
+    soprState.editor = (() => { try { return localStorage.getItem('soprEditor') || ''; } catch { return ''; } })();
+    const ed = $('#sopr-editor');
+    if (ed) { ed.value = soprState.editor; ed.addEventListener('input', e => {
+      soprState.editor = e.target.value; try { localStorage.setItem('soprEditor', e.target.value); } catch {}
+    }); }
+    $('#sopr-download')?.addEventListener('click', soprDownload);
+    $$('#tab-sops .sopr-subtab').forEach(b => b.addEventListener('click', () => soprSetSubtab(b.dataset.soprTab)));
+    soprState.wired = true;
   }
-  renderSops();
+  if (!soprState.loaded) {
+    try {
+      const [rev, kb] = await Promise.all([
+        api('/api/sop-review'),
+        api('/api/sops').catch(() => []),
+      ]);
+      soprState.rows = rev.sops || [];
+      soprState.kb = Array.isArray(kb) ? kb : (kb.sops || kb.rows || []);
+      soprState.loaded = true;
+    } catch (err) {
+      const t = $('#sopr-tracker'); if (t) t.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+      return;
+    }
+  }
+  soprSetSubtab(soprState.subtab);
 }
 
-const sopCatOf = (s) => (s.category || '').trim() || '(Uncategorized)';
-const sopClientMatch = (s, q) =>
-  [s.title, s.source, (s.tags || []).join(' '), s.category].filter(Boolean).join(' ').toLowerCase().includes(q);
+function soprSetSubtab(t) {
+  soprState.subtab = t;
+  $$('#tab-sops .sopr-subtab').forEach(b => b.classList.toggle('active', b.dataset.soprTab === t));
+  ['readme', 'structure', 'tracker'].forEach(p => $('#sopr-' + p)?.classList.toggle('hidden', p !== t));
+  if (t === 'readme') soprRenderReadme();
+  if (t === 'structure') soprRenderStructure();
+  if (t === 'tracker') soprRenderTracker();
+}
 
-function sopCardHtml(s, q, admin) {
-  const isOpen = s.id === openSopId;
-  const detail = sopDetailCache[s.id];
-  const tags = (s.tags || []).map(t => `<span class="sop-pill">${sopHighlight(t, q)}</span>`).join('');
-  const dateStr = s.uploadedAt ? new Date(s.uploadedAt).toLocaleDateString() : '';
-  const meta = [s.source ? sopHighlight(s.source, q) : '', dateStr].filter(Boolean).join(' · ');
-  return `<div class="sop-card project-card${isOpen ? ' open' : ''}${s.archived ? ' sop-archived' : ''}" data-id="${s.id}">
-    <div class="project-head" data-sop-toggle="${s.id}">
-      <div>
-        <div class="project-title">${sopHighlight(s.title, q)} ${s.archived ? '<span class="badge badge-gray">Archived</span>' : ''}</div>
-        ${meta ? `<div class="muted small" style="margin-top:3px">${meta}</div>` : ''}
-        ${tags ? `<div style="margin-top:5px">${tags}</div>` : ''}
+// ---- Read Me -------------------------------------------------------------
+function soprRenderReadme() {
+  const el = $('#sopr-readme'); if (!el) return;
+  const rows = soprState.rows;
+  const byStatus = {};
+  SOPR_STATUSES.forEach(s => byStatus[s] = 0);
+  rows.forEach(r => { if (byStatus[r.status] !== undefined) byStatus[r.status]++; });
+  const cats = new Set(rows.map(r => r.category || 'Uncategorized'));
+  const pending = rows.filter(r => r.pending || r.status === 'Pending Review').length;
+  const resman = rows.filter(r => r.resman === 'yes').length;
+  const mergeC = rows.filter(r => r.status === 'Merge Candidate').length;
+  const statusCards = SOPR_STATUSES.map(s =>
+    `<div class="sopr-stat"><span class="sopr-badge ${SOPR_STATUS_CLASS[s]}">${s}</span><b>${byStatus[s]}</b></div>`).join('');
+  el.innerHTML = `
+    <div class="sopr-readme">
+      <div class="sopr-card">
+        <h3>What's in the tracker</h3>
+        <div class="sopr-kpis">
+          <div class="sopr-kpi"><div class="sopr-kpi-val">${rows.length}</div><div class="sopr-kpi-lab">SOPs under review</div></div>
+          <div class="sopr-kpi"><div class="sopr-kpi-val">${cats.size}</div><div class="sopr-kpi-lab">Categories</div></div>
+          <div class="sopr-kpi"><div class="sopr-kpi-val">${pending}</div><div class="sopr-kpi-lab">Pending review</div></div>
+          <div class="sopr-kpi"><div class="sopr-kpi-val">${resman}</div><div class="sopr-kpi-lab">ResMan-related</div></div>
+          <div class="sopr-kpi"><div class="sopr-kpi-val">${mergeC}</div><div class="sopr-kpi-lab">Merge candidates</div></div>
+          <div class="sopr-kpi"><div class="sopr-kpi-val">${soprState.kb.length}</div><div class="sopr-kpi-lab">AI Admin KB SOPs</div></div>
+        </div>
+        <h4>Breakdown by status</h4>
+        <div class="sopr-stat-row">${statusCards}</div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        ${admin ? `<button class="btn-sm sop-edit" data-id="${s.id}">Edit</button>
-                   <button class="btn-sm sop-archive" data-id="${s.id}">${s.archived ? 'Unarchive' : 'Archive'}</button>` : ''}
-        <span class="muted small">${s.chars}c</span>
-        <span class="project-toggle">▶</span>
+      <div class="sopr-card">
+        <h3>How to use this</h3>
+        <ul class="sopr-list-plain">
+          <li>Set who you are in <b>Editing as</b> (top right) — it stamps your edits.</li>
+          <li><b>Category Structure</b> shows every SOP grouped by category.</li>
+          <li><b>SOP Tracker</b> is the working list — open <b>Review</b> to accept a proposed title, accept or reject Claude's rewrite, set status, ResMan, and merges.</li>
+          <li>Merge candidates are linked in pairs: <b>2–3, 20–21, 24–25, 33–34, 71–72</b>.</li>
+          <li>The <b>AI Admin Knowledge Base</b> (${soprState.kb.length} SOPs) is a separate source, shown read-only.</li>
+          <li><b>Download My Edits (JSON)</b> exports the full current state.</li>
+        </ul>
+        <div class="sopr-note">${soprCanEdit()
+          ? '✎ You have edit access (admin).'
+          : '👁 Read-only view — only the AI Admin can change statuses and recommendations.'}</div>
       </div>
+    </div>`;
+}
+
+// ---- Category Structure --------------------------------------------------
+function soprRenderStructure() {
+  const el = $('#sopr-structure'); if (!el) return;
+  const groups = new Map();
+  soprState.rows.forEach(r => {
+    const c = r.category || 'Uncategorized';
+    if (!groups.has(c)) groups.set(c, []);
+    groups.get(c).push(r);
+  });
+  const cats = [...groups.keys()].sort((a, b) => a.localeCompare(b));
+
+  // AI Admin KB grouped by its own category, shown first, clearly a separate source.
+  const kbByCat = new Map();
+  soprState.kb.forEach(s => { const c = s.category || 'Uncategorized'; if (!kbByCat.has(c)) kbByCat.set(c, []); kbByCat.get(c).push(s); });
+  const kbBlock = soprState.kb.length ? `
+    <div class="sopr-catblock sopr-kb">
+      <div class="sopr-cathead"><span class="sopr-catnum">★</span> ${SOPR_KB_CATEGORY} <span class="sopr-catcount">${soprState.kb.length} · separate source</span></div>
+      ${[...kbByCat.keys()].sort().map(c => `
+        <div class="sopr-subcat"><div class="sopr-subcat-title">${esc(c)}</div>
+          <ul>${kbByCat.get(c).map(s => `<li>${esc(s.title || '(untitled)')}</li>`).join('')}</ul>
+        </div>`).join('')}
+    </div>` : '';
+
+  el.innerHTML = kbBlock + cats.map((c, i) => {
+    const items = groups.get(c);
+    return `<div class="sopr-catblock">
+      <div class="sopr-cathead"><span class="sopr-catnum">${i + 1}</span> ${esc(c)} <span class="sopr-catcount">${items.length}</span></div>
+      <ul class="sopr-cat-list">${items.map(s => `<li>${esc(s.title || '(untitled)')}${
+        s.status === 'Merge Candidate' && s.merge_pair_id ? ` <span class="sopr-mini purple">merge → #${s.merge_pair_id}</span>` : ''}</li>`).join('')}</ul>
+    </div>`;
+  }).join('');
+}
+
+// ---- SOP Tracker ---------------------------------------------------------
+const soprIsResman = r => r.resman === 'yes' || r.resman === 'pending';
+function soprMatchesQuick(r) {
+  switch (soprState.filters.quick) {
+    case 'Update Needed':    return r.status === 'Update Needed';
+    case 'Pending Review':   return r.status === 'Pending Review';
+    case 'Merge Candidate':  return r.status === 'Merge Candidate';
+    case 'ResMan':           return soprIsResman(r);
+    default:                 return true;
+  }
+}
+function soprFiltered() {
+  const f = soprState.filters, s = (f.search || '').toLowerCase();
+  return soprState.rows.filter(r => {
+    if (!soprMatchesQuick(r)) return false;
+    if (f.category !== 'All' && (r.category || 'Uncategorized') !== f.category) return false;
+    if (s) {
+      const hay = `${r.title || ''} ${r.category || ''} ${(Array.isArray(r.tags) ? r.tags.join(' ') : '')}`.toLowerCase();
+      if (!hay.includes(s)) return false;
+    }
+    return true;
+  });
+}
+function soprFilteredKb() {
+  // KB only shows when no review-specific quick filter is active.
+  if (soprState.filters.quick !== 'All') return [];
+  const f = soprState.filters, s = (f.search || '').toLowerCase();
+  return soprState.kb.filter(k => {
+    if (f.category !== 'All' && f.category !== SOPR_KB_CATEGORY) return false;
+    if (s) { const hay = `${k.title || ''} ${k.category || ''} ${(Array.isArray(k.tags) ? k.tags.join(' ') : '')}`.toLowerCase(); if (!hay.includes(s)) return false; }
+    return true;
+  });
+}
+
+function soprRenderTracker() {
+  const el = $('#sopr-tracker'); if (!el) return;
+  const cats = ['All', SOPR_KB_CATEGORY, ...[...new Set(soprState.rows.map(r => r.category || 'Uncategorized'))].sort()];
+  const quickDefs = [['All', 'All'], ['Update Needed', 'Update Needed'], ['Pending Review', 'Pending Review'],
+    ['Merge Candidate', 'Merge Candidates'], ['ResMan', 'ResMan']];
+  const list = soprFiltered(), kb = soprFilteredKb();
+  el.innerHTML = `
+    <div class="sopr-filters">
+      ${quickDefs.map(([v, t]) => `<button class="sopr-pill${soprState.filters.quick === v ? ' active' : ''}" data-sopr-quick="${esc(v)}">${t}</button>`).join('')}
+      <select class="sopr-select" id="sopr-f-cat">${cats.map(c => `<option value="${esc(c)}"${soprState.filters.category === c ? ' selected' : ''}>${c === 'All' ? 'All categories' : esc(c)}</option>`).join('')}</select>
+      <input class="sopr-search" id="sopr-f-search" type="search" placeholder="🔎 title, tags, category" value="${esc(soprState.filters.search)}">
+      <span class="sopr-count">Showing ${list.length}${kb.length ? ' + ' + kb.length + ' KB' : ''} of ${soprState.rows.length} SOPs</span>
     </div>
-    <div class="project-body">
-      ${isOpen ? (detail ? `
-        ${s.slab_url ? `<a class="btn-sm primary slab-link" href="${esc(s.slab_url)}" target="_blank" rel="noopener">Open in Slab →</a>` : ''}
-        <div class="sop-content">${q ? sopHighlight(detail.text, q) : formatSopContent(detail.text)}</div>
-        <p class="muted small" style="margin-top:12px">Last updated: ${detail.uploadedAt ? new Date(detail.uploadedAt).toLocaleString() : '—'}</p>
-      ` : '<p class="muted small">Loading...</p>') : ''}
+    <div class="sopr-grid">
+      <div class="sopr-listpanel">
+        <div class="sopr-listwrap">${soprTrackerListHtml(list, kb)}</div>
+      </div>
+      <div class="sopr-detailpanel" id="sopr-detail">${soprDetailHtml()}</div>
+    </div>`;
+
+  el.querySelectorAll('[data-sopr-quick]').forEach(b => b.addEventListener('click', () => { soprState.filters.quick = b.dataset.soprQuick; soprRenderTracker(); }));
+  $('#sopr-f-cat')?.addEventListener('change', e => { soprState.filters.category = e.target.value; soprRenderTracker(); });
+  $('#sopr-f-search')?.addEventListener('input', e => { soprState.filters.search = e.target.value; soprRenderTrackerListOnly(); });
+  soprWireRows();
+  soprWireDetail();
+}
+
+// Re-render only the list + count (keeps search focus while typing).
+function soprRenderTrackerListOnly() {
+  const list = soprFiltered(), kb = soprFilteredKb();
+  const wrap = $('#tab-sops .sopr-listwrap'); const count = $('#tab-sops .sopr-count');
+  if (count) count.textContent = `Showing ${list.length}${kb.length ? ' + ' + kb.length + ' KB' : ''} of ${soprState.rows.length} SOPs`;
+  if (wrap) { wrap.innerHTML = soprTrackerListHtml(list, kb); soprWireRows(); }
+}
+
+function soprRowHtml(r, n) {
+  const badges = [
+    `<span class="sopr-badge ${SOPR_STATUS_CLASS[r.status] || 'sopr-st-gray'}">${esc(r.status || '—')}</span>`,
+    soprIsResman(r) ? `<span class="sopr-mini blue">ResMan${r.resman === 'pending' ? '?' : ''}</span>` : '',
+    (r.merge === 'yes' || r.merge === 'pending' || r.merge_pair_id) ? `<span class="sopr-mini purple">Merge${r.merge_pair_id ? ' #' + r.merge_pair_id : ''}</span>` : '',
+    r.pending ? '<span class="sopr-mini gray">pending</span>' : '',
+  ].filter(Boolean).join(' ');
+  return `<div class="sopr-row${soprState.selectedId === ('r' + r.id) ? ' selected' : ''}" data-sopr-id="${r.id}">
+    <div class="sopr-row-n">${n}</div>
+    <div class="sopr-row-body">
+      <div class="sopr-row-title">${esc(r.title || '(untitled)')}</div>
+      <div class="sopr-row-badges">${badges}</div>
     </div>
+    <button class="sopr-review-btn" data-sopr-review="${r.id}">Review</button>
   </div>`;
 }
 
-function renderSops() {
-  const list = $('#sop-list');
-  if (!list) return;
-  const showArchived = $('#sop-show-archived')?.checked;
-  const q = sopQuery.trim().toLowerCase();
-
-  $('#sop-total').textContent = sopAll.length;
-  let items = sopAll.slice();
-  if (!showArchived) items = items.filter(s => !s.archived);
-  if (q) items = items.filter(s => sopClientMatch(s, q) || sopServerTextIds.has(s.id));
-
-  // Category datalist for the edit modal.
-  const dl = $('#sop-cat-list');
-  if (dl) dl.innerHTML = [...new Set([...SOP_CATEGORY_ORDER, ...sopAll.map(sopCatOf)])]
-    .filter(c => c !== '(Uncategorized)').map(c => `<option value="${esc(c)}">`).join('');
-
-  if (!items.length) { list.innerHTML = `<p class="hint">${q ? 'No SOPs match your search.' : 'No SOPs yet.'}</p>`; return; }
-
-  const groups = new Map();
-  for (const s of items) { const c = sopCatOf(s); if (!groups.has(c)) groups.set(c, []); groups.get(c).push(s); }
-  const orderedCats = [
-    ...SOP_CATEGORY_ORDER.filter(c => groups.has(c)),
-    ...[...groups.keys()].filter(c => !SOP_CATEGORY_ORDER.includes(c) && c !== '(Uncategorized)').sort(),
-    ...(groups.has('(Uncategorized)') ? ['(Uncategorized)'] : []),
-  ];
-
-  const admin = sopIsAdmin();
-  list.innerHTML = orderedCats.map(cat => {
-    const sops = groups.get(cat).slice().sort((a, b) => (a.archived ? 1 : 0) - (b.archived ? 1 : 0)); // active first
-    const collapsed = q ? false : (sopCatCollapsed[cat] !== false);   // searching forces expand
-    const icon = SOP_CAT_ICON[cat] || '📄';
-    return `<div class="sop-cat">
-      <div class="sop-cat-head" data-cat-toggle="${esc(cat)}">
-        <span>${collapsed ? '▶' : '▼'} ${icon} ${esc(cat)} <span class="muted">(${sops.length})</span></span>
+function soprTrackerListHtml(list, kb) {
+  if (!list.length && !kb.length) return '<div class="empty-state">No SOPs match these filters.</div>';
+  let html = list.map((r, i) => soprRowHtml(r, i + 1)).join('');
+  if (kb.length) {
+    html += `<div class="sopr-kb-divider">★ ${SOPR_KB_CATEGORY} <span class="muted small">— separate source, read-only</span></div>`;
+    html += kb.map((k, i) => `<div class="sopr-row sopr-row-kb${soprState.selectedId === ('kb' + (k.id ?? i)) ? ' selected' : ''}" data-sopr-kb="${esc(k.id ?? i)}">
+      <div class="sopr-row-n">★</div>
+      <div class="sopr-row-body">
+        <div class="sopr-row-title">${esc(k.title || '(untitled)')}</div>
+        <div class="sopr-row-badges"><span class="sopr-mini gray">${esc(k.category || 'KB')}</span></div>
       </div>
-      <div class="sop-cat-body${collapsed ? ' hidden' : ''}">
-        ${sops.map(s => sopCardHtml(s, q, admin)).join('')}
+      <button class="sopr-review-btn" data-sopr-kbview="${esc(k.id ?? i)}">View</button>
+    </div>`).join('');
+  }
+  return html;
+}
+
+function soprWireRows() {
+  document.querySelectorAll('#tab-sops [data-sopr-review]').forEach(b => b.addEventListener('click', () => soprSelect(b.dataset.soprReview)));
+  document.querySelectorAll('#tab-sops [data-sopr-kbview]').forEach(b => b.addEventListener('click', () => soprSelectKb(b.dataset.soprKbview)));
+  document.querySelectorAll('#tab-sops .sopr-row[data-sopr-id]').forEach(r => r.addEventListener('click', e => { if (!e.target.closest('button')) soprSelect(r.dataset.soprId); }));
+}
+
+async function soprSelect(id) {
+  soprState.selectedId = 'r' + id;
+  if (!soprState.detailCache['r' + id]) {
+    soprRenderDetailOnly();
+    try { const d = await api(`/api/sop-review/${encodeURIComponent(id)}`); soprState.detailCache['r' + id] = d.sop || { error: 'Not found' }; }
+    catch (err) { soprState.detailCache['r' + id] = { error: err.message }; }
+  }
+  soprRenderTracker();
+}
+function soprSelectKb(id) {
+  soprState.selectedId = 'kb' + id;
+  const k = soprState.kb.find(x => String(x.id ?? '') === String(id)) || soprState.kb[Number(id)] || null;
+  soprState.detailCache['kb' + id] = k ? { __kb: true, ...k } : { error: 'Not found' };
+  soprRenderTracker();
+}
+function soprRenderDetailOnly() {
+  const el = $('#sopr-detail'); if (el) { el.innerHTML = soprDetailHtml(); soprWireDetail(); }
+}
+
+function soprDetailHtml() {
+  const sel = soprState.selectedId;
+  if (!sel) return `<div class="sopr-detail-empty"><div class="sopr-detail-icon">★</div><div>Select an SOP and press Review</div></div>`;
+  const rec = soprState.detailCache[sel];
+  if (!rec) return `<div class="sopr-detail-empty"><span class="sv-spinner"></span> Loading…</div>`;
+  if (rec.error) return `<div class="sopr-detail-empty">Could not load: ${esc(rec.error)}</div>`;
+  if (rec.__kb) return soprKbDetailHtml(rec);
+  return soprReviewDetailHtml(rec);
+}
+
+function soprKbDetailHtml(k) {
+  return `<div class="sopr-detail">
+    <div class="sopr-detail-head"><div><span class="sopr-mini gray">${SOPR_KB_CATEGORY}</span>
+      <h3>${esc(k.title || '(untitled)')}</h3><div class="muted small">${esc(k.category || '')}${k.source ? ' · ' + esc(k.source) : ''}</div></div></div>
+    <div class="sopr-sec"><div class="sopr-sec-title">Content</div><div class="sopr-text">${esc(k.text || k.full_text || k.body || '—')}</div></div>
+    <div class="sopr-note">Read-only — this is an AI Admin Knowledge Base SOP (managed separately from the review tracker).</div>
+  </div>`;
+}
+
+function soprReviewDetailHtml(r) {
+  const admin = soprCanEdit();
+  const dis = admin ? '' : 'disabled';
+  const cats = [...new Set(soprState.rows.map(x => x.category || 'Uncategorized'))].sort();
+  const tags = Array.isArray(r.tags) ? r.tags : [];
+  const mergePartner = r.merge_pair_id ? soprState.rows.find(x => x.id === r.merge_pair_id) : null;
+  const titleRow = (r.proposed_title && r.proposed_title !== r.title)
+    ? `<div class="sopr-titlecompare">
+        <div><div class="sopr-lab">Current title</div><div class="sopr-cur">${esc(r.title || '')}</div></div>
+        <div><div class="sopr-lab">Proposed title <span class="sopr-mini ${r.title_status === 'Accepted' ? 'green' : 'purple'}">${esc(r.title_status || 'Suggested')}</span></div>
+          <div class="sopr-prop">${esc(r.proposed_title)}</div>
+          ${admin ? `<div class="sopr-btnrow"><button class="sopr-btn ok" data-sopr-act="title-accept">Accept</button><button class="sopr-btn" data-sopr-act="title-keep">Keep Current</button></div>` : ''}
+        </div></div>`
+    : `<div class="sopr-lab">Title</div><div class="sopr-cur">${esc(r.title || '')}</div>`;
+
+  return `<div class="sopr-detail" data-sopr-detail-id="${r.id}">
+    <div class="sopr-detail-head">
+      <div style="min-width:0">
+        <span class="sopr-badge ${SOPR_STATUS_CLASS[r.status] || 'sopr-st-gray'}">${esc(r.status || '—')}</span>
+        <h3>#${r.id} · ${esc(r.title || '(untitled)')}</h3>
+        <div class="muted small">${esc(r.file || '')}${r.updated_by ? ' · last edited by ' + esc(r.updated_by) : ''}</div>
       </div>
-    </div>`;
-  }).join('');
+    </div>
 
-  list.querySelectorAll('[data-cat-toggle]').forEach(h => h.addEventListener('click', () => {
-    const cat = h.getAttribute('data-cat-toggle');
-    sopCatCollapsed[cat] = !(sopCatCollapsed[cat] !== false);   // flip; default (absent) = collapsed
-    renderSops();
+    <div class="sopr-sec">${titleRow}</div>
+
+    ${mergePartner || r.merge === 'yes' || r.merge === 'pending' || r.merge_pair_id ? `
+    <div class="sopr-sec"><div class="sopr-sec-title">Merge</div>
+      ${mergePartner ? `<div class="sopr-merge-link">🔗 Merge candidate with <b>#${mergePartner.id} — ${esc(mergePartner.title || '')}</b></div>` : ''}
+      <div class="sopr-inline">
+        <label>Merge <select data-sopr-field="merge" ${dis}>${['no', 'pending', 'yes'].map(v => `<option value="${v}"${r.merge === v ? ' selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label>Pair with # <select data-sopr-field="merge_pair_id" ${dis}><option value="">—</option>${soprState.rows.filter(x => x.id !== r.id).map(x => `<option value="${x.id}"${r.merge_pair_id === x.id ? ' selected' : ''}>#${x.id} ${esc((x.title || '').slice(0, 40))}</option>`).join('')}</select></label>
+      </div>
+    </div>` : `
+    <div class="sopr-sec"><div class="sopr-sec-title">Merge</div>
+      <label>Merge <select data-sopr-field="merge" ${dis}>${['no', 'pending', 'yes'].map(v => `<option value="${v}"${r.merge === v ? ' selected' : ''}>${v}</option>`).join('')}</select></label></div>`}
+
+    <div class="sopr-sec"><div class="sopr-sec-title">Original full text</div>
+      <div class="sopr-scroll sopr-pre">${esc(r.full_text || '—')}</div></div>
+
+    <div class="sopr-sec"><div class="sopr-sec-title">Claude's recommendation
+      <span class="sopr-mini ${r.recommendation_status === 'Accepted' ? 'green' : r.recommendation_status === 'Rejected' ? 'red' : 'purple'}">${esc(r.recommendation_status || 'Suggested')}</span></div>
+      <div class="sopr-scroll sopr-pre">${esc(r.recommendation || '—')}</div>
+      ${admin ? `<div class="sopr-btnrow"><button class="sopr-btn ok" data-sopr-act="rec-accept">Accept</button><button class="sopr-btn danger" data-sopr-act="rec-reject">Reject</button></div>` : ''}
+    </div>
+
+    ${r.source_note ? `<div class="sopr-sec"><div class="sopr-sec-title">Source note</div><div class="sopr-text muted">${esc(r.source_note)}</div></div>` : ''}
+
+    <div class="sopr-sec"><div class="sopr-sec-title">Classification</div>
+      <div class="sopr-inline">
+        <label>Category <select data-sopr-field="category" ${dis}>${cats.map(c => `<option value="${esc(c)}"${(r.category || 'Uncategorized') === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+        <label>Status <select data-sopr-field="status" ${dis}>${SOPR_STATUSES.map(s => `<option value="${s}"${r.status === s ? ' selected' : ''}>${s}</option>`).join('')}</select></label>
+        <label>ResMan <select data-sopr-field="resman" ${dis}>${['no', 'pending', 'yes'].map(v => `<option value="${v}"${r.resman === v ? ' selected' : ''}>${v}</option>`).join('')}</select></label>
+      </div>
+      <div class="sopr-tags">
+        <div class="sopr-lab">Tags</div>
+        <div class="sopr-tagwrap">${tags.map((t, i) => `<span class="sopr-tag">${esc(t)}${admin ? `<button data-sopr-tagdel="${i}">×</button>` : ''}</span>`).join('') || '<span class="muted small">none</span>'}</div>
+        ${admin ? `<div class="sopr-inline"><input class="sopr-taginput" placeholder="add tag…"><button class="sopr-btn" data-sopr-act="tag-add">Add</button></div>` : ''}
+      </div>
+    </div>
+
+    <div class="sopr-sec"><div class="sopr-sec-title">Screenshots</div>
+      <div class="sopr-shots-placeholder">📎 No screenshots attached${admin ? ' — attachments coming soon.' : '.'}</div></div>
+  </div>`;
+}
+
+// Wire detail controls after each tracker render (delegated within the panel).
+function soprWireDetail() {
+  const panel = $('#sopr-detail'); if (!panel) return;
+  const idAttr = panel.querySelector('[data-sopr-detail-id]')?.getAttribute('data-sopr-detail-id');
+  if (!idAttr || !soprCanEdit()) return;
+  const id = Number(idAttr);
+  panel.querySelectorAll('[data-sopr-field]').forEach(sel => sel.addEventListener('change', () => {
+    let v = sel.value;
+    if (sel.dataset.soprField === 'merge_pair_id') v = v === '' ? null : Number(v);
+    soprPatch(id, { [sel.dataset.soprField]: v });
   }));
-  list.querySelectorAll('[data-sop-toggle]').forEach(h => h.addEventListener('click', (e) => {
-    if (e.target.closest('.sop-edit') || e.target.closest('.sop-archive')) return;   // buttons handle themselves
-    toggleSop(h.getAttribute('data-sop-toggle'));
+  panel.querySelectorAll('[data-sopr-act]').forEach(btn => btn.addEventListener('click', () => {
+    const rec = soprState.detailCache['r' + id]; if (!rec) return;
+    const act = btn.dataset.soprAct;
+    if (act === 'title-accept') soprPatch(id, { title: rec.proposed_title, title_status: 'Accepted' });
+    else if (act === 'title-keep') soprPatch(id, { title_status: 'No Change' });
+    else if (act === 'rec-accept') soprPatch(id, { recommendation_status: 'Accepted' });
+    else if (act === 'rec-reject') soprPatch(id, { recommendation_status: 'Rejected' });
+    else if (act === 'tag-add') {
+      const inp = panel.querySelector('.sopr-taginput'); const val = (inp?.value || '').trim();
+      if (val) { const tags = Array.isArray(rec.tags) ? [...rec.tags, val] : [val]; soprPatch(id, { tags }); }
+    }
   }));
-  list.querySelectorAll('.sop-edit').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); sopEditModal(sopAll.find(s => s.id === b.dataset.id)); }));
-  list.querySelectorAll('.sop-archive').forEach(b => b.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const s = sopAll.find(x => x.id === b.dataset.id);
-    try {
-      await api(`/api/sops/${encodeURIComponent(s.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: !s.archived }) });
-      toast(s.archived ? 'Unarchived' : 'Archived', 'success');
-      loadSops();
-    } catch (err) { toast(err.message, 'error'); }
+  panel.querySelectorAll('[data-sopr-tagdel]').forEach(btn => btn.addEventListener('click', () => {
+    const rec = soprState.detailCache['r' + id]; if (!rec) return;
+    const tags = (Array.isArray(rec.tags) ? rec.tags : []).filter((_, i) => i !== Number(btn.dataset.soprTagdel));
+    soprPatch(id, { tags });
   }));
 }
 
-async function toggleSop(id) {
-  if (openSopId === id) { openSopId = null; renderSops(); return; }
-  openSopId = id;
-  if (!sopDetailCache[id]) {
-    renderSops();   // show "Loading..." immediately
-    try { sopDetailCache[id] = await api(`/api/sops/${encodeURIComponent(id)}`); }
-    catch (err) { toast(err.message, 'error'); return; }
-  }
-  renderSops();
-}
-
-// ── Search ──────────────────────────────────────────────────────────────────
-$('#sop-search')?.addEventListener('input', async (e) => {
-  sopQuery = e.target.value;
-  const q = sopQuery.trim();
-  // The list only carries title/source/tags/category; hit the server's
-  // full-text search too so the query also matches SOP body text.
-  if (q.length >= 2) {
-    try { const { results } = await api(`/api/sops/search/${encodeURIComponent(q)}`); sopServerTextIds = new Set((results || []).map(r => r.id)); }
-    catch { sopServerTextIds = new Set(); }
-  } else {
-    sopServerTextIds = new Set();
-  }
-  renderSops();
-});
-$('#sop-show-archived')?.addEventListener('change', renderSops);
-
-// ── Edit modal (admin) ────────────────────────────────────────────────────
-let sopEditId = null;
-function sopEditModal(s) {
-  if (!s) return;
-  sopEditId = s.id;
-  const f = $('#sop-edit-form');
-  f.elements.title.value = s.title || '';
-  f.elements.category.value = s.category || '';
-  f.elements.tags.value = (s.tags || []).join(', ');
-  $('#sop-edit-modal').classList.remove('hidden');
-}
-function sopEditClose() { $('#sop-edit-modal')?.classList.add('hidden'); sopEditId = null; }
-$('#sop-edit-close')?.addEventListener('click', sopEditClose);
-$('#sop-edit-cancel')?.addEventListener('click', sopEditClose);
-$('#sop-edit-overlay')?.addEventListener('click', sopEditClose);
-$('#sop-edit-form')?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const f = e.target;
-  const payload = {
-    title: f.elements.title.value.trim(),
-    category: f.elements.category.value.trim() || null,
-    tags: f.elements.tags.value.split(',').map(t => t.trim()).filter(Boolean),
-  };
+async function soprPatch(id, patch) {
   try {
-    await api(`/api/sops/${encodeURIComponent(sopEditId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    sopEditClose();
-    toast('SOP updated', 'success');
-    loadSops();
+    const body = { ...patch, updated_by: soprState.editor || currentUser?.name || null };
+    const d = await api(`/api/sop-review/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    soprState.detailCache['r' + id] = d.sop;
+    // Reflect the change in the list row too.
+    const idx = soprState.rows.findIndex(x => x.id === id);
+    if (idx >= 0) soprState.rows[idx] = { ...soprState.rows[idx], ...d.sop };
+    toast('Saved', 'success');
+    soprRenderTracker();
   } catch (err) { toast(err.message, 'error'); }
-});
+}
 
-// ── Add SOP (unchanged behavior) ────────────────────────────────────────────
-$('#sop-add-toggle').addEventListener('click', () => $('#sop-add-form').classList.toggle('hidden'));
-$('#sop-add-cancel').addEventListener('click', () => { $('#sop-add-form').classList.add('hidden'); $('#sop-add-form').reset(); });
-$('#sop-add-form').addEventListener('submit', async e => {
-  e.preventDefault();
-  const fd = new FormData(e.target);
-  const body = Object.fromEntries(fd);
+async function soprDownload() {
   try {
-    await api('/api/sops', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    e.target.reset();
-    e.target.classList.add('hidden');
-    toast('SOP added', 'success');
-    loadSops();
-  } catch (err) { toast(err.message, 'error'); }
-});
+    const d = await api('/api/sop-review?full=1');
+    const payload = { exportedFrom: 'Metric SOP Review Tracker (dashboard)', exportedAt: new Date().toISOString(), editor: soprState.editor || null, records: d.sops || [] };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'metric-sop-review-edits.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  } catch (err) { toast('Export failed: ' + err.message, 'error'); }
+}
 
 // =====================================================================
 // PLATFORM PROJECTS — expandable cards with subtasks
