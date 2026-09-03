@@ -1922,3 +1922,9 @@ tr.ca-sel { background: var(--accent-glow); }
 .sopr-tag button { border:none; background:none; color:var(--muted); cursor:pointer; font-size:13px; padding:0; line-height:1; }
 .sopr-tag button:hover { color:#DC2626; }
 .sopr-shots-placeholder { font-size:12.5px; color:var(--muted); padding:14px; border:1px dashed var(--border); border-radius:8px; text-align:center; }
+
+/* Meeting summary cards (6PM + EOD) */
+.mtg-block { margin-top: 8px; font-size: 13px; }
+.mtg-block b { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 3px; }
+.mtg-block ul { margin: 0; padding-left: 18px; }
+.mtg-block li { margin: 2px 0; line-height: 1.45; }

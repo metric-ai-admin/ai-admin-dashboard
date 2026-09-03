@@ -2261,6 +2261,24 @@ async function loadEod() {
         ${list(s.flaggedForLyndsay.map(f => `[${esc(f.mailbox)}] ${esc(f.subject)} — from ${esc(f.sender)}`), 'Nothing still flagged.')}
       </div>
     </div>`;
+
+  loadEodMeetings();
+}
+
+// Today's captured Teams meeting summaries for the EOD tab (non-blocking).
+async function loadEodMeetings() {
+  const el = $('#eod-meetings');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const d = await api('/api/meetings/summaries');
+    const list = (d.summaries || []).filter(m => m.status === 'summarized');
+    el.innerHTML = list.length
+      ? list.map(mtgSummaryCardHtml).join('')
+      : '<div class="empty-state">No meeting transcripts captured today (internal/ops meetings only; transcription must have been on).</div>';
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Could not load meeting summaries: ${esc(err.message)}</p>`;
+  }
 }
 
 $('#eod-refresh').addEventListener('click', loadEod);
@@ -6784,12 +6802,34 @@ async function sixpmLoad() {
   }
 }
 
+// One meeting-summary card — shared by the 6PM report and the EOD Meetings view.
+function mtgSummaryCardHtml(m) {
+  const time = m.start_at ? new Date(m.start_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const decisions = Array.isArray(m.key_decisions) ? m.key_decisions : [];
+  const actions = Array.isArray(m.action_items) ? m.action_items : [];
+  const attendees = Array.isArray(m.attendees) ? m.attendees : [];
+  return `<div class="card" style="margin-bottom:10px">
+    <div class="card-meta" style="justify-content:space-between">
+      ${m.category ? `<span class="badge badge-gray">${esc(m.category)}</span>` : '<span></span>'}
+      <span class="muted small">${esc(time)}</span>
+    </div>
+    <div class="card-title">${esc(m.subject || '(untitled meeting)')}</div>
+    ${attendees.length ? `<div class="card-meta small muted"><span>👥 ${attendees.map(esc).join(', ')}</span></div>` : ''}
+    ${m.summary ? `<div class="card-notes">${esc(m.summary)}</div>` : ''}
+    ${decisions.length ? `<div class="mtg-block"><b>Key decisions</b><ul>${decisions.map(d => `<li>${esc(d)}</li>`).join('')}</ul></div>` : ''}
+    ${actions.length ? `<div class="mtg-block"><b>Action items</b><ul>${actions.map(a =>
+        `<li>${esc(a.action)}${a.owner ? ` <span class="muted small">— ${esc(a.owner)}</span>` : ''}</li>`).join('')}</ul></div>` : ''}
+    ${!decisions.length && !actions.length && !m.summary ? '<div class="card-notes muted small"><i>Captured, no summary detail.</i></div>' : ''}
+  </div>`;
+}
+
 function sixpmRender() {
   const r = sixpmReport;
   if (!r) {
     $('#sixpm-meta').textContent = 'No report generated yet — it runs automatically at 6 PM Central.';
     $('#sixpm-sources').innerHTML = '';
     $('#sixpm-meetings').innerHTML = '<div class="empty-state">Nothing yet. Press Generate Now to build one for today.</div>';
+    $('#sixpm-summaries') && ($('#sixpm-summaries').innerHTML = '');
     $('#sixpm-actions').innerHTML = '';
     $('#sixpm-inbox').innerHTML = '';
     return;
@@ -6836,6 +6876,13 @@ function sixpmRender() {
     : `<div class="empty-state">${s.meetings === 'error'
         ? 'The calendar could not be read: ' + esc(s.meetings_error || '')
         : 'No meetings today carried one of the three report categories.'}</div>`;
+
+  // Today's Meeting Summaries (auto-captured from Teams transcripts)
+  const summaries = r.meeting_summaries || [];
+  const sm = $('#sixpm-summaries');
+  if (sm) sm.innerHTML = summaries.length
+    ? summaries.map(mtgSummaryCardHtml).join('')
+    : `<div class="empty-state">${s.transcripts === 'ok' ? 'No summaries.' : esc(s.transcripts_reason || 'No transcripts captured yet today.')}</div>`;
 
   // Action items
   const actions = r.action_items || [];

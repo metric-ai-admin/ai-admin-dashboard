@@ -53,6 +53,7 @@ const { registerAllTools } = require('./mcp-tools.cjs');
 const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
+const teams = require('./teams-transcripts.js');
 const crmEngine = require('./crm-task-engine.js');
 const XLSX        = require('xlsx');
 const multer      = require('multer');
@@ -5397,6 +5398,175 @@ app.post('/api/maintenance/command-center/state', requireAuth, async (req, res) 
 // ── End Command Center daily state ──────────────────────────────────────────
 
 // =====================================================================
+// MODULE — TEAMS MEETING TRANSCRIPTS (polling capture + summaries)
+// =====================================================================
+// Polls today's internal/ops Teams meetings, fetches any transcript we haven't
+// seen, summarizes it with Claude, and stores it in meeting_summaries. Reads the
+// calendar with the delegated token (Calendars.Read, as Arturo) and the meeting
+// transcripts with the app-only token (OnlineMeetingTranscript.Read.All +
+// OnlineMeetings.Read.All, scoped to Lyndsay by the Teams access policy).
+
+// Capture allow-list — internal/ops meetings only (KPI, standup, maintenance,
+// code violation review). Client calls are excluded. Matched on subject +
+// Outlook category; both lists are env-overridable so the final set can change
+// without a deploy.
+const MEETING_CAPTURE_KEYWORDS = (process.env.MEETING_CAPTURE_KEYWORDS
+  || 'kpi,standup,stand-up,stand up,daily huddle,maintenance,code violation,violation review,operations,ops meeting')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const MEETING_EXCLUDE_KEYWORDS = (process.env.MEETING_EXCLUDE_KEYWORDS || 'client')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+function meetingIsCapturable(m) {
+  const hay = `${m.subject || ''} ${(m.categories || []).join(' ')}`.toLowerCase();
+  if (MEETING_EXCLUDE_KEYWORDS.some(k => hay.includes(k))) return false;
+  return MEETING_CAPTURE_KEYWORDS.some(k => hay.includes(k));
+}
+
+// Today's meetings with a Teams join URL (delegated calendar read, as Arturo).
+// No Prefer-timezone header, so dateTimes come back as UTC and store cleanly;
+// the Central-time meeting_date is derived separately.
+async function captureCalendarMeetings() {
+  const token = await graphAccessToken();
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const end = new Date(); end.setHours(23, 59, 59, 999);
+  const url = `https://graph.microsoft.com/v1.0/users/${MAILBOX_LYNDSAY}/calendarView`
+    + `?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
+    + '&$select=subject,start,end,onlineMeeting,categories,organizer,attendees,isAllDay'
+    + '&$orderby=start/dateTime&$top=100';
+  const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message || `calendar returned ${r.status}`);
+  return (j.value || []).filter(e => !e.isAllDay && e.onlineMeeting?.joinUrl);
+}
+
+const ctDateOf = (iso) => {
+  try { return new Date(iso).toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE }); }
+  catch { return null; }
+};
+
+// Summarize one transcript. Returns { attendees, key_decisions, action_items, summary }.
+async function summarizeMeetingTranscript(meta, transcriptText) {
+  const system = 'You summarize an internal team meeting at Metric Property Management (a property '
+    + 'management company) from its transcript. Respond ONLY with valid JSON, no markdown: '
+    + '{"attendees":["name"],"key_decisions":["decision"],"action_items":[{"action":"imperative action",'
+    + '"owner":"person responsible or null"}],"summary":"2-3 sentence recap"}. Base everything strictly '
+    + 'on the transcript — do not invent attendees, decisions, owners or actions that are not present. '
+    + 'Owners are named people from the transcript.';
+  const user = `Meeting: ${meta.subject || '(untitled)'}\nDate: ${meta.date || ''}\n\nTRANSCRIPT:\n`
+    + String(transcriptText).slice(0, 60000);
+  const parsed = await callGrading.anthropicJson({ system, user, maxTokens: 1500 });
+  return {
+    attendees: Array.isArray(parsed.attendees) ? parsed.attendees : [],
+    key_decisions: Array.isArray(parsed.key_decisions) ? parsed.key_decisions : [],
+    action_items: (Array.isArray(parsed.action_items) ? parsed.action_items : [])
+      .map(a => ({ action: String(a.action || '').trim(), owner: a.owner || null }))
+      .filter(a => a.action),
+    summary: parsed.summary || '',
+  };
+}
+
+// One polling pass: for each capturable meeting, pull any new transcript,
+// summarize, and upsert. Idempotent by transcript_id — a meeting whose transcript
+// isn't ready yet simply produces nothing and is retried next pass.
+async function captureMeetingTranscripts() {
+  const out = { scanned: 0, capturable: 0, resolved: 0, transcripts: 0, summarized: 0, skipped: 0, errors: 0, items: [], error: null };
+  if (!CRM_CONFIGURED) { out.error = 'Supabase not configured'; return out; }
+  if (!GRAPH_CONFIGURED) { out.error = 'Graph not configured'; return out; }
+  if (!process.env.ANTHROPIC_API_KEY) { out.error = 'ANTHROPIC_API_KEY not set'; return out; }
+  const db = supabaseAdmin || supabasePublic;
+
+  let meetings;
+  try { meetings = await captureCalendarMeetings(); }
+  catch (err) { out.error = 'calendar: ' + err.message; return out; }
+  out.scanned = meetings.length;
+
+  let appToken;
+  try { appToken = await graphMailToken(); }
+  catch (err) { out.error = 'app token: ' + err.message; return out; }
+  const userId = MAILBOX_LYNDSAY;
+
+  for (const m of meetings) {
+    if (!meetingIsCapturable(m)) { out.skipped++; continue; }
+    out.capturable++;
+    try {
+      const om = await teams.resolveOnlineMeeting(fetchFn, appToken, userId, m.onlineMeeting.joinUrl);
+      if (!om) { out.skipped++; continue; }
+      out.resolved++;
+      const transcripts = await teams.listTranscripts(fetchFn, appToken, userId, om.id);
+      for (const t of transcripts) {
+        out.transcripts++;
+        const { data: existing } = await db.from('meeting_summaries').select('id').eq('transcript_id', t.id).maybeSingle();
+        if (existing) continue;   // already captured
+        const vtt = await teams.fetchTranscriptVtt(fetchFn, appToken, userId, om.id, t.id);
+        const text = teams.parseVtt(vtt);
+        const date = ctDateOf(m.start?.dateTime) || null;
+        const base = {
+          meeting_id: om.id, transcript_id: t.id, join_url: m.onlineMeeting.joinUrl,
+          subject: m.subject || null, category: (m.categories || [])[0] || null,
+          meeting_date: date, start_at: m.start?.dateTime || null, end_at: m.end?.dateTime || null,
+          organizer: m.organizer?.emailAddress?.name || null,
+          source: 'teams', updated_at: new Date().toISOString(),
+        };
+        if (!text.trim()) {
+          await db.from('meeting_summaries').upsert({ ...base, status: 'no_transcript', error: 'empty transcript' }, { onConflict: 'transcript_id' });
+          continue;
+        }
+        const s = await summarizeMeetingTranscript({ subject: m.subject, date }, text);
+        await db.from('meeting_summaries').upsert({
+          ...base, attendees: s.attendees, key_decisions: s.key_decisions, action_items: s.action_items,
+          summary: s.summary, transcript_text: text.slice(0, 200000), status: 'summarized', error: null,
+        }, { onConflict: 'transcript_id' });
+        out.summarized++;
+        out.items.push({ subject: m.subject, actions: s.action_items.length });
+      }
+    } catch (err) { out.errors++; out.items.push({ subject: m.subject, error: err.message }); }
+  }
+  return out;
+}
+
+// On-demand capture (admin) — the cron below runs it automatically through the day.
+app.post('/api/meetings/capture', requireAuth, requireRole('admin'), async (req, res) => {
+  try { res.json({ ok: true, summary: await captureMeetingTranscripts() }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Today's (or ?date=) meeting summaries — light columns; :id returns the full
+// record including transcript_text.
+app.get('/api/meetings/summaries', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ summaries: [] });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? req.query.date : reportDateStr();
+    const { data, error } = await db.from('meeting_summaries')
+      .select('id,subject,category,meeting_date,start_at,end_at,organizer,attendees,key_decisions,action_items,summary,status')
+      .eq('meeting_date', date).order('start_at', { ascending: true });
+    if (error) throw new Error(error.message);
+    res.json({ date, summaries: data || [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/meetings/summaries/:id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('meeting_summaries').select('*').eq('id', req.params.id).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return res.status(404).json({ error: 'Summary not found' });
+    res.json({ summary: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Polling schedule — every 45 min through the working day (UTC ~ 8am-7pm CT).
+// Transcripts appear minutes-to-~an-hour after a meeting ends, so several passes
+// catch them before the 6PM report reads the table.
+cron.schedule('*/45 13-23 * * *', async () => {
+  try {
+    const s = await captureMeetingTranscripts();
+    if (s.summarized || s.errors) console.log(`[meetings] capture — ${s.summarized} summarized, ${s.errors} errors, ${s.scanned} scanned`);
+  } catch (err) { console.error('[meetings] capture failed:', err.message); }
+});
+
+// =====================================================================
 // MODULE — DAILY 6 PM REPORT
 // =====================================================================
 // Lyndsay's end-of-day roll-up, spec confirmed 2026-08-17: the day's meetings in
@@ -5516,10 +5686,22 @@ async function sixPmBuild() {
   const cal = await sixPmMeetings();
   const inbox = refreshState.inboxCounts || null;
   const ai = await sixPmActionItems(cal.meetings);
+  // Today's captured Teams meeting summaries (populated by the polling job).
+  let meetingSummaries = [];
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    if (CRM_CONFIGURED) {
+      const { data } = await db.from('meeting_summaries')
+        .select('subject,category,summary,key_decisions,action_items,attendees,start_at,status')
+        .eq('meeting_date', reportDateStr()).order('start_at', { ascending: true });
+      meetingSummaries = (data || []).filter(m => m.status === 'summarized');
+    }
+  } catch (err) { console.error('[6pm] meeting summaries unavailable:', err.message); }
   return {
     report_date: reportDateStr(),
     meetings: cal.meetings,
     action_items: ai.items,
+    meeting_summaries: meetingSummaries,
     inbox_snapshot: inbox ? { lyndsay: inbox.lyndsay ?? null, lastChecked: inbox.lastChecked ?? null } : {},
     sources: {
       meetings: cal.error ? 'error' : 'ok',
@@ -5527,9 +5709,9 @@ async function sixPmBuild() {
       meetings_matched: cal.matched,
       meetings_other_today: cal.otherToday,
       categories: SIXPM_CATEGORIES,
-      // Stated rather than left to be inferred from an empty array.
-      transcripts: 'unavailable',
-      transcripts_reason: 'Needs OnlineMeetingTranscript.Read.All (application) with admin consent and a Teams application access policy for Lyndsay.',
+      transcripts: meetingSummaries.length ? 'ok' : 'none',
+      transcripts_reason: meetingSummaries.length ? null
+        : 'No transcripts captured yet today (internal/ops meetings only; transcription must have been on).',
       action_items: ai.reason ? 'unavailable' : 'ok',
       action_items_reason: ai.reason,
       inbox: inbox ? 'ok' : 'unavailable',
