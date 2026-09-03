@@ -523,7 +523,7 @@ function acctModal(title, fields, onSave) {
     if (f.type === 'textarea') {
       return `<label class="acct-field"><span>${esc(f.label)}</span><textarea name="${f.name}" class="crm-input" rows="2">${esc(v)}</textarea></label>`;
     }
-    return `<label class="acct-field"><span>${esc(f.label)}</span><input name="${f.name}" type="${f.type || 'text'}" class="crm-input" value="${esc(v)}"></label>`;
+    return `<label class="acct-field"><span>${esc(f.label)}</span><input name="${f.name}" type="${f.type || 'text'}"${f.step ? ` step="${esc(f.step)}"` : ''} class="crm-input" value="${esc(v)}"></label>`;
   }).join('');
   const form = $('#acct-modal-form');
   form.onsubmit = async (e) => {
@@ -565,7 +565,7 @@ function acctBillModal(b) {
       options: ['', ...acctState.vendors.map(v => v.id)], value: b?.vendor_id || '' },
     { name: 'property', label: 'Property', value: b?.property },
     { name: 'work_order_ref', label: 'WO Ref', value: b?.work_order_ref },
-    { name: 'amount', label: 'Amount', type: 'number', value: b?.amount },
+    { name: 'amount', label: 'Amount', type: 'number', step: '0.01', value: b?.amount },
     { name: 'status', label: 'Status', type: 'select', options: ['pending', 'approved', 'paid', 'disputed'], value: b?.status || 'pending' },
     { name: 'due_date', label: 'Due Date', type: 'date', value: b?.due_date },
     { name: 'paid_date', label: 'Paid Date', type: 'date', value: b?.paid_date },
