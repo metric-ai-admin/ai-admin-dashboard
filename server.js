@@ -5410,8 +5410,12 @@ app.post('/api/maintenance/command-center/state', requireAuth, async (req, res) 
 // code violation review). Client calls are excluded. Matched on subject +
 // Outlook category; both lists are env-overridable so the final set can change
 // without a deploy.
+// Defaults match Lyndsay's exact recurring titles (confirmed 2026-09-03):
+// "Daily Standup", "Daily Maintenance coordinator", "KPI", "Code Violation
+// Review", "Weekly Renewal Meeting", "Collections Daily Alignment". Substring,
+// case-insensitive; env-overridable.
 const MEETING_CAPTURE_KEYWORDS = (process.env.MEETING_CAPTURE_KEYWORDS
-  || 'kpi,standup,stand-up,stand up,daily huddle,maintenance,code violation,violation review,operations,ops meeting')
+  || 'kpi,standup,stand-up,stand up,maintenance coordinator,maintenance,code violation,violation review,renewal,weekly renewal,collections daily alignment,collections,daily alignment')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const MEETING_EXCLUDE_KEYWORDS = (process.env.MEETING_EXCLUDE_KEYWORDS || 'client')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
