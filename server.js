@@ -3745,18 +3745,61 @@ const leasingPick = (row, candidates) => {
 const leasingTruthy = v => v === true || v === 'true' || v === 'Yes' || v === 'yes' || v === 1 || v === '1';
 const leasingDateOnly = v => { if (!v) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-CA'); };
 
-// Debug: raw first row from the report, unmapped, to confirm the live field keys
-// and that the endpoint works. Admin-gated; remove once the mapping is verified.
+// Debug: probe several candidate AppFolio URL patterns for the Guest Card
+// Interests Joined Report and report what each one returns, so we can identify
+// the correct endpoint. Admin-gated; remove once the endpoint is confirmed.
+// The evictions sync works against a NAMED template (delinquency_as_of.json) via
+// POST + Basic auth; a custom Joined Report addressed by UUID likely needs a
+// different path, so we try a spread of them (both the id and a couple of likely
+// template names, GET and POST).
 app.get('/api/leasing/sync/raw', requireMetricAdmin, async (req, res) => {
-  try {
-    const to = req.query.date_to || new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
-    const from = req.query.date_from || to;
-    const raw = await appfolioLeasingFetch(from, to);
-    const first = raw[0] || null;
-    res.json({ ok: true, count: raw.length, first_row_keys: first ? Object.keys(first) : null, first_row: first });
-  } catch (err) {
-    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: err.message });
+  const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
+  if (!id || !secret) return res.status(503).json({ ok: false, error: 'AppFolio API not configured.' });
+  const auth = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
+  const to = req.query.date_to || new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+  const from = req.query.date_from || to;
+  const rid = APPFOLIO_LEASING_REPORT_ID;
+  const dateQs = `filters[received_on_from]=${from}&filters[received_on_to]=${to}&paginate_results=false`;
+
+  // Each candidate: { method, url, body? }. GET carries filters in the query;
+  // POST mirrors the evictions body shape.
+  const postBody = JSON.stringify({ received_on_from: from, received_on_to: to, paginate_results: false });
+  const candidates = [
+    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v2/reports/${rid}.json?${dateQs}` },
+    { method: 'POST', url: `${APPFOLIO_BASE}/api/v2/reports/${rid}.json`, body: postBody },
+    { method: 'GET',  url: `${APPFOLIO_BASE}/reports/${rid}.json?${dateQs}` },
+    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v1/reports/${rid}?${dateQs}` },
+    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v1/reports/${rid}.json?${dateQs}` },
+    { method: 'GET',  url: `${APPFOLIO_BASE}/joined_reports/${rid}.json?${dateQs}` },
+    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v2/joined_reports/${rid}.json?${dateQs}` },
+    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v0/reports/${rid}.json?${dateQs}` },
+    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v2/reports/guest_card_interests.json?${dateQs}` },
+    { method: 'POST', url: `${APPFOLIO_BASE}/api/v2/reports/guest_card_interests.json`, body: postBody },
+    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v2/reports/guest_cards.json?${dateQs}` },
+  ];
+
+  const attempts = [];
+  let winner = null;
+  for (const c of candidates) {
+    const opts = { method: c.method, headers: { Authorization: auth } };
+    if (c.body) { opts.headers['Content-Type'] = 'application/json'; opts.body = c.body; }
+    let status = null, snippet = null, keys = null, err = null;
+    try {
+      const resp = await fetchFn(c.url, opts);
+      status = resp.status;
+      const text = await resp.text().catch(() => '');
+      let j = null; try { j = JSON.parse(text); } catch (_) {}
+      if (resp.ok) {
+        const rows = Array.isArray(j) ? j : (j?.results || j?.data || []);
+        const first = rows[0] || null;
+        keys = first ? Object.keys(first) : (j && !Array.isArray(j) ? Object.keys(j) : null);
+        if (!winner) winner = { method: c.method, url: c.url, status, count: rows.length, first_row_keys: keys, first_row: first };
+      }
+      snippet = text ? text.slice(0, 300) : '';
+    } catch (e) { err = e.message; }
+    attempts.push({ method: c.method, url: c.url, status, ok: status >= 200 && status < 300, keys, snippet, error: err });
   }
+  res.json({ ok: !!winner, winner, attempts, tried: candidates.length });
 });
 
 // POST /api/leasing/sync — pull the Guest Card Interests report for a date range
