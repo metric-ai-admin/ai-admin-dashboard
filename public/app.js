@@ -78,6 +78,8 @@ const TAB_ACCESS = {
   // role uses 'crm'. She gets normal BD CRM access minus the internal staff
   // roster (admin/operations only — see CRM_ROSTER_ROLES).
   leasing_bd:  ['leasing', 'crm'],
+  // Collections agent — Evictions tab only.
+  evictions_agent: ['evictions'],
 };
 
 // Maintenance is read-only for these two: they consult the board, they do not
@@ -146,6 +148,7 @@ function roleLabelFor(role) {
     maintenance: 'Maintenance Coordinator', bd_agent: 'BD Agent',
     regional_director: 'Regional Director', resident_success: 'Resident Success',
     collections_leasing: 'Collections & Leasing', leasing_bd: 'Leasing & BD',
+    evictions_agent: 'Collections Agent',
   }[role] || role;
 }
 
