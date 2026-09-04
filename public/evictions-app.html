@@ -2355,6 +2355,29 @@ function App() {
       setSyncing(false);
     }
   }
+  async function clearSession() {
+    if (!confirm('Clear the saved session? This wipes the last uploaded/synced report and returns to the empty upload screen.')) return;
+    try {
+      const resp = await fetch('/api/evictions/session', { method: 'DELETE', credentials: 'same-origin' });
+      if (!resp.ok) {
+        const j = await resp.json().catch(() => null);
+        alert('Could not clear the session: ' + ((j && j.error) || ('HTTP ' + resp.status)));
+        return;
+      }
+      // Reset to the empty upload screen. The save effect early-returns on a
+      // null rawUnits, so this does not re-persist anything.
+      hydratingRef.current = true;
+      setRawUnits(null);
+      setActivities([]);
+      setReportDay(null);
+      setReportDate(null);
+      setNotes({});
+      setExpanded(new Set());
+      setCompleted(new Set());
+    } catch (err) {
+      alert('Could not clear the session: ' + err.message);
+    }
+  }
   function applyActivitiesRows(rows, sourceLabel) {
     const parsed = parseActivitiesCSV(rows);
     if (parsed.length === 0) {
@@ -2558,7 +2581,13 @@ function App() {
     className: `btn ${!rawUnits ? 'disabled' : ''}`,
     disabled: !rawUnits,
     onClick: () => exportSession(enriched, qualifying, notes, reportDate, completed, activities)
-  }, "↓ Export Session"))), !rawUnits ? /*#__PURE__*/React.createElement("div", {
+  }, "↓ Export Session"), /*#__PURE__*/React.createElement("button", {
+    className: `btn ${!rawUnits ? 'disabled' : ''}`,
+    disabled: !rawUnits,
+    style: { opacity: 0.7, fontSize: '0.85em' },
+    onClick: clearSession,
+    title: "Wipe the saved session and start fresh"
+  }, "🗑 Clear Session"))), !rawUnits ? /*#__PURE__*/React.createElement("div", {
     className: "upload-wrap",
     onDragOver: e => {
       e.preventDefault();

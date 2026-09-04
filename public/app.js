@@ -189,6 +189,30 @@ function loadTab(tab) {
 function loadEvictions() {
   const frame = $('#evictions-frame');
   if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/evictions/app');
+  wireEvictionsFullscreen();
+}
+
+// Full-screen toggle for the Eviction Tracker iframe. Expands the frame to fill
+// the viewport (position:fixed overlay); Escape or the button collapses it back.
+let evictionsFsWired = false;
+function wireEvictionsFullscreen() {
+  if (evictionsFsWired) return;
+  const btn = $('#evictions-fullscreen-btn');
+  const frame = $('#evictions-frame');
+  if (!btn || !frame) return;
+  evictionsFsWired = true;
+  const enter = () => {
+    frame.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:9999;border:0;border-radius:0;background:#fff';
+    btn.textContent = '✕ Exit Full Screen';
+    btn.dataset.fs = '1';
+  };
+  const exit = () => {
+    frame.style.cssText = 'width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff';
+    btn.textContent = '⛶ Full Screen';
+    delete btn.dataset.fs;
+  };
+  btn.addEventListener('click', () => { btn.dataset.fs ? exit() : enter(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && btn.dataset.fs) exit(); });
 }
 
 // ── Leasing — Weekly Goal Board (Katie) ─────────────────────────────────────

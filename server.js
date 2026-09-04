@@ -3469,6 +3469,19 @@ app.post('/api/evictions/session', requireMetricAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Clear the saved session so the tracker reloads to the empty upload screen.
+// The table is global latest-wins (same "replaces what everyone sees" model as
+// upload), so clearing wipes all rows and is admin-gated for the same reason.
+app.delete('/api/evictions/session', requireMetricAdmin, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { error } = await db.from('eviction_sessions').delete().not('id', 'is', null);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- POST /api/evictions/sync --------------------------------------------------
 // Pulls the Delinquency (As Of) report straight from AppFolio's Reports API v2,
 // maps its fields to the column names the client parser expects, and returns the

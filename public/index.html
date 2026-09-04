@@ -1704,9 +1704,14 @@
         <h2>Eviction Tracker</h2>
         <p class="muted small">AppFolio reports — Delinquency · Activities · Calls · Directory. Last upload is saved and reloaded automatically.</p>
       </div>
+      <div class="view-actions">
+        <button class="btn-sm" id="evictions-fullscreen-btn">⛶ Full Screen</button>
+      </div>
     </div>
-    <iframe id="evictions-frame" title="Eviction Tracker"
-            style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff"></iframe>
+    <div id="evictions-frame-wrap">
+      <iframe id="evictions-frame" title="Eviction Tracker"
+              style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff"></iframe>
+    </div>
   </section>
 
   <!-- ============ ACCOUNTING / BILLING (Claudia) ============ -->
