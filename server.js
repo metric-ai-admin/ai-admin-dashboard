@@ -3519,6 +3519,33 @@ const APPFOLIO_DELINQUENCY_MAP = [
   ['Payment Date 3',              ['payment_date_3']],
 ];
 
+// Debug: return the raw first result object from AppFolio, unmapped, so the real
+// field names can be inspected directly. Admin-gated. Temporary diagnostic.
+app.get('/api/evictions/sync/raw', requireMetricAdmin, async (req, res) => {
+  const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
+  if (!id || !secret) return res.status(503).json({ ok: false, error: 'AppFolio API not configured.' });
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+  const auth = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
+  const endpoint = 'https://metricpropertymanagement.appfolio.com/api/v2/reports/delinquency_as_of.json';
+  const filter = { occurred_on_to: today, tenant_statuses: ['0', '4'], property_visibility: 'active', paginate_results: false };
+  try {
+    const resp = await fetchFn(endpoint, { method: 'POST', headers: { Authorization: auth, 'Content-Type': 'application/json' }, body: JSON.stringify(filter) });
+    const j = await resp.json().catch(() => null);
+    if (!resp.ok) return res.status(resp.status).json({ ok: false, error: (j && (j.error || j.message)) || `AppFolio returned ${resp.status}` });
+    const results = Array.isArray(j) ? j : (j?.results || j?.data || []);
+    const first = results[0] || null;
+    res.json({
+      ok: true,
+      count: results.length,
+      top_level_keys: j && !Array.isArray(j) ? Object.keys(j) : null,
+      first_row_keys: first ? Object.keys(first) : null,
+      first_row: first
+    });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: 'AppFolio sync failed: ' + err.message });
+  }
+});
+
 app.post('/api/evictions/sync', requireMetricAdmin, async (req, res) => {
   const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
   if (!id || !secret) {
