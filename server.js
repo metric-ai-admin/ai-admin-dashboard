@@ -3489,62 +3489,40 @@ app.delete('/api/evictions/session', requireMetricAdmin, async (req, res) => {
 // The client feeds these rows through the existing parser and the existing
 // rawUnits->/api/evictions/session save effect persists them — no new write path.
 //
-// AppFolio field -> parser column. The API's exact field names weren't verifiable
-// here, so each target lists the estimated name plus a couple of tolerant
-// fallbacks; unknown extras are ignored by the parser.
-const APPFOLIO_DELINQUENCY_MAP = [
-  ['Property Name',               ['property_name', 'property']],
-  ['AR Agent',                    ['ar_agent', 'agent']],
-  ['Unit',                        ['unit', 'unit_name']],
-  ['Name',                        ['name', 'tenant', 'tenant_name']],
-  ['Tenant Status',               ['tenant_status', 'status']],
-  ['Amount Receivable',           ['amount_receivable', 'total_amount_receivable', 'balance']],
-  ['Delinquent Rent',             ['delinquent_rent']],
-  ['Last Payment',                ['last_payment', 'last_payment_date']],
-  ['Payment Amount',              ['payment_amount', 'last_payment_amount']],
-  ['Eviction Filed on Date',      ['eviction_filed_on_date', 'eviction_filed_date', 'filed_date']],
-  ['JP Court Date',               ['jp_court_date']],
-  ['County Court Date',           ['county_court_date']],
-  ['Writ Scheduled Date',         ['writ_scheduled_date', 'writ_date']],
-  ['Eviction Status',             ['eviction_status']],
-  ['Delinquency Notes',           ['delinquency_notes', 'notes']],
-  ['Cause #',                     ['cause_number', 'cause_no', 'cause']],
-  ['Envelope Number',             ['envelope_number', 'envelope_no', 'envelope']],
-  ['JP Court #',                  ['jp_court_number', 'jp_court_no']],
-  ['# Missed Pmt Arrangements',   ['missed_payment_arrangements', 'missed_pmt_arrangements']],
-  ['Last True Known Occupancy',   ['last_true_known_occupancy', 'last_known_occupancy']],
-  ['Payment Amount 1',            ['payment_amount_1']],
-  ['Payment Date 1',              ['payment_date_1']],
-  ['Payment Date 2',              ['payment_date_2']],
-  ['Payment Date 3',              ['payment_date_3']],
-];
-
-// Debug: return the raw first result object from AppFolio, unmapped, so the real
-// field names can be inspected directly. Admin-gated. Temporary diagnostic.
-app.get('/api/evictions/sync/raw', requireMetricAdmin, async (req, res) => {
-  const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
-  if (!id || !secret) return res.status(503).json({ ok: false, error: 'AppFolio API not configured.' });
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
-  const auth = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
-  const endpoint = 'https://metricpropertymanagement.appfolio.com/api/v2/reports/delinquency_as_of.json';
-  const filter = { occurred_on_to: today, tenant_statuses: ['0', '4'], property_visibility: 'active', paginate_results: false };
-  try {
-    const resp = await fetchFn(endpoint, { method: 'POST', headers: { Authorization: auth, 'Content-Type': 'application/json' }, body: JSON.stringify(filter) });
-    const j = await resp.json().catch(() => null);
-    if (!resp.ok) return res.status(resp.status).json({ ok: false, error: (j && (j.error || j.message)) || `AppFolio returned ${resp.status}` });
-    const results = Array.isArray(j) ? j : (j?.results || j?.data || []);
-    const first = results[0] || null;
-    res.json({
-      ok: true,
-      count: results.length,
-      top_level_keys: j && !Array.isArray(j) ? Object.keys(j) : null,
-      first_row_keys: first ? Object.keys(first) : null,
-      first_row: first
-    });
-  } catch (err) {
-    res.status(502).json({ ok: false, error: 'AppFolio sync failed: ' + err.message });
-  }
-});
+// AppFolio field -> parser column, confirmed against the live Delinquency (As Of)
+// API response. A null value means the standard report doesn't return that column
+// (the eviction-specific fields live only in the eviction workflow, not here); the
+// column is still emitted so the parser sees it, but blank in every row. 'AR Agent'
+// is not returned at all — it's hardcoded to Karla below (the only active agent),
+// otherwise the parser's isPersonName() filter would drop every synced row.
+const APPFOLIO_DELINQUENCY_MAP = {
+  'Property Name':               'property_name',
+  'Unit':                        'unit',
+  'Name':                        'name',
+  'Tenant Status':               'tenant_status',
+  'Amount Receivable':           'amount_receivable',
+  'Delinquent Rent':             'delinquent_rent',
+  'Delinquency Notes':           'delinquency_notes',
+  // Fields not returned by this API endpoint — emitted blank:
+  'AR Agent':                    null, // hardcoded to Karla for API syncs
+  'Last Payment':                null,
+  'Payment Amount':              null,
+  'Eviction Status':             null,
+  'Eviction Filed on Date':      null,
+  'JP Court Date':               null,
+  'County Court Date':           null,
+  'Writ Scheduled Date':         null,
+  'Cause #':                     null,
+  'Envelope Number':             null,
+  'JP Court #':                  null,
+  '# Missed Pmt Arrangements':   null,
+  'Last True Known Occupancy':   null,
+  'Payment Amount 1':            null,
+  'Payment Date 1':              null,
+  'Payment Date 2':              null,
+  'Payment Date 3':              null,
+};
+const APPFOLIO_SYNC_AGENT = 'Karla'; // AR Agent isn't in the API response
 
 app.post('/api/evictions/sync', requireMetricAdmin, async (req, res) => {
   const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
@@ -3574,13 +3552,13 @@ app.post('/api/evictions/sync', requireMetricAdmin, async (req, res) => {
       next = j && j.next_page_url;
     }
 
-    const pick = (row, candidates) => {
-      for (const k of candidates) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return row[k];
-      return '';
-    };
     const rows = raw.map(r => {
       const out = {};
-      for (const [col, candidates] of APPFOLIO_DELINQUENCY_MAP) out[col] = pick(r, candidates);
+      for (const [col, field] of Object.entries(APPFOLIO_DELINQUENCY_MAP)) {
+        const v = field ? r[field] : null;
+        out[col] = (v === undefined || v === null) ? '' : v;
+      }
+      out['AR Agent'] = APPFOLIO_SYNC_AGENT; // API doesn't return an agent
       return out;
     });
 
