@@ -3469,6 +3469,87 @@ app.post('/api/evictions/session', requireMetricAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- POST /api/evictions/sync --------------------------------------------------
+// Pulls the Delinquency (As Of) report straight from AppFolio's Reports API v2,
+// maps its fields to the column names the client parser expects, and returns the
+// rows. Same replaces-what-everyone-sees semantics as an upload, so admin-gated.
+// The client feeds these rows through the existing parser and the existing
+// rawUnits->/api/evictions/session save effect persists them — no new write path.
+//
+// AppFolio field -> parser column. The API's exact field names weren't verifiable
+// here, so each target lists the estimated name plus a couple of tolerant
+// fallbacks; unknown extras are ignored by the parser.
+const APPFOLIO_DELINQUENCY_MAP = [
+  ['Property Name',               ['property_name', 'property']],
+  ['AR Agent',                    ['ar_agent', 'agent']],
+  ['Unit',                        ['unit', 'unit_name']],
+  ['Name',                        ['name', 'tenant', 'tenant_name']],
+  ['Tenant Status',               ['tenant_status', 'status']],
+  ['Amount Receivable',           ['amount_receivable', 'total_amount_receivable', 'balance']],
+  ['Delinquent Rent',             ['delinquent_rent']],
+  ['Last Payment',                ['last_payment', 'last_payment_date']],
+  ['Payment Amount',              ['payment_amount', 'last_payment_amount']],
+  ['Eviction Filed on Date',      ['eviction_filed_on_date', 'eviction_filed_date', 'filed_date']],
+  ['JP Court Date',               ['jp_court_date']],
+  ['County Court Date',           ['county_court_date']],
+  ['Writ Scheduled Date',         ['writ_scheduled_date', 'writ_date']],
+  ['Eviction Status',             ['eviction_status']],
+  ['Delinquency Notes',           ['delinquency_notes', 'notes']],
+  ['Cause #',                     ['cause_number', 'cause_no', 'cause']],
+  ['Envelope Number',             ['envelope_number', 'envelope_no', 'envelope']],
+  ['JP Court #',                  ['jp_court_number', 'jp_court_no']],
+  ['# Missed Pmt Arrangements',   ['missed_payment_arrangements', 'missed_pmt_arrangements']],
+  ['Last True Known Occupancy',   ['last_true_known_occupancy', 'last_known_occupancy']],
+  ['Payment Amount 1',            ['payment_amount_1']],
+  ['Payment Date 1',              ['payment_date_1']],
+  ['Payment Date 2',              ['payment_date_2']],
+  ['Payment Date 3',              ['payment_date_3']],
+];
+
+app.post('/api/evictions/sync', requireMetricAdmin, async (req, res) => {
+  const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
+  if (!id || !secret) {
+    return res.status(503).json({ ok: false, error: 'AppFolio API not configured — set APPFOLIO_CLIENT_ID and APPFOLIO_CLIENT_SECRET.' });
+  }
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE }); // YYYY-MM-DD, Central
+  const auth = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
+  const endpoint = 'https://metricpropertymanagement.appfolio.com/api/v2/reports/delinquency_as_of.json';
+  const filter = { occurred_on_to: today, tenant_statuses: ['0', '4'], property_visibility: 'active', paginate_results: false };
+  try {
+    const raw = [];
+    // First page: POST with the filter body. Subsequent pages (if the API still
+    // paginates) are GET next_page_url. Guarded against a runaway loop.
+    let resp = await fetchFn(endpoint, { method: 'POST', headers: { Authorization: auth, 'Content-Type': 'application/json' }, body: JSON.stringify(filter) });
+    let j = await resp.json().catch(() => null);
+    if (!resp.ok) return res.status(resp.status).json({ ok: false, error: (j && (j.error || j.message)) || `AppFolio returned ${resp.status}` });
+    const pull = obj => Array.isArray(obj) ? obj : (obj?.results || obj?.data || []);
+    raw.push(...pull(j));
+    let next = j && j.next_page_url;
+    let guard = 0;
+    while (next && guard++ < 200) {
+      resp = await fetchFn(next, { headers: { Authorization: auth } });
+      j = await resp.json().catch(() => null);
+      if (!resp.ok) return res.status(resp.status).json({ ok: false, error: (j && (j.error || j.message)) || `AppFolio returned ${resp.status} on a later page` });
+      raw.push(...pull(j));
+      next = j && j.next_page_url;
+    }
+
+    const pick = (row, candidates) => {
+      for (const k of candidates) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return row[k];
+      return '';
+    };
+    const rows = raw.map(r => {
+      const out = {};
+      for (const [col, candidates] of APPFOLIO_DELINQUENCY_MAP) out[col] = pick(r, candidates);
+      return out;
+    });
+
+    res.json({ ok: true, rows, report_date: today, count: rows.length });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: 'AppFolio sync failed: ' + err.message });
+  }
+});
+
 // The ported app itself, served to any valid session (the nav tab is admin-only
 // on the client; upload is admin-gated on the server). Same-origin so its
 // fetches to /api/evictions/* carry the cookie.

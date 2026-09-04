@@ -2153,6 +2153,7 @@ function App() {
   const [showAll, setShowAll] = useState(false);
   const [activeTab, setActiveTab] = useState('tracker');
   const [dragOver, setDragOver] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   useEffect(() => {
     if (rawUnits) return;
     const el = document.getElementById('preload-data');
@@ -2322,6 +2323,37 @@ function App() {
     const snap = computeSnapshotSummary(result.units, result.day, result.rd);
     setHistoricalSnapshots(prev => upsertSnapshot(prev, snap));
     return true;
+  }
+  async function syncFromAppFolio() {
+    if (syncing) return;
+    setSyncing(true);
+    try {
+      const resp = await fetch('/api/evictions/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin' });
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok || !data || !data.ok) {
+        alert('AppFolio sync failed: ' + ((data && data.error) || ('HTTP ' + resp.status)));
+        return;
+      }
+      const rows = data.rows || [];
+      if (!rows.length) {
+        alert('AppFolio returned no delinquency rows.');
+        return;
+      }
+      // Build an array-of-arrays (header row + data) the parser expects. Union
+      // the keys so every column present in any row makes it into the header.
+      const header = [];
+      const seen = new Set();
+      rows.forEach(o => Object.keys(o).forEach(k => { if (!seen.has(k)) { seen.add(k); header.push(k); } }));
+      const aoa = [header, ...rows.map(o => header.map(h => (o[h] == null ? '' : o[h])))];
+      const result = parseDelinquencyFromSheets([{ name: 'AppFolio Sync', rows: aoa }], null);
+      if (!applyDelinquencyResult(result)) {
+        alert('AppFolio sync returned data but it could not be parsed.');
+      }
+    } catch (err) {
+      alert('AppFolio sync failed: ' + err.message);
+    } finally {
+      setSyncing(false);
+    }
   }
   function applyActivitiesRows(rows, sourceLabel) {
     const parsed = parseActivitiesCSV(rows);
@@ -2519,6 +2551,10 @@ function App() {
   }, /*#__PURE__*/React.createElement("button", {
     className: "btn"
   }, "↑ Upload Reports")), /*#__PURE__*/React.createElement("button", {
+    className: `btn ${syncing ? 'disabled' : ''}`,
+    disabled: syncing,
+    onClick: syncFromAppFolio
+  }, syncing ? "Syncing…" : "↺ Sync from AppFolio"), /*#__PURE__*/React.createElement("button", {
     className: `btn ${!rawUnits ? 'disabled' : ''}`,
     disabled: !rawUnits,
     onClick: () => exportSession(enriched, qualifying, notes, reportDate, completed, activities)
