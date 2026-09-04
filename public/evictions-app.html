@@ -1839,8 +1839,8 @@ function CompletedToggle({
       e.stopPropagation();
       onToggle();
     },
-    title: isCompleted ? 'Mark as not completed' : 'Mark this task completed'
-  }, isCompleted ? '✓ Completed' : 'Mark Completed');
+    title: isCompleted ? 'Undo — mark as not completed' : 'Mark this task completed'
+  }, isCompleted ? '↩ Undo' : 'Mark Completed');
 }
 function ExpandedDetail({
   u,
@@ -2221,6 +2221,20 @@ function App() {
       .catch(() => {});
     return () => { cancelled = true; };
   }, []);
+  // Load the persistent completed set (eviction_completed table). Keyed by the
+  // stable property||unit id, so completed accounts stay marked/dimmed even after
+  // a fresh AppFolio sync brings them back in as delinquent.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/evictions/completed', { credentials: 'same-origin' })
+      .then(r => r.ok ? r.json() : null)
+      .then(j => {
+        if (cancelled || !j || !Array.isArray(j.completed)) return;
+        setCompleted(new Set(j.completed.map(c => c.id)));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
   useEffect(() => {
     if (!rawUnits) return;
     if (hydratingRef.current) { hydratingRef.current = false; return; }
@@ -2319,7 +2333,9 @@ function App() {
     setReportDate(result.rd);
     setNotes({});
     setExpanded(new Set());
-    setCompleted(new Set());
+    // NOTE: completed marks are intentionally NOT reset here. They live in the
+    // eviction_completed table (loaded on mount) and are keyed by the stable
+    // property||unit id, so they persist across uploads and daily AppFolio syncs.
     const snap = computeSnapshotSummary(result.units, result.day, result.rd);
     setHistoricalSnapshots(prev => upsertSnapshot(prev, snap));
     return true;
@@ -2541,11 +2557,27 @@ function App() {
     }));
   }
   function toggleCompleted(id) {
+    const willComplete = !completed.has(id);
     setCompleted(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);else next.add(id);
       return next;
     });
+    // Persist to eviction_completed so the mark survives syncs, reloads, sessions.
+    if (willComplete) {
+      const u = (enriched || []).find(x => x.id === id) || {};
+      fetch('/api/evictions/completed', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, property: u.property || '', unit: u.unit || '' })
+      }).catch(() => {});
+    } else {
+      fetch('/api/evictions/completed/' + encodeURIComponent(id), {
+        method: 'DELETE',
+        credentials: 'same-origin'
+      }).catch(() => {});
+    }
   }
   const critCount = qualifying.filter(u => u.nextAction.urgency === 'critical').length;
   const highCount = qualifying.filter(u => u.nextAction.urgency === 'high').length;

@@ -64,7 +64,7 @@ const TAB_ACCESS = {
   // yet — Arturo creates the accounts once passwords are agreed — so the entries
   // sit here inert until then rather than needing a deploy on the day.
   regional_director:   ['maintenance', 'reports'],   // Rebekah Tuckner
-  resident_success:    ['maintenance', 'reports'],   // Kara Garst
+  resident_success:    ['maintenance', 'reports', 'evictions'],   // Kara Garst
   collections_leasing: ['reports'],                  // Rocío Hunsberger
   // Claudia Villalobos (Accounting/QC). No account in dashboard_users yet, so
   // this sits inert until Arturo creates it — mirrors the three roles above.

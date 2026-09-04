@@ -3482,6 +3482,46 @@ app.delete('/api/evictions/session', requireMetricAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- Persistent "Mark Completed" state (eviction_completed) --------------------
+// Kept separate from the session snapshot so completed marks survive a daily Sync
+// from AppFolio that overwrites the session. Keyed by the tracker's unit id
+// (property||unit). Readable/writable by anyone with tracker access — it's a
+// per-account workflow action, not the "replaces everyone" upload.
+app.get('/api/evictions/completed', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ completed: [] });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('eviction_completed').select('*');
+    if (error) throw new Error(error.message);
+    res.json({ completed: data || [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/evictions/completed', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const { id, property, unit } = req.body || {};
+  if (!id || typeof id !== 'string') return res.status(400).json({ error: 'id (string) is required' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const row = { id, property: property || null, unit: unit || null, completed_by: sessionUsername(req) || 'Karla' };
+    const { data, error } = await db.from('eviction_completed').upsert([row], { onConflict: 'id' }).select().single();
+    if (error) throw new Error(error.message);
+    res.status(201).json({ ok: true, completed: data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/evictions/completed/:id', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const id = req.params.id;
+  if (!id) return res.status(400).json({ error: 'id is required' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { error } = await db.from('eviction_completed').delete().eq('id', id);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- POST /api/evictions/sync --------------------------------------------------
 // Pulls the Delinquency (As Of) report straight from AppFolio's Reports API v2,
 // maps its fields to the column names the client parser expects, and returns the
