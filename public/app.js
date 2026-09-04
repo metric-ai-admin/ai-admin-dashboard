@@ -3561,7 +3561,13 @@ $('#crm-dm-save-btn').addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...crmState.dmScores, audit_notes: $('#crm-dm-audit-notes').value, agent_name: agent }),
     });
-    toast('DM Review saved ✅', 'success');
+    // Saving the review IS completing the DM task. Task Queue tasks are derived
+    // (crm-task-engine): the 'dm' task for this property drops off automatically
+    // once the saved review makes dmComplete() true. Refresh the queue so the
+    // agent doesn't have to mark it done as a separate step. Only the dm task is
+    // affected — no other task type is touched.
+    crmReloadTaskView();
+    toast('DM Review saved and task completed ✅', 'success');
   } catch (err) { toast(err.message, 'error'); }
 });
 
