@@ -545,7 +545,7 @@ function extractAsOfDate(rows) {
     if (!row) continue;
     for (const cell of row) {
       if (cell && typeof cell === 'string') {
-        const m = cell.match(/As of:\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
+        const m = cell.match(/(?:As of|Exported On):\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
         if (m) {
           const mo = parseInt(m[1], 10),
             da = parseInt(m[2], 10),
@@ -829,6 +829,14 @@ function parseDelinquencyFromSheets(sheets, fallbackFilename) {
             rd = fromName.date;
           }
         }
+      }
+      // Last resort: no date from the tab name, the sheet metadata ("As of" /
+      // "Exported On"), or the filename — fall back to today so the day-10
+      // threshold logic still has a date to work with.
+      if (rd == null) {
+        const now = new Date();
+        rd = now;
+        day = now.getDate();
       }
       return {
         units,
