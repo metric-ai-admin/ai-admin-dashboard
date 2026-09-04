@@ -204,11 +204,13 @@ function wireEvictionsFullscreen() {
   const enter = () => {
     frame.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:9999;border:0;border-radius:0;background:#fff';
     btn.textContent = '✕ Exit Full Screen';
+    btn.classList.add('is-fullscreen'); // floats the button above the iframe
     btn.dataset.fs = '1';
   };
   const exit = () => {
     frame.style.cssText = 'width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff';
     btn.textContent = '⛶ Full Screen';
+    btn.classList.remove('is-fullscreen');
     delete btn.dataset.fs;
   };
   btn.addEventListener('click', () => { btn.dataset.fs ? exit() : enter(); });

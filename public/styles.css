@@ -1935,3 +1935,20 @@ tr.ca-sel { background: var(--accent-glow); }
 .crm-task-mode.active { background:var(--accent); color:#fff; }
 .crm-completed-range { display:inline-flex; align-items:center; gap:8px; }
 .crm-completed-range input[type=date] { padding:5px 7px; }
+
+/* Eviction Tracker — floating Exit Full Screen button (above the iframe) */
+#evictions-fullscreen-btn.is-fullscreen {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 10000; /* above the iframe at 9999 */
+  background: rgba(30, 30, 40, 0.85);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.2);
+  backdrop-filter: blur(4px);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
