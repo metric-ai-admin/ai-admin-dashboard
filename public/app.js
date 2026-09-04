@@ -3556,10 +3556,22 @@ $('#crm-dm-save-btn').addEventListener('click', async () => {
   const agent = crmResolveAgent();
   if (!agent) return;
   try {
+    // Map the in-memory short keys (website/floorplan/gbp/facebook/ils) to the
+    // *_scores column names the server persists. Without this the sections save
+    // as {} — which is why dmComplete() was never true and the dm task never left
+    // the queue no matter how often it reloaded.
     await crmFetch(`/api/crm/properties/${p.id}/dm-review`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...crmState.dmScores, audit_notes: $('#crm-dm-audit-notes').value, agent_name: agent }),
+      body: JSON.stringify({
+        website_scores:   crmState.dmScores.website,
+        floorplan_scores: crmState.dmScores.floorplan,
+        gbp_scores:       crmState.dmScores.gbp,
+        facebook_scores:  crmState.dmScores.facebook,
+        ils_scores:       crmState.dmScores.ils,
+        audit_notes: $('#crm-dm-audit-notes').value,
+        agent_name: agent,
+      }),
     });
     // Saving the review IS completing the DM task. Task Queue tasks are derived
     // (crm-task-engine): the 'dm' task for this property drops off automatically
