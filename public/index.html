@@ -1671,19 +1671,20 @@
     <div class="card" style="margin-bottom:16px">
       <div class="view-head" style="margin:0 0 8px;align-items:flex-start">
         <div>
-          <h3 style="margin:0">AppFolio Leads Sync</h3>
-          <p class="muted small" style="margin:2px 0 0">Pull Guest Card Interests straight from AppFolio for a date range — replaces the manual weekly Excel export.</p>
+          <h3 style="margin:0">AppFolio Leads</h3>
+          <p class="muted small" style="margin:2px 0 0">Upload the weekly Guest Card Interests Excel export — it's parsed into the leasing database. Pick a date range or past week to view the roll-up.</p>
         </div>
         <div class="view-actions">
-          <button class="btn-sm" data-leasing-preset="last-week">Last Week</button>
-          <button class="btn-sm" data-leasing-preset="last-2-weeks">Last 2 Weeks</button>
-          <button class="btn-sm" data-leasing-preset="this-month">This Month</button>
+          <input type="file" id="leasing-upload-input" accept=".xlsx" hidden>
+          <button class="btn-sm primary" id="leasing-upload-btn">⬆ Upload Excel</button>
         </div>
       </div>
       <div class="crm-completed-range" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
         <label class="small">From <input type="date" id="leasing-sync-from"></label>
         <label class="small">To <input type="date" id="leasing-sync-to"></label>
-        <button class="btn-sm primary" id="leasing-sync-btn">↺ Sync from AppFolio</button>
+        <button class="btn-sm" data-leasing-preset="last-week">Last Week</button>
+        <button class="btn-sm" data-leasing-preset="last-2-weeks">Last 2 Weeks</button>
+        <button class="btn-sm" data-leasing-preset="this-month">This Month</button>
         <label class="small">History week
           <select id="leasing-week-select" class="crm-select"><option value="">— recent weeks —</option></select>
         </label>

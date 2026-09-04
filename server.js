@@ -3672,32 +3672,30 @@ const LEASING_LIST_COLS = 'id,week_ending,submitted_by,submitted_at,status,kpi_j
 const LEASING_STATUSES = ['submitted', 'reviewed', 'approved'];
 
 // =====================================================================
-// LEASING LEADS — direct sync from AppFolio's "Guest Card Interests"
-// Joined Report, replacing the manual weekly Excel export/import.
-// Same auth as /api/evictions/sync (APPFOLIO_CLIENT_ID/SECRET, Basic).
+// LEASING LEADS — Guest Card Interests, uploaded as the AppFolio Excel export.
+// Katie exports the report weekly and uploads the .xlsx here; the server parses
+// it and upserts leasing_leads. The KPI roll-ups + history all read from that
+// table. (Realm-X / REST auto-sync can replace the upload later without changing
+// the table or the read paths.)
 // =====================================================================
-const APPFOLIO_LEASING_REPORT_ID = '6610f13d-95ae-11f0-a6a2-063f6f7015b5';
-const APPFOLIO_BASE = 'https://metricpropertymanagement.appfolio.com';
 
-// Guest Card Interests field -> leasing_leads column. Live key names are not yet
-// verified (the report is a custom Joined Report), so each target lists the most
-// likely snake_case key plus tolerant fallbacks. GET /api/leasing/sync/raw dumps
-// the real keys so this can be corrected on the first live sync — same discovery
-// flow we used for the evictions sync.
-const APPFOLIO_LEASING_MAP = {
-  name:               ['name', 'guest_card_name', 'prospect_name'],
-  email:              ['email_address', 'email'],
-  phone:              ['phone_number', 'phone'],
-  interest_received:  ['interest_received', 'received_on', 'interest_received_at'],
-  last_activity_date: ['last_activity_date', 'last_activity'],
-  last_activity_type: ['last_activity_type'],
-  move_in_preference: ['move_in_preference', 'move_in', 'desired_move_in'],
-  lisa_lead:          ['lisa_lead', 'lisa'],
-  source:             ['source', 'lead_source'],
-  property:           ['property', 'property_name'],
-  assigned_user:      ['assigned_user', 'assigned_to', 'agent'],
+// Excel column header -> leasing_leads column. Matched case-insensitively with a
+// couple of tolerant variants each, so minor header wording changes still land.
+const LEASING_HEADER_MAP = {
+  name:               ['name', 'guest card name', 'prospect name'],
+  email:              ['email address', 'email'],
+  phone:              ['phone number', 'phone'],
+  interest_received:  ['interest received', 'received on', 'interest received on'],
+  last_activity_date: ['last activity date', 'last activity'],
+  last_activity_type: ['last activity type'],
+  move_in_preference: ['move in preference', 'move-in preference', 'move in'],
+  lisa_lead:          ['lisa lead', 'lisa'],
+  source:             ['source', 'lead source'],
+  property:           ['property', 'property name'],
+  assigned_user:      ['assigned user', 'assigned to', 'agent'],
   notes:              ['notes', 'note'],
 };
+const normHdr = s => String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' ');
 
 // Saturday (Sun–Sat week) that a date falls in, as YYYY-MM-DD. Katie's week.
 function leasingWeekEnding(d) {
@@ -3707,149 +3705,93 @@ function leasingWeekEnding(d) {
   day.setDate(day.getDate() + (6 - day.getDay())); // 0=Sun..6=Sat
   return day.toLocaleDateString('en-CA');
 }
+const leasingTruthy = v => v === true || v === 'true' || v === 'Yes' || v === 'yes' || v === 'Y' || v === 1 || v === '1';
+const leasingDateOnly = v => { if (v === '' || v == null) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-CA'); };
 
-function appfolioLeasingUrl(from, to) {
-  // Custom Joined Report by id; filters mirror the report's received_on window.
-  const qs = new URLSearchParams();
-  if (from) qs.set('filters[received_on_from]', from);
-  if (to)   qs.set('filters[received_on_to]', to);
-  qs.set('paginate_results', 'false');
-  return `${APPFOLIO_BASE}/api/v2/reports/${APPFOLIO_LEASING_REPORT_ID}.json?${qs.toString()}`;
-}
-
-async function appfolioLeasingFetch(from, to) {
-  const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
-  if (!id || !secret) { const e = new Error('AppFolio API not configured — set APPFOLIO_CLIENT_ID and APPFOLIO_CLIENT_SECRET.'); e.code = 503; throw e; }
-  const auth = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
-  const pull = obj => Array.isArray(obj) ? obj : (obj?.results || obj?.data || []);
-  const raw = [];
-  let resp = await fetchFn(appfolioLeasingUrl(from, to), { headers: { Authorization: auth } });
-  let j = await resp.json().catch(() => null);
-  if (!resp.ok) { const e = new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status}`); e.code = resp.status; throw e; }
-  raw.push(...pull(j));
-  let next = j && j.next_page_url, guard = 0;
-  while (next && guard++ < 200) {
-    resp = await fetchFn(next, { headers: { Authorization: auth } });
-    j = await resp.json().catch(() => null);
-    if (!resp.ok) { const e = new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status} on a later page`); e.code = resp.status; throw e; }
-    raw.push(...pull(j));
-    next = j && j.next_page_url;
-  }
-  return raw;
-}
-
-const leasingPick = (row, candidates) => {
-  for (const k of candidates) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return row[k];
-  return null;
-};
-const leasingTruthy = v => v === true || v === 'true' || v === 'Yes' || v === 'yes' || v === 1 || v === '1';
-const leasingDateOnly = v => { if (!v) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-CA'); };
-
-// Debug: probe several candidate AppFolio URL patterns for the Guest Card
-// Interests Joined Report and report what each one returns, so we can identify
-// the correct endpoint. Admin-gated; remove once the endpoint is confirmed.
-// The evictions sync works against a NAMED template (delinquency_as_of.json) via
-// POST + Basic auth; a custom Joined Report addressed by UUID likely needs a
-// different path, so we try a spread of them (both the id and a couple of likely
-// template names, GET and POST).
-app.get('/api/leasing/sync/raw', requireMetricAdmin, async (req, res) => {
-  const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
-  if (!id || !secret) return res.status(503).json({ ok: false, error: 'AppFolio API not configured.' });
-  const auth = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
-  const to = req.query.date_to || new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
-  const from = req.query.date_from || to;
-  const rid = APPFOLIO_LEASING_REPORT_ID;
-  const dateQs = `filters[received_on_from]=${from}&filters[received_on_to]=${to}&paginate_results=false`;
-
-  // Each candidate: { method, url, body? }. GET carries filters in the query;
-  // POST mirrors the evictions body shape.
-  const postBody = JSON.stringify({ received_on_from: from, received_on_to: to, paginate_results: false });
-  const candidates = [
-    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v2/reports/${rid}.json?${dateQs}` },
-    { method: 'POST', url: `${APPFOLIO_BASE}/api/v2/reports/${rid}.json`, body: postBody },
-    { method: 'GET',  url: `${APPFOLIO_BASE}/reports/${rid}.json?${dateQs}` },
-    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v1/reports/${rid}?${dateQs}` },
-    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v1/reports/${rid}.json?${dateQs}` },
-    { method: 'GET',  url: `${APPFOLIO_BASE}/joined_reports/${rid}.json?${dateQs}` },
-    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v2/joined_reports/${rid}.json?${dateQs}` },
-    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v0/reports/${rid}.json?${dateQs}` },
-    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v2/reports/guest_card_interests.json?${dateQs}` },
-    { method: 'POST', url: `${APPFOLIO_BASE}/api/v2/reports/guest_card_interests.json`, body: postBody },
-    { method: 'GET',  url: `${APPFOLIO_BASE}/api/v2/reports/guest_cards.json?${dateQs}` },
-  ];
-
-  const attempts = [];
-  let winner = null;
-  for (const c of candidates) {
-    const opts = { method: c.method, headers: { Authorization: auth } };
-    if (c.body) { opts.headers['Content-Type'] = 'application/json'; opts.body = c.body; }
-    let status = null, snippet = null, keys = null, err = null;
-    try {
-      const resp = await fetchFn(c.url, opts);
-      status = resp.status;
-      const text = await resp.text().catch(() => '');
-      let j = null; try { j = JSON.parse(text); } catch (_) {}
-      if (resp.ok) {
-        const rows = Array.isArray(j) ? j : (j?.results || j?.data || []);
-        const first = rows[0] || null;
-        keys = first ? Object.keys(first) : (j && !Array.isArray(j) ? Object.keys(j) : null);
-        if (!winner) winner = { method: c.method, url: c.url, status, count: rows.length, first_row_keys: keys, first_row: first };
-      }
-      snippet = text ? text.slice(0, 300) : '';
-    } catch (e) { err = e.message; }
-    attempts.push({ method: c.method, url: c.url, status, ok: status >= 200 && status < 300, keys, snippet, error: err });
-  }
-  res.json({ ok: !!winner, winner, attempts, tried: candidates.length });
-});
-
-// POST /api/leasing/sync — pull the Guest Card Interests report for a date range
-// and upsert into leasing_leads. requireMetricAccess (Katie's leasing role).
-app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
+// POST /api/leasing/upload — parse the Guest Card Interests .xlsx and upsert into
+// leasing_leads. requireMetricAccess (Katie's leasing role). multipart field "file".
+const leasingUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+app.post('/api/leasing/upload', requireMetricAccess, leasingUpload.single('file'), async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
-  const { date_from, date_to } = req.body || {};
-  if (!date_from || !date_to) return res.status(400).json({ ok: false, error: 'date_from and date_to are required (YYYY-MM-DD)' });
+  if (!req.file) return res.status(400).json({ ok: false, error: 'No file uploaded. Send the .xlsx as multipart field "file".' });
   try {
-    const raw = await appfolioLeasingFetch(date_from, date_to);
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    if (!aoa.length) return res.status(400).json({ ok: false, error: 'Spreadsheet is empty or unreadable.' });
+
+    // AppFolio exports carry title/metadata rows above the real header. Find the
+    // header row by locating one that has a "name" column and either "property"
+    // or "interest received".
+    const matches = (cell, cands) => cands.includes(normHdr(cell));
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(aoa.length, 30); i++) {
+      const cells = (aoa[i] || []).map(normHdr);
+      const hasName = cells.some(c => LEASING_HEADER_MAP.name.includes(c));
+      const hasAnchor = cells.some(c => LEASING_HEADER_MAP.property.includes(c) || LEASING_HEADER_MAP.interest_received.includes(c));
+      if (hasName && hasAnchor) { headerIdx = i; break; }
+    }
+    if (headerIdx === -1) return res.status(400).json({ ok: false, error: 'Could not find the header row (expected columns like Name, Property, Interest Received).' });
+
+    // Map each field to its column index.
+    const header = aoa[headerIdx];
+    const col = {};
+    for (const [field, cands] of Object.entries(LEASING_HEADER_MAP)) {
+      col[field] = header.findIndex(h => matches(h, cands));
+    }
+    const cell = (row, field) => { const i = col[field]; return i >= 0 && row[i] != null ? row[i] : ''; };
+
     const seen = new Set();
     const rows = [];
-    for (const r of raw) {
-      const name = leasingPick(r, APPFOLIO_LEASING_MAP.name);
-      const phone = leasingPick(r, APPFOLIO_LEASING_MAP.phone);
-      const interestRaw = leasingPick(r, APPFOLIO_LEASING_MAP.interest_received);
-      const appfolio_id = [name || '', phone || '', interestRaw || ''].join('|').trim();
-      if (!appfolio_id || appfolio_id === '||') continue;
-      if (seen.has(appfolio_id)) continue; // de-dupe within this pull
+    let lastProperty = ''; // carry-forward for grouped-by-property exports
+    for (let i = headerIdx + 1; i < aoa.length; i++) {
+      const r = aoa[i] || [];
+      let property = String(cell(r, 'property') || '').trim();
+      const name = String(cell(r, 'name') || '').trim();
+      // Group header / subtotal rows carry a property but no lead name — remember
+      // the property and skip. Detail rows may leave property blank under a group.
+      if (!name) { if (property) lastProperty = property; continue; }
+      if (!property) property = lastProperty;
+
+      const phone = String(cell(r, 'phone') || '').trim();
+      const interestRaw = cell(r, 'interest_received');
+      const interestDate = (interestRaw === '' || interestRaw == null) ? null : new Date(interestRaw);
+      const interestIso = (interestDate && !isNaN(interestDate.getTime())) ? interestDate.toISOString() : null;
+      const appfolio_id = [name, phone, interestIso || String(interestRaw || '')].join('|').trim();
+      if (appfolio_id === '||' || seen.has(appfolio_id)) continue;
       seen.add(appfolio_id);
-      const interestDate = interestRaw ? new Date(interestRaw) : null;
+
       rows.push({
         appfolio_id,
-        name: name || null,
-        email: leasingPick(r, APPFOLIO_LEASING_MAP.email),
+        name,
+        email: String(cell(r, 'email') || '').trim() || null,
         phone: phone || null,
-        interest_received: (interestDate && !isNaN(interestDate.getTime())) ? interestDate.toISOString() : null,
-        last_activity_date: leasingDateOnly(leasingPick(r, APPFOLIO_LEASING_MAP.last_activity_date)),
-        last_activity_type: leasingPick(r, APPFOLIO_LEASING_MAP.last_activity_type),
-        move_in_preference: leasingDateOnly(leasingPick(r, APPFOLIO_LEASING_MAP.move_in_preference)),
-        lisa_lead: leasingTruthy(leasingPick(r, APPFOLIO_LEASING_MAP.lisa_lead)),
-        source: leasingPick(r, APPFOLIO_LEASING_MAP.source),
-        property: leasingPick(r, APPFOLIO_LEASING_MAP.property),
-        assigned_user: leasingPick(r, APPFOLIO_LEASING_MAP.assigned_user),
-        notes: leasingPick(r, APPFOLIO_LEASING_MAP.notes),
-        week_ending: (interestDate && !isNaN(interestDate.getTime())) ? leasingWeekEnding(interestDate) : null,
+        interest_received: interestIso,
+        last_activity_date: leasingDateOnly(cell(r, 'last_activity_date')),
+        last_activity_type: String(cell(r, 'last_activity_type') || '').trim() || null,
+        move_in_preference: leasingDateOnly(cell(r, 'move_in_preference')),
+        lisa_lead: leasingTruthy(cell(r, 'lisa_lead')),
+        source: String(cell(r, 'source') || '').trim() || null,
+        property: property || null,
+        assigned_user: String(cell(r, 'assigned_user') || '').trim() || null,
+        notes: String(cell(r, 'notes') || '').trim() || null,
+        week_ending: interestIso ? leasingWeekEnding(interestDate) : null,
         synced_at: new Date().toISOString(),
       });
     }
+    if (!rows.length) return res.status(400).json({ ok: false, error: 'No lead rows found in the spreadsheet.' });
+
     const db = supabaseAdmin || supabasePublic;
-    let synced = 0;
+    let uploaded = 0;
     for (let i = 0; i < rows.length; i += 500) {
       const chunk = rows.slice(i, i + 500);
       const { error } = await db.from('leasing_leads').upsert(chunk, { onConflict: 'appfolio_id' });
       if (error) throw new Error(error.message);
-      synced += chunk.length;
+      uploaded += chunk.length;
     }
-    res.json({ ok: true, synced, date_from, date_to });
+    res.json({ ok: true, uploaded });
   } catch (err) {
-    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Leasing sync failed: ' + err.message });
+    res.status(500).json({ ok: false, error: 'Leasing upload failed: ' + err.message });
   }
 });
 

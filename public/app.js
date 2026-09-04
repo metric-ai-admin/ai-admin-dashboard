@@ -278,15 +278,22 @@ function leasingApplyPreset(preset) {
   if (fEl) fEl.value = from; if (tEl) tEl.value = to;
 }
 function leasingWireSync() {
-  if (!$('#leasing-sync-btn')) return;
+  if (!$('#leasing-upload-btn')) return;
   leasingApplyPreset('last-week');
   $$('[data-leasing-preset]').forEach(b =>
-    b.addEventListener('click', () => leasingApplyPreset(b.dataset.leasingPreset)));
-  $('#leasing-sync-btn').addEventListener('click', leasingSyncFromAppFolio);
+    b.addEventListener('click', () => { leasingApplyPreset(b.dataset.leasingPreset); leasingLoadRange(); }));
+  $('#leasing-upload-btn').addEventListener('click', () => $('#leasing-upload-input')?.click());
+  $('#leasing-upload-input')?.addEventListener('change', leasingUploadExcel);
+  $('#leasing-sync-from')?.addEventListener('change', leasingLoadRange);
+  $('#leasing-sync-to')?.addEventListener('change', leasingLoadRange);
   $('#leasing-week-select')?.addEventListener('change', e => {
     if (e.target.value) leasingLoadLeads({ week_ending: e.target.value });
   });
   leasingLoadWeeks();
+}
+function leasingLoadRange() {
+  const from = $('#leasing-sync-from')?.value, to = $('#leasing-sync-to')?.value;
+  if (from && to) leasingLoadLeads({ date_from: from, date_to: to });
 }
 async function leasingLoadWeeks() {
   const sel = $('#leasing-week-select');
@@ -297,28 +304,29 @@ async function leasingLoadWeeks() {
       (weeks || []).map(w => `<option value="${esc(w)}">Week ending ${esc(w)}</option>`).join('');
   } catch (_) { /* leave the placeholder */ }
 }
-async function leasingSyncFromAppFolio() {
-  const btn = $('#leasing-sync-btn');
-  const from = $('#leasing-sync-from')?.value, to = $('#leasing-sync-to')?.value;
-  if (!from || !to) { toast('Pick a From and To date first.', 'error'); return; }
-  if (from > to) { toast('From date must be on or before To date.', 'error'); return; }
-  const status = $('#leasing-sync-status');
-  btn.disabled = true; const label = btn.textContent; btn.textContent = '⏳ Syncing…';
-  if (status) status.textContent = `Pulling ${from} → ${to} from AppFolio…`;
+async function leasingUploadExcel(e) {
+  const input = e.target;
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const btn = $('#leasing-upload-btn'), status = $('#leasing-sync-status');
+  const label = btn.textContent; btn.disabled = true; btn.textContent = '⏳ Uploading…';
+  if (status) status.textContent = `Parsing ${file.name}…`;
   try {
-    const r = await api('/api/leasing/sync', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date_from: from, date_to: to }),
-    });
-    toast(`Synced ${r.synced} leads ✅`, 'success');
-    if (status) status.textContent = `Synced ${r.synced} leads for ${from} → ${to}.`;
+    const fd = new FormData();
+    fd.append('file', file);
+    // Raw fetch (not api()) so the browser sets the multipart boundary itself.
+    const r = await fetch('/api/leasing/upload', { method: 'POST', credentials: 'same-origin', body: fd });
+    const data = await r.json().catch(() => null);
+    if (!r.ok || !data || !data.ok) throw new Error((data && data.error) || ('HTTP ' + r.status));
+    toast(`Uploaded ${data.uploaded} leads ✔️`, 'success');
+    if (status) status.textContent = `Uploaded ${data.uploaded} leads from ${file.name}.`;
     await leasingLoadWeeks();
-    await leasingLoadLeads({ date_from: from, date_to: to });
+    leasingLoadRange();
   } catch (err) {
     toast(err.message, 'error');
     if (status) status.textContent = '❌ ' + err.message;
   } finally {
-    btn.disabled = false; btn.textContent = label;
+    btn.disabled = false; btn.textContent = label; input.value = '';
   }
 }
 // Lightweight per-property roll-up of the synced leads so the sync isn't a black
