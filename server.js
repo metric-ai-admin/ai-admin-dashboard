@@ -3522,6 +3522,48 @@ app.delete('/api/evictions/completed/:id', requireMetricAccess, async (req, res)
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- GET /api/evictions/daily-summary -----------------------------------------
+// Read-only roll-up for the Daily Report: how many accounts Karla marked
+// completed today (Central time), plus the total on the current tracker session.
+// No tracker changes — pure read from eviction_completed + eviction_sessions.
+app.get('/api/evictions/daily-summary', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) {
+    return res.json({ completed_today: 0, completed_accounts: [], total_on_tracker: 0, report_date: null, pending: 0 });
+  }
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE }); // YYYY-MM-DD, Central
+    // Pull a small recent window and filter to "today in Central" in JS — robust
+    // across DST and keeps the query bounded as the table grows.
+    const since = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const { data: comp, error: compErr } = await db.from('eviction_completed')
+      .select('id,property,unit,completed_at')
+      .gte('completed_at', since)
+      .order('completed_at', { ascending: false });
+    if (compErr) throw new Error(compErr.message);
+    const completed_accounts = (comp || []).filter(r =>
+      r.completed_at && new Date(r.completed_at).toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE }) === today
+    );
+
+    const { data: sess, error: sessErr } = await db.from('eviction_sessions')
+      .select('data,report_date,uploaded_at')
+      .order('uploaded_at', { ascending: false }).limit(1).maybeSingle();
+    if (sessErr) throw new Error(sessErr.message);
+    const units = sess && sess.data && Array.isArray(sess.data.units) ? sess.data.units.length : 0;
+    const report_date = sess
+      ? (sess.data && sess.data.reportDate ? String(sess.data.reportDate).slice(0, 10) : (sess.report_date || null))
+      : null;
+
+    res.json({
+      completed_today: completed_accounts.length,
+      completed_accounts,
+      total_on_tracker: units,
+      report_date,
+      pending: Math.max(0, units - completed_accounts.length)
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- POST /api/evictions/sync --------------------------------------------------
 // Pulls the Delinquency (As Of) report straight from AppFolio's Reports API v2,
 // maps its fields to the column names the client parser expects, and returns the

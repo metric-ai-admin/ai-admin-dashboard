@@ -6904,6 +6904,7 @@ const SIXPM_SOURCE_LABEL = {
 };
 
 async function sixpmLoad() {
+  sixpmEvictionsLoad(); // independent read — a report error shouldn't hide it
   const el = $('#sixpm-meetings');
   if (!el) return;
   el.innerHTML = '<p class="small muted">Loading…</p>';
@@ -6914,6 +6915,42 @@ async function sixpmLoad() {
   } catch (err) {
     el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
     $('#sixpm-meta').textContent = 'Could not load the report';
+  }
+}
+
+// Evictions roll-up for the 6PM report — read-only view of Karla's daily progress
+// (eviction_completed + eviction_sessions), so Lyndsay/admins don't need the tab.
+async function sixpmEvictionsLoad() {
+  const el = $('#sixpm-evictions');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const s = await api('/api/evictions/daily-summary');
+    const done = s.completed_today || 0;
+    const badge = done > 0
+      ? '<span class="badge badge-green">● On track</span>'
+      : '<span class="badge badge-yellow">● No accounts actioned today</span>';
+    const list = (s.completed_accounts || []).length
+      ? `<div class="report-group"><b>✅ Completed today:</b><ul class="report-list">${
+          s.completed_accounts.map(a =>
+            `<li>${esc(a.property || '')}${a.unit ? ` — Unit ${esc(a.unit)}` : ''}</li>`).join('')
+        }</ul></div>`
+      : '<p class="report-group muted small">No accounts marked completed today yet</p>';
+    el.innerHTML = `<div class="card">
+      <div class="card-meta" style="justify-content:space-between">
+        <span class="card-title">📋 Evictions — Karla</span>
+        ${badge}
+      </div>
+      <div class="stat-row" style="margin:8px 0">
+        <div><span class="stat-num">${done}</span> <span class="stat-label">actioned today</span></div>
+        <div><span class="stat-num">${s.pending || 0}</span> <span class="stat-label">still pending</span></div>
+        <div><span class="stat-num">${s.total_on_tracker || 0}</span> <span class="stat-label">total on tracker</span></div>
+      </div>
+      ${s.report_date ? `<div class="card-meta small muted"><span>Report date: ${esc(s.report_date)}</span></div>` : ''}
+      ${list}
+    </div>`;
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
   }
 }
 
