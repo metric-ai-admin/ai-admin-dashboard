@@ -4428,6 +4428,7 @@ app.patch('/api/crm/properties/:id', requireCRM, async (req, res) => {
       'property_name','address','city','state','zip','submarket','style',
       'year_built','asset_class','units','vacancy_pct','avg_asking_unit','avg_unit_sf',
       'management_company','management_type',
+      'property_phone',
       'owner_name','owner_contact_name','owner_phone','owner_email','owner_address',
       'assigned_to','phone_assignee','phone_assignee3','online_dm_assignee',
       'rop_status','lead_score_override','lyndsay_reviewed','notes',

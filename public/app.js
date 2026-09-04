@@ -3410,7 +3410,60 @@ function parseNotes(n) {
   }
 }
 
+// The mystery-shop call instruction sits above the log. It needs the property's
+// leasing-line number (properties.property_phone). When it's missing, show a
+// clear notice with an inline "Add Phone Number" editor so the agent can fill it
+// in without leaving the modal — rather than the tab silently showing nothing.
+function crmRenderPhoneInstruction(p) {
+  const el = $('#crm-phone-instruction');
+  if (!el) return;
+  const phone = ((p && p.property_phone) || '').trim();
+  const showEditor = (current) => {
+    el.innerHTML = `<div class="crm-call-instruction" style="background:#F4F1E8;border:1px solid #DCD3B0;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+        <label class="small" style="font-weight:600">Property phone number
+          <input id="crm-phone-number-input" class="crm-input" type="tel" placeholder="(512) 555-0123" value="${esc(current || '')}" style="margin:0 8px;max-width:200px">
+        </label>
+        <button class="btn-sm primary" id="crm-phone-number-save">Save</button>
+        <button class="btn-sm" id="crm-phone-number-cancel">Cancel</button>
+      </div>`;
+    $('#crm-phone-number-save').addEventListener('click', crmSavePhoneNumber);
+    $('#crm-phone-number-cancel').addEventListener('click', () => crmRenderPhoneInstruction(crmState.activeProperty));
+    $('#crm-phone-number-input').focus();
+  };
+  if (phone) {
+    el.innerHTML = `<div class="crm-call-instruction" style="background:#F4F1E8;border:1px solid #DCD3B0;border-radius:8px;padding:10px 12px;margin-bottom:10px;font-weight:600;color:#3A3120;">
+        📞 Call ${esc(phone)} — put on speaker and record the call with your computer's recording app. Ask for pricing on apartments if answered. Let the agent lead the call. Document their effort. Save the recording and upload to OneDrive labelled with Date and Property Name.
+        <button class="btn-sm crm-phone-edit-btn" style="margin-left:8px">Edit</button>
+      </div>`;
+    el.querySelector('.crm-phone-edit-btn').addEventListener('click', () => showEditor(phone));
+  } else {
+    el.innerHTML = `<div class="crm-call-instruction" style="background:#FBF3E6;border:1px solid #E7C48B;border-radius:8px;padding:10px 12px;margin-bottom:10px;color:#7A5A1E;">
+        ⚠ No phone number on file for this property.
+        <button class="btn-sm primary crm-phone-add-number-btn" style="margin-left:8px">+ Add Phone Number</button>
+      </div>`;
+    el.querySelector('.crm-phone-add-number-btn').addEventListener('click', () => showEditor(''));
+  }
+}
+
+async function crmSavePhoneNumber() {
+  const p = crmState.activeProperty;
+  if (!p) return;
+  const val = ($('#crm-phone-number-input')?.value || '').trim();
+  try {
+    const updated = await crmFetch(`/api/crm/properties/${p.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ property_phone: val }),
+    });
+    // Merge so the modal's other tabs keep their loaded sub-arrays (phone_shops,
+    // dm_review, …); the PATCH only returns the bare properties row.
+    crmState.activeProperty = { ...p, property_phone: updated.property_phone };
+    crmRenderPhoneInstruction(crmState.activeProperty);
+    toast(val ? 'Phone number saved ✅' : 'Phone number cleared', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 function crmRenderPhoneList(shops) {
+  crmRenderPhoneInstruction(crmState.activeProperty);
   const connLabel = { answered_agent: 'Answered', answered_ai: 'AI/Service', voicemail: 'Voicemail', no_answer: 'No Answer', wrong_number: 'Wrong #' };
   const connCls   = { answered_agent: 'conn-answered', answered_ai: 'conn-answered', voicemail: 'conn-voicemail', no_answer: 'conn-noanswer', wrong_number: 'conn-noanswer' };
   $('#crm-phone-count').textContent = `${shops.length} call(s) logged`;
