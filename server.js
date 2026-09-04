@@ -3564,7 +3564,7 @@ const APPFOLIO_DELINQUENCY_MAP = {
 };
 const APPFOLIO_SYNC_AGENT = 'Karla'; // AR Agent isn't in the API response
 
-app.post('/api/evictions/sync', requireMetricAdmin, async (req, res) => {
+app.post('/api/evictions/sync', requireMetricAccess, async (req, res) => {
   const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
   if (!id || !secret) {
     return res.status(503).json({ ok: false, error: 'AppFolio API not configured — set APPFOLIO_CLIENT_ID and APPFOLIO_CLIENT_SECRET.' });
