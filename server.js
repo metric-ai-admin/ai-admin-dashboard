@@ -3671,6 +3671,180 @@ app.get('/evictions/app', requireMetricAccess, (req, res) => {
 const LEASING_LIST_COLS = 'id,week_ending,submitted_by,submitted_at,status,kpi_json,notes,created_at';
 const LEASING_STATUSES = ['submitted', 'reviewed', 'approved'];
 
+// =====================================================================
+// LEASING LEADS — direct sync from AppFolio's "Guest Card Interests"
+// Joined Report, replacing the manual weekly Excel export/import.
+// Same auth as /api/evictions/sync (APPFOLIO_CLIENT_ID/SECRET, Basic).
+// =====================================================================
+const APPFOLIO_LEASING_REPORT_ID = '6610f13d-95ae-11f0-a6a2-063f6f7015b5';
+const APPFOLIO_BASE = 'https://metricpropertymanagement.appfolio.com';
+
+// Guest Card Interests field -> leasing_leads column. Live key names are not yet
+// verified (the report is a custom Joined Report), so each target lists the most
+// likely snake_case key plus tolerant fallbacks. GET /api/leasing/sync/raw dumps
+// the real keys so this can be corrected on the first live sync — same discovery
+// flow we used for the evictions sync.
+const APPFOLIO_LEASING_MAP = {
+  name:               ['name', 'guest_card_name', 'prospect_name'],
+  email:              ['email_address', 'email'],
+  phone:              ['phone_number', 'phone'],
+  interest_received:  ['interest_received', 'received_on', 'interest_received_at'],
+  last_activity_date: ['last_activity_date', 'last_activity'],
+  last_activity_type: ['last_activity_type'],
+  move_in_preference: ['move_in_preference', 'move_in', 'desired_move_in'],
+  lisa_lead:          ['lisa_lead', 'lisa'],
+  source:             ['source', 'lead_source'],
+  property:           ['property', 'property_name'],
+  assigned_user:      ['assigned_user', 'assigned_to', 'agent'],
+  notes:              ['notes', 'note'],
+};
+
+// Saturday (Sun–Sat week) that a date falls in, as YYYY-MM-DD. Katie's week.
+function leasingWeekEnding(d) {
+  const dt = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(dt.getTime())) return null;
+  const day = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+  day.setDate(day.getDate() + (6 - day.getDay())); // 0=Sun..6=Sat
+  return day.toLocaleDateString('en-CA');
+}
+
+function appfolioLeasingUrl(from, to) {
+  // Custom Joined Report by id; filters mirror the report's received_on window.
+  const qs = new URLSearchParams();
+  if (from) qs.set('filters[received_on_from]', from);
+  if (to)   qs.set('filters[received_on_to]', to);
+  qs.set('paginate_results', 'false');
+  return `${APPFOLIO_BASE}/api/v2/reports/${APPFOLIO_LEASING_REPORT_ID}.json?${qs.toString()}`;
+}
+
+async function appfolioLeasingFetch(from, to) {
+  const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
+  if (!id || !secret) { const e = new Error('AppFolio API not configured — set APPFOLIO_CLIENT_ID and APPFOLIO_CLIENT_SECRET.'); e.code = 503; throw e; }
+  const auth = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
+  const pull = obj => Array.isArray(obj) ? obj : (obj?.results || obj?.data || []);
+  const raw = [];
+  let resp = await fetchFn(appfolioLeasingUrl(from, to), { headers: { Authorization: auth } });
+  let j = await resp.json().catch(() => null);
+  if (!resp.ok) { const e = new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status}`); e.code = resp.status; throw e; }
+  raw.push(...pull(j));
+  let next = j && j.next_page_url, guard = 0;
+  while (next && guard++ < 200) {
+    resp = await fetchFn(next, { headers: { Authorization: auth } });
+    j = await resp.json().catch(() => null);
+    if (!resp.ok) { const e = new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status} on a later page`); e.code = resp.status; throw e; }
+    raw.push(...pull(j));
+    next = j && j.next_page_url;
+  }
+  return raw;
+}
+
+const leasingPick = (row, candidates) => {
+  for (const k of candidates) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return row[k];
+  return null;
+};
+const leasingTruthy = v => v === true || v === 'true' || v === 'Yes' || v === 'yes' || v === 1 || v === '1';
+const leasingDateOnly = v => { if (!v) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-CA'); };
+
+// Debug: raw first row from the report, unmapped, to confirm the live field keys
+// and that the endpoint works. Admin-gated; remove once the mapping is verified.
+app.get('/api/leasing/sync/raw', requireMetricAdmin, async (req, res) => {
+  try {
+    const to = req.query.date_to || new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+    const from = req.query.date_from || to;
+    const raw = await appfolioLeasingFetch(from, to);
+    const first = raw[0] || null;
+    res.json({ ok: true, count: raw.length, first_row_keys: first ? Object.keys(first) : null, first_row: first });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/leasing/sync — pull the Guest Card Interests report for a date range
+// and upsert into leasing_leads. requireMetricAccess (Katie's leasing role).
+app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
+  const { date_from, date_to } = req.body || {};
+  if (!date_from || !date_to) return res.status(400).json({ ok: false, error: 'date_from and date_to are required (YYYY-MM-DD)' });
+  try {
+    const raw = await appfolioLeasingFetch(date_from, date_to);
+    const seen = new Set();
+    const rows = [];
+    for (const r of raw) {
+      const name = leasingPick(r, APPFOLIO_LEASING_MAP.name);
+      const phone = leasingPick(r, APPFOLIO_LEASING_MAP.phone);
+      const interestRaw = leasingPick(r, APPFOLIO_LEASING_MAP.interest_received);
+      const appfolio_id = [name || '', phone || '', interestRaw || ''].join('|').trim();
+      if (!appfolio_id || appfolio_id === '||') continue;
+      if (seen.has(appfolio_id)) continue; // de-dupe within this pull
+      seen.add(appfolio_id);
+      const interestDate = interestRaw ? new Date(interestRaw) : null;
+      rows.push({
+        appfolio_id,
+        name: name || null,
+        email: leasingPick(r, APPFOLIO_LEASING_MAP.email),
+        phone: phone || null,
+        interest_received: (interestDate && !isNaN(interestDate.getTime())) ? interestDate.toISOString() : null,
+        last_activity_date: leasingDateOnly(leasingPick(r, APPFOLIO_LEASING_MAP.last_activity_date)),
+        last_activity_type: leasingPick(r, APPFOLIO_LEASING_MAP.last_activity_type),
+        move_in_preference: leasingDateOnly(leasingPick(r, APPFOLIO_LEASING_MAP.move_in_preference)),
+        lisa_lead: leasingTruthy(leasingPick(r, APPFOLIO_LEASING_MAP.lisa_lead)),
+        source: leasingPick(r, APPFOLIO_LEASING_MAP.source),
+        property: leasingPick(r, APPFOLIO_LEASING_MAP.property),
+        assigned_user: leasingPick(r, APPFOLIO_LEASING_MAP.assigned_user),
+        notes: leasingPick(r, APPFOLIO_LEASING_MAP.notes),
+        week_ending: (interestDate && !isNaN(interestDate.getTime())) ? leasingWeekEnding(interestDate) : null,
+        synced_at: new Date().toISOString(),
+      });
+    }
+    const db = supabaseAdmin || supabasePublic;
+    let synced = 0;
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500);
+      const { error } = await db.from('leasing_leads').upsert(chunk, { onConflict: 'appfolio_id' });
+      if (error) throw new Error(error.message);
+      synced += chunk.length;
+    }
+    res.json({ ok: true, synced, date_from, date_to });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Leasing sync failed: ' + err.message });
+  }
+});
+
+// GET /api/leasing/leads?date_from&date_to — leads in a date range (by
+// interest_received), for the KPI roll-ups. Falls back to week_ending filter.
+app.get('/api/leasing/leads', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ leads: [] });
+  const { date_from, date_to, week_ending } = req.query;
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    let q = db.from('leasing_leads').select('*');
+    if (week_ending) {
+      q = q.eq('week_ending', week_ending);
+    } else {
+      if (date_from) q = q.gte('interest_received', new Date(date_from + 'T00:00:00').toISOString());
+      if (date_to)   q = q.lte('interest_received', new Date(date_to + 'T23:59:59').toISOString());
+    }
+    const { data, error } = await q.order('interest_received', { ascending: false }).limit(10000);
+    if (error) throw new Error(error.message);
+    res.json({ leads: data || [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/leasing/weeks — distinct week_ending values, newest first, for the
+// history week selector.
+app.get('/api/leasing/weeks', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ weeks: [] });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('leasing_leads')
+      .select('week_ending').not('week_ending', 'is', null)
+      .order('week_ending', { ascending: false }).limit(10000);
+    if (error) throw new Error(error.message);
+    const weeks = [...new Set((data || []).map(r => r.week_ending))];
+    res.json({ weeks });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // List all submissions, newest first.
 app.get('/api/leasing/submissions', requireAuth, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ submissions: [] });

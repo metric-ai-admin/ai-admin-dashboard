@@ -1666,6 +1666,31 @@
       </div>
     </div>
 
+    <!-- Panel — AppFolio Leads Sync (Guest Card Interests) -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="view-head" style="margin:0 0 8px;align-items:flex-start">
+        <div>
+          <h3 style="margin:0">AppFolio Leads Sync</h3>
+          <p class="muted small" style="margin:2px 0 0">Pull Guest Card Interests straight from AppFolio for a date range — replaces the manual weekly Excel export.</p>
+        </div>
+        <div class="view-actions">
+          <button class="btn-sm" data-leasing-preset="last-week">Last Week</button>
+          <button class="btn-sm" data-leasing-preset="last-2-weeks">Last 2 Weeks</button>
+          <button class="btn-sm" data-leasing-preset="this-month">This Month</button>
+        </div>
+      </div>
+      <div class="crm-completed-range" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+        <label class="small">From <input type="date" id="leasing-sync-from"></label>
+        <label class="small">To <input type="date" id="leasing-sync-to"></label>
+        <button class="btn-sm primary" id="leasing-sync-btn">↺ Sync from AppFolio</button>
+        <label class="small">History week
+          <select id="leasing-week-select" class="crm-select"><option value="">— recent weeks —</option></select>
+        </label>
+        <span class="small muted" id="leasing-sync-status"></span>
+      </div>
+      <div id="leasing-sync-summary" style="margin-top:12px"></div>
+    </div>
+
     <!-- Panel A — Submission History -->
     <div class="card" style="margin-bottom:16px">
       <div class="view-head" style="margin:0 0 8px">

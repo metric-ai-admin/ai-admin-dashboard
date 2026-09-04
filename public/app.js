@@ -244,12 +244,102 @@ function loadLeasing() {
     $('#leasing-refresh')?.addEventListener('click', leasingLoadHistory);
     $('#leasing-submit')?.addEventListener('click', leasingSubmit);
     const wk = $('#leasing-week'); if (wk) wk.textContent = leasingNextSunday();
+    leasingWireSync();
     leasingState.wired = true;
   }
   // Lazy-load the tool iframe (its ExcelJS/fonts aren't fetched until needed).
   const frame = $('#leasing-frame');
   if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/tools/weekly_leasing_goal_board.html');
   leasingLoadHistory();
+}
+
+// ── AppFolio Leads Sync (Guest Card Interests) ──────────────────────────────
+// Default range = most recent full Sun–Sat week (Katie's week pattern).
+function leasingDefaultRange() {
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const sinceSat = (d.getDay() + 1) % 7;          // 0=Sun..6=Sat → days since last Saturday
+  const lastSat = new Date(d); lastSat.setDate(d.getDate() - sinceSat);
+  const lastSun = new Date(lastSat); lastSun.setDate(lastSat.getDate() - 6);
+  return { from: lastSun.toLocaleDateString('en-CA'), to: lastSat.toLocaleDateString('en-CA') };
+}
+function leasingApplyPreset(preset) {
+  const base = leasingDefaultRange();
+  let from = base.from, to = base.to;
+  if (preset === 'last-2-weeks') {
+    const s = new Date(base.from + 'T00:00:00'); s.setDate(s.getDate() - 7);
+    from = s.toLocaleDateString('en-CA');
+  } else if (preset === 'this-month') {
+    const now = new Date();
+    from = new Date(now.getFullYear(), now.getMonth(), 1).toLocaleDateString('en-CA');
+    to = now.toLocaleDateString('en-CA');
+  }
+  const fEl = $('#leasing-sync-from'), tEl = $('#leasing-sync-to');
+  if (fEl) fEl.value = from; if (tEl) tEl.value = to;
+}
+function leasingWireSync() {
+  if (!$('#leasing-sync-btn')) return;
+  leasingApplyPreset('last-week');
+  $$('[data-leasing-preset]').forEach(b =>
+    b.addEventListener('click', () => leasingApplyPreset(b.dataset.leasingPreset)));
+  $('#leasing-sync-btn').addEventListener('click', leasingSyncFromAppFolio);
+  $('#leasing-week-select')?.addEventListener('change', e => {
+    if (e.target.value) leasingLoadLeads({ week_ending: e.target.value });
+  });
+  leasingLoadWeeks();
+}
+async function leasingLoadWeeks() {
+  const sel = $('#leasing-week-select');
+  if (!sel) return;
+  try {
+    const { weeks } = await api('/api/leasing/weeks');
+    sel.innerHTML = '<option value="">— recent weeks —</option>' +
+      (weeks || []).map(w => `<option value="${esc(w)}">Week ending ${esc(w)}</option>`).join('');
+  } catch (_) { /* leave the placeholder */ }
+}
+async function leasingSyncFromAppFolio() {
+  const btn = $('#leasing-sync-btn');
+  const from = $('#leasing-sync-from')?.value, to = $('#leasing-sync-to')?.value;
+  if (!from || !to) { toast('Pick a From and To date first.', 'error'); return; }
+  if (from > to) { toast('From date must be on or before To date.', 'error'); return; }
+  const status = $('#leasing-sync-status');
+  btn.disabled = true; const label = btn.textContent; btn.textContent = '⏳ Syncing…';
+  if (status) status.textContent = `Pulling ${from} → ${to} from AppFolio…`;
+  try {
+    const r = await api('/api/leasing/sync', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date_from: from, date_to: to }),
+    });
+    toast(`Synced ${r.synced} leads ✅`, 'success');
+    if (status) status.textContent = `Synced ${r.synced} leads for ${from} → ${to}.`;
+    await leasingLoadWeeks();
+    await leasingLoadLeads({ date_from: from, date_to: to });
+  } catch (err) {
+    toast(err.message, 'error');
+    if (status) status.textContent = '❌ ' + err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+// Lightweight per-property roll-up of the synced leads so the sync isn't a black
+// box. The full KPI board (weekly_leasing_goal_board.html) is a separate tool.
+async function leasingLoadLeads(params) {
+  const el = $('#leasing-sync-summary');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading leads…</p>';
+  try {
+    const qs = new URLSearchParams(params).toString();
+    const { leads } = await api(`/api/leasing/leads?${qs}`);
+    if (!leads || !leads.length) { el.innerHTML = '<p class="small muted">No leads for this range.</p>'; return; }
+    const byProp = {};
+    leads.forEach(l => { const p = l.property || '—'; byProp[p] = (byProp[p] || 0) + 1; });
+    const rows = Object.entries(byProp).sort((a, b) => b[1] - a[1])
+      .map(([p, n]) => `<tr><td>${esc(p)}</td><td style="text-align:right">${n}</td></tr>`).join('');
+    el.innerHTML = `<p class="small muted" style="margin:0 0 6px">${leads.length} lead(s) · ${Object.keys(byProp).length} propert${Object.keys(byProp).length === 1 ? 'y' : 'ies'}</p>
+      <div class="crm-table-wrap"><table class="crm-sub-table"><thead><tr><th>Property</th><th style="text-align:right">Leads</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">❌ ${esc(err.message)}</p>`;
+  }
 }
 
 const LEASING_STATUS_BADGE = {
