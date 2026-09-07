@@ -1129,6 +1129,29 @@ function ccImportActivity(file) {
 }
 
 /* ---------------- boot ---------------- */
+/* Rebuild the board on load from Supabase (no AppFolio fetch), so Erick sees his
+   task board + progress immediately after a refresh without clicking Sync. */
+async function ccLoadCached() {
+  let data;
+  try { data = await api('/api/maintenance/cached'); } catch { return false; }
+  if (!data || !data.last_synced) return false;
+  let any = false;
+  for (const d of CC_SYNC_DEFS) {
+    const rows = (data[d.key] || []).map(d.row);
+    if (rows.length) { ccIngest(d.headers(), rows, d.key); any = true; }
+  }
+  if (!any) return false;
+  ccRenderSlots();
+  const when = new Date(data.last_synced).toLocaleString();
+  const status = $('#cc-sync-status'); if (status) status.textContent = `Data from last sync: ${when}`;
+  const banner = $('#cc-restored');
+  if (banner && !banner.classList.contains('hidden')) {
+    banner.innerHTML = `↻ <b>Restored from today's session</b> — showing data from last sync (${esc(when)}). Click “Sync from AppFolio” to refresh.`;
+  }
+  ccGenerate(); // rebuild totals + task board; saved check states re-apply by task id
+  return true;
+}
+
 function ccInit() {
   if (ccInit._done) return;
   const host = $('#cc-routine'); if (!host) return;
@@ -1140,7 +1163,9 @@ function ccInit() {
   ccBuildRoutine();
   ccRenderSlots();
   ccUpdateProgress();
-  ccRestoreState();
+  // Restore saved check states first (sets ccChecks), then rebuild the board from
+  // the last sync's data so totals + task cards are populated automatically.
+  ccRestoreState().then(() => ccLoadCached());
 
   const drop = $('#cc-drop'), input = $('#cc-file');
   input?.addEventListener('change', e => { if (e.target.files[0]) ccLoadFile(e.target.files[0]); e.target.value = ''; });

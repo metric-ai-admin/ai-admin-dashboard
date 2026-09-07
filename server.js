@@ -3627,7 +3627,10 @@ app.post('/api/evictions/sync', requireMetricAccess, async (req, res) => {
     let next = j && j.next_page_url;
     let guard = 0;
     while (next && guard++ < 200) {
-      resp = await fetchFn(next, { headers: { Authorization: auth } });
+      // next_page_url is relative; resolve to absolute (Node fetch can't parse a
+      // relative URL).
+      const nextUrl = /^https?:\/\//i.test(next) ? next : 'https://metricpropertymanagement.appfolio.com' + next;
+      resp = await fetchFn(nextUrl, { headers: { Authorization: auth } });
       j = await resp.json().catch(() => null);
       if (!resp.ok) return res.status(resp.status).json({ ok: false, error: (j && (j.error || j.message)) || `AppFolio returned ${resp.status} on a later page` });
       raw.push(...pull(j));
@@ -3733,7 +3736,10 @@ async function appfolioReportsFetch(reportPath, body) {
   raw.push(...pull(j));
   let next = j && j.next_page_url, guard = 0;
   while (next && guard++ < 500) {
-    resp = await fetchFn(next, { headers: { Authorization: auth } });
+    // AppFolio returns next_page_url as a RELATIVE path (e.g. /api/v2/reports/…?
+    // page=1); Node fetch can't parse a relative URL, so resolve it to absolute.
+    const nextUrl = /^https?:\/\//i.test(next) ? next : APPFOLIO_REPORTS_BASE + next;
+    resp = await fetchFn(nextUrl, { headers: { Authorization: auth } });
     j = await resp.json().catch(() => null);
     if (!resp.ok) { const e = new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status} on a later page`); e.code = resp.status; throw e; }
     raw.push(...pull(j));
@@ -4098,6 +4104,30 @@ app.get('/api/maintenance/work-orders', requireMetricAccess, async (req, res) =>
     if (error) throw new Error(error.message);
     const last = (data || []).reduce((m, r) => (r.synced_at && r.synced_at > m ? r.synced_at : m), '');
     res.json({ work_orders: data || [], last_synced: last || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/maintenance/cached — all maintenance slot data straight from Supabase
+// (no AppFolio fetch), so the Command Center can rebuild the board on page load
+// without re-syncing. Returns per-slot rows + the newest synced_at.
+app.get('/api/maintenance/cached', requireMetricAccess, async (req, res) => {
+  const empty = { wo: [], insp: [], bill: [], labor: [], cf: [], inv: [], audit: [], last_synced: null };
+  if (!CRM_CONFIGURED) return res.json(empty);
+  const TABLES = {
+    wo: 'maintenance_work_orders', insp: 'maintenance_inspections', bill: 'maintenance_billable',
+    labor: 'maintenance_labor', cf: 'maintenance_custom_fields', inv: 'maintenance_inventory', audit: 'maintenance_audit',
+  };
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const out = {}; let last = '';
+    await Promise.all(Object.entries(TABLES).map(async ([k, t]) => {
+      // Per-table tolerant: a not-yet-migrated table shouldn't sink the whole load.
+      const { data, error } = await db.from(t).select('*').limit(10000);
+      out[k] = error ? [] : (data || []);
+      for (const r of out[k]) if (r.synced_at && r.synced_at > last) last = r.synced_at;
+    }));
+    out.last_synced = last || null;
+    res.json(out);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
