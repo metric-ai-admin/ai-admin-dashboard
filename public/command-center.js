@@ -303,27 +303,114 @@ function ccWoRowFromSynced(w) {
     'Scheduled End': w.scheduled_end || '',
   };
 }
+/* Per-slot header names are chosen to match each slot's CC_COLS candidates, so
+   ccIngest routes them correctly and every field the slot reads is populated. */
+const CC_INSP_HEADERS = ['Inspection Name', 'Property Name', 'Unit', 'Status', 'Inspection Date', 'Marked Done By', 'Created On', 'Inspection ID'];
+function ccInspRow(r) {
+  return {
+    'Inspection Name': r.inspection_name || '',  // → template
+    'Property Name': r.property_name || '',       // → property
+    'Unit': r.unit || '',
+    'Status': r.status || '',
+    'Inspection Date': r.inspection_date || '',
+    'Marked Done By': r.marked_done_by || '',     // → completedBy
+    'Created On': r.created_on || '',             // → created
+    'Inspection ID': r.inspection_id || '',       // → inspId
+  };
+}
+const CC_BILL_HEADERS = ['Work Order Number', 'Property', 'Unit', 'Vendor', 'Created Date', 'Billable Type', 'Description', 'Billable Hours', 'Quantity', 'Amount', 'Unbilled Amount'];
+function ccBillRow(r) {
+  return {
+    'Work Order Number': r.work_order_number || '',
+    'Property': r.property || '',
+    'Unit': r.unit || '',
+    'Vendor': r.vendor || '',
+    'Created Date': r.created_date || '',          // → created
+    'Billable Type': r.billable_type || '',        // → billtype
+    'Description': r.description || '',
+    'Billable Hours': r.billable_hours == null ? '' : String(r.billable_hours), // → hours
+    'Quantity': r.quantity == null ? '' : String(r.quantity),
+    'Amount': r.amount == null ? '' : String(r.amount),
+    'Unbilled Amount': r.unbilled_amount == null ? '' : String(r.unbilled_amount), // → unbilled
+  };
+}
+const CC_LABOR_HEADERS = ['Work Order Number', 'Labor Date', 'Maintenance Tech', 'Property', 'Unit', 'Start Time', 'End Time', 'Worked Hours', 'Work Order Status', 'Description', 'Work Order Issue'];
+function ccLaborRow(r) {
+  return {
+    'Work Order Number': r.work_order_number || '',
+    'Labor Date': r.labor_date || '',              // → laborDate
+    'Maintenance Tech': r.maintenance_tech || '',  // → laborTech
+    'Property': r.property || '',
+    'Unit': r.unit || '',
+    'Start Time': r.start_time || '',              // → startTime (after-hours check)
+    'End Time': r.end_time || '',
+    'Worked Hours': r.worked_hours == null ? '' : String(r.worked_hours), // → hours
+    'Work Order Status': r.work_order_status || '',
+    'Description': r.description || '',
+    'Work Order Issue': r.work_order_issue || '',
+  };
+}
+const CC_CF_HEADERS = ['Work Order Number', 'Work Order ID', 'Service Request ID', 'Code Violation', 'Estimated Completion Time', 'Life Safety Issue', 'Parts Needed Ordered Tracking'];
+function ccCfRow(r) {
+  return {
+    'Work Order Number': r.work_order_number || '',
+    'Work Order ID': r.work_order_id || '',        // → woId
+    'Service Request ID': r.service_request_id || '',
+    'Code Violation': r.code_violation || '',      // → codeviolation
+    'Estimated Completion Time': r.estimated_completion_time || '', // → estcompletion
+    'Life Safety Issue': r.life_safety_issue || '', // → lifesafety
+    'Parts Needed Ordered Tracking': r.parts_needed || '', // → parts
+  };
+}
+const CC_INV_HEADERS = ['Item Name', 'Work Order Number', 'Work Order Status', 'Property', 'Unit', 'Inventory Added On', 'Quantity', 'Cost', 'Sale Price', 'Category', 'Inventory Location'];
+function ccInvRow(r) {
+  return {
+    'Item Name': r.item_name || '',
+    'Work Order Number': r.work_order_number || '',
+    'Work Order Status': r.work_order_status || '',
+    'Property': r.property || '',
+    'Unit': r.unit || '',
+    'Inventory Added On': r.inventory_added_on || '', // → invAddedOn
+    'Quantity': r.quantity == null ? '' : String(r.quantity),
+    'Cost': r.cost == null ? '' : String(r.cost),
+    'Sale Price': r.sale_price == null ? '' : String(r.sale_price), // → salePrice
+    'Category': r.category || '',
+    'Inventory Location': r.inventory_location || '',
+  };
+}
+
+/* Pull every report in parallel, feed each into its slot, then generate. */
+const CC_SYNC_DEFS = [
+  { key: 'wo',    name: 'All Work Orders',     ep: '/api/maintenance/sync',               headers: () => CC_SYNC_HEADERS, row: ccWoRowFromSynced },
+  { key: 'insp',  name: 'Inspection Detail',   ep: '/api/maintenance/sync/inspections',   headers: () => CC_INSP_HEADERS,  row: ccInspRow },
+  { key: 'bill',  name: 'Work Order Billable', ep: '/api/maintenance/sync/billable',      headers: () => CC_BILL_HEADERS,  row: ccBillRow },
+  { key: 'labor', name: 'Labor Summary',       ep: '/api/maintenance/sync/labor',         headers: () => CC_LABOR_HEADERS, row: ccLaborRow },
+  { key: 'cf',    name: 'Custom Fields',       ep: '/api/maintenance/sync/custom-fields', headers: () => CC_CF_HEADERS,    row: ccCfRow },
+  { key: 'inv',   name: 'Inventory Usage',     ep: '/api/maintenance/sync/inventory',     headers: () => CC_INV_HEADERS,   row: ccInvRow },
+];
 async function ccSyncFromAppFolio() {
   const btn = $('#cc-sync'), status = $('#cc-sync-status'), st = $('#cc-status');
   if (!btn) return;
   const label = btn.textContent; btn.disabled = true; btn.textContent = '⏳ Syncing…';
-  if (status) status.textContent = 'Pulling work orders from AppFolio…';
+  if (status) status.textContent = 'Pulling all reports from AppFolio…';
   try {
-    await api('/api/maintenance/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    const data = await api('/api/maintenance/work-orders');
-    const wos = data.work_orders || [];
-    if (!wos.length) {
-      if (status) status.textContent = 'Synced, but AppFolio returned no work orders.';
-      toast('Synced — no work orders returned', 'error');
-      return;
+    const settled = await Promise.all(CC_SYNC_DEFS.map(d =>
+      api(d.ep, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+        .then(r => ({ d, r })).catch(e => ({ d, err: e }))
+    ));
+    let total = 0; const parts = [], failed = [];
+    for (const { d, r, err } of settled) {
+      if (err || !r || !r.ok) { failed.push(d.name); continue; }
+      const rows = (r.rows || []).map(d.row);
+      if (rows.length) { ccIngest(d.headers(), rows, d.key); total += rows.length; }
+      parts.push(`${d.name}: ${rows.length}`);
     }
-    const rows = wos.map(ccWoRowFromSynced);
-    ccIngest(CC_SYNC_HEADERS, rows, 'wo'); // routes to the All Work Orders slot
     ccRenderSlots();
-    const when = data.last_synced ? new Date(data.last_synced).toLocaleString() : new Date().toLocaleString();
-    if (status) status.textContent = `Last synced: ${when} · ${wos.length} work orders`;
-    if (st) st.innerHTML = `<b>✓ Synced from AppFolio:</b> ${wos.length} work orders → All Work Orders`;
-    toast(`Synced ${wos.length} work orders ✅`, 'success');
+    const when = new Date().toLocaleString();
+    if (status) status.textContent = `Last synced: ${when} · ${total} rows` + (failed.length ? ` · failed: ${failed.join(', ')}` : '');
+    if (st) st.innerHTML = `<b>✓ Synced from AppFolio:</b> ${parts.map(esc).join(' · ')}`
+      + (failed.length ? ` · <span style="color:var(--red)">failed: ${failed.map(esc).join(', ')}</span>` : '');
+    toast(failed.length ? `Synced with ${failed.length} report failure(s)` : `Synced ${total} rows ✅`, failed.length ? 'error' : 'success');
     ccGenerate(); // same "Generate today's tasks" logic as the Excel upload
   } catch (err) {
     if (status) status.textContent = '❌ ' + err.message;

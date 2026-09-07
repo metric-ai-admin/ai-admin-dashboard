@@ -3936,11 +3936,137 @@ app.post('/api/maintenance/sync', requireMetricAccess, async (req, res) => {
       if (error) throw new Error(error.message);
       synced += chunk.length;
     }
-    res.json({ ok: true, synced, timestamp: new Date().toISOString() });
+    res.json({ ok: true, synced, timestamp: new Date().toISOString(), rows });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Maintenance sync failed: ' + err.message });
   }
 });
+
+// ── Supporting maintenance reports (Inspection / Billable / Labor / Custom
+// Fields / Inventory) → their own tables, full-replaced each sync (each report
+// is a current snapshot). Field keys are tolerant candidates; `sample_keys` is
+// returned so the live keys can be verified from the sync response.
+const mwoStr = v => (v == null ? null : String(v));
+const mwoNum = v => { if (v == null || String(v).trim() === '') return null; const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n; };
+const MAINT_SUPPORT_REPORTS = {
+  inspections: {
+    report: '/api/v2/reports/inspection_detail.json',
+    filter: { property_visibility: 'active' },
+    table: 'maintenance_inspections',
+    map: r => ({
+      inspection_id:    mwoStr(mwoPick(r, ['inspection_id', 'id'])),
+      inspection_name:  mwoPick(r, ['inspection_name', 'name', 'inspection_template', 'template']),
+      property_name:    mwoPick(r, ['property_name', 'property']),
+      unit:             mwoPick(r, ['unit_name', 'unit']),
+      primary_resident: mwoPick(r, ['primary_tenant', 'primary_resident', 'resident']),
+      status:           mwoPick(r, ['status', 'inspection_status']),
+      inspection_date:  leasingDateOnly(mwoPick(r, ['inspection_date', 'scheduled_date', 'date'])),
+      marked_done_on:   leasingDateOnly(mwoPick(r, ['marked_done_on', 'completed_on', 'done_on'])),
+      marked_done_by:   mwoPick(r, ['marked_done_by', 'completed_by', 'done_by']),
+      created_on:       leasingDateOnly(mwoPick(r, ['created_on', 'created_at', 'created'])),
+      property_id:      mwoStr(mwoPick(r, ['property_id'])),
+    }),
+  },
+  billable: {
+    report: '/api/v2/reports/work_order_billable_detail.json',
+    filter: { work_order_statuses: ['0', '8', '12'], property_visibility: 'active' },
+    table: 'maintenance_billable',
+    map: r => ({
+      work_order_number: mwoStr(mwoPick(r, ['work_order_number'])),
+      property:          mwoPick(r, ['property_name', 'property']),
+      unit:              mwoPick(r, ['unit_name', 'unit']),
+      vendor:            mwoPick(r, ['vendor']),
+      created_date:      leasingDateOnly(mwoPick(r, ['created_date', 'created_at', 'created'])),
+      billable_type:     mwoPick(r, ['billable_type']),
+      description:       mwoPick(r, ['description', 'job_description']),
+      billable_hours:    mwoNum(mwoPick(r, ['billable_hours', 'hours'])),
+      quantity:          mwoNum(mwoPick(r, ['quantity'])),
+      amount:            mwoNum(mwoPick(r, ['amount'])),
+      billed_amount:     mwoNum(mwoPick(r, ['billed_amount'])),
+      unbilled_amount:   mwoNum(mwoPick(r, ['unbilled_amount', 'unbilled'])),
+    }),
+  },
+  labor: {
+    report: '/api/v2/reports/work_order_labor_summary.json',
+    filter: { property_visibility: 'active' },
+    table: 'maintenance_labor',
+    map: r => ({
+      work_order_number: mwoStr(mwoPick(r, ['work_order_number'])),
+      labor_date:        leasingDateOnly(mwoPick(r, ['date', 'labor_date', 'worked_on'])),
+      maintenance_tech:  mwoPick(r, ['maintenance_tech', 'technician', 'tech']),
+      property:          mwoPick(r, ['property_name', 'property']),
+      unit:              mwoPick(r, ['unit_name', 'unit']),
+      start_time:        mwoStr(mwoPick(r, ['start_time'])),
+      end_time:          mwoStr(mwoPick(r, ['end_time'])),
+      worked_hours:      mwoNum(mwoPick(r, ['worked_hours', 'hours'])),
+      billable_hours:    mwoNum(mwoPick(r, ['billable_hours'])),
+      work_order_status: mwoPick(r, ['work_order_status', 'status']),
+      description:       mwoPick(r, ['description', 'job_description']),
+      work_order_issue:  mwoPick(r, ['work_order_issue', 'issue']),
+    }),
+  },
+  custom_fields: {
+    report: '/api/v2/reports/work_order_custom_fields.json',
+    filter: { property_visibility: 'active' },
+    table: 'maintenance_custom_fields',
+    map: r => ({
+      work_order_number:         mwoStr(mwoPick(r, ['work_order_number', 'work_order_#', 'work_order'])),
+      work_order_id:             mwoStr(mwoPick(r, ['work_order_id'])),
+      service_request_id:        mwoStr(mwoPick(r, ['service_request_id'])),
+      code_violation:            mwoPick(r, ['code_violation']),
+      estimated_completion_time: mwoPick(r, ['estimated_completion_time', 'est_completion_time']),
+      life_safety_issue:         mwoPick(r, ['life_safety_issue', 'life_safety']),
+      parts_needed:              mwoPick(r, ['parts_needed_ordered_tracking', 'parts_needed', 'parts_needed_/_ordered_tracking']),
+    }),
+  },
+  inventory: {
+    report: '/api/v2/reports/inventory_usage.json',
+    filter: { property_visibility: 'active' },
+    table: 'maintenance_inventory',
+    map: r => ({
+      item_name:          mwoPick(r, ['item_name']),
+      work_order_number:  mwoStr(mwoPick(r, ['work_order_number'])),
+      work_order_status:  mwoPick(r, ['work_order_status', 'status']),
+      property:           mwoPick(r, ['property_name', 'property']),
+      unit:               mwoPick(r, ['unit_name', 'unit']),
+      inventory_added_on: leasingDateOnly(mwoPick(r, ['inventory_added_on', 'added_on'])),
+      quantity:           mwoNum(mwoPick(r, ['quantity'])),
+      cost:               mwoNum(mwoPick(r, ['cost'])),
+      sale_price:         mwoNum(mwoPick(r, ['sale_price'])),
+      category:           mwoPick(r, ['category']),
+      inventory_location: mwoPick(r, ['inventory_location', 'location']),
+    }),
+  },
+};
+async function maintSyncSupportReport(res, key) {
+  if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
+  const cfg = MAINT_SUPPORT_REPORTS[key];
+  if (!cfg) return res.status(400).json({ ok: false, error: 'Unknown report ' + key });
+  try {
+    const raw = await appfolioReportsFetch(cfg.report, cfg.filter);
+    const rows = raw.map(cfg.map);
+    const db = supabaseAdmin || supabasePublic;
+    // Snapshot semantics: clear the table, then insert the current set.
+    const { error: delErr } = await db.from(cfg.table).delete().not('id', 'is', null);
+    if (delErr) throw new Error(delErr.message);
+    let synced = 0;
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500);
+      if (!chunk.length) break;
+      const { error } = await db.from(cfg.table).insert(chunk);
+      if (error) throw new Error(error.message);
+      synced += chunk.length;
+    }
+    res.json({ ok: true, synced, timestamp: new Date().toISOString(), rows, sample_keys: raw[0] ? Object.keys(raw[0]) : null });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: `Maintenance ${key} sync failed: ` + err.message });
+  }
+}
+app.post('/api/maintenance/sync/inspections',   requireMetricAccess, (req, res) => maintSyncSupportReport(res, 'inspections'));
+app.post('/api/maintenance/sync/billable',      requireMetricAccess, (req, res) => maintSyncSupportReport(res, 'billable'));
+app.post('/api/maintenance/sync/labor',         requireMetricAccess, (req, res) => maintSyncSupportReport(res, 'labor'));
+app.post('/api/maintenance/sync/custom-fields', requireMetricAccess, (req, res) => maintSyncSupportReport(res, 'custom_fields'));
+app.post('/api/maintenance/sync/inventory',     requireMetricAccess, (req, res) => maintSyncSupportReport(res, 'inventory'));
 
 // GET /api/maintenance/work-orders — all synced work orders (for the Command
 // Center), newest first, plus the latest synced_at.
