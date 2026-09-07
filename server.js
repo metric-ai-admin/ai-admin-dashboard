@@ -3678,7 +3678,7 @@ const LEASING_STATUSES = ['submitted', 'reviewed', 'approved'];
 // date range and syncs; the KPI roll-ups + history read from leasing_leads.
 // =====================================================================
 const APPFOLIO_REPORTS_BASE = 'https://metricpropertymanagement.appfolio.com';
-const APPFOLIO_GUEST_CARD_REPORT = '/api/v2/reports/guest_card_interests.json';
+const APPFOLIO_GUEST_CARD_REPORT = '/api/v2/reports/guest_cards.json';
 
 // Response field -> leasing_leads column. Live key names weren't verifiable here,
 // so each lists the most likely key plus tolerant fallbacks; GET /api/leasing/
