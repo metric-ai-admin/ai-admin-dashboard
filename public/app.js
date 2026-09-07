@@ -3554,6 +3554,12 @@ $('#crm-online-save').addEventListener('click', async () => {
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
     crmState.activeProperty = updated;
     crmRenderOnlineList(updated.online_shops); // also resets the form
+    // Task Queue tasks are derived (crm-task-engine): the 'online' task for this
+    // property drops off once the saved shop count satisfies completion (≥2 online
+    // shops, or 1 shop plus a follow-up). Refresh the queue so it clears
+    // immediately instead of lingering until a page refresh — same pattern as the
+    // DM Review save.
+    crmReloadTaskView();
   } catch (err) { toast(err.message, 'error'); }
 });
 
