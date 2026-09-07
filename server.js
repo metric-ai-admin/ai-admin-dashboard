@@ -3876,6 +3876,9 @@ const APPFOLIO_WO_FIELDS = {
   scheduled_start:        ['scheduled_start'],
   scheduled_end:          ['scheduled_end'],
   created_at_appfolio:    ['created_at'],
+  work_order_id:          ['work_order_id'],       // powers the AppFolio WO link
+  service_request_id:     ['service_request_id'],
+  vendor:                 ['vendor'],
 };
 const mwoPick = (row, cands) => {
   for (const k of cands) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return row[k];
@@ -3904,6 +3907,9 @@ function mwoRowFromReport(r) {
     scheduled_start: leasingDateOnly(mwoPick(r, F.scheduled_start)),
     scheduled_end: leasingDateOnly(mwoPick(r, F.scheduled_end)),
     created_at_appfolio: (created && !isNaN(created.getTime())) ? created.toISOString() : null,
+    work_order_id: (() => { const v = mwoPick(r, F.work_order_id); return v == null ? null : String(v); })(),
+    service_request_id: (() => { const v = mwoPick(r, F.service_request_id); return v == null ? null : String(v); })(),
+    vendor: mwoPick(r, F.vendor),
     synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

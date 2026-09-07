@@ -279,18 +279,21 @@ async function ccLoadFile(file) {
    so Generate today's tasks runs identically to the Excel upload. Only the wo
    slot is populated — the other tabs (labor, inspections, inventory, …) still
    come from the Master Data File if their tasks are wanted. */
-const CC_SYNC_HEADERS = ['Work Order Number', 'Property', 'Unit', 'Status', 'Priority', 'Work Order Type',
-  'Assigned User', 'Work Order Issue', 'Job Description', 'Created At', 'Primary Resident',
-  'Primary Resident Phone', 'Scheduled Start', 'Scheduled End'];
+const CC_SYNC_HEADERS = ['Work Order Number', 'Work Order ID', 'Service Request ID', 'Property', 'Unit',
+  'Status', 'Priority', 'Work Order Type', 'Assigned User', 'Vendor', 'Work Order Issue', 'Job Description',
+  'Created At', 'Primary Resident', 'Primary Resident Phone', 'Scheduled Start', 'Scheduled End'];
 function ccWoRowFromSynced(w) {
   return {
     'Work Order Number': w.work_order_number || '',
+    'Work Order ID': w.work_order_id || '',           // → woId, builds the AppFolio link
+    'Service Request ID': w.service_request_id || '', // → srId
     'Property': w.property_name || w.property || '',
     'Unit': w.unit || '',
     'Status': w.status || '',
     'Priority': w.priority || '',
     'Work Order Type': w.work_order_type || '',
     'Assigned User': w.assigned_user || '',
+    'Vendor': w.vendor || '',                         // vendor-assigned WOs have no Assigned User
     'Work Order Issue': w.issue || '',
     'Job Description': w.description || w.issue || '',
     'Created At': w.created_at_appfolio || '',
