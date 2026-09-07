@@ -50,7 +50,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
-const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, analyzeWorkOrders } = require('./metric-routes.js');
+const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
 const teams = require('./teams-transcripts.js');
@@ -3947,38 +3947,6 @@ app.get('/api/maintenance/work-orders', requireMetricAccess, async (req, res) =>
     if (error) throw new Error(error.message);
     const last = (data || []).reduce((m, r) => (r.synced_at && r.synced_at > m ? r.synced_at : m), '');
     res.json({ work_orders: data || [], last_synced: last || null });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// GET /api/maintenance/command-center — runs the SAME work-order analysis the CSV
-// analyzer uses (analyzeWorkOrders) over the synced rows, returning the shape the
-// Command Center already renders ({ groups, totalWorkOrders, analyzedAt }).
-app.get('/api/maintenance/command-center', requireMetricAccess, async (req, res) => {
-  const empty = { totalWorkOrders: 0, groups: { urgent: [], followup: [], ready: [], none: [] }, analyzedAt: null, last_synced: null };
-  if (!CRM_CONFIGURED) return res.json(empty);
-  try {
-    const db = supabaseAdmin || supabasePublic;
-    const { data, error } = await db.from('maintenance_work_orders')
-      .select('*').order('created_at_appfolio', { ascending: false }).limit(10000);
-    if (error) throw new Error(error.message);
-    const wos = data || [];
-    if (!wos.length) return res.json(empty);
-    // Rebuild the analyzer's array-of-arrays input with headers its buildHeaderMap
-    // recognises (work order / property / unit / status / assignee / description /
-    // created). Extra columns ride along in the per-card `fields` table.
-    const header = ['Work Order Number', 'Property Name', 'Unit', 'Status', 'Assigned User', 'Job Description',
-      'Created At', 'Priority', 'Work Order Type', 'Primary Resident', 'Primary Resident Phone', 'Scheduled Start', 'Scheduled End'];
-    const rows = [header, ...wos.map(w => [
-      w.work_order_number || '', w.property_name || w.property || '', w.unit || '', w.status || '',
-      w.assigned_user || '', w.description || w.issue || '', w.created_at_appfolio || '', w.priority || '',
-      w.work_order_type || '', w.primary_resident || '', w.primary_resident_phone || '',
-      w.scheduled_start || '', w.scheduled_end || '',
-    ].map(v => v == null ? '' : String(v)))];
-    const analysis = analyzeWorkOrders(rows);
-    const groups = { urgent: [], followup: [], ready: [], none: [] };
-    for (const a of analysis.actions) (groups[a.topTier] || groups.none).push(a);
-    const last = wos.reduce((m, r) => (r.synced_at && r.synced_at > m ? r.synced_at : m), '');
-    res.json({ analyzedAt: last || new Date().toISOString(), last_synced: last || null, sourceType: 'appfolio_sync', totalWorkOrders: analysis.count, headers: analysis.headers, groups });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

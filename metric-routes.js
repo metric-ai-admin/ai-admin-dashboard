@@ -1067,4 +1067,4 @@ function registerMetricRoutes(app, db) {
 // email routes that serve Lyndsay's mailbox. They need session-or-key for the
 // same reason /api/operational does: the MCP tools read them over HTTP with no
 // cookie, sending x-metric-key instead.
-module.exports = { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, analyzeWorkOrders };
+module.exports = { registerMetricRoutes, requireMetricAccess, requireMetricAdmin };

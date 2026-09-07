@@ -273,6 +273,63 @@ async function ccLoadFile(file) {
   }
 }
 
+/* ---------------- AppFolio direct sync ---------------- */
+/* Pulls fresh work orders into maintenance_work_orders, then feeds them into the
+   'All Work Orders' slot in the exact shape ccIngest expects (header-keyed rows),
+   so Generate today's tasks runs identically to the Excel upload. Only the wo
+   slot is populated — the other tabs (labor, inspections, inventory, …) still
+   come from the Master Data File if their tasks are wanted. */
+const CC_SYNC_HEADERS = ['Work Order Number', 'Property', 'Unit', 'Status', 'Priority', 'Work Order Type',
+  'Assigned User', 'Work Order Issue', 'Job Description', 'Created At', 'Primary Resident',
+  'Primary Resident Phone', 'Scheduled Start', 'Scheduled End'];
+function ccWoRowFromSynced(w) {
+  return {
+    'Work Order Number': w.work_order_number || '',
+    'Property': w.property_name || w.property || '',
+    'Unit': w.unit || '',
+    'Status': w.status || '',
+    'Priority': w.priority || '',
+    'Work Order Type': w.work_order_type || '',
+    'Assigned User': w.assigned_user || '',
+    'Work Order Issue': w.issue || '',
+    'Job Description': w.description || w.issue || '',
+    'Created At': w.created_at_appfolio || '',
+    'Primary Resident': w.primary_resident || '',
+    'Primary Resident Phone': w.primary_resident_phone || '',
+    'Scheduled Start': w.scheduled_start || '',
+    'Scheduled End': w.scheduled_end || '',
+  };
+}
+async function ccSyncFromAppFolio() {
+  const btn = $('#cc-sync'), status = $('#cc-sync-status'), st = $('#cc-status');
+  if (!btn) return;
+  const label = btn.textContent; btn.disabled = true; btn.textContent = '⏳ Syncing…';
+  if (status) status.textContent = 'Pulling work orders from AppFolio…';
+  try {
+    await api('/api/maintenance/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await api('/api/maintenance/work-orders');
+    const wos = data.work_orders || [];
+    if (!wos.length) {
+      if (status) status.textContent = 'Synced, but AppFolio returned no work orders.';
+      toast('Synced — no work orders returned', 'error');
+      return;
+    }
+    const rows = wos.map(ccWoRowFromSynced);
+    ccIngest(CC_SYNC_HEADERS, rows, 'wo'); // routes to the All Work Orders slot
+    ccRenderSlots();
+    const when = data.last_synced ? new Date(data.last_synced).toLocaleString() : new Date().toLocaleString();
+    if (status) status.textContent = `Last synced: ${when} · ${wos.length} work orders`;
+    if (st) st.innerHTML = `<b>✓ Synced from AppFolio:</b> ${wos.length} work orders → All Work Orders`;
+    toast(`Synced ${wos.length} work orders ✅`, 'success');
+    ccGenerate(); // same "Generate today's tasks" logic as the Excel upload
+  } catch (err) {
+    if (status) status.textContent = '❌ ' + err.message;
+    toast('Sync failed: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+
 /* Which tabs are in hand, so a missing one is visible before Generate rather
    than as a silently thinner task list afterwards. */
 const CC_SLOTS = [
@@ -991,6 +1048,7 @@ function ccInit() {
     drop.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) ccLoadFile(f); });
   }
   $('#cc-generate')?.addEventListener('click', ccGenerate);
+  $('#cc-sync')?.addEventListener('click', ccSyncFromAppFolio);
   $('#cc-clear')?.addEventListener('click', () => {
     for (const k in ccReports) delete ccReports[k];
     CC_TASKS = [];
