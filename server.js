@@ -3856,26 +3856,26 @@ const APPFOLIO_WORK_ORDER_FILTER = {
   work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
   property_visibility: 'active',
 };
-// Response field -> column. Live keys weren't verifiable here (custom report), so
-// each lists the most likely key plus tolerant fallbacks; GET /api/maintenance/
-// sync/raw dumps the real keys so this can be locked after the first sync.
+// Response field -> column, locked to the live work_order.json keys (verified
+// against a real response). `issue` prefers work_order_issue and falls back to
+// job_description; everything else is an exact key.
 const APPFOLIO_WO_FIELDS = {
-  work_order_number:      ['work_order_number', 'number', 'wo_number'],
+  work_order_number:      ['work_order_number'],
   property:               ['property'],
   property_name:          ['property_name'],
   property_id:            ['property_id'],
-  unit:                   ['unit', 'unit_name'],
-  issue:                  ['work_order_issue', 'issue', 'title'],
-  description:            ['job_description', 'description'],
-  status:                 ['status', 'work_order_status'],
+  unit:                   ['unit_name'],
+  issue:                  ['work_order_issue', 'job_description'],
+  description:            ['job_description'],
+  status:                 ['status'],
   priority:               ['priority'],
-  work_order_type:        ['work_order_type', 'type'],
-  assigned_user:          ['assigned_user', 'assigned_to'],
-  primary_resident:       ['primary_resident', 'resident'],
-  primary_resident_phone: ['primary_resident_phone_number', 'primary_resident_phone', 'resident_phone'],
+  work_order_type:        ['work_order_type'],
+  assigned_user:          ['assigned_user'],
+  primary_resident:       ['primary_tenant'],
+  primary_resident_phone: ['primary_tenant_phone_number'],
   scheduled_start:        ['scheduled_start'],
   scheduled_end:          ['scheduled_end'],
-  created_at_appfolio:    ['created_at', 'created', 'created_on'],
+  created_at_appfolio:    ['created_at'],
 };
 const mwoPick = (row, cands) => {
   for (const k of cands) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return row[k];
@@ -3900,7 +3900,7 @@ function mwoRowFromReport(r) {
     work_order_type: mwoPick(r, F.work_order_type),
     assigned_user: mwoPick(r, F.assigned_user),
     primary_resident: mwoPick(r, F.primary_resident),
-    primary_resident_phone: (() => { const v = mwoPick(r, F.primary_resident_phone); return v == null ? null : String(v); })(),
+    primary_resident_phone: (() => { const v = mwoPick(r, F.primary_resident_phone); return v == null ? null : String(v).replace(/^\s*phone:\s*/i, '').trim(); })(),
     scheduled_start: leasingDateOnly(mwoPick(r, F.scheduled_start)),
     scheduled_end: leasingDateOnly(mwoPick(r, F.scheduled_end)),
     created_at_appfolio: (created && !isNaN(created.getTime())) ? created.toISOString() : null,
@@ -3980,18 +3980,6 @@ app.get('/api/maintenance/command-center', requireMetricAccess, async (req, res)
     const last = wos.reduce((m, r) => (r.synced_at && r.synced_at > m ? r.synced_at : m), '');
     res.json({ analyzedAt: last || new Date().toISOString(), last_synced: last || null, sourceType: 'appfolio_sync', totalWorkOrders: analysis.count, headers: analysis.headers, groups });
   } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// Debug: raw first row (unmapped) to confirm live field keys. Admin-gated;
-// remove once the mapping is verified.
-app.get('/api/maintenance/sync/raw', requireMetricAdmin, async (req, res) => {
-  try {
-    const raw = await appfolioReportsFetch(APPFOLIO_WORK_ORDER_REPORT, APPFOLIO_WORK_ORDER_FILTER);
-    const first = raw[0] || null;
-    res.json({ ok: true, count: raw.length, first_row_keys: first ? Object.keys(first) : null, first_row: first });
-  } catch (err) {
-    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: err.message });
-  }
 });
 
 // List all submissions, newest first.
