@@ -3680,26 +3680,31 @@ const LEASING_STATUSES = ['submitted', 'reviewed', 'approved'];
 const APPFOLIO_REPORTS_BASE = 'https://metricpropertymanagement.appfolio.com';
 const APPFOLIO_GUEST_CARD_REPORT = '/api/v2/reports/guest_cards.json';
 
-// Response field -> leasing_leads column. Live key names weren't verifiable here,
-// so each lists the most likely key plus tolerant fallbacks; GET /api/leasing/
-// sync/raw dumps the real keys so this can be corrected after the first sync.
+// Response field -> leasing_leads column, locked to the live guest_cards.json
+// keys (verified against a real response).
 const APPFOLIO_LEASING_FIELDS = {
-  name:               ['name', 'guest_card_name', 'prospect_name'],
-  email:              ['email', 'email_address'],
-  phone:              ['phone', 'phone_number'],
-  interest_received:  ['interest_received', 'received_on', 'interest_received_at'],
-  last_activity_date: ['last_activity_date', 'last_activity'],
-  last_activity_type: ['last_activity_type'],
-  move_in_preference: ['move_in_preference', 'move_in', 'desired_move_in'],
-  lisa_lead:          ['lisa_lead', 'lisa'],
-  source:             ['source', 'lead_source'],
-  property:           ['property', 'property_name'],
-  assigned_user:      ['assigned_user', 'assigned_to', 'agent'],
-  notes:              ['notes', 'note'],
+  name:               'name',
+  email:              'email_address',
+  phone:              'phone_number',
+  interest_received:  'received',            // ISO timestamp
+  last_activity_date: 'last_activity_date',
+  last_activity_type: 'last_activity_type',
+  move_in_preference: 'move_in_preference',
+  lisa_lead:          'lisa_lead',           // "Yes"/"No"
+  source:             'source',
+  property:           'property_name',       // cleaner than `property` (has address)
+  assigned_user:      'assigned_user',
+  notes:              'notes',
+  guest_card_id:      'guest_card_id',       // integer
+  guest_card_uuid:    'guest_card_uuid',     // stable UUID → appfolio_id
+  status:             'status',
+  lead_type:          'lead_type',
+  property_id:        'property_id',
 };
-const leasingPick = (row, cands) => {
-  for (const k of cands) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return row[k];
-  return null;
+// Read one field, normalized: null when missing/blank.
+const leasingVal = (row, key) => {
+  const v = row[key];
+  return (v === undefined || v === null || String(v).trim() === '') ? null : v;
 };
 
 // Saturday (Sun–Sat week) that a date falls in, as YYYY-MM-DD. Katie's week.
@@ -3739,26 +3744,37 @@ async function appfolioReportsFetch(reportPath, body) {
 
 // Map one raw report row to a leasing_leads record (or null to skip).
 function leasingRowFromReport(r) {
-  const name = leasingPick(r, APPFOLIO_LEASING_FIELDS.name);
-  if (!name) return null;
-  const phone = leasingPick(r, APPFOLIO_LEASING_FIELDS.phone);
-  const interestRaw = leasingPick(r, APPFOLIO_LEASING_FIELDS.interest_received);
+  const F = APPFOLIO_LEASING_FIELDS;
+  const uuid = leasingVal(r, F.guest_card_uuid);
+  const name = leasingVal(r, F.name);
+  if (!uuid && !name) return null; // nothing to key on
+  const phone = leasingVal(r, F.phone);
+  const interestRaw = leasingVal(r, F.interest_received);
   const interestDate = interestRaw ? new Date(interestRaw) : null;
   const interestIso = (interestDate && !isNaN(interestDate.getTime())) ? interestDate.toISOString() : null;
+  const gcId = leasingVal(r, F.guest_card_id);
+  const propId = leasingVal(r, F.property_id);
   return {
-    appfolio_id: [String(name).trim(), String(phone || '').trim(), interestIso || String(interestRaw || '')].join('|'),
-    name: String(name).trim(),
-    email: leasingPick(r, APPFOLIO_LEASING_FIELDS.email),
+    // Stable per-guest-card UUID is the identity; composite is only a fallback
+    // for the unlikely row without a uuid.
+    appfolio_id: uuid || [String(name || '').trim(), String(phone || '').trim(), interestIso || String(interestRaw || '')].join('|'),
+    name: name ? String(name).trim() : null,
+    email: leasingVal(r, F.email),
     phone: phone ? String(phone).trim() : null,
     interest_received: interestIso,
-    last_activity_date: leasingDateOnly(leasingPick(r, APPFOLIO_LEASING_FIELDS.last_activity_date)),
-    last_activity_type: leasingPick(r, APPFOLIO_LEASING_FIELDS.last_activity_type),
-    move_in_preference: leasingDateOnly(leasingPick(r, APPFOLIO_LEASING_FIELDS.move_in_preference)),
-    lisa_lead: leasingTruthy(leasingPick(r, APPFOLIO_LEASING_FIELDS.lisa_lead)),
-    source: leasingPick(r, APPFOLIO_LEASING_FIELDS.source),
-    property: leasingPick(r, APPFOLIO_LEASING_FIELDS.property),
-    assigned_user: leasingPick(r, APPFOLIO_LEASING_FIELDS.assigned_user),
-    notes: leasingPick(r, APPFOLIO_LEASING_FIELDS.notes),
+    last_activity_date: leasingDateOnly(leasingVal(r, F.last_activity_date)),
+    last_activity_type: leasingVal(r, F.last_activity_type),
+    move_in_preference: leasingDateOnly(leasingVal(r, F.move_in_preference)),
+    lisa_lead: leasingTruthy(leasingVal(r, F.lisa_lead)),
+    source: leasingVal(r, F.source),
+    property: leasingVal(r, F.property),
+    assigned_user: leasingVal(r, F.assigned_user),
+    notes: leasingVal(r, F.notes),
+    guest_card_id: gcId != null ? parseInt(gcId, 10) || null : null,
+    guest_card_uuid: uuid,
+    status: leasingVal(r, F.status),
+    lead_type: leasingVal(r, F.lead_type),
+    property_id: propId != null ? String(propId) : null,
     week_ending: interestIso ? leasingWeekEnding(interestDate) : null,
     synced_at: new Date().toISOString(),
   };
@@ -3791,20 +3807,6 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
     res.json({ ok: true, synced, date_from, date_to });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Leasing sync failed: ' + err.message });
-  }
-});
-
-// Debug: raw first row (unmapped) to confirm the live field keys. Admin-gated;
-// remove once the mapping is verified.
-app.get('/api/leasing/sync/raw', requireMetricAdmin, async (req, res) => {
-  try {
-    const to = req.query.date_to || new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
-    const from = req.query.date_from || to;
-    const raw = await appfolioReportsFetch(APPFOLIO_GUEST_CARD_REPORT, { received_on_from: from, received_on_to: to, property_visibility: 'active' });
-    const first = raw[0] || null;
-    res.json({ ok: true, count: raw.length, first_row_keys: first ? Object.keys(first) : null, first_row: first });
-  } catch (err) {
-    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: err.message });
   }
 });
 
