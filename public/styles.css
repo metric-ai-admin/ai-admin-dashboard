@@ -71,8 +71,9 @@ code, .mono { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; position: sticky; top: 0;
   /* align-self:flex-start stops the flex row from stretching the sidebar to the
-     full page height (which overrode height:100vh and killed the nav's scroll). */
-  align-self: flex-start; height: 100vh; max-height: 100vh; overflow: hidden;
+     full page height (which overrode height:100vh and killed the nav's scroll).
+     No overflow:hidden here — the .sidebar-nav scrolls internally. */
+  align-self: flex-start; height: 100vh;
 }
 .sidebar-header {
   padding: 20px 16px 16px;
@@ -155,7 +156,10 @@ code, .mono { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
 }
 
 /* ---------- Maintenance sub-nav ---------- */
-.subnav-group { display: contents; }
+/* A real flex column, not display:contents — with display:contents the expanded
+   submenu's height is left out of .sidebar-nav's scrollHeight, so the nav can't
+   scroll to reveal it and the items get clipped. */
+.subnav-group { display: flex; flex-direction: column; gap: 2px; }
 .subnav-caret { float: right; font-size: 11px; opacity: 0.55; transition: transform 0.2s; }
 .subnav {
   display: flex; flex-direction: column; gap: 1px;
