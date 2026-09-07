@@ -155,6 +155,15 @@ function roleLabelFor(role) {
 // ---- Tabs -------------------------------------------------------------------
 $$('#tabs button[data-tab]').forEach(btn => {
   btn.addEventListener('click', () => {
+    // Collapsible submenu: clicking a submenu toggle that's already active and
+    // expanded collapses it (works for any .subnav-group, not just Maintenance).
+    const group = btn.closest('.subnav-group');
+    const subnav = group?.querySelector('.subnav');
+    if (subnav && btn.classList.contains('active') && !subnav.classList.contains('hidden')) {
+      subnav.classList.add('hidden');
+      const c = group.querySelector('.subnav-caret'); if (c) c.textContent = '›';
+      return;
+    }
     $$('#tabs button[data-tab]').forEach(b => b.classList.remove('active'));
     $$('.tab').forEach(t => t.classList.remove('active'));
     btn.classList.add('active');
@@ -162,6 +171,23 @@ $$('#tabs button[data-tab]').forEach(btn => {
     loadTab(btn.dataset.tab);
   });
 });
+
+// Floating "back to top": the scroll container is <main> (overflow-y:auto), not
+// the window — watch both to be safe. Appears after 400px, smooth-scrolls up.
+(function backToTop() {
+  const btn = document.getElementById('back-to-top');
+  if (!btn) return;
+  const main = document.querySelector('main');
+  const scrollTop = () => Math.max(main ? main.scrollTop : 0, window.scrollY || 0);
+  const onScroll = () => { btn.hidden = scrollTop() <= 400; };
+  (main || window).addEventListener('scroll', onScroll, { passive: true });
+  window.addEventListener('scroll', onScroll, { passive: true });
+  btn.addEventListener('click', () => {
+    (main || window).scrollTo({ top: 0, behavior: 'smooth' });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+  onScroll();
+})();
 
 function loadTab(tab) {
   if (tab !== 'maintenance') {

@@ -379,6 +379,17 @@ function ccInvRow(r) {
   };
 }
 
+// Audit slot: only wo# + unbilled amount. Header set deliberately excludes
+// 'Billable Type' so ccDetectReport routes it to 'audit' (unbilledamount), not 'bill'.
+const CC_AUDIT_HEADERS = ['Work Order Number', 'Property', 'Unbilled Amount'];
+function ccAuditRow(r) {
+  return {
+    'Work Order Number': r.work_order_number || '',
+    'Property': r.property || '',
+    'Unbilled Amount': r.unbilled_amount == null ? '' : String(r.unbilled_amount), // → unbilled, sets _src.audit
+  };
+}
+
 /* Pull every report in parallel, feed each into its slot, then generate. */
 const CC_SYNC_DEFS = [
   { key: 'wo',    name: 'All Work Orders',     ep: '/api/maintenance/sync',               headers: () => CC_SYNC_HEADERS, row: ccWoRowFromSynced },
@@ -387,6 +398,7 @@ const CC_SYNC_DEFS = [
   { key: 'labor', name: 'Labor Summary',       ep: '/api/maintenance/sync/labor',         headers: () => CC_LABOR_HEADERS, row: ccLaborRow },
   { key: 'cf',    name: 'Custom Fields',       ep: '/api/maintenance/sync/custom-fields', headers: () => CC_CF_HEADERS,    row: ccCfRow },
   { key: 'inv',   name: 'Inventory Usage',     ep: '/api/maintenance/sync/inventory',     headers: () => CC_INV_HEADERS,   row: ccInvRow },
+  { key: 'audit', name: 'Audit: unbilled',     ep: '/api/maintenance/sync/audit',         headers: () => CC_AUDIT_HEADERS, row: ccAuditRow },
 ];
 async function ccSyncFromAppFolio() {
   const btn = $('#cc-sync'), status = $('#cc-sync-status'), st = $('#cc-status');
@@ -400,16 +412,16 @@ async function ccSyncFromAppFolio() {
     ));
     let total = 0; const parts = [], failed = [];
     for (const { d, r, err } of settled) {
-      if (err || !r || !r.ok) { failed.push(d.name); continue; }
+      if (err || !r || !r.ok) { failed.push(`${d.name} (${(err && err.message) || (r && r.error) || 'error'})`); continue; }
       const rows = (r.rows || []).map(d.row);
       if (rows.length) { ccIngest(d.headers(), rows, d.key); total += rows.length; }
       parts.push(`${d.name}: ${rows.length}`);
     }
     ccRenderSlots();
     const when = new Date().toLocaleString();
-    if (status) status.textContent = `Last synced: ${when} · ${total} rows` + (failed.length ? ` · failed: ${failed.join(', ')}` : '');
+    if (status) status.textContent = `Last synced: ${when} · ${total} rows` + (failed.length ? ` · ${failed.length} failed` : '');
     if (st) st.innerHTML = `<b>✓ Synced from AppFolio:</b> ${parts.map(esc).join(' · ')}`
-      + (failed.length ? ` · <span style="color:var(--red)">failed: ${failed.map(esc).join(', ')}</span>` : '');
+      + (failed.length ? `<br><span style="color:var(--red)">failed: ${failed.map(esc).join(' · ')}</span>` : '');
     toast(failed.length ? `Synced with ${failed.length} report failure(s)` : `Synced ${total} rows ✅`, failed.length ? 'error' : 'success');
     ccGenerate(); // same "Generate today's tasks" logic as the Excel upload
   } catch (err) {

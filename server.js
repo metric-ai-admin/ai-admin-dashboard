@@ -4007,7 +4007,9 @@ const MAINT_SUPPORT_REPORTS = {
   },
   custom_fields: {
     report: '/api/v2/reports/work_order_custom_fields.json',
-    filter: { property_visibility: 'active' },
+    // Custom fields hang off work orders; the report needs a work-order status
+    // filter like the main report (property_visibility alone 400s).
+    filter: { work_order_statuses: ['0', '1', '2', '9', '11', '3'], property_visibility: 'active' },
     table: 'maintenance_custom_fields',
     map: r => ({
       work_order_number:         mwoStr(mwoPick(r, ['work_order_number', 'work_order_#', 'work_order'])),
@@ -4037,6 +4039,20 @@ const MAINT_SUPPORT_REPORTS = {
       inventory_location: mwoPick(r, ['inventory_location', 'location']),
     }),
   },
+  // Audit: unbilled — the billable detail limited to Work Done / Ready to Bill
+  // items that still carry an unbilled amount. Merging a WO from here flags the
+  // "Unbilled over 30 days" task; only wo# + unbilled amount are needed.
+  audit: {
+    report: '/api/v2/reports/work_order_billable_detail.json',
+    filter: { work_order_statuses: ['8', '12'], property_visibility: 'active' },
+    table: 'maintenance_audit',
+    map: r => ({
+      work_order_number: mwoStr(mwoPick(r, ['work_order_number'])),
+      property:          mwoPick(r, ['property_name', 'property']),
+      unbilled_amount:   mwoNum(mwoPick(r, ['unbilled_amount', 'unbilled'])),
+    }),
+    postFilter: rec => rec.unbilled_amount != null && rec.unbilled_amount > 0,
+  },
 };
 async function maintSyncSupportReport(res, key) {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
@@ -4044,7 +4060,8 @@ async function maintSyncSupportReport(res, key) {
   if (!cfg) return res.status(400).json({ ok: false, error: 'Unknown report ' + key });
   try {
     const raw = await appfolioReportsFetch(cfg.report, cfg.filter);
-    const rows = raw.map(cfg.map);
+    let rows = raw.map(cfg.map);
+    if (cfg.postFilter) rows = rows.filter(cfg.postFilter);
     const db = supabaseAdmin || supabasePublic;
     // Snapshot semantics: clear the table, then insert the current set.
     const { error: delErr } = await db.from(cfg.table).delete().not('id', 'is', null);
@@ -4059,6 +4076,7 @@ async function maintSyncSupportReport(res, key) {
     }
     res.json({ ok: true, synced, timestamp: new Date().toISOString(), rows, sample_keys: raw[0] ? Object.keys(raw[0]) : null });
   } catch (err) {
+    console.error(`[maintenance sync ${key}]`, err.message);
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: `Maintenance ${key} sync failed: ` + err.message });
   }
 }
@@ -4067,6 +4085,7 @@ app.post('/api/maintenance/sync/billable',      requireMetricAccess, (req, res) 
 app.post('/api/maintenance/sync/labor',         requireMetricAccess, (req, res) => maintSyncSupportReport(res, 'labor'));
 app.post('/api/maintenance/sync/custom-fields', requireMetricAccess, (req, res) => maintSyncSupportReport(res, 'custom_fields'));
 app.post('/api/maintenance/sync/inventory',     requireMetricAccess, (req, res) => maintSyncSupportReport(res, 'inventory'));
+app.post('/api/maintenance/sync/audit',         requireMetricAccess, (req, res) => maintSyncSupportReport(res, 'audit'));
 
 // GET /api/maintenance/work-orders — all synced work orders (for the Command
 // Center), newest first, plus the latest synced_at.
