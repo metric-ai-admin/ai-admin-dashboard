@@ -3415,8 +3415,10 @@ function crmRenderOnlineScorecard() {
   const host = $('#of-scorecard');
   if (!host) return;
   const sc = crmOnlineSC, a = sc.answers, r = sc.ratings, fu = sc.followup, notes = sc.rnotes;
+  // Selected buttons use the DM-review highlight (.crm-grade-btn.active — gold),
+  // since .btn-sm has no styled .primary state.
   const ynBtns = (cid, opts) => `<div class="crm-sc-btns" style="display:flex;gap:6px;flex-wrap:wrap;">${
-    opts.map(([v, l]) => `<button type="button" class="btn-sm ${a[cid] === v ? 'primary' : ''}" data-sc-btn data-crit="${cid}" data-val="${v}">${l}</button>`).join('')}</div>`;
+    opts.map(([v, l]) => `<button type="button" class="crm-grade-btn ${a[cid] === v ? 'active' : ''}" data-sc-btn data-crit="${cid}" data-val="${v}">${l}</button>`).join('')}</div>`;
   host.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin:6px 0;">
       <label class="small" style="font-weight:600;margin:0">Online Response Scorecard</label>
@@ -3431,7 +3433,7 @@ function crmRenderOnlineScorecard() {
                  ${ONLINE_SPEED_OPTIONS.map(([v, l]) => `<option value="${v}" ${crmOnlineEffectiveSpeed(sc) === v ? 'selected' : ''}>${l}</option>`).join('')}
                </select>`
             : c.type === 'scale'
-              ? `<div class="crm-sc-btns" style="display:flex;gap:6px;flex-wrap:wrap;">${[0,1,2,3,4,5].map(n => `<button type="button" class="btn-sm ${r[c.id] === n ? 'primary' : ''}" data-sc-scale data-crit="${c.id}" data-val="${n}">${n === 0 ? 'N/A' : n}</button>`).join('')}</div>`
+              ? `<div class="crm-sc-btns" style="display:flex;gap:6px;flex-wrap:wrap;">${[0,1,2,3,4,5].map(n => `<button type="button" class="crm-grade-btn ${r[c.id] === n ? 'active' : ''}" data-sc-scale data-crit="${c.id}" data-val="${n}">${n === 0 ? 'N/A' : n}</button>`).join('')}</div>`
               : c.type === 'yns'
                 ? ynBtns(c.id, [['yes','Yes'],['somewhat','Somewhat'],['no','No']])
                 : ynBtns(c.id, [['yes','Yes'],['no','No']])}
@@ -3442,7 +3444,7 @@ function crmRenderOnlineScorecard() {
       <label class="small" style="font-weight:600">Follow-Up Persistence (the days after your inquiry)</label>
       <div class="crm-detail-grid" style="margin-top:6px">
         <label class="small">Followed up within 24 hours?
-          <div class="crm-sc-btns" style="display:flex;gap:6px;">${[['yes','Yes'],['no','No']].map(([v,l]) => `<button type="button" class="btn-sm ${fu.within24 === v ? 'primary' : ''}" data-sc-fu="within24" data-val="${v}">${l}</button>`).join('')}</div>
+          <div class="crm-sc-btns" style="display:flex;gap:6px;">${[['yes','Yes'],['no','No']].map(([v,l]) => `<button type="button" class="crm-grade-btn ${fu.within24 === v ? 'active' : ''}" data-sc-fu="within24" data-val="${v}">${l}</button>`).join('')}</div>
         </label>
         <label class="small">Total follow-up attempts (7 days)<input type="number" min="0" class="crm-input" value="${esc(fu.attempts ?? '')}" data-sc-fu-num="attempts"></label>
         <label class="small">Days until their last follow-up<input type="number" min="0" class="crm-input" value="${esc(fu.lastDays ?? '')}" data-sc-fu-num="lastDays"></label>
@@ -3455,19 +3457,48 @@ function crmRenderOnlineScorecard() {
   crmOnlineUpdateScoreDisplay();
 }
 
+const crmMaybeLink = v => {
+  const s = String(v || '').trim();
+  return /^https?:\/\//i.test(s) ? `<a href="${esc(s)}" target="_blank" rel="noopener">${esc(s)}</a>` : esc(s);
+};
+// Read-only detail of a saved scorecard (or a clear message when it predates
+// the scorecard column). scard may arrive as a parsed object or a JSON string.
+function crmOnlineScorecardDetailHtml(scard) {
+  if (!scard || typeof scard !== 'object') return '<p class="small muted" style="margin:0">Scorecard not available for this entry.</p>';
+  const a = scard.answers || {}, r = scard.ratings || {}, fu = scard.followup || {}, rn = scard.rnotes || {};
+  const disp = c => {
+    if (c.type === 'speed') { const o = ONLINE_SPEED_OPTIONS.find(x => x[0] === a.response_time); return o ? o[1] : '—'; }
+    if (c.type === 'scale') { const v = r[c.id]; return v == null ? '—' : (v === 0 ? 'N/A' : String(v)); }
+    const v = a[c.id]; return v ? ({ yes: 'Yes', no: 'No', somewhat: 'Somewhat' }[v] || v) : '—';
+  };
+  const rows = ONLINE_SHOP_CRITERIA.map(c =>
+    `<div class="small" style="display:flex;justify-content:space-between;gap:12px;padding:2px 0;">
+       <span class="muted" style="max-width:70%">${esc(c.label)}${rn[c.id] ? ` <em>— ${esc(rn[c.id])}</em>` : ''}</span>
+       <b>${esc(disp(c))}</b>
+     </div>`).join('');
+  const fuLine = crmOnlineFollowupLogged(scard)
+    ? `<div class="small" style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)"><b>Follow-up:</b> within 24h ${esc(fu.within24 || '—')} · attempts ${esc(fu.attempts ?? '—')} · last-day ${esc(fu.lastDays ?? '—')}${fu.notes ? ` · ${esc(fu.notes)}` : ''}</div>`
+    : '';
+  return rows + fuLine;
+}
 function crmRenderOnlineList(shops) {
   crmResetOnlineForm(); // BUG 2: reset whenever the tab is shown / property changes
   $('#crm-online-list').innerHTML = shops.length ? shops.map(s => {
-    const pct = s.score != null ? s.score : (s.scorecard ? crmOnlineScore(s.scorecard) : null);
+    let scard = s.scorecard;
+    if (typeof scard === 'string') { try { scard = JSON.parse(scard); } catch { scard = null; } } // jsonb may come back as text
+    const pct = s.score != null ? s.score : (scard ? crmOnlineScore(scard) : null);
     return `
-    <div class="crm-entry-card">
-      <div class="crm-entry-card-head">
-        <span class="crm-entry-meta">${fmtDate(s.shop_date)} · ${esc(s.agent_name||'—')}</span>
-        ${pct != null ? `<span class="crm-entry-meta">Score: ${pct}${String(pct).includes('%') ? '' : '%'}</span>` : ''}
+    <details class="crm-entry-card" style="margin-bottom:6px;">
+      <summary style="cursor:pointer;">
+        <span class="crm-entry-meta">${fmtDate(s.shop_date)} · ${esc(s.agent_name || '—')}</span>
+        <span class="crm-entry-meta" style="float:right">${pct != null ? `Score: ${pct}${String(pct).includes('%') ? '' : '%'}` : 'No score'}</span>
+      </summary>
+      <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
+        ${s.platform ? `<div class="small" style="margin-bottom:6px;"><b>Platform / URL:</b> ${crmMaybeLink(s.platform)}</div>` : ''}
+        ${crmOnlineScorecardDetailHtml(scard)}
+        ${parseNotes(s.notes).text ? `<p class="small" style="margin-top:8px;"><b>Notes:</b> ${esc(parseNotes(s.notes).text)}</p>` : ''}
       </div>
-      ${s.platform ? `<div class="small">${esc(s.platform)}</div>` : ''}
-      ${parseNotes(s.notes).text ? `<p class="small" style="margin-top:4px;">${esc(parseNotes(s.notes).text)}</p>` : ''}
-    </div>`; }).join('') : '<p class="muted small">No online shops yet.</p>';
+    </details>`; }).join('') : '<p class="muted small">No online shops yet.</p>';
 }
 
 // Scorecard interactions — delegated once on the container (survives re-renders).
