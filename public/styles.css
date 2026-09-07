@@ -1937,7 +1937,8 @@ tr.ca-sel { background: var(--accent-glow); }
 .crm-completed-range input[type=date] { padding:5px 7px; }
 
 /* Eviction Tracker — floating Exit Full Screen button (above the iframe) */
-#evictions-fullscreen-btn.is-fullscreen {
+#evictions-fullscreen-btn.is-fullscreen,
+#leasing-fullscreen-btn.is-fullscreen {
   position: fixed;
   top: 12px;
   right: 16px;

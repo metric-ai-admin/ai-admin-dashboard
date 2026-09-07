@@ -220,37 +220,22 @@ function wireEvictionsFullscreen() {
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && btn.dataset.fs) exit(); });
 }
 
-// ── Leasing — Weekly Goal Board (Katie) ─────────────────────────────────────
-// Panel A is the submission history (review/approve). Panel B embeds Lyndsay's
-// standalone tool in a same-origin iframe; "Submit to Dashboard" reads the
-// tool's own snapshot()/compute() through contentWindow and POSTs a snapshot.
-const leasingState = { subs: [], wired: false, expandedId: null, detail: {} };
-// Who may change status / add reviewer notes. Only admin today; Lyndsay, Kara
-// and Bekah get their own roles here once those accounts exist.
-const LEASING_REVIEW_ROLES = ['admin'];
-const leasingCanReview = () => LEASING_REVIEW_ROLES.includes(currentUser?.role);
-
-// The week this report covers — the upcoming Sunday (today if today is Sunday).
-function leasingNextSunday() {
-  const d = new Date();
-  d.setDate(d.getDate() + ((7 - d.getDay()) % 7));
-  const m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
-}
+// ── Leasing — AppFolio Leads Sync + Goal Board (Katie) ──────────────────────
+// The Leasing tab syncs Guest Card Interests from AppFolio into leasing_leads and
+// embeds the Weekly Leasing Goal Board tool in an iframe (with a full-screen
+// toggle). The old submission-history / submit-to-dashboard workflow is gone.
+const leasingState = { wired: false };
 
 function loadLeasing() {
-  if (!$('#leasing-history')) return;
+  if (!$('#leasing-sync-btn')) return;
   if (!leasingState.wired) {
-    $('#leasing-refresh')?.addEventListener('click', leasingLoadHistory);
-    $('#leasing-submit')?.addEventListener('click', leasingSubmit);
-    const wk = $('#leasing-week'); if (wk) wk.textContent = leasingNextSunday();
     leasingWireSync();
+    wireLeasingFullscreen();
     leasingState.wired = true;
   }
-  // Lazy-load the tool iframe (its ExcelJS/fonts aren't fetched until needed).
+  // Lazy-load the tool iframe (its fonts/scripts aren't fetched until needed).
   const frame = $('#leasing-frame');
   if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/tools/weekly_leasing_goal_board.html');
-  leasingLoadHistory();
 }
 
 // ── AppFolio Leads Sync (Guest Card Interests) ──────────────────────────────
@@ -347,190 +332,31 @@ async function leasingLoadLeads(params) {
   }
 }
 
-const LEASING_STATUS_BADGE = {
-  submitted: 'badge-blue', reviewed: 'badge-yellow', approved: 'badge-green',
-};
-function leasingStatusBadge(st) {
-  return `<span class="badge ${LEASING_STATUS_BADGE[st] || 'badge-gray'}">${esc(st || 'submitted')}</span>`;
-}
 
-async function leasingLoadHistory() {
-  const el = $('#leasing-history');
-  if (!el) return;
-  el.innerHTML = '<p class="small muted">Loading…</p>';
-  try {
-    const d = await api('/api/leasing/submissions');
-    leasingState.subs = d.submissions || [];
-    leasingRenderHistory();
-  } catch (err) {
-    el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
-  }
-}
-
-function leasingKpiCell(k) {
-  if (!k) return '<span class="muted small">—</span>';
-  const bits = [];
-  if (k.occupancy_pct != null) bits.push(`${k.occupancy_pct}% occ`);
-  if (k.traffic_target != null) bits.push(`${k.traffic_target} traffic`);
-  if (k.net_moveins_needed != null) bits.push(`${k.net_moveins_needed} net`);
-  return bits.length ? `<span class="small">${esc(bits.join(' · '))}</span>` : '<span class="muted small">—</span>';
-}
-
-function leasingRenderHistory() {
-  const el = $('#leasing-history');
-  if (!el) return;
-  if (!leasingState.subs.length) {
-    el.innerHTML = '<div class="empty-state">No submissions yet.</div>';
-    return;
-  }
-  const canReview = leasingCanReview();
-  el.innerHTML = `<div style="overflow-x:auto"><table class="crm-table">
-    <thead><tr><th>Week Ending</th><th>Submitted By</th><th>Submitted At</th><th>Status</th><th>KPI snapshot</th><th></th></tr></thead>
-    <tbody>${leasingState.subs.map(s => {
-      const expanded = leasingState.expandedId === s.id;
-      const statusCell = canReview
-        ? `<select class="crm-select leasing-status" data-id="${esc(s.id)}">
-             ${['submitted', 'reviewed', 'approved'].map(v =>
-               `<option value="${v}"${v === s.status ? ' selected' : ''}>${v}</option>`).join('')}
-           </select>`
-        : leasingStatusBadge(s.status);
-      return `<tr class="leasing-row${expanded ? ' expanded' : ''}" data-id="${esc(s.id)}">
-        <td class="mono small">${esc(s.week_ending || '')}</td>
-        <td>${esc(s.submitted_by || '')}</td>
-        <td class="small muted">${s.submitted_at ? new Date(s.submitted_at).toLocaleString() : ''}</td>
-        <td>${statusCell}</td>
-        <td>${leasingKpiCell(s.kpi_json)}</td>
-        <td><button class="btn-sm leasing-expand" data-id="${esc(s.id)}">${expanded ? 'Hide' : 'View'}</button></td>
-      </tr>${expanded ? `<tr class="leasing-detail-row"><td colspan="6"><div class="leasing-detail" id="leasing-detail-${esc(s.id)}"><p class="small muted">Loading…</p></div></td></tr>` : ''}`;
-    }).join('')}</tbody></table></div>`;
-
-  el.querySelectorAll('.leasing-expand').forEach(b =>
-    b.addEventListener('click', () => leasingToggle(b.dataset.id)));
-  el.querySelectorAll('.leasing-status').forEach(sel =>
-    sel.addEventListener('change', () => leasingSetStatus(sel.dataset.id, sel.value)));
-
-  if (leasingState.expandedId) leasingRenderDetail(leasingState.expandedId);
-}
-
-async function leasingToggle(id) {
-  leasingState.expandedId = leasingState.expandedId === id ? null : id;
-  leasingRenderHistory();
-  if (leasingState.expandedId === id && !leasingState.detail[id]) {
-    try {
-      const d = await api(`/api/leasing/submissions/${encodeURIComponent(id)}`);
-      leasingState.detail[id] = d.submission;
-    } catch (err) {
-      leasingState.detail[id] = { error: err.message };
-    }
-    leasingRenderDetail(id);
-  }
-}
-
-function leasingRenderDetail(id) {
-  const box = $(`#leasing-detail-${CSS.escape(id)}`);
-  if (!box) return;
-  const s = leasingState.detail[id];
-  if (!s) { box.innerHTML = '<p class="small muted">Loading…</p>'; return; }
-  if (s.error) { box.innerHTML = `<p class="small muted">Could not load: ${esc(s.error)}</p>`; return; }
-
-  const k = s.kpi_json || {};
-  const props = Array.isArray(k.properties) ? k.properties : [];
-  const rollup = props.length ? `<div style="overflow-x:auto"><table class="crm-table">
-      <thead><tr><th>Property</th><th>Units</th><th>Occupied</th><th>Occ %</th><th>Net Move-Ins</th><th>Traffic Target</th><th>Tours</th><th>Apps</th></tr></thead>
-      <tbody>${props.map(p => `<tr>
-        <td>${esc(p.property || '')}</td>
-        <td>${esc(p.units ?? '')}</td>
-        <td>${esc(p.occupied ?? '')}</td>
-        <td>${p.occ_pct != null ? esc(p.occ_pct) + '%' : ''}</td>
-        <td>${esc(p.net_moveins ?? '')}</td>
-        <td>${esc(p.traffic_target ?? '')}</td>
-        <td>${esc(p.tours ?? '')}</td>
-        <td>${esc(p.apps ?? '')}</td>
-      </tr>`).join('')}</tbody></table></div>`
-    : '<p class="small muted">No per-property KPI snapshot stored for this submission.</p>';
-
-  const portfolio = (k.occupied != null || k.traffic_target != null) ? `
-    <div class="leasing-kpis">
-      ${k.occupancy_pct != null ? `<div class="leasing-kpi"><span class="lab">Occupancy</span><b>${esc(k.occupancy_pct)}%</b><span class="muted small">${esc(k.occupied ?? '')}/${esc(k.units ?? '')}</span></div>` : ''}
-      ${k.net_moveins_needed != null ? `<div class="leasing-kpi"><span class="lab">Net Move-Ins Needed</span><b>${esc(k.net_moveins_needed)}</b></div>` : ''}
-      ${k.traffic_target != null ? `<div class="leasing-kpi"><span class="lab">Traffic Target</span><b>${esc(k.traffic_target)}</b></div>` : ''}
-      ${k.additional_traffic != null ? `<div class="leasing-kpi"><span class="lab">Additional Traffic</span><b>${esc(k.additional_traffic)}</b></div>` : ''}
-    </div>` : '';
-
-  const canReview = leasingCanReview();
-  const notes = canReview
-    ? `<div class="leasing-notes">
-         <label class="small muted">Reviewer notes</label>
-         <textarea id="leasing-notes-${esc(id)}" rows="3" class="crm-input" placeholder="Notes for Katie / the team…">${esc(s.notes || '')}</textarea>
-         <button class="btn-sm primary" id="leasing-save-notes-${esc(id)}">Save notes</button>
-       </div>`
-    : (s.notes ? `<div class="leasing-notes"><label class="small muted">Reviewer notes</label><div class="report-group">${esc(s.notes)}</div></div>` : '');
-
-  box.innerHTML = `
-    ${portfolio}
-    ${s.narrative ? `<div class="leasing-narrative"><label class="small muted">Narrative</label><div class="report-group">${esc(s.narrative)}</div></div>` : ''}
-    <div class="leasing-sub-title">Per-property roll-up</div>
-    ${rollup}
-    ${notes}`;
-
-  if (canReview) {
-    $(`#leasing-save-notes-${CSS.escape(id)}`)?.addEventListener('click', () => {
-      const val = $(`#leasing-notes-${CSS.escape(id)}`)?.value || '';
-      leasingSaveNotes(id, val);
-    });
-  }
-}
-
-async function leasingSetStatus(id, status) {
-  try {
-    await api(`/api/leasing/submissions/${encodeURIComponent(id)}`,
-      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
-    const row = leasingState.subs.find(x => x.id === id); if (row) row.status = status;
-    toast('Status updated', 'success');
-  } catch (err) { toast(err.message, 'error'); leasingLoadHistory(); }
-}
-
-async function leasingSaveNotes(id, notes) {
-  try {
-    await api(`/api/leasing/submissions/${encodeURIComponent(id)}`,
-      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notes }) });
-    if (leasingState.detail[id]) leasingState.detail[id].notes = notes;
-    toast('Notes saved', 'success');
-  } catch (err) { toast(err.message, 'error'); }
-}
-
-// Read the tool's live state through the same-origin iframe (its getLeasingPayload
-// bridge) and POST a snapshot for the current week.
-async function leasingSubmit() {
+// Full-screen toggle for the Leasing Goal Board iframe — same pattern as the
+// Eviction Tracker. Expands the frame to fill the viewport; a floating
+// "← Back to Dashboard" button (and Escape) collapses it back.
+let leasingFsWired = false;
+function wireLeasingFullscreen() {
+  if (leasingFsWired) return;
+  const btn = $('#leasing-fullscreen-btn');
   const frame = $('#leasing-frame');
-  const win = frame?.contentWindow;
-  if (!win || typeof win.getLeasingPayload !== 'function') {
-    toast('The board is still loading — give it a moment and try again.', 'error');
-    return;
-  }
-  const btn = $('#leasing-submit');
-  const original = btn?.textContent;
-  if (btn) { btn.disabled = true; btn.textContent = 'Submitting…'; }
-  try {
-    const captured = win.getLeasingPayload();
-    const payload = {
-      week_ending: leasingNextSunday(),
-      submitted_by: currentUser?.name || 'Katie',
-      narrative: captured.narrative || '',
-      goals_json: captured.goals_json || null,
-      data_json: captured.data_json || null,
-      kpi_json: captured.kpi_json || null,
-    };
-    await api('/api/leasing/submissions',
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    toast('Weekly report submitted ✅', 'success');
-    leasingState.detail = {};
-    leasingLoadHistory();
-  } catch (err) {
-    toast('Submit failed: ' + err.message, 'error');
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = original; }
-  }
+  if (!btn || !frame) return;
+  leasingFsWired = true;
+  const enter = () => {
+    frame.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:9999;border:0;border-radius:0;background:#fff';
+    btn.textContent = '← Back to Dashboard';
+    btn.classList.add('is-fullscreen');
+    btn.dataset.fs = '1';
+  };
+  const exit = () => {
+    frame.style.cssText = 'width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff';
+    btn.textContent = '⛶ Full Screen';
+    btn.classList.remove('is-fullscreen');
+    delete btn.dataset.fs;
+  };
+  btn.addEventListener('click', () => { btn.dataset.fs ? exit() : enter(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && btn.dataset.fs) exit(); });
 }
 
 // ── Accounting / Billing (Claudia) ─────────────────────────────────────────
