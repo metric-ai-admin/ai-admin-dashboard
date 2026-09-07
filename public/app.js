@@ -3541,24 +3541,36 @@ $('#crm-online-save').addEventListener('click', async () => {
   if (!p) return;
   const agent = crmResolveAgent($('#of-agent').value);
   if (!agent) return;
+  const sc = crmOnlineSC || { answers: {}, ratings: {}, followup: { channels: {} }, rnotes: {} };
+  // Only persist a scorecard when the agent actually filled one. A notes-only
+  // shop stores no scorecard (null), so the save never depends on the scorecard
+  // column — a valid online shop still lands and increments the count that the
+  // task engine uses to complete the online task.
+  const scorecardFilled = Object.keys(sc.answers).length || Object.keys(sc.ratings).length
+    || crmOnlineFollowupLogged(sc) || Object.values(sc.rnotes).some(Boolean);
   const body = {
     shop_date: $('#of-date').value || new Date().toISOString().slice(0, 10),
     agent_name: agent,
     platform: $('#of-platform').value,
-    score: crmOnlineScore(crmOnlineSC),
+    score: scorecardFilled ? crmOnlineScore(sc) : null,
     notes: $('#of-notes').value,
-    scorecard: crmOnlineSC,
   };
+  if (scorecardFilled) body.scorecard = sc;
+  const prevCount = (p.online_shops || []).length;
   try {
     await crmFetch(`/api/crm/properties/${p.id}/online-shops`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    // Re-fetch the full property so online_shops (and its count) is authoritative.
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
     crmState.activeProperty = updated;
     crmRenderOnlineList(updated.online_shops); // also resets the form
-    // Task Queue tasks are derived (crm-task-engine): the 'online' task for this
-    // property drops off once the saved shop count satisfies completion (≥2 online
-    // shops, or 1 shop plus a follow-up). Refresh the queue so it clears
-    // immediately instead of lingering until a page refresh — same pattern as the
-    // DM Review save.
+    if ((updated.online_shops || []).length <= prevCount) {
+      // The POST returned OK but the row didn't land — surface it instead of
+      // leaving the task silently stuck.
+      toast('Saved, but the entry did not appear in the database — please retry.', 'error');
+    }
+    // Task Queue tasks are derived server-side (crm-task-engine): the 'online'
+    // task drops off once the shop count satisfies completion (≥2 online shops,
+    // or 1 shop plus a follow-up). Refresh so it clears immediately.
     crmReloadTaskView();
   } catch (err) { toast(err.message, 'error'); }
 });
