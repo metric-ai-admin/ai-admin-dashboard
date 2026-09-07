@@ -3517,17 +3517,168 @@ $('#crm-phone-save').addEventListener('click', async () => {
 });
 
 // ── Online shop tab ───────────────────────────────────────────────────────────
+// Online Response Scorecard — ported verbatim (criteria, weights, speed options)
+// from the original standalone BD CRM tool so the auto-calculated score matches.
+const ONLINE_SPEED_OPTIONS = [
+  ['instant', 'Instant', 5], ['1hr', 'Within 1 hour', 4], ['same_day', 'Same business day', 3],
+  ['next_day', 'Next business day', 2], ['2plus', '2+ business days', 1],
+  ['5plus', '5+ business days', 0.5], ['never', 'Never', 0],
+];
+const ONLINE_SHOP_CRITERIA = [
+  { id: 'google_direct', type: 'yns', label: 'Google the property — does its page come up direct to the property on the 1st page of Google?', help: 'Somewhat = a result came up, but it went to the management company instead of the property.' },
+  { id: 'form_ease', type: 'yn', label: 'Inquiry easy to submit (short form / working chat)' },
+  { id: 'auto_ack', type: 'yn', label: 'Immediate auto-acknowledgement received' },
+  { id: 'response_received', type: 'yn', label: 'Human response received' },
+  { id: 'response_time', type: 'speed', label: 'Response speed' },
+  { id: 'personalization', type: 'scale', label: 'Response personalized (used your name / details)' },
+  { id: 'cta_tour', type: 'yn', label: 'Invited to tour' },
+];
+let crmOnlineSC = null; // in-progress scorecard for the new-entry form
+
+function crmOnlineFollowupLogged(sc) {
+  const fu = sc.followup || {};
+  return !!(fu.within24 || fu.attempts || fu.lastDays || fu.notes || Object.values(fu.channels || {}).some(Boolean));
+}
+function crmOnlineEffectiveSpeed(sc) {
+  const a = sc.answers || {};
+  if (a.response_time) return a.response_time;
+  const hasOther = Object.entries(a).some(([k, v]) => k !== 'response_time' && v)
+    || Object.values(sc.ratings || {}).some(v => v) || crmOnlineFollowupLogged(sc);
+  if (!hasOther) return '';
+  return crmOnlineFollowupLogged(sc) ? '' : 'never';
+}
+function crmOnlineScore(sc) {
+  const r = sc.ratings || {}, a = sc.answers || {}, fu = sc.followup || {};
+  let score = 0, max = 0;
+  ONLINE_SHOP_CRITERIA.forEach(c => {
+    if (c.type === 'speed') {
+      const opt = ONLINE_SPEED_OPTIONS.find(x => x[0] === crmOnlineEffectiveSpeed(sc));
+      if (opt) { score += opt[2]; max += 5; }
+    } else if (c.type === 'scale') {
+      const v = r[c.id]; if (v && v > 0) { score += v; max += 5; }
+    } else {
+      const v = a[c.id];
+      if (v === 'yes') { score += 1; max += 1; }
+      else if (v === 'somewhat') { score += 0.5; max += 1; }
+      else if (v === 'no') { max += 1; }
+    }
+  });
+  if (fu.within24 === 'yes') { score += 1; max += 1; } else if (fu.within24 === 'no') { max += 1; }
+  return max ? Math.round(score / max * 100) : null;
+}
+
+function crmDefaultAgentName() {
+  const opts = ['Katie', 'Rhoxie', 'Katrina', 'Erick', 'Oscar', 'Lyndsay'];
+  const first = String((currentUser && currentUser.name) || '').trim().split(/\s+/)[0];
+  return opts.find(o => o.toLowerCase() === first.toLowerCase()) || '';
+}
+// BUG 2: fully reset the form so values never leak between properties. Only
+// Shopped By (current user) and Date (today) are pre-filled.
+function crmResetOnlineForm() {
+  crmOnlineSC = { answers: {}, ratings: {}, followup: { channels: {} }, rnotes: {} };
+  const a = $('#of-agent'); if (a) a.value = crmDefaultAgentName();
+  const d = $('#of-date'); if (d) d.value = new Date().toISOString().slice(0, 10);
+  const pl = $('#of-platform'); if (pl) pl.value = '';
+  const nt = $('#of-notes'); if (nt) nt.value = '';
+  const sc = $('#of-score'); if (sc) sc.value = '';
+  $('#crm-online-form')?.classList.add('hidden');
+  crmRenderOnlineScorecard();
+}
+function crmOnlineUpdateScoreDisplay() {
+  const pct = crmOnlineScore(crmOnlineSC);
+  const el = $('#of-score'); if (el) el.value = pct == null ? '' : pct + '%';
+}
+function crmRenderOnlineScorecard() {
+  const host = $('#of-scorecard');
+  if (!host) return;
+  const sc = crmOnlineSC, a = sc.answers, r = sc.ratings, fu = sc.followup, notes = sc.rnotes;
+  const ynBtns = (cid, opts) => `<div class="crm-sc-btns" style="display:flex;gap:6px;flex-wrap:wrap;">${
+    opts.map(([v, l]) => `<button type="button" class="btn-sm ${a[cid] === v ? 'primary' : ''}" data-sc-btn data-crit="${cid}" data-val="${v}">${l}</button>`).join('')}</div>`;
+  host.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:6px 0;">
+      <label class="small" style="font-weight:600;margin:0">Online Response Scorecard</label>
+    </div>
+    ${ONLINE_SHOP_CRITERIA.map(c => `
+      <div class="crm-entry-card" style="margin-bottom:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div class="small" style="max-width:60%;">${esc(c.label)}${c.help ? `<div class="muted" style="font-size:11px;margin-top:2px;">${esc(c.help)}</div>` : ''}</div>
+          ${c.type === 'speed'
+            ? `<select class="crm-select" style="width:auto" data-sc-speed>
+                 <option value="">—</option>
+                 ${ONLINE_SPEED_OPTIONS.map(([v, l]) => `<option value="${v}" ${crmOnlineEffectiveSpeed(sc) === v ? 'selected' : ''}>${l}</option>`).join('')}
+               </select>`
+            : c.type === 'scale'
+              ? `<div class="crm-sc-btns" style="display:flex;gap:6px;flex-wrap:wrap;">${[0,1,2,3,4,5].map(n => `<button type="button" class="btn-sm ${r[c.id] === n ? 'primary' : ''}" data-sc-scale data-crit="${c.id}" data-val="${n}">${n === 0 ? 'N/A' : n}</button>`).join('')}</div>`
+              : c.type === 'yns'
+                ? ynBtns(c.id, [['yes','Yes'],['somewhat','Somewhat'],['no','No']])
+                : ynBtns(c.id, [['yes','Yes'],['no','No']])}
+        </div>
+        <input class="crm-input" style="margin-top:6px" placeholder="Notes…" value="${esc(notes[c.id] || '')}" data-sc-note data-crit="${c.id}">
+      </div>`).join('')}
+    <div class="crm-entry-card">
+      <label class="small" style="font-weight:600">Follow-Up Persistence (the days after your inquiry)</label>
+      <div class="crm-detail-grid" style="margin-top:6px">
+        <label class="small">Followed up within 24 hours?
+          <div class="crm-sc-btns" style="display:flex;gap:6px;">${[['yes','Yes'],['no','No']].map(([v,l]) => `<button type="button" class="btn-sm ${fu.within24 === v ? 'primary' : ''}" data-sc-fu="within24" data-val="${v}">${l}</button>`).join('')}</div>
+        </label>
+        <label class="small">Total follow-up attempts (7 days)<input type="number" min="0" class="crm-input" value="${esc(fu.attempts ?? '')}" data-sc-fu-num="attempts"></label>
+        <label class="small">Days until their last follow-up<input type="number" min="0" class="crm-input" value="${esc(fu.lastDays ?? '')}" data-sc-fu-num="lastDays"></label>
+        <label class="small">Channels used
+          <div style="display:flex;gap:12px;padding-top:6px;">${['call','text','email'].map(ch => `<label class="small" style="display:flex;gap:4px;align-items:center;"><input type="checkbox" ${(fu.channels || {})[ch] ? 'checked' : ''} data-sc-fu-ch="${ch}"> ${ch[0].toUpperCase() + ch.slice(1)}</label>`).join('')}</div>
+        </label>
+      </div>
+      <input class="crm-input" style="margin-top:8px" placeholder="Persistence notes (what did each follow-up say?)…" value="${esc(fu.notes || '')}" data-sc-fu-text>
+    </div>`;
+  crmOnlineUpdateScoreDisplay();
+}
+
 function crmRenderOnlineList(shops) {
-  $('#crm-online-list').innerHTML = shops.length ? shops.map(s => `
+  crmResetOnlineForm(); // BUG 2: reset whenever the tab is shown / property changes
+  $('#crm-online-list').innerHTML = shops.length ? shops.map(s => {
+    const pct = s.score != null ? s.score : (s.scorecard ? crmOnlineScore(s.scorecard) : null);
+    return `
     <div class="crm-entry-card">
       <div class="crm-entry-card-head">
         <span class="crm-entry-meta">${fmtDate(s.shop_date)} · ${esc(s.agent_name||'—')}</span>
-        ${s.score != null ? `<span class="crm-entry-meta">Score: ${s.score}</span>` : ''}
+        ${pct != null ? `<span class="crm-entry-meta">Score: ${pct}${String(pct).includes('%') ? '' : '%'}</span>` : ''}
       </div>
       ${s.platform ? `<div class="small">${esc(s.platform)}</div>` : ''}
       ${parseNotes(s.notes).text ? `<p class="small" style="margin-top:4px;">${esc(parseNotes(s.notes).text)}</p>` : ''}
-    </div>`).join('') : '<p class="muted small">No online shops yet.</p>';
+    </div>`; }).join('') : '<p class="muted small">No online shops yet.</p>';
 }
+
+// Scorecard interactions — delegated once on the container (survives re-renders).
+(function wireOnlineScorecard() {
+  const host = document.getElementById('of-scorecard');
+  if (!host) return;
+  host.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b || !crmOnlineSC) return;
+    if (b.hasAttribute('data-sc-btn')) {
+      const c = b.dataset.crit, v = b.dataset.val;
+      crmOnlineSC.answers[c] = crmOnlineSC.answers[c] === v ? '' : v;
+      crmRenderOnlineScorecard();
+    } else if (b.hasAttribute('data-sc-scale')) {
+      const c = b.dataset.crit, n = parseInt(b.dataset.val, 10);
+      crmOnlineSC.ratings[c] = crmOnlineSC.ratings[c] === n ? null : n;
+      crmRenderOnlineScorecard();
+    } else if (b.hasAttribute('data-sc-fu')) {
+      const v = b.dataset.val;
+      crmOnlineSC.followup.within24 = crmOnlineSC.followup.within24 === v ? '' : v;
+      crmRenderOnlineScorecard();
+    }
+  });
+  host.addEventListener('change', e => {
+    if (!crmOnlineSC) return;
+    if (e.target.hasAttribute('data-sc-speed')) { crmOnlineSC.answers.response_time = e.target.value; crmRenderOnlineScorecard(); }
+    else if (e.target.hasAttribute('data-sc-fu-ch')) { crmOnlineSC.followup.channels[e.target.dataset.scFuCh] = e.target.checked; crmOnlineUpdateScoreDisplay(); }
+  });
+  host.addEventListener('input', e => {
+    if (!crmOnlineSC) return;
+    if (e.target.hasAttribute('data-sc-note')) crmOnlineSC.rnotes[e.target.dataset.crit] = e.target.value;
+    else if (e.target.hasAttribute('data-sc-fu-num')) { crmOnlineSC.followup[e.target.dataset.scFuNum] = e.target.value; crmOnlineUpdateScoreDisplay(); }
+    else if (e.target.hasAttribute('data-sc-fu-text')) crmOnlineSC.followup.notes = e.target.value;
+  });
+})();
 
 $('#crm-online-add-btn').addEventListener('click', () => $('#crm-online-form').classList.toggle('hidden'));
 $('#crm-online-cancel').addEventListener('click', () => $('#crm-online-form').classList.add('hidden'));
@@ -3536,13 +3687,19 @@ $('#crm-online-save').addEventListener('click', async () => {
   if (!p) return;
   const agent = crmResolveAgent($('#of-agent').value);
   if (!agent) return;
-  const body = { shop_date: $('#of-date').value || new Date().toISOString().slice(0,10), agent_name: agent, platform: $('#of-platform').value, score: parseFloat($('#of-score').value) || null, notes: $('#of-notes').value };
+  const body = {
+    shop_date: $('#of-date').value || new Date().toISOString().slice(0, 10),
+    agent_name: agent,
+    platform: $('#of-platform').value,
+    score: crmOnlineScore(crmOnlineSC),
+    notes: $('#of-notes').value,
+    scorecard: crmOnlineSC,
+  };
   try {
     await crmFetch(`/api/crm/properties/${p.id}/online-shops`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
     crmState.activeProperty = updated;
-    crmRenderOnlineList(updated.online_shops);
-    $('#crm-online-form').classList.add('hidden');
+    crmRenderOnlineList(updated.online_shops); // also resets the form
   } catch (err) { toast(err.message, 'error'); }
 });
 

@@ -881,6 +881,7 @@
                     <label>Vacancy %<input data-field="vacancy_pct" class="crm-input crm-editable" type="number" step="0.1"></label>
                     <label>Avg Asking/Unit<input data-field="avg_asking_unit" class="crm-input crm-editable" type="number"></label>
                     <label>Avg Unit SF<input data-field="avg_unit_sf" class="crm-input crm-editable" type="number"></label>
+                    <label>Property Phone (leasing line)<input data-field="property_phone" class="crm-input crm-editable" type="tel" placeholder="(512) 555-0123"></label>
                   </div>
                 </section>
 
@@ -1052,10 +1053,11 @@
                   </select>
                 </label>
                 <label>Date<input id="of-date" type="date" class="crm-input"></label>
-                <label>Platform<input id="of-platform" class="crm-input" placeholder="e.g. Apartments.com"></label>
-                <label>Score (0-100)<input id="of-score" type="number" min="0" max="100" class="crm-input"></label>
+                <label>Property Website / Platform URL<input id="of-platform" class="crm-input" placeholder="e.g. https://…"></label>
+                <label>Score (auto)<input id="of-score" type="text" class="crm-input" readonly placeholder="—"></label>
               </div>
-              <label>Notes<textarea id="of-notes" class="crm-textarea" rows="3"></textarea></label>
+              <div id="of-scorecard"></div>
+              <label>Notes<textarea id="of-notes" class="crm-textarea" rows="3" placeholder="General notes for this online shop…"></textarea></label>
               <div style="display:flex;gap:8px;margin-top:8px;">
                 <button id="crm-online-save" class="btn-sm primary">Save</button>
                 <button id="crm-online-cancel" class="btn-sm">Cancel</button>
