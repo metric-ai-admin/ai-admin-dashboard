@@ -50,7 +50,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
-const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin } = require('./metric-routes.js');
+const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, analyzeWorkOrders } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
 const teams = require('./teams-transcripts.js');
@@ -3843,6 +3843,155 @@ app.get('/api/leasing/weeks', requireMetricAccess, async (req, res) => {
     const weeks = [...new Set((data || []).map(r => r.week_ending))];
     res.json({ weeks });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// =====================================================================
+// MAINTENANCE WORK ORDERS — synced from AppFolio's Reports API
+// (work_order.json), replacing Erick's manual daily Excel upload. Uses the same
+// Reports-API auth/pagination as the leasing sync (appfolioReportsFetch).
+// =====================================================================
+const APPFOLIO_WORK_ORDER_REPORT = '/api/v2/reports/work_order.json';
+const APPFOLIO_WORK_ORDER_FILTER = {
+  work_order_statuses: ['0', '1', '2', '9', '11', '3'],
+  work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
+  property_visibility: 'active',
+};
+// Response field -> column. Live keys weren't verifiable here (custom report), so
+// each lists the most likely key plus tolerant fallbacks; GET /api/maintenance/
+// sync/raw dumps the real keys so this can be locked after the first sync.
+const APPFOLIO_WO_FIELDS = {
+  work_order_number:      ['work_order_number', 'number', 'wo_number'],
+  property:               ['property'],
+  property_name:          ['property_name'],
+  property_id:            ['property_id'],
+  unit:                   ['unit', 'unit_name'],
+  issue:                  ['work_order_issue', 'issue', 'title'],
+  description:            ['job_description', 'description'],
+  status:                 ['status', 'work_order_status'],
+  priority:               ['priority'],
+  work_order_type:        ['work_order_type', 'type'],
+  assigned_user:          ['assigned_user', 'assigned_to'],
+  primary_resident:       ['primary_resident', 'resident'],
+  primary_resident_phone: ['primary_resident_phone_number', 'primary_resident_phone', 'resident_phone'],
+  scheduled_start:        ['scheduled_start'],
+  scheduled_end:          ['scheduled_end'],
+  created_at_appfolio:    ['created_at', 'created', 'created_on'],
+};
+const mwoPick = (row, cands) => {
+  for (const k of cands) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return row[k];
+  return null;
+};
+function mwoRowFromReport(r) {
+  const F = APPFOLIO_WO_FIELDS;
+  const num = mwoPick(r, F.work_order_number);
+  if (!num) return null; // work_order_number is the identity/upsert key
+  const createdRaw = mwoPick(r, F.created_at_appfolio);
+  const created = createdRaw ? new Date(createdRaw) : null;
+  return {
+    work_order_number: String(num).trim(),
+    property: mwoPick(r, F.property),
+    property_name: mwoPick(r, F.property_name),
+    property_id: (() => { const v = mwoPick(r, F.property_id); return v == null ? null : String(v); })(),
+    unit: mwoPick(r, F.unit),
+    issue: mwoPick(r, F.issue),
+    description: mwoPick(r, F.description),
+    status: (() => { const v = mwoPick(r, F.status); return v == null ? null : String(v); })(),
+    priority: mwoPick(r, F.priority),
+    work_order_type: mwoPick(r, F.work_order_type),
+    assigned_user: mwoPick(r, F.assigned_user),
+    primary_resident: mwoPick(r, F.primary_resident),
+    primary_resident_phone: (() => { const v = mwoPick(r, F.primary_resident_phone); return v == null ? null : String(v); })(),
+    scheduled_start: leasingDateOnly(mwoPick(r, F.scheduled_start)),
+    scheduled_end: leasingDateOnly(mwoPick(r, F.scheduled_end)),
+    created_at_appfolio: (created && !isNaN(created.getTime())) ? created.toISOString() : null,
+    synced_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+// POST /api/maintenance/sync — pull active work orders and upsert them.
+app.post('/api/maintenance/sync', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
+  try {
+    const raw = await appfolioReportsFetch(APPFOLIO_WORK_ORDER_REPORT, APPFOLIO_WORK_ORDER_FILTER);
+    const seen = new Set();
+    const rows = [];
+    for (const r of raw) {
+      const rec = mwoRowFromReport(r);
+      if (!rec || seen.has(rec.work_order_number)) continue;
+      seen.add(rec.work_order_number);
+      rows.push(rec);
+    }
+    const db = supabaseAdmin || supabasePublic;
+    let synced = 0;
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500);
+      const { error } = await db.from('maintenance_work_orders').upsert(chunk, { onConflict: 'work_order_number' });
+      if (error) throw new Error(error.message);
+      synced += chunk.length;
+    }
+    res.json({ ok: true, synced, timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Maintenance sync failed: ' + err.message });
+  }
+});
+
+// GET /api/maintenance/work-orders — all synced work orders (for the Command
+// Center), newest first, plus the latest synced_at.
+app.get('/api/maintenance/work-orders', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ work_orders: [], last_synced: null });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('maintenance_work_orders')
+      .select('*').order('created_at_appfolio', { ascending: false }).limit(10000);
+    if (error) throw new Error(error.message);
+    const last = (data || []).reduce((m, r) => (r.synced_at && r.synced_at > m ? r.synced_at : m), '');
+    res.json({ work_orders: data || [], last_synced: last || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/maintenance/command-center — runs the SAME work-order analysis the CSV
+// analyzer uses (analyzeWorkOrders) over the synced rows, returning the shape the
+// Command Center already renders ({ groups, totalWorkOrders, analyzedAt }).
+app.get('/api/maintenance/command-center', requireMetricAccess, async (req, res) => {
+  const empty = { totalWorkOrders: 0, groups: { urgent: [], followup: [], ready: [], none: [] }, analyzedAt: null, last_synced: null };
+  if (!CRM_CONFIGURED) return res.json(empty);
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('maintenance_work_orders')
+      .select('*').order('created_at_appfolio', { ascending: false }).limit(10000);
+    if (error) throw new Error(error.message);
+    const wos = data || [];
+    if (!wos.length) return res.json(empty);
+    // Rebuild the analyzer's array-of-arrays input with headers its buildHeaderMap
+    // recognises (work order / property / unit / status / assignee / description /
+    // created). Extra columns ride along in the per-card `fields` table.
+    const header = ['Work Order Number', 'Property Name', 'Unit', 'Status', 'Assigned User', 'Job Description',
+      'Created At', 'Priority', 'Work Order Type', 'Primary Resident', 'Primary Resident Phone', 'Scheduled Start', 'Scheduled End'];
+    const rows = [header, ...wos.map(w => [
+      w.work_order_number || '', w.property_name || w.property || '', w.unit || '', w.status || '',
+      w.assigned_user || '', w.description || w.issue || '', w.created_at_appfolio || '', w.priority || '',
+      w.work_order_type || '', w.primary_resident || '', w.primary_resident_phone || '',
+      w.scheduled_start || '', w.scheduled_end || '',
+    ].map(v => v == null ? '' : String(v)))];
+    const analysis = analyzeWorkOrders(rows);
+    const groups = { urgent: [], followup: [], ready: [], none: [] };
+    for (const a of analysis.actions) (groups[a.topTier] || groups.none).push(a);
+    const last = wos.reduce((m, r) => (r.synced_at && r.synced_at > m ? r.synced_at : m), '');
+    res.json({ analyzedAt: last || new Date().toISOString(), last_synced: last || null, sourceType: 'appfolio_sync', totalWorkOrders: analysis.count, headers: analysis.headers, groups });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Debug: raw first row (unmapped) to confirm live field keys. Admin-gated;
+// remove once the mapping is verified.
+app.get('/api/maintenance/sync/raw', requireMetricAdmin, async (req, res) => {
+  try {
+    const raw = await appfolioReportsFetch(APPFOLIO_WORK_ORDER_REPORT, APPFOLIO_WORK_ORDER_FILTER);
+    const first = raw[0] || null;
+    res.json({ ok: true, count: raw.length, first_row_keys: first ? Object.keys(first) : null, first_row: first });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: err.message });
+  }
 });
 
 // List all submissions, newest first.

@@ -4310,6 +4310,7 @@ async function loadMaintenance() {
       renderMaintenanceKanban();
     }));
     $('#maint-appfolio-refresh')?.addEventListener('click',   loadMaintenanceAppFolio);
+    $('#maint-sync-btn')?.addEventListener('click',           maintSyncFromAppFolio);
     $('#maint-eod-refresh')?.addEventListener('click',        loadMaintenanceEodSummary);
     $('#maint-report-refresh')?.addEventListener('click',     loadMaintenanceDailyReport);
     $('#maint-eod-copy')?.addEventListener('click', () => {
@@ -5769,16 +5770,39 @@ async function loadMaintenanceAppFolio() {
   const groups = $('#appfolioGroups');
   if (!groups) return;
   try {
-    const data = await api('/api/appfolio/latest');
-    if (!data || !data.analyzedAt) {
+    // Data source is now the AppFolio sync (maintenance_work_orders), analyzed
+    // server-side into the same groups the CSV analyzer produced.
+    const data = await api('/api/maintenance/command-center');
+    const lbl = $('#maint-sync-status');
+    if (lbl) lbl.textContent = data.last_synced
+      ? `Last synced: ${new Date(data.last_synced).toLocaleString()}`
+      : 'Not synced yet — click “Sync from AppFolio”.';
+    if (!data || !data.totalWorkOrders) {
       $('#appfolioSummary')?.classList.add('hidden');
-      groups.innerHTML = '<div class="empty-state">No analysis yet — drop a Work Orders CSV above.</div>';
+      groups.innerHTML = '<div class="empty-state">No work orders yet — click “Sync from AppFolio”.</div>';
       return;
     }
     appfolioData = data;
     renderAppfolio(data);
   } catch (err) {
     groups.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+async function maintSyncFromAppFolio() {
+  const btn = $('#maint-sync-btn'), status = $('#maint-sync-status');
+  if (!btn) return;
+  const label = btn.textContent; btn.disabled = true; btn.textContent = '⏳ Syncing…';
+  if (status) status.textContent = 'Pulling active work orders from AppFolio…';
+  try {
+    const r = await api('/api/maintenance/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    toast(`Synced ${r.synced} work orders ✅`, 'success');
+    await loadMaintenanceAppFolio();
+  } catch (err) {
+    toast(err.message, 'error');
+    if (status) status.textContent = '❌ ' + err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = label;
   }
 }
 
