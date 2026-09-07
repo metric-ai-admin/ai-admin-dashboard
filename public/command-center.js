@@ -292,7 +292,7 @@ function ccWoRowFromSynced(w) {
     'Status': w.status || '',
     'Priority': w.priority || '',
     'Work Order Type': w.work_order_type || '',
-    'Assigned User': w.assigned_user || '',
+    'Assigned User': w.assigned_user || w.vendor || '', // vendor-only WOs count as assigned
     'Vendor': w.vendor || '',                         // vendor-assigned WOs have no Assigned User
     'Work Order Issue': w.issue || '',
     'Job Description': w.description || w.issue || '',
