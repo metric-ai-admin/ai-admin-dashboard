@@ -3672,30 +3672,35 @@ const LEASING_LIST_COLS = 'id,week_ending,submitted_by,submitted_at,status,kpi_j
 const LEASING_STATUSES = ['submitted', 'reviewed', 'approved'];
 
 // =====================================================================
-// LEASING LEADS — Guest Card Interests, uploaded as the AppFolio Excel export.
-// Katie exports the report weekly and uploads the .xlsx here; the server parses
-// it and upserts leasing_leads. The KPI roll-ups + history all read from that
-// table. (Realm-X / REST auto-sync can replace the upload later without changing
-// the table or the read paths.)
+// LEASING LEADS — Guest Card Interests, synced from AppFolio's REPORTS API.
+// This is a DIFFERENT system from the Database API (APPFOLIO_CLIENT_ID/SECRET):
+// it has its own credentials, APPFOLIO_REPORTS_CLIENT_ID / _SECRET. Katie picks a
+// date range and syncs; the KPI roll-ups + history read from leasing_leads.
 // =====================================================================
+const APPFOLIO_REPORTS_BASE = 'https://metricpropertymanagement.appfolio.com';
+const APPFOLIO_GUEST_CARD_REPORT = '/api/v2/reports/guest_card_interests.json';
 
-// Excel column header -> leasing_leads column. Matched case-insensitively with a
-// couple of tolerant variants each, so minor header wording changes still land.
-const LEASING_HEADER_MAP = {
-  name:               ['name', 'guest card name', 'prospect name'],
-  email:              ['email address', 'email'],
-  phone:              ['phone number', 'phone'],
-  interest_received:  ['interest received', 'received on', 'interest received on'],
-  last_activity_date: ['last activity date', 'last activity'],
-  last_activity_type: ['last activity type'],
-  move_in_preference: ['move in preference', 'move-in preference', 'move in'],
-  lisa_lead:          ['lisa lead', 'lisa'],
-  source:             ['source', 'lead source'],
-  property:           ['property', 'property name'],
-  assigned_user:      ['assigned user', 'assigned to', 'agent'],
+// Response field -> leasing_leads column. Live key names weren't verifiable here,
+// so each lists the most likely key plus tolerant fallbacks; GET /api/leasing/
+// sync/raw dumps the real keys so this can be corrected after the first sync.
+const APPFOLIO_LEASING_FIELDS = {
+  name:               ['name', 'guest_card_name', 'prospect_name'],
+  email:              ['email', 'email_address'],
+  phone:              ['phone', 'phone_number'],
+  interest_received:  ['interest_received', 'received_on', 'interest_received_at'],
+  last_activity_date: ['last_activity_date', 'last_activity'],
+  last_activity_type: ['last_activity_type'],
+  move_in_preference: ['move_in_preference', 'move_in', 'desired_move_in'],
+  lisa_lead:          ['lisa_lead', 'lisa'],
+  source:             ['source', 'lead_source'],
+  property:           ['property', 'property_name'],
+  assigned_user:      ['assigned_user', 'assigned_to', 'agent'],
   notes:              ['notes', 'note'],
 };
-const normHdr = s => String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' ');
+const leasingPick = (row, cands) => {
+  for (const k of cands) if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') return row[k];
+  return null;
+};
 
 // Saturday (Sun–Sat week) that a date falls in, as YYYY-MM-DD. Katie's week.
 function leasingWeekEnding(d) {
@@ -3708,90 +3713,98 @@ function leasingWeekEnding(d) {
 const leasingTruthy = v => v === true || v === 'true' || v === 'Yes' || v === 'yes' || v === 'Y' || v === 1 || v === '1';
 const leasingDateOnly = v => { if (v === '' || v == null) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-CA'); };
 
-// POST /api/leasing/upload — parse the Guest Card Interests .xlsx and upsert into
-// leasing_leads. requireMetricAccess (Katie's leasing role). multipart field "file".
-const leasingUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
-app.post('/api/leasing/upload', requireMetricAccess, leasingUpload.single('file'), async (req, res) => {
+// Fetch a Reports-API report with the Reports credentials, following next_page_url
+// (same pagination as the evictions/delinquency sync). Returns the concatenated
+// result rows. Throws err.code = HTTP status on failure.
+async function appfolioReportsFetch(reportPath, body) {
+  const id = process.env.APPFOLIO_REPORTS_CLIENT_ID, secret = process.env.APPFOLIO_REPORTS_CLIENT_SECRET;
+  if (!id || !secret) { const e = new Error('AppFolio Reports API not configured — set APPFOLIO_REPORTS_CLIENT_ID and APPFOLIO_REPORTS_CLIENT_SECRET.'); e.code = 503; throw e; }
+  const auth = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
+  const pull = obj => Array.isArray(obj) ? obj : (obj?.results || obj?.data || []);
+  const raw = [];
+  let resp = await fetchFn(`${APPFOLIO_REPORTS_BASE}${reportPath}`, { method: 'POST', headers: { Authorization: auth, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let j = await resp.json().catch(() => null);
+  if (!resp.ok) { const e = new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status}`); e.code = resp.status; throw e; }
+  raw.push(...pull(j));
+  let next = j && j.next_page_url, guard = 0;
+  while (next && guard++ < 500) {
+    resp = await fetchFn(next, { headers: { Authorization: auth } });
+    j = await resp.json().catch(() => null);
+    if (!resp.ok) { const e = new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status} on a later page`); e.code = resp.status; throw e; }
+    raw.push(...pull(j));
+    next = j && j.next_page_url;
+  }
+  return raw;
+}
+
+// Map one raw report row to a leasing_leads record (or null to skip).
+function leasingRowFromReport(r) {
+  const name = leasingPick(r, APPFOLIO_LEASING_FIELDS.name);
+  if (!name) return null;
+  const phone = leasingPick(r, APPFOLIO_LEASING_FIELDS.phone);
+  const interestRaw = leasingPick(r, APPFOLIO_LEASING_FIELDS.interest_received);
+  const interestDate = interestRaw ? new Date(interestRaw) : null;
+  const interestIso = (interestDate && !isNaN(interestDate.getTime())) ? interestDate.toISOString() : null;
+  return {
+    appfolio_id: [String(name).trim(), String(phone || '').trim(), interestIso || String(interestRaw || '')].join('|'),
+    name: String(name).trim(),
+    email: leasingPick(r, APPFOLIO_LEASING_FIELDS.email),
+    phone: phone ? String(phone).trim() : null,
+    interest_received: interestIso,
+    last_activity_date: leasingDateOnly(leasingPick(r, APPFOLIO_LEASING_FIELDS.last_activity_date)),
+    last_activity_type: leasingPick(r, APPFOLIO_LEASING_FIELDS.last_activity_type),
+    move_in_preference: leasingDateOnly(leasingPick(r, APPFOLIO_LEASING_FIELDS.move_in_preference)),
+    lisa_lead: leasingTruthy(leasingPick(r, APPFOLIO_LEASING_FIELDS.lisa_lead)),
+    source: leasingPick(r, APPFOLIO_LEASING_FIELDS.source),
+    property: leasingPick(r, APPFOLIO_LEASING_FIELDS.property),
+    assigned_user: leasingPick(r, APPFOLIO_LEASING_FIELDS.assigned_user),
+    notes: leasingPick(r, APPFOLIO_LEASING_FIELDS.notes),
+    week_ending: interestIso ? leasingWeekEnding(interestDate) : null,
+    synced_at: new Date().toISOString(),
+  };
+}
+
+// POST /api/leasing/sync — pull Guest Card Interests for a date range from the
+// Reports API and upsert into leasing_leads. requireMetricAccess (Katie).
+app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
-  if (!req.file) return res.status(400).json({ ok: false, error: 'No file uploaded. Send the .xlsx as multipart field "file".' });
+  const { date_from, date_to } = req.body || {};
+  if (!date_from || !date_to) return res.status(400).json({ ok: false, error: 'date_from and date_to are required (YYYY-MM-DD)' });
   try {
-    const wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-    if (!aoa.length) return res.status(400).json({ ok: false, error: 'Spreadsheet is empty or unreadable.' });
-
-    // AppFolio exports carry title/metadata rows above the real header. Find the
-    // header row by locating one that has a "name" column and either "property"
-    // or "interest received".
-    const matches = (cell, cands) => cands.includes(normHdr(cell));
-    let headerIdx = -1;
-    for (let i = 0; i < Math.min(aoa.length, 30); i++) {
-      const cells = (aoa[i] || []).map(normHdr);
-      const hasName = cells.some(c => LEASING_HEADER_MAP.name.includes(c));
-      const hasAnchor = cells.some(c => LEASING_HEADER_MAP.property.includes(c) || LEASING_HEADER_MAP.interest_received.includes(c));
-      if (hasName && hasAnchor) { headerIdx = i; break; }
-    }
-    if (headerIdx === -1) return res.status(400).json({ ok: false, error: 'Could not find the header row (expected columns like Name, Property, Interest Received).' });
-
-    // Map each field to its column index.
-    const header = aoa[headerIdx];
-    const col = {};
-    for (const [field, cands] of Object.entries(LEASING_HEADER_MAP)) {
-      col[field] = header.findIndex(h => matches(h, cands));
-    }
-    const cell = (row, field) => { const i = col[field]; return i >= 0 && row[i] != null ? row[i] : ''; };
-
+    const raw = await appfolioReportsFetch(APPFOLIO_GUEST_CARD_REPORT, { received_on_from: date_from, received_on_to: date_to, property_visibility: 'active' });
     const seen = new Set();
     const rows = [];
-    let lastProperty = ''; // carry-forward for grouped-by-property exports
-    for (let i = headerIdx + 1; i < aoa.length; i++) {
-      const r = aoa[i] || [];
-      let property = String(cell(r, 'property') || '').trim();
-      const name = String(cell(r, 'name') || '').trim();
-      // Group header / subtotal rows carry a property but no lead name — remember
-      // the property and skip. Detail rows may leave property blank under a group.
-      if (!name) { if (property) lastProperty = property; continue; }
-      if (!property) property = lastProperty;
-
-      const phone = String(cell(r, 'phone') || '').trim();
-      const interestRaw = cell(r, 'interest_received');
-      const interestDate = (interestRaw === '' || interestRaw == null) ? null : new Date(interestRaw);
-      const interestIso = (interestDate && !isNaN(interestDate.getTime())) ? interestDate.toISOString() : null;
-      const appfolio_id = [name, phone, interestIso || String(interestRaw || '')].join('|').trim();
-      if (appfolio_id === '||' || seen.has(appfolio_id)) continue;
-      seen.add(appfolio_id);
-
-      rows.push({
-        appfolio_id,
-        name,
-        email: String(cell(r, 'email') || '').trim() || null,
-        phone: phone || null,
-        interest_received: interestIso,
-        last_activity_date: leasingDateOnly(cell(r, 'last_activity_date')),
-        last_activity_type: String(cell(r, 'last_activity_type') || '').trim() || null,
-        move_in_preference: leasingDateOnly(cell(r, 'move_in_preference')),
-        lisa_lead: leasingTruthy(cell(r, 'lisa_lead')),
-        source: String(cell(r, 'source') || '').trim() || null,
-        property: property || null,
-        assigned_user: String(cell(r, 'assigned_user') || '').trim() || null,
-        notes: String(cell(r, 'notes') || '').trim() || null,
-        week_ending: interestIso ? leasingWeekEnding(interestDate) : null,
-        synced_at: new Date().toISOString(),
-      });
+    for (const r of raw) {
+      const rec = leasingRowFromReport(r);
+      if (!rec || rec.appfolio_id === '||' || seen.has(rec.appfolio_id)) continue;
+      seen.add(rec.appfolio_id);
+      rows.push(rec);
     }
-    if (!rows.length) return res.status(400).json({ ok: false, error: 'No lead rows found in the spreadsheet.' });
-
     const db = supabaseAdmin || supabasePublic;
-    let uploaded = 0;
+    let synced = 0;
     for (let i = 0; i < rows.length; i += 500) {
       const chunk = rows.slice(i, i + 500);
       const { error } = await db.from('leasing_leads').upsert(chunk, { onConflict: 'appfolio_id' });
       if (error) throw new Error(error.message);
-      uploaded += chunk.length;
+      synced += chunk.length;
     }
-    res.json({ ok: true, uploaded });
+    res.json({ ok: true, synced, date_from, date_to });
   } catch (err) {
-    res.status(500).json({ ok: false, error: 'Leasing upload failed: ' + err.message });
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Leasing sync failed: ' + err.message });
+  }
+});
+
+// Debug: raw first row (unmapped) to confirm the live field keys. Admin-gated;
+// remove once the mapping is verified.
+app.get('/api/leasing/sync/raw', requireMetricAdmin, async (req, res) => {
+  try {
+    const to = req.query.date_to || new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+    const from = req.query.date_from || to;
+    const raw = await appfolioReportsFetch(APPFOLIO_GUEST_CARD_REPORT, { received_on_from: from, received_on_to: to, property_visibility: 'active' });
+    const first = raw[0] || null;
+    res.json({ ok: true, count: raw.length, first_row_keys: first ? Object.keys(first) : null, first_row: first });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: err.message });
   }
 });
 
