@@ -3593,17 +3593,25 @@ $('#crm-appt-save').addEventListener('click', async () => {
 });
 
 // ── Follow-ups tab ────────────────────────────────────────────────────────────
+// Full follow-up history — expandable cards (same pattern as Online Shop) so an
+// agent can see every prior attempt (date, who, method, outcome, next action,
+// notes) before logging the next one.
 function crmRenderFUList(fus) {
   const methodLabel = { call_back: '📞 Call Back', email_response: '📧 Email Response', text: '💬 Text', owner_response: '🔥 Owner Responded' };
-  $('#crm-fu-list').innerHTML = fus.length ? fus.map(f => `
-    <div class="crm-entry-card">
-      <div class="crm-entry-card-head">
-        <span>${esc(methodLabel[f.method] || f.method)}</span>
-        <span class="crm-entry-meta">${fmtDate(f.follow_up_date)}</span>
+  $('#crm-fu-list').innerHTML = fus.length ? fus.map((f, i) => `
+    <details class="crm-entry-card" style="margin-bottom:6px;">
+      <summary style="cursor:pointer;">
+        <span class="crm-entry-meta">Attempt ${fus.length - i} · ${fmtDate(f.follow_up_date)} · ${esc(f.agent_name || '—')}</span>
+        <span class="crm-entry-meta" style="float:right">${esc(methodLabel[f.method] || f.method || '—')}${f.completed ? ' · ✅' : ''}</span>
+      </summary>
+      <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
+        ${f.contact_name ? `<div class="small"><b>Contact:</b> ${esc(f.contact_name)}</div>` : ''}
+        ${f.outcome ? `<div class="small" style="margin-top:4px;"><b>Outcome:</b> ${esc(f.outcome)}</div>` : ''}
+        ${f.next_action ? `<div class="small" style="margin-top:4px;"><b>Next:</b> ${esc(f.next_action)}${f.next_action_date ? ` (by ${fmtDate(f.next_action_date)})` : ''}</div>` : ''}
+        ${f.notes ? `<p class="small" style="margin-top:6px;"><b>Notes:</b> ${esc(f.notes)}</p>` : ''}
+        ${!f.contact_name && !f.outcome && !f.next_action && !f.notes ? '<p class="small muted" style="margin:0">No additional details recorded.</p>' : ''}
       </div>
-      ${f.outcome ? `<p class="small" style="margin-top:4px;">${esc(f.outcome)}</p>` : ''}
-      ${f.next_action ? `<p class="small muted">Next: ${esc(f.next_action)}</p>` : ''}
-    </div>`).join('') : '<p class="muted small">No follow-ups logged.</p>';
+    </details>`).join('') : '<p class="muted small">No follow-ups logged yet.</p>';
 }
 
 $('#crm-fu-add-btn').addEventListener('click', () => $('#crm-fu-form').classList.toggle('hidden'));
