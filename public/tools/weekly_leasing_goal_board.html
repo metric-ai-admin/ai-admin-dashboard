@@ -774,6 +774,17 @@ const GROUPS=[
 const SINGLES=["Ascent at Northgate","Windy Hill Apartment","The Sidney"];
 const SINGLE_LABEL={"Ascent at Northgate":"Ascent","Windy Hill Apartment":"Windy Hill","The Sidney":"The Sidney"};
 
+// Communities Lyndsay wants hidden from every board view (matches the server-side
+// LEASING_EXCLUDED_FRAGMENTS). Case-insensitive substring match — prune them from
+// DATA, SINGLES and GROUPS at load so they never render or roll up.
+const BOARD_EXCLUDED_FRAGMENTS=["lily pad","wolf ridge","sidney","brazos"];
+const boardExcluded=n=>{ const s=String(n||"").toLowerCase(); return BOARD_EXCLUDED_FRAGMENTS.some(f=>s.indexOf(f)>-1); };
+(function pruneExcludedProps(){
+  for(let i=DATA.length-1;i>=0;i--){ if(boardExcluded(DATA[i].p)) DATA.splice(i,1); }
+  for(let i=SINGLES.length-1;i>=0;i--){ if(boardExcluded(SINGLES[i])) SINGLES.splice(i,1); }
+  GROUPS.forEach(g=>{ for(let i=g.props.length-1;i>=0;i--){ if(boardExcluded(g.props[i])) g.props.splice(i,1); } });
+})();
+
 const PORT_CONV=0.130, CONV_BENCH=0.10, CANC_BENCH=0.05, DEN_BENCH=0.10, SLOWAPP_FLAG=0.10;
 const START=new Date(2026,4,31); // Sunday -- weeks run Sun-Sat to match AppFolio's own reporting convention
 const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];

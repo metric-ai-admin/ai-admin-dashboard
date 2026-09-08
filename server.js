@@ -3878,6 +3878,15 @@ const leasingStatusIs = (status, ...needles) => {
   return needles.some(n => s.includes(n));
 };
 
+// Properties Lyndsay wants hidden from the Goal Board / roll-up / all leasing
+// views. Case-insensitive substring match on the community name — add or remove
+// fragments here to change what's shown.
+const LEASING_EXCLUDED_FRAGMENTS = ['lily pad', 'wolf ridge', 'sidney', 'brazos'];
+const leasingIsExcluded = name => {
+  const n = String(name || '').trim().toLowerCase();
+  return LEASING_EXCLUDED_FRAGMENTS.some(frag => n.includes(frag));
+};
+
 // Count logged outbound calls in a guest card's notes that fall within a week.
 // AppFolio logs each activity as its own entry separated by ';', formatted as
 // "MM/DD/YYYY, Call\nMM/DD/YYYY HH:MM AM/PM\nProperty Name\n\nNote text". A call
@@ -3991,6 +4000,7 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
     ]);
     const properties = [];
     for (const name of names) {
+      if (leasingIsExcluded(name)) continue; // hidden from all leasing views
       const c = byComm.get(name) || { name, property_id: null, traffic: 0, apps: 0, approved: 0, denied: 0, calls: 0 };
       const o = (c.property_id && occById.get(c.property_id)) || occByName.get(String(name).trim().toLowerCase()) || null;
       const total_units = o && o.total_units != null ? o.total_units : null;
