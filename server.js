@@ -4773,21 +4773,46 @@ function ctDateStr(offsetDays = 0) {
   const d = new Date(Date.now() + offsetDays * 86400000);
   return new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(d);
 }
+// Don't grade calls too short to be a real conversation, or whose transcript is
+// too thin to score — those come back as low/flagged noise and drag the averages.
+const AUTOGRADE_MIN_DURATION = 30;   // seconds
+const AUTOGRADE_MIN_TRANSCRIPT = 100; // characters
+
+// The line owner for the default SimpleVOIP user (resolveVoipUser returns null
+// for the default, and the manual flow fills the agent from the client dropdown
+// — the backfill/cron have no client, so look the name up from the roster once).
+let svDefaultOwnerCache;
+async function svDefaultLineOwner() {
+  if (svDefaultOwnerCache !== undefined) return svDefaultOwnerCache;
+  svDefaultOwnerCache = null;
+  try {
+    const uid = simplevoip.defaultUserId();
+    if (uid && CRM_CONFIGURED) {
+      const db = supabaseAdmin || supabasePublic;
+      const { data } = await db.from('simplevoip_users')
+        .select('name').eq('user_id', uid).maybeSingle();
+      if (data && data.name) svDefaultOwnerCache = data.name;
+    }
+  } catch { /* leave null */ }
+  return svDefaultOwnerCache;
+}
 
 // Grade ONE call and save it. Returns { status:'graded'|'skipped'|'error', ... }.
 // call: a shaped SimpleVOIP call; transcript: the transcription text. Skips a
-// call that is already graded or has no transcript. Throws only on a save
-// failure (the caller counts it as an error).
+// call that is already graded, too short, or with too little transcript to
+// score. Throws only on a save failure (the caller counts it as an error).
 async function autoGradeCall(call, transcript, opts = {}) {
   const recording_id = call && call.recording_id;
   if (!recording_id) return { status: 'skipped', reason: 'no recording_id' };
+  if ((Number(call.duration) || 0) < AUTOGRADE_MIN_DURATION) return { status: 'skipped', reason: 'too short' };
   const text = String(transcript || '').trim();
-  if (!text) return { status: 'skipped', reason: 'no transcript' };
+  if (text.length < AUTOGRADE_MIN_TRANSCRIPT) return { status: 'skipped', reason: 'short transcript' };
   const db = supabaseAdmin || supabasePublic;
   const { data: existing } = await db.from('call_grades')
     .select('id').eq('recording_id', recording_id).limit(1).maybeSingle();
   if (existing) return { status: 'skipped', reason: 'already graded' };
-  // Self-identified agent picks the rubric; fall back to the line owner.
+  // Self-identified agent picks the rubric; fall back to the line owner (the
+  // default user's roster name), never null-into-"Unidentified".
   const identified = callGrading.detectAgentFromTranscript(text);
   const agent = identified || opts.lineOwner || null;
   const parsed = await callGrading.gradeTranscript({
@@ -4813,9 +4838,13 @@ async function autoGradeCall(call, transcript, opts = {}) {
 // Claude calls. Returns { date, total, already_graded, newly_graded, errors }.
 async function autoGradeDay(date, { delayMs = 500 } = {}) {
   const { calls } = await simplevoip.fetchCallsForDate(null, date);
-  const shaped = simplevoip.shapeCalls(calls).filter(c => c.has_transcript && c.recording_id);
+  // Only calls with a transcript, of real length — short calls (a few seconds)
+  // aren't conversations and would grade as low/flagged noise.
+  const shaped = simplevoip.shapeCalls(calls)
+    .filter(c => c.has_transcript && c.recording_id && (Number(c.duration) || 0) >= AUTOGRADE_MIN_DURATION);
+  const lineOwner = await svDefaultLineOwner();
   const db = supabaseAdmin || supabasePublic;
-  let already = 0, graded = 0, errors = 0;
+  let already = 0, graded = 0, skipped = 0, errors = 0;
   for (const c of shaped) {
     try {
       // Cheap existence check first, so already-graded calls skip the transcript
@@ -4825,16 +4854,16 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
       if (ex) { already++; continue; }
       const t = await simplevoip.fetchCallTranscript(null, c.recording_id);
       const text = t && t.transcription ? t.transcription : '';
-      if (!String(text).trim()) continue; // transcript expired/absent — nothing to grade
-      const r = await autoGradeCall(c, text, { call_date: date });
+      const r = await autoGradeCall(c, text, { call_date: date, lineOwner });
       if (r.status === 'graded') { graded++; await svSleep(delayMs); }
       else if (r.reason === 'already graded') already++;
+      else skipped++; // too short / thin transcript
     } catch (err) {
       errors++;
       console.error('[auto-grade]', c.recording_id, err.message);
     }
   }
-  return { date, total: shaped.length, already_graded: already, newly_graded: graded, errors };
+  return { date, total: shaped.length, already_graded: already, newly_graded: graded, skipped, errors };
 }
 
 // POST /api/sv/grade/backfill?days=N — grade all ungraded transcribed calls over
@@ -4847,13 +4876,13 @@ app.post('/api/sv/grade/backfill', requireMetricAdmin, async (req, res) => {
   if (!Number.isFinite(days) || days < 1) days = 7;
   if (days > 30) days = 30;
   try {
-    let total = 0, already = 0, graded = 0, errors = 0;
+    let total = 0, already = 0, graded = 0, skipped = 0, errors = 0;
     for (let i = 0; i < days; i++) {
       const r = await autoGradeDay(ctDateStr(-i), { delayMs: 500 });
-      total += r.total; already += r.already_graded; graded += r.newly_graded; errors += r.errors;
+      total += r.total; already += r.already_graded; graded += r.newly_graded; skipped += r.skipped; errors += r.errors;
     }
-    console.log(`[auto-grade] backfill ${days}d: ${graded} graded, ${already} already, ${errors} errors (of ${total})`);
-    res.json({ ok: true, days, total_calls: total, already_graded: already, newly_graded: graded, errors });
+    console.log(`[auto-grade] backfill ${days}d: ${graded} graded, ${already} already, ${skipped} skipped, ${errors} errors (of ${total})`);
+    res.json({ ok: true, days, total_calls: total, already_graded: already, newly_graded: graded, skipped, errors });
   } catch (err) {
     const status = /not configured/i.test(err.message) ? 503 : 500;
     res.status(status).json({ ok: false, error: err.message });
@@ -4865,7 +4894,7 @@ cron.schedule('0 2 * * *', () => {
   if (!CRM_CONFIGURED || !simplevoip.isConfigured()) return;
   const yesterday = ctDateStr(-1);
   autoGradeDay(yesterday, { delayMs: 500 })
-    .then(r => console.log(`Auto-grade: ${r.newly_graded} calls graded, ${r.already_graded} skipped, ${r.errors} errors (${r.date})`))
+    .then(r => console.log(`Auto-grade: ${r.newly_graded} calls graded, ${r.already_graded + r.skipped} skipped, ${r.errors} errors (${r.date})`))
     .catch(err => console.error('[auto-grade] nightly failed:', err.message));
 }, { timezone: LYNDSAY_TIMEZONE });
 
