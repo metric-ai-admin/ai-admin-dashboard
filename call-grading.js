@@ -27,9 +27,13 @@ const KNOWN_AGENTS = ['Danny', 'Rebekah', 'Bekah', 'Katie', 'Rhoxie', 'Katrina',
 function detectAgentFromTranscript(transcript) {
   if (!transcript) return null;
   const text = String(transcript);
+  const canon = name => name === 'Bekah' ? 'Rebekah' : (name === 'Rocio' ? 'Rocío' : name);
   for (const name of KNOWN_AGENTS) {
-    const re = new RegExp('(?:this is|my name is|speaking with|you(?:\'re| are) speaking with)\\s+' + name + '\\b', 'i');
-    if (re.test(text)) return name === 'Bekah' ? 'Rebekah' : (name === 'Rocio' ? 'Rocío' : name);
+    // "this is Danny", "my name is Danny", "thank you for calling … this is Danny",
+    // "you've reached Danny", "Danny speaking", "Danny here".
+    const before = new RegExp('(?:this is|my name is|speaking with|you(?:\'re| are) speaking with|you(?:\'ve| have) reached)\\s+' + name + '\\b', 'i');
+    const after = new RegExp('\\b' + name + '\\s+(?:speaking|here)\\b', 'i');
+    if (before.test(text) || after.test(text)) return canon(name);
   }
   return null;
 }

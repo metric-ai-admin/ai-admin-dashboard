@@ -1008,14 +1008,19 @@ function registerMetricRoutes(app, db) {
     // parallel and scanned deterministically (no model call), and a boolean is
     // attached so the row can show 🚨 without the reviewer opening each call.
     // Failures are non-fatal: an unscanned call simply carries no badge.
-    await Promise.all(shaped
-      .filter(c => c.has_transcript && c.recording_id)
-      .map(async c => {
-        try {
-          const d = await simplevoip.fetchCallTranscript(who.userId, c.recording_id);
-          c.office_redirect = !!(d && simplevoip.detectOfficeRedirect(d.transcription || '').flagged);
-        } catch { /* leave unset — no badge */ }
-      }));
+    // Skipped with ?scan=0 — the week/month range view fetches many days and the
+    // per-transcript scan would be too heavy; the badge still shows on the
+    // single-day view where reviewers actually open calls.
+    if (req.query.scan !== '0') {
+      await Promise.all(shaped
+        .filter(c => c.has_transcript && c.recording_id)
+        .map(async c => {
+          try {
+            const d = await simplevoip.fetchCallTranscript(who.userId, c.recording_id);
+            c.office_redirect = !!(d && simplevoip.detectOfficeRedirect(d.transcription || '').flagged);
+          } catch { /* leave unset — no badge */ }
+        }));
+    }
     // 200 with an error field rather than a 500: partial pages are still worth
     // showing, and the view can say what went wrong beside them.
     res.json({ configured: true, date, user: who.name, user_id: who.userId,

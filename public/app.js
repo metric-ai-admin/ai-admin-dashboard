@@ -5027,6 +5027,11 @@ let svUsersLoaded = false;
 // Client-side filters over the already-loaded day. Persist across date/agent
 // changes so the reviewer keeps their view.
 let svFilters = { direction: 'all', status: 'all', phone: '' };
+// Date-range view for the call list. 'today' keeps the original single-day
+// behaviour; week/month/custom fetch each day in the range and concatenate.
+let svRange = 'today';                       // today | week | month | custom
+let svRangeFrom = null, svRangeTo = null;    // YYYY-MM-DD, for the custom range
+let svMultiDay = false;                      // loaded set spans >1 day (show dates)
 
 // The roster comes from simplevoip_users. It is empty until the ids are pulled
 // from Kazoo, so the selector only appears once there is a choice to make —
@@ -5105,6 +5110,13 @@ function svTime(unixSeconds) {
   // Unix SECONDS from the vendor; multiplying is what puts it in this century.
   return new Date(unixSeconds * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
+// Date + time, for the week/month range view where the day matters.
+function svDateTime(unixSeconds) {
+  if (!unixSeconds) return '—';
+  const d = new Date(unixSeconds * 1000);
+  return d.toLocaleDateString([], { month: 'numeric', day: 'numeric' }) + ' '
+    + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
 function svDuration(sec) {
   const s = Number(sec) || 0;
   if (!s) return '—';
@@ -5145,6 +5157,42 @@ function svNormalizeDate(raw) {
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
+const svIso = d => d.toLocaleDateString('en-CA');
+// Resolve the current selector into an inclusive [from, to] date window, anchored
+// on the date in the picker (svDate). Week is Mon–Sun; the window never extends
+// past today so we don't fetch empty future days.
+function svComputeRange() {
+  const anchor = svDate || todayStr();
+  const today = todayStr();
+  const clamp = iso => (iso > today ? today : iso);
+  if (svRange === 'week') {
+    const d = new Date(anchor + 'T00:00:00'); const back = (d.getDay() + 6) % 7; // Mon start
+    const mon = new Date(d); mon.setDate(d.getDate() - back);
+    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+    return { from: svIso(mon), to: clamp(svIso(sun)), label: 'Week of ' + svIso(mon) };
+  }
+  if (svRange === 'month') {
+    const d = new Date(anchor + 'T00:00:00');
+    const first = new Date(d.getFullYear(), d.getMonth(), 1);
+    const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    return { from: svIso(first), to: clamp(svIso(last)), label: first.toLocaleDateString([], { month: 'long', year: 'numeric' }) };
+  }
+  if (svRange === 'custom' && svRangeFrom && svRangeTo) {
+    const from = svRangeFrom <= svRangeTo ? svRangeFrom : svRangeTo;
+    const to = svRangeFrom <= svRangeTo ? svRangeTo : svRangeFrom;
+    return { from, to, label: from + ' → ' + to };
+  }
+  return { from: anchor, to: anchor, label: anchor };
+}
+function svDatesInRange(from, to) {
+  const out = []; const end = new Date(to + 'T00:00:00'); const d = new Date(from + 'T00:00:00');
+  let guard = 0;
+  while (d <= end && guard++ < 70) { out.push(svIso(d)); d.setDate(d.getDate() + 1); }
+  return out;
+}
+const svNotConfiguredHtml = d => `<div class="banner banner-warn">🔌 <b>SimpleVOIP is not configured.</b>
+  <div class="small" style="margin-top:6px">${esc(d.message || '')}</div></div>`;
+
 async function loadCallAnalyzer() {
   const list = $('#sv-list');
   if (!list) return;
@@ -5157,22 +5205,38 @@ async function loadCallAnalyzer() {
   await svLoadUsers();
   list.innerHTML = '<p class="small muted">Loading calls…</p>';
   svClosePanel();
+  const who = $('#sv-user')?.value || '';
+  const qUser = who ? `&user_id=${encodeURIComponent(who)}` : '';
+  const range = svComputeRange();
+  const dates = svDatesInRange(range.from, range.to);
+  svMultiDay = dates.length > 1;
   try {
-    const who = $('#sv-user')?.value || '';
-    const d = await api(`/api/simplevoip/calls?date=${encodeURIComponent(svDate)}`
-      + (who ? `&user_id=${encodeURIComponent(who)}` : ''));
-    if (!d.configured) {
-      list.innerHTML = `<div class="banner banner-warn">🔌 <b>SimpleVOIP is not configured.</b>
-        <div class="small" style="margin-top:6px">${esc(d.message || '')}</div></div>`;
-      $('#sv-meta').textContent = '';
-      return;
+    if (!svMultiDay) {
+      const d = await api(`/api/simplevoip/calls?date=${encodeURIComponent(dates[0])}${qUser}`);
+      if (!d.configured) { list.innerHTML = svNotConfiguredHtml(d); $('#sv-meta').textContent = ''; return; }
+      svCalls = d.calls || [];
+      const withT = svCalls.filter(c => c.has_transcript).length;
+      $('#sv-meta').textContent =
+        `${svCalls.length} call${svCalls.length === 1 ? '' : 's'} on ${d.date} · ${withT} with a transcript`
+        + (d.user ? ` · ${d.user}` : '');
+      svRender(d.error);
+    } else {
+      // Range: fetch each day with scan=0 (skip the heavy per-transcript compliance
+      // pre-scan), then concatenate newest-first by the unix datetime.
+      const results = await Promise.all(dates.map(dt =>
+        api(`/api/simplevoip/calls?date=${encodeURIComponent(dt)}&scan=0${qUser}`)
+          .catch(e => ({ calls: [], error: e.message }))));
+      const notCfg = results.find(r => r && r.configured === false);
+      if (notCfg) { list.innerHTML = svNotConfiguredHtml(notCfg); $('#sv-meta').textContent = ''; return; }
+      svCalls = results.flatMap(r => (r && r.calls) || []).sort((a, b) => (b.datetime || 0) - (a.datetime || 0));
+      const withT = svCalls.filter(c => c.has_transcript).length;
+      const errs = results.map(r => r && r.error).filter(Boolean);
+      const uName = results.find(r => r && r.user)?.user;
+      $('#sv-meta').textContent =
+        `${svCalls.length} call${svCalls.length === 1 ? '' : 's'} · ${range.label} · ${withT} with a transcript`
+        + (uName ? ` · ${uName}` : '');
+      svRender(errs.length ? `${errs.length} day(s) had errors — ${errs[0]}` : null);
     }
-    svCalls = d.calls || [];
-    const withT = svCalls.filter(c => c.has_transcript).length;
-    $('#sv-meta').textContent =
-      `${svCalls.length} call${svCalls.length === 1 ? '' : 's'} on ${d.date} · ${withT} with a transcript`
-      + (d.user ? ` · ${d.user}` : '');
-    svRender(d.error);
   } catch (err) {
     list.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
   }
@@ -5201,8 +5265,10 @@ function svDetectAgent(transcript) {
   if (!transcript) return null;
   const t = String(transcript);
   for (const n of SV_KNOWN_AGENTS) {
-    const re = new RegExp('(?:this is|my name is|speaking with|you(?:\'re| are) speaking with)\\s+' + n + '\\b', 'i');
-    if (re.test(t)) return n === 'Bekah' ? 'Rebekah' : (n === 'Rocio' ? 'Rocío' : n);
+    // Mirrors the server (call-grading.js detectAgentFromTranscript).
+    const before = new RegExp('(?:this is|my name is|speaking with|you(?:\'re| are) speaking with|you(?:\'ve| have) reached)\\s+' + n + '\\b', 'i');
+    const after = new RegExp('\\b' + n + '\\s+(?:speaking|here)\\b', 'i');
+    if (before.test(t) || after.test(t)) return n === 'Bekah' ? 'Rebekah' : (n === 'Rocio' ? 'Rocío' : n);
   }
   return null;
 }
@@ -5234,18 +5300,26 @@ function svCallMatches(c) {
 function svRender(error) {
   const list = $('#sv-list');
   if (!list) return;
-  if (!svCalls.length) {
-    list.innerHTML = (error ? `<div class="banner banner-warn">${esc(error)}</div>` : '')
-      + '<div class="empty-state">No calls found for this date.</div>';
-    return;
-  }
 
   const sel = (id, label, opts, cur) => `<label class="sv-filter"><span class="muted small">${label}</span>
     <select id="${id}">${opts.map(([v, t]) =>
       `<option value="${v}"${v === cur ? ' selected' : ''}>${t}</option>`).join('')}</select></label>`;
 
-  list.innerHTML = (error ? `<div class="banner banner-warn">Partial results — ${esc(error)}</div>` : '')
+  const rangeSel = sel('sv-f-range', 'Range',
+    [['today', 'Today'], ['week', 'This Week'], ['month', 'This Month'], ['custom', 'Custom']], svRange);
+  const customInputs = svRange === 'custom'
+    ? `<label class="sv-filter"><span class="muted small">From</span>
+         <input id="sv-f-from" type="date" value="${esc(svRangeFrom || '')}"></label>
+       <label class="sv-filter"><span class="muted small">To</span>
+         <input id="sv-f-to" type="date" value="${esc(svRangeTo || '')}"></label>`
+    : '';
+
+  // The filter bar renders whether or not calls loaded, so the Range control is
+  // always reachable (an empty range would otherwise trap the reviewer).
+  list.innerHTML = (error ? `<div class="banner banner-warn">${esc(error)}</div>` : '')
     + `<div class="sv-filterbar">
+        ${rangeSel}
+        ${customInputs}
         ${sel('sv-f-dir', 'Direction', [['all', 'All'], ['inbound', 'Inbound'], ['outbound', 'Outbound']], svFilters.direction)}
         ${sel('sv-f-status', 'Status', [['all', 'All'], ['answered', 'Answered'], ['missed', 'Missed'],
           ['answered_elsewhere', 'Answered Elsewhere'], ['no_transcript', 'No Transcript']], svFilters.status)}
@@ -5255,8 +5329,15 @@ function svRender(error) {
       </div>
       <div id="sv-table-wrap"></div>`;
 
-  // Wire filters. The bar is rendered once; only the table + count re-render on
-  // change, so the phone input keeps focus while typing.
+  // Range change re-fetches (a new set of days); Direction/Status/Phone only
+  // re-filter the loaded set, so the phone input keeps focus while typing.
+  $('#sv-f-range')?.addEventListener('change', e => {
+    svRange = e.target.value;
+    if (svRange === 'custom') { svRangeFrom = svRangeFrom || svDate; svRangeTo = svRangeTo || svDate; svRender(); }
+    else loadCallAnalyzer();
+  });
+  $('#sv-f-from')?.addEventListener('change', e => { svRangeFrom = svNormalizeDate(e.target.value) || svRangeFrom; if (svRangeFrom && svRangeTo) loadCallAnalyzer(); });
+  $('#sv-f-to')?.addEventListener('change', e => { svRangeTo = svNormalizeDate(e.target.value) || svRangeTo; if (svRangeFrom && svRangeTo) loadCallAnalyzer(); });
   $('#sv-f-dir')?.addEventListener('change', e => { svFilters.direction = e.target.value; svApplyFilters(); });
   $('#sv-f-status')?.addEventListener('change', e => { svFilters.status = e.target.value; svApplyFilters(); });
   $('#sv-f-phone')?.addEventListener('input', e => { svFilters.phone = e.target.value; svApplyFilters(); });
@@ -5274,7 +5355,7 @@ function svApplyFilters() {
   if (count) count.textContent = `Showing ${rows.length} of ${svCalls.length} call${svCalls.length === 1 ? '' : 's'}`;
 
   if (!rows.length) {
-    wrap.innerHTML = '<div class="empty-state">No calls match the filters.</div>';
+    wrap.innerHTML = `<div class="empty-state">${svCalls.length ? 'No calls match the filters.' : 'No calls found for this range.'}</div>`;
     return;
   }
 
@@ -5306,7 +5387,7 @@ function svApplyFilters() {
         const aeRow = aeInner ? `<tr class="sv-ae-row"><td colspan="6" class="sv-ae-cell">${aeInner}</td></tr>` : '';
         return `<tr class="${c.office_redirect ? 'sv-row-flagged' : ''}">
         <td class="mono small">${c.office_redirect
-              ? '<span class="sv-flag-badge" title="Office Redirect policy violation — open transcript">🚨</span> ' : ''}${esc(svTime(c.datetime))}</td>
+              ? '<span class="sv-flag-badge" title="Office Redirect policy violation — open transcript">🚨</span> ' : ''}${esc(svMultiDay ? svDateTime(c.datetime) : svTime(c.datetime))}</td>
         <td>${esc(c.caller)}${c.caller_number && c.caller_number !== c.caller
               ? ` <span class="muted small">${esc(c.caller_number)}</span>` : ''}</td>
         <td class="small muted">${esc(c.direction || '')}</td>
@@ -5523,7 +5604,11 @@ async function svGradeCurrent() {
   const transcript = t.transcript_text || '';
   if (!transcript.trim()) { toast('This call has no transcript to grade', 'error'); return; }
 
-  const agent = t.agent_name
+  // Grade whoever IDENTIFIES themselves on the call (Rebekah's line is shared),
+  // falling back to the line owner. The server also re-detects from the
+  // transcript; sending the identified name keeps the two in agreement.
+  const agent = svPanelState.identified
+    || t.agent_name
     || ($('#sv-user')?.selectedOptions?.[0]?.textContent || '').split('—')[0].trim()
     || null;
 
