@@ -4148,6 +4148,32 @@ const APPFOLIO_LEASE_HISTORY_REPORT= '/api/v2/reports/lease_history.json';
 // property_id → integer or null.
 const leasingPropId = v => { const n = mwoNum(v); return n == null ? null : Math.round(n); };
 
+// Shared upsert with detailed logging. Surfaces the real Supabase error (missing
+// onConflict unique constraint = 42P10, permission denied = 42501, type mismatch,
+// etc.) to the Render logs AND the caller instead of failing silently. Returns
+// the number of rows actually persisted (from .select()), so raw≠mapped≠synced
+// pinpoints whether the problem is the report, the mapping, or the write.
+async function leasingSyncUpsert(table, rows, onConflict) {
+  const db = supabaseAdmin || supabasePublic;
+  let synced = 0;
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500); if (!chunk.length) break;
+    const { data, error } = await db.from(table).upsert(chunk, { onConflict }).select(onConflict);
+    if (error) {
+      console.error(`[leasing-sync] ${table} upsert failed`, { code: error.code, message: error.message, details: error.details, hint: error.hint });
+      const e = new Error(`${error.message}${error.details ? ' | ' + error.details : ''}${error.hint ? ' | hint: ' + error.hint : ''}${error.code ? ' (code ' + error.code + ')' : ''}`);
+      e.code = 400; throw e;
+    }
+    synced += data ? data.length : chunk.length;
+  }
+  return synced;
+}
+// Log raw report size + a sample of the mapped row so field-name mismatches and
+// all-skipped mappings are visible in the Render logs.
+const leasingSyncLog = (label, raw, rows) =>
+  console.log(`[leasing-sync] ${label}: serviceRole=${!!supabaseAdmin} raw=${raw.length} mapped=${rows.length}`,
+    raw[0] ? { rawKeys: Object.keys(raw[0]), sampleMapped: rows[0] || null } : { note: 'report returned 0 rows' });
+
 // POST /api/leasing/sync/showings — upsert leasing_showings on showing_id.
 app.post('/api/leasing/sync/showings', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
@@ -4172,15 +4198,9 @@ app.post('/api/leasing/sync/showings', requireMetricAccess, async (req, res) => 
         synced_at: now,
       });
     }
-    const db = supabaseAdmin || supabasePublic;
-    let synced = 0;
-    for (let i = 0; i < rows.length; i += 500) {
-      const chunk = rows.slice(i, i + 500); if (!chunk.length) break;
-      const { error } = await db.from('leasing_showings').upsert(chunk, { onConflict: 'showing_id' });
-      if (error) throw new Error(error.message);
-      synced += chunk.length;
-    }
-    res.json({ ok: true, synced, timestamp: now });
+    leasingSyncLog('showings', raw, rows);
+    const synced = await leasingSyncUpsert('leasing_showings', rows, 'showing_id');
+    res.json({ ok: true, synced, mapped: rows.length, raw: raw.length, serviceRole: !!supabaseAdmin, timestamp: now });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Showings sync failed: ' + err.message });
   }
@@ -4209,15 +4229,9 @@ app.post('/api/leasing/sync/applications', requireMetricAccess, async (req, res)
         synced_at: now,
       });
     }
-    const db = supabaseAdmin || supabasePublic;
-    let synced = 0;
-    for (let i = 0; i < rows.length; i += 500) {
-      const chunk = rows.slice(i, i + 500); if (!chunk.length) break;
-      const { error } = await db.from('leasing_applications').upsert(chunk, { onConflict: 'rental_application_id' });
-      if (error) throw new Error(error.message);
-      synced += chunk.length;
-    }
-    res.json({ ok: true, synced, from_date, timestamp: now });
+    leasingSyncLog('applications', raw, rows);
+    const synced = await leasingSyncUpsert('leasing_applications', rows, 'rental_application_id');
+    res.json({ ok: true, synced, mapped: rows.length, raw: raw.length, serviceRole: !!supabaseAdmin, from_date, timestamp: now });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Applications sync failed: ' + err.message });
   }
@@ -4247,15 +4261,9 @@ app.post('/api/leasing/sync/lease-history', requireMetricAccess, async (req, res
         synced_at: now,
       });
     }
-    const db = supabaseAdmin || supabasePublic;
-    let synced = 0;
-    for (let i = 0; i < rows.length; i += 500) {
-      const chunk = rows.slice(i, i + 500); if (!chunk.length) break;
-      const { error } = await db.from('leasing_lease_history').upsert(chunk, { onConflict: 'lease_uuid' });
-      if (error) throw new Error(error.message);
-      synced += chunk.length;
-    }
-    res.json({ ok: true, synced, timestamp: now });
+    leasingSyncLog('lease-history', raw, rows);
+    const synced = await leasingSyncUpsert('leasing_lease_history', rows, 'lease_uuid');
+    res.json({ ok: true, synced, mapped: rows.length, raw: raw.length, serviceRole: !!supabaseAdmin, timestamp: now });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Lease-history sync failed: ' + err.message });
   }
