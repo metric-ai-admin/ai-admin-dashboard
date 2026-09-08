@@ -12,7 +12,28 @@
 // browser (per Metric's key-safety rule).
 
 const SYSTEM_PROMPT = require('./call-grade-prompt.json');
+// Danny is a receptionist, not a leasing agent — his calls are graded against a
+// routing/transfer protocol (call-grade-prompt-danny.json), same output schema.
+const DANNY_PROMPT = require('./call-grade-prompt-danny.json');
 const GRADE_MODEL = process.env.CALL_GRADE_MODEL || 'claude-sonnet-4-6';
+
+// Agents whose name in "this is <name>" reliably identifies who was on the call.
+// Rebekah's line is shared, so the graded agent comes from self-identification,
+// not the line owner.
+const KNOWN_AGENTS = ['Danny', 'Rebekah', 'Bekah', 'Katie', 'Rhoxie', 'Katrina', 'Oscar', 'Erick', 'Lyndsay', 'Rocío', 'Rocio', 'Yeni', 'Sammy'];
+// Detect the agent from how they introduce themselves in the transcript
+// ("this is <Name>", "my name is <Name>", "speaking with <Name>"). Returns the
+// canonical name, or null when no known agent self-identifies.
+function detectAgentFromTranscript(transcript) {
+  if (!transcript) return null;
+  const text = String(transcript);
+  for (const name of KNOWN_AGENTS) {
+    const re = new RegExp('(?:this is|my name is|speaking with|you(?:\'re| are) speaking with)\\s+' + name + '\\b', 'i');
+    if (re.test(text)) return name === 'Bekah' ? 'Rebekah' : (name === 'Rocio' ? 'Rocío' : name);
+  }
+  return null;
+}
+const isDanny = agent => /\bdanny\b/i.test(String(agent || ''));
 
 // Strip a ```json … ``` fence if the model wrapped its JSON, then parse.
 function parseModelJson(text) {
@@ -65,7 +86,9 @@ async function gradeTranscript({ callType, agent, duration, transcript }) {
     + '\nAgent: ' + (agent || 'unknown')
     + '\nDuration: ' + (duration || 'unknown') + ' seconds'
     + '\n\nTRANSCRIPT:\n' + transcript;
-  return anthropicJson({ system: SYSTEM_PROMPT, user: userContent, maxTokens: 4000 });
+  // Danny gets the receptionist rubric; everyone else the standard leasing rubric.
+  const system = isDanny(agent) ? DANNY_PROMPT : SYSTEM_PROMPT;
+  return anthropicJson({ system, user: userContent, maxTokens: 4000 });
 }
 
-module.exports = { SYSTEM_PROMPT, gradeTranscript, anthropicJson, GRADE_MODEL };
+module.exports = { SYSTEM_PROMPT, DANNY_PROMPT, gradeTranscript, anthropicJson, GRADE_MODEL, detectAgentFromTranscript };

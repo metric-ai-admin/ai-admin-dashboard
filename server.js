@@ -4269,13 +4269,17 @@ app.post('/api/calls/grade', requireAuth, async (req, res) => {
   if (!b.recording_id) return res.status(400).json({ error: 'recording_id is required' });
   if (!b.transcript || !String(b.transcript).trim()) return res.status(400).json({ error: 'transcript is required' });
   try {
+    // Rebekah's line is shared — grade whoever IDENTIFIES themselves on the call,
+    // not the line owner. Falls back to the passed agent when nobody self-IDs.
+    const identified = callGrading.detectAgentFromTranscript(b.transcript);
+    const gradeAgent = identified || b.agent_name;
     const parsed = await callGrading.gradeTranscript({
       callType: b.call_direction || b.call_type,
-      agent: b.agent_name,
+      agent: gradeAgent,
       duration: b.duration_seconds,
       transcript: b.transcript,
     });
-    const row = callGradeRow(parsed, b);
+    const row = callGradeRow(parsed, { ...b, agent_name: gradeAgent });
     const db = supabaseAdmin || supabasePublic;
     await db.from('call_grades').delete().eq('recording_id', row.recording_id);
     const { data, error } = await db.from('call_grades').insert(row).select('*').single();

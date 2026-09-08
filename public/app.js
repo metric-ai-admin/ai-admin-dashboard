@@ -5003,6 +5003,26 @@ function svStatusCat(c) {
   return 'other';
 }
 
+// Detect the agent from self-identification in the transcript (mirrors the
+// server's list). Rebekah's line is shared, so who's graded is who says their
+// name on the call, not the line owner.
+const SV_KNOWN_AGENTS = ['Danny', 'Rebekah', 'Bekah', 'Katie', 'Rhoxie', 'Katrina', 'Oscar', 'Erick', 'Lyndsay', 'Rocío', 'Rocio', 'Yeni', 'Sammy'];
+function svDetectAgent(transcript) {
+  if (!transcript) return null;
+  const t = String(transcript);
+  for (const n of SV_KNOWN_AGENTS) {
+    const re = new RegExp('(?:this is|my name is|speaking with|you(?:\'re| are) speaking with)\\s+' + n + '\\b', 'i');
+    if (re.test(t)) return n === 'Bekah' ? 'Rebekah' : (n === 'Rocio' ? 'Rocío' : n);
+  }
+  return null;
+}
+const svDirBadge = dir => {
+  const d = String(dir || '').toLowerCase();
+  if (d === 'inbound') return '<span class="badge badge-blue">⬇ Inbound</span>';
+  if (d === 'outbound') return '<span class="badge badge-gray">⬆ Outbound</span>';
+  return '';
+};
+
 function svCallMatches(c) {
   const f = svFilters;
   if (f.direction !== 'all' && String(c.direction || '').toLowerCase() !== f.direction) return false;
@@ -5202,9 +5222,13 @@ async function svOpen(btn) {
         <div class="sv-compliance-action">POLICY VIOLATION: Agent directed resident/applicant to office — requires follow-up with ${esc(agent)}</div>
       </div>` : '';
 
+    // Rebekah's line is shared: show who identified themselves on the call vs the
+    // line owner. `line` is the transcript's line owner (or the selected user).
+    const line = t.agent_name || $('#sv-user')?.selectedOptions?.[0]?.textContent || '';
+    const identified = svDetectAgent(t.transcript_text);
     // Keep everything the transcript view needs so the panel can switch between
     // the transcript and the grade result without re-fetching.
-    svPanelState = { t, row, agent, meta, compliance, sentiment, grade: null };
+    svPanelState = { t, row, agent, line, identified, meta, compliance, sentiment, grade: null };
     svRenderTranscriptPanel();
     svLoadExistingGrade(t.recording_id || id);   // non-blocking: reveals a "View grade" chip if one exists
   } catch (err) {
@@ -5243,14 +5267,19 @@ const svgBadgeColor = g => svgNotScoreable(g) ? SVG_NS_COLOR : svgGradeColor(g.o
 function svRenderTranscriptPanel() {
   const panel = $('#sv-panel');
   if (!panel || !svPanelState) return;
-  const { t, row, compliance, sentiment, meta } = svPanelState;
+  const { t, row, compliance, sentiment, meta, line, identified } = svPanelState;
+  // Agent line: show self-identified name vs the (possibly shared) line owner.
+  const agentLine = identified
+    ? `Agent (identified as): <b>${esc(identified)}</b>${line && identified !== line ? ` · Line: ${esc(line)}` : ''}`
+    : (line ? `Line: ${esc(line)}` : '');
   panel.innerHTML = `
     <div class="sv-panel-head">
-      <div>
-        <h4 style="margin:0">${esc(t.caller || row.caller || 'Call')}</h4>
+      <div style="min-width:0">
+        <h4 style="margin:0">${esc(t.caller || row.caller || 'Call')} ${svDirBadge(row.direction)}</h4>
         <p class="muted small" style="margin:2px 0 0">
           ${esc(row.datetime ? svTime(row.datetime) : '')}${row.duration ? ` · ${esc(svDuration(row.duration))}` : ''}
         </p>
+        ${agentLine ? `<p class="muted small" style="margin:3px 0 0">${agentLine}</p>` : ''}
       </div>
       <div class="sv-head-actions">
         <button class="btn-sm primary" id="sv-grade-btn">⭐ Grade This Call</button>
@@ -5368,7 +5397,12 @@ function svShowGrade(g) {
     </div>
     <div class="sv-sec sv-sec-transcript">
       <div class="sv-sec-body"><div class="sv-transcript-scroll svg-fb">${svGradeFeedbackHtml(g)}</div></div>
-    </div>`;
+    </div>
+    ${svPanelState?.t?.transcript_text ? `
+    <div class="sv-sec sv-sec-transcript">
+      <div class="sv-sec-title">Full Transcript</div>
+      <div class="sv-sec-body"><div class="sv-transcript-scroll">${svRenderTranscript(svPanelState.t.transcript_text)}</div></div>
+    </div>` : ''}`;
   $('#sv-close')?.addEventListener('click', svClosePanel);
   $('#sv-grade-back')?.addEventListener('click', svRenderTranscriptPanel);
 }
@@ -5432,7 +5466,20 @@ function svGradeFeedbackHtml(g) {
 // her KPI row, filter pills, and detail design. All markup is namespaced under
 // .svg-tool / .cqa-* so it is fully isolated from the rest of the dashboard —
 // the Calls list and transcript panel are untouched.
-const svgState = { grades: [], filters: { agent: 'All', grade: 'All', direction: 'All', management: null }, selectedId: null, detailCache: {}, loaded: false };
+const svgState = { grades: [], filters: { agent: 'All', grade: 'All', direction: 'All', management: null, period: 'all', from: '', to: '' }, selectedId: null, detailCache: {}, loaded: false };
+// Start-of-day for a period option, as a YYYY-MM-DD lower bound (local time).
+function svgPeriodStart(period) {
+  const d = new Date(); d.setHours(0, 0, 0, 0);
+  if (period === 'today') return d.toLocaleDateString('en-CA');
+  if (period === 'week') { d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toLocaleDateString('en-CA'); } // Monday
+  if (period === 'month') { d.setDate(1); return d.toLocaleDateString('en-CA'); }
+  return null;
+}
+// A grade's date for period filtering: prefer the call date, fall back to graded_at.
+function svgGradeDate(g) {
+  if (g.call_date && /^\d{4}-\d{2}-\d{2}$/.test(g.call_date)) return g.call_date;
+  return g.graded_at ? new Date(g.graded_at).toLocaleDateString('en-CA') : null;
+}
 
 function svSetView(view) {
   $$('#sv-view-toggle .sv-vt-btn').forEach(b => b.classList.toggle('active', b.dataset.svView === view));
@@ -5466,6 +5513,17 @@ function svgFiltered() {
     else if (f.grade === 'DF') { if (ns || !['D', 'F'].includes(g.overall_grade)) return false; }
     else if (['A', 'B', 'C'].includes(f.grade)) { if (ns || g.overall_grade !== f.grade) return false; }
     if (f.direction !== 'All' && (g.call_direction || '') !== f.direction) return false;
+    // Period / date-range filter (by call date, falling back to graded date).
+    if (f.period && f.period !== 'all') {
+      const gd = svgGradeDate(g);
+      if (f.period === 'custom') {
+        if (f.from && (!gd || gd < f.from)) return false;
+        if (f.to && (!gd || gd > f.to)) return false;
+      } else {
+        const start = svgPeriodStart(f.period);
+        if (start && (!gd || gd < start)) return false;
+      }
+    }
     if (f.management === 'flagged' && !svgIsFlagged(g)) return false;
     if (f.management === 'legal' && !g.legal_violation) return false;
     if (f.management === 'fairhousing' && !g.fair_housing_flag) return false;
@@ -5508,6 +5566,9 @@ function svgRender() {
 
   el.querySelectorAll('[data-svg-grade]').forEach(b => b.addEventListener('click', () => { svgState.filters.grade = b.dataset.svgGrade; svgRender(); }));
   el.querySelectorAll('[data-svg-dir]').forEach(b => b.addEventListener('click', () => { svgState.filters.direction = b.dataset.svgDir; svgRender(); }));
+  el.querySelectorAll('[data-svg-period]').forEach(b => b.addEventListener('click', () => { svgState.filters.period = b.dataset.svgPeriod; svgRender(); }));
+  $('#svg-f-from')?.addEventListener('change', e => { svgState.filters.from = e.target.value; svgRender(); });
+  $('#svg-f-to')?.addEventListener('change', e => { svgState.filters.to = e.target.value; svgRender(); });
   el.querySelectorAll('[data-svg-mgmt]').forEach(b => b.addEventListener('click', () => { const m = b.dataset.svgMgmt; svgState.filters.management = svgState.filters.management === m ? null : m; svgRender(); }));
   $('#svg-f-agent')?.addEventListener('change', e => { svgState.filters.agent = e.target.value; svgRender(); });
   el.querySelectorAll('.cqa-row').forEach(r => r.addEventListener('click', () => svgSelect(r.dataset.rid)));
@@ -5542,7 +5603,15 @@ function svgFilterPillsHtml() {
   const mgmtPills = mgmtDefs.map(([v, t, cls]) =>
     `<button class="cqa-pill ${cls}${f.management === v ? ' active' : ''}" data-svg-mgmt="${v}">${t}</button>`).join('');
   const agents = ['All', ...Array.from(new Set(svgState.grades.map(g => g.agent_name || 'Unidentified'))).sort()];
+  const periodDefs = [['all', 'All time'], ['today', 'Today'], ['week', 'This Week'], ['month', 'This Month'], ['custom', 'Custom']];
+  const periodPills = periodDefs.map(([v, t]) =>
+    `<button class="cqa-pill${f.period === v ? ' active' : ''}" data-svg-period="${v}">${t}</button>`).join('');
+  const customRange = f.period === 'custom'
+    ? `<span class="cqa-daterange"><input type="date" class="cqa-select" id="svg-f-from" value="${esc(f.from || '')}"> – <input type="date" class="cqa-select" id="svg-f-to" value="${esc(f.to || '')}"></span>`
+    : '';
   return `<div class="cqa-filters">
+    ${periodPills}${customRange}
+    <span class="cqa-pill-sep"></span>
     ${gradePills}
     <span class="cqa-pill-sep"></span>
     ${dirPills}
