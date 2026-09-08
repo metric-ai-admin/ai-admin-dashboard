@@ -3275,6 +3275,8 @@ function crmRenderPhoneInstruction(p) {
   const el = $('#crm-phone-instruction');
   if (!el) return;
   const phone = ((p && p.property_phone) || '').trim();
+  const ver = (p && p.phone_number_version) || 0;
+  const shopCount = ((p && p.phone_shops) || []).filter(s => (s.phone_number_version || 0) === ver && parseNotes(s.notes).connection).length;
   const showEditor = (current) => {
     el.innerHTML = `<div class="crm-call-instruction" style="background:#F4F1E8;border:1px solid #DCD3B0;border-radius:8px;padding:10px 12px;margin-bottom:10px;">
         <label class="small" style="font-weight:600">Property phone number
@@ -3287,18 +3289,34 @@ function crmRenderPhoneInstruction(p) {
     $('#crm-phone-number-cancel').addEventListener('click', () => crmRenderPhoneInstruction(crmState.activeProperty));
     $('#crm-phone-number-input').focus();
   };
+  // "New Phone Number" resets the 3-shop cycle (bumps phone_number_version).
+  const showNewNumberEditor = () => {
+    el.innerHTML = `<div class="crm-call-instruction" style="background:#FBF3E6;border:1px solid #E7C48B;border-radius:8px;padding:10px 12px;margin-bottom:10px;color:#7A5A1E;">
+        <label class="small" style="font-weight:600">New phone number — resets the 3-shop cycle (any agent can shop again)
+          <input id="crm-newnum-input" class="crm-input" type="tel" placeholder="(512) 555-0123" style="margin:0 8px;max-width:200px">
+        </label>
+        <button class="btn-sm primary" id="crm-newnum-save">Save &amp; reset cycle</button>
+        <button class="btn-sm" id="crm-newnum-cancel">Cancel</button>
+      </div>`;
+    $('#crm-newnum-save').addEventListener('click', crmSaveNewPhoneNumber);
+    $('#crm-newnum-cancel').addEventListener('click', () => crmRenderPhoneInstruction(crmState.activeProperty));
+    $('#crm-newnum-input').focus();
+  };
+  const newNumBtn = shopCount > 0 ? `<button class="btn-sm crm-phone-newnum-btn" style="margin-left:8px">+ New Phone Number</button>` : '';
   if (phone) {
     el.innerHTML = `<div class="crm-call-instruction" style="background:#F4F1E8;border:1px solid #DCD3B0;border-radius:8px;padding:10px 12px;margin-bottom:10px;font-weight:600;color:#3A3120;">
         📞 Call ${esc(phone)} — put on speaker and record the call with your computer's recording app. Ask for pricing on apartments if answered. Let the agent lead the call. Document their effort. Save the recording and upload to OneDrive labelled with Date and Property Name.
-        <button class="btn-sm crm-phone-edit-btn" style="margin-left:8px">Edit</button>
+        <button class="btn-sm crm-phone-edit-btn" style="margin-left:8px">Edit</button>${newNumBtn}
       </div>`;
     el.querySelector('.crm-phone-edit-btn').addEventListener('click', () => showEditor(phone));
+    el.querySelector('.crm-phone-newnum-btn')?.addEventListener('click', showNewNumberEditor);
   } else {
     el.innerHTML = `<div class="crm-call-instruction" style="background:#FBF3E6;border:1px solid #E7C48B;border-radius:8px;padding:10px 12px;margin-bottom:10px;color:#7A5A1E;">
         ⚠ No phone number on file for this property.
-        <button class="btn-sm primary crm-phone-add-number-btn" style="margin-left:8px">+ Add Phone Number</button>
+        <button class="btn-sm primary crm-phone-add-number-btn" style="margin-left:8px">+ Add Phone Number</button>${newNumBtn}
       </div>`;
     el.querySelector('.crm-phone-add-number-btn').addEventListener('click', () => showEditor(''));
+    el.querySelector('.crm-phone-newnum-btn')?.addEventListener('click', showNewNumberEditor);
   }
 }
 
@@ -3316,6 +3334,26 @@ async function crmSavePhoneNumber() {
     crmState.activeProperty = { ...p, property_phone: updated.property_phone };
     crmRenderPhoneInstruction(crmState.activeProperty);
     toast(val ? 'Phone number saved ✅' : 'Phone number cleared', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// New number → bump phone_number_version server-side (resets the 3-shop cycle),
+// then re-fetch so the counter and task queue reflect a fresh attempt 1 of 3.
+async function crmSaveNewPhoneNumber() {
+  const p = crmState.activeProperty;
+  if (!p) return;
+  const val = ($('#crm-newnum-input')?.value || '').trim();
+  if (!val) { toast('Enter the new phone number.', 'error'); return; }
+  try {
+    await crmFetch(`/api/crm/properties/${p.id}/new-phone-number`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: val }),
+    });
+    const updated = await crmFetch(`/api/crm/properties/${p.id}`);
+    crmState.activeProperty = updated;
+    crmRenderPhoneList(updated.phone_shops);
+    crmReloadTaskView();
+    toast('New number saved — phone-shop cycle reset ✅', 'success');
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -3362,6 +3400,7 @@ $('#crm-phone-save').addEventListener('click', async () => {
     crmState.activeProperty = updated;
     crmRenderPhoneList(updated.phone_shops);
     $('#crm-phone-form').classList.add('hidden');
+    crmReloadTaskView(); // phone task advances (attempt N of 3) / drops off at 3
   } catch (err) { toast(err.message, 'error'); }
 });
 

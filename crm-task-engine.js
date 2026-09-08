@@ -116,7 +116,11 @@ const isNoVoicemail = c => c === NO_VOICEMAIL;
 
 /** Phone shops that actually recorded an outcome, newest-last. */
 function connectedShops(p) {
+  const ver = p.phone_number_version || 0;
   return (p.phone_shops || [])
+    // Only count shops from the current phone-number cycle — a "New Phone Number"
+    // reset bumps the version, so older-number shops no longer count.
+    .filter(s => (s.phone_number_version || 0) === ver)
     .map(s => ({ ...s, conn: parseNotes(s.notes).connection, date: dateOf(s.shop_date) }))
     .filter(s => s.conn)
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
@@ -256,7 +260,9 @@ function readyChecklist(p) {
   const success = shops.some(s => isSuccess(s.conn));
   const unsuccessful = shops.filter(s => !isSuccess(s.conn));
   const lastDate = shops.map(s => s.date).filter(Boolean).sort().pop();
-  const phoneDone = success || (unsuccessful.length >= 3 && lastDate && daysSince(lastDate) >= 3);
+  // Lyndsay's rule: 3 phone shops complete the task (a successful contact ends it
+  // early). Date-spacing/agent-rotation are enforced on the generated task, not here.
+  const phoneDone = success || shops.length >= 3;
 
   const os = p.online_shops || [];
   const lastOnline = os.map(s => dateOf(s.shop_date)).filter(Boolean).sort().pop();
@@ -340,10 +346,18 @@ function computeTasks(properties, options = {}) {
 
     if (!holdShops && !success && shops.length < 3) {
       const n = shops.length + 1;
-      const agent = n === 3 ? (p.phone_assignee3 || 'Katie') : (p.phone_assignee || 'Erick');
+      // Lyndsay's rule: each attempt goes to a DIFFERENT agent than the previous
+      // one (a property shouldn't get the same caller twice in a row). Attempt 1
+      // uses the primary assignee; later attempts pick any assignee/agent that
+      // isn't the one who did the most recent shop.
+      const lastAgent = shops.length ? shops[shops.length - 1].agent_name : null;
+      const pool = [p.phone_assignee, p.phone_assignee3, 'Erick', 'Katie', 'Oscar'].filter(Boolean);
+      const agent = (n === 1)
+        ? (p.phone_assignee || pool[0] || 'Erick')
+        : (pool.find(a => a && a !== lastAgent) || pool[0] || 'Erick');
       const lastDate = shops.map(s => s.date).filter(Boolean).sort().pop();
-      // Next attempt is due two days after the last one, not immediately.
-      const due = shops.length && lastDate ? addDays(lastDate, 2) : today;
+      // Attempts are at least one day apart.
+      const due = shops.length && lastDate ? addDays(lastDate, 1) : today;
       tasks.push({ ...base, type: 'phone', label: `Phone shop — attempt ${n} of 3`,
         agent, tab: 'phone', minutes: TASK_TARGET_MINUTES.phone, due, priority: pri.priority });
     }

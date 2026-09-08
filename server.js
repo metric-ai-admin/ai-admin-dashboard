@@ -4719,10 +4719,34 @@ app.post('/api/crm/properties/:id/outreach-drafts', requireCRM, async (req, res)
 app.post('/api/crm/properties/:id/phone-shops', requireCRM, async (req, res) => {
   try {
     const db = supabaseAdmin || supabasePublic;
+    // Tag the shop with the property's current phone-number version, so a later
+    // "New Phone Number" reset starts a fresh 3-attempt cycle.
+    const { data: prop } = await db.from('properties').select('phone_number_version').eq('id', req.params.id).maybeSingle();
+    const ver = (prop && prop.phone_number_version) || 0;
     const { data, error } = await db.from('phone_shops')
-      .insert({ ...req.body, property_id: req.params.id }).select().single();
+      .insert({ ...req.body, property_id: req.params.id, phone_number_version: ver }).select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- POST /api/crm/properties/:id/new-phone-number -----------------------------
+// Save a new leasing-line number and bump phone_number_version, which resets the
+// 3-attempt phone-shop cycle (the engine only counts shops from the current
+// version, so the same agent may shop the new number).
+app.post('/api/crm/properties/:id/new-phone-number', requireCRM, async (req, res) => {
+  const phone = (req.body && req.body.phone != null) ? String(req.body.phone).trim() : '';
+  if (!phone) return res.status(400).json({ error: 'phone is required' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data: prop, error: readErr } = await db.from('properties').select('phone_number_version').eq('id', req.params.id).maybeSingle();
+    if (readErr) throw new Error(readErr.message);
+    const nextVer = ((prop && prop.phone_number_version) || 0) + 1;
+    const { data, error } = await db.from('properties')
+      .update({ property_phone: phone, phone_number_version: nextVer })
+      .eq('id', req.params.id).select().single();
+    if (error) throw new Error(error.message);
+    res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
