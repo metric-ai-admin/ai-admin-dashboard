@@ -4091,6 +4091,42 @@ app.get('/api/leasing/occupancy', requireMetricAccess, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Phase 5a: debug raw endpoints for the 3 remaining leasing reports ────────
+// Tours (Showings), Applications, and Move-ins (Lease History / box_score) still
+// come from hardcoded seeds on the Goal Board. Before locking a sync + field map
+// for each, these admin-gated endpoints return the raw first row so the exact
+// report slug + field names can be verified against a live response — the same
+// verify-first pattern used for occupancy and guest cards. Removed once locked.
+// A ?slug= override tries a different report path; ?from= sets a from_date filter
+// (rental_applications needs one), ?to= an optional to_date.
+async function leasingReportRawProbe(defaultSlug, req, res) {
+  const slug = (req.query.slug && String(req.query.slug).trim()) || defaultSlug;
+  const reportPath = '/api/v2/reports/' + slug + '.json';
+  // A tolerant filter: most leasing reports accept a date window + active
+  // visibility, and custom reports 404 on pagination, so keep it off.
+  const filter = { property_visibility: 'active', paginate_results: false };
+  if (req.query.from) filter.from_date = String(req.query.from);
+  if (req.query.to) filter.to_date = String(req.query.to);
+  try {
+    const raw = await appfolioReportsFetch(reportPath, filter);
+    const first = raw[0] || null;
+    res.json({
+      ok: true, report_slug: slug, count: raw.length,
+      first_row_keys: first ? Object.keys(first) : null,
+      first_row: first,
+    });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502)
+       .json({ ok: false, report_slug: slug, error: err.message });
+  }
+}
+// GET /api/leasing/showings/raw?slug=showings
+app.get('/api/leasing/showings/raw', requireMetricAdmin, (req, res) => leasingReportRawProbe('showings', req, res));
+// GET /api/leasing/applications/raw?slug=rental_applications&from=YYYY-MM-DD
+app.get('/api/leasing/applications/raw', requireMetricAdmin, (req, res) => leasingReportRawProbe('rental_applications', req, res));
+// GET /api/leasing/lease-history/raw?slug=lease_history  (try slug=box_score for move-ins)
+app.get('/api/leasing/lease-history/raw', requireMetricAdmin, (req, res) => leasingReportRawProbe('lease_history', req, res));
+
 // =====================================================================
 // MAINTENANCE WORK ORDERS — synced from AppFolio's Reports API
 // (work_order.json), replacing Erick's manual daily Excel upload. Uses the same
