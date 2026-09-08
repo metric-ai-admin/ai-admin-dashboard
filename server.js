@@ -4663,10 +4663,26 @@ app.patch('/api/leasing/submissions/:id', requireAuth, async (req, res) => {
 // Grades dashboard stays light; a row-expand fetches the full record.
 const CALL_GRADE_LIST_COLS = 'id,recording_id,agent_name,call_date,call_direction,'
   + 'duration_seconds,property_name,overall_score,overall_grade,legal_violation,'
-  + 'fair_housing_flag,liability_flag,summary,outcome,flags,graded_by,graded_at';
+  + 'fair_housing_flag,liability_flag,summary,outcome,flags,not_scoreable,'
+  + 'not_scoreable_reason,graded_by,graded_at';
 
-// Shapes a parsed grade + call metadata into a call_grades row.
+// Shapes a parsed grade + call metadata into a call_grades row. A call the AI
+// declines to score (vendor/utility/internal, or a different agent than the one
+// it's attributed to), or whose flags say the same, is stored as Not Scoreable:
+// overall_grade 'N/S' with no score, so it never reads as a real F or drags the
+// averages.
 function callGradeRow(parsed, meta) {
+  const flags = Array.isArray(parsed.flags) ? parsed.flags.slice() : [];
+  const flagStr = flags.join(' | ').toLowerCase();
+  const notScoreable = parsed.not_scoreable === true
+    || /agent identity mismatch|wrong call|mislabel|not[\s_]*scoreable|no scoreable criteria/i.test(flagStr);
+  const reason = notScoreable
+    ? (parsed.not_scoreable_reason || parsed.reason
+        || flags.find(f => /identity mismatch|wrong call|mislabel|scoreable/i.test(String(f)))
+        || 'Vendor/internal or wrong-agent call')
+    : null;
+  // Keep a canonical N/S flag so any flag-based consumer still detects it.
+  if (notScoreable && !/not[\s_]*scoreable/i.test(flagStr)) flags.unshift('Not Scoreable — ' + reason);
   return {
     recording_id:      meta.recording_id,
     agent_name:        meta.agent_name || null,
@@ -4674,14 +4690,16 @@ function callGradeRow(parsed, meta) {
     call_direction:    meta.call_direction || null,
     duration_seconds:  Number.isFinite(+meta.duration_seconds) ? Math.round(+meta.duration_seconds) : null,
     property_name:     (parsed.property_name && String(parsed.property_name).trim()) || meta.property_name || 'Unidentified',
-    overall_score:     Number.isFinite(+parsed.overall_score) ? Math.round(+parsed.overall_score) : null,
-    overall_grade:     parsed.overall_grade || null,
+    overall_score:     notScoreable ? null : (Number.isFinite(+parsed.overall_score) ? Math.round(+parsed.overall_score) : null),
+    overall_grade:     notScoreable ? 'N/S' : (parsed.overall_grade || null),
+    not_scoreable:     notScoreable,
+    not_scoreable_reason: reason,
     legal_violation:   !!parsed.legal_violation,
     fair_housing_flag: !!parsed.fair_housing_flag,
     liability_flag:    !!parsed.liability_flag,
     summary:           parsed.summary || null,
     outcome:           parsed.outcome || null,
-    flags:             Array.isArray(parsed.flags) ? parsed.flags : [],
+    flags:             flags,
     categories:        Array.isArray(parsed.categories) ? parsed.categories : [],
     coaching:          Array.isArray(parsed.coaching) ? parsed.coaching : [],
     key_moments:       Array.isArray(parsed.key_moments) ? parsed.key_moments : [],

@@ -5524,9 +5524,12 @@ const svgIsFlagged = g => !!(g && (g.legal_violation || g.fair_housing_flag || g
 // (a support call, a different speaker, no scoreable criteria). It comes back as
 // F/low with a flag; we treat it as its own status so it doesn't read as a real F
 // or pollute agent metrics. Detected from the stored flags — no re-grade needed.
-const SVG_NS_PATTERNS = [/wrong\s*call/i, /no\s*scoreable\s*criteria\s*met/i];
+const SVG_NS_PATTERNS = [/wrong\s*call/i, /no\s*scoreable\s*criteria\s*met/i, /agent identity mismatch/i, /mislabel/i, /not[\s_]*scoreable/i];
 function svgNotScoreable(g) {
-  return Array.isArray(g?.flags) && g.flags.some(f => SVG_NS_PATTERNS.some(re => re.test(String(f || ''))));
+  if (!g) return false;
+  if (g.not_scoreable === true) return true;              // stored flag (new grades)
+  if (String(g.overall_grade || '') === 'N/S') return true;
+  return Array.isArray(g.flags) && g.flags.some(f => SVG_NS_PATTERNS.some(re => re.test(String(f || ''))));
 }
 // Badge letter and colour, honouring Not Scoreable.
 const svgBadgeText = g => svgNotScoreable(g) ? 'N/S' : (g.overall_grade || '?');
@@ -5686,7 +5689,7 @@ function svShowGrade(g) {
 // scorecard, coaching, key moments. Namespaced under .svg-fb.
 function svGradeFeedbackHtml(g) {
   let html = '';
-  if (svgNotScoreable(g)) html += `<div class="svg-alert ns">🚫 <b>Not Scoreable</b> — this transcript doesn't reflect the listed agent's call (wrong call / no scoreable criteria). It's excluded from the agent's average and grade distribution.</div>`;
+  if (svgNotScoreable(g)) html += `<div class="svg-alert ns">🚫 <b>Not Scoreable</b> — ${esc(g.not_scoreable_reason || "this transcript doesn't reflect the listed agent's call (vendor/internal, wrong call, or agent identity mismatch)")}. It's excluded from the agent's average and grade distribution.</div>`;
   if (g.legal_violation) html += `<div class="svg-alert legal">⚖️ Legal / liability language detected. Do not engage further without supervisor guidance — escalate to management immediately.</div>`;
   if (g.fair_housing_flag) html += `<div class="svg-alert amber">🏠 Possible Fair Housing concern detected on this call. Review required.</div>`;
   if (g.liability_flag && !g.legal_violation) html += `<div class="svg-alert amber">⚠️ Liability flag raised — threat of legal action or attorney mention. Escalate to management.</div>`;
