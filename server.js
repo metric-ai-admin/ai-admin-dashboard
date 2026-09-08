@@ -4666,6 +4666,17 @@ const CALL_GRADE_LIST_COLS = 'id,recording_id,agent_name,call_date,call_directio
   + 'fair_housing_flag,liability_flag,summary,outcome,flags,not_scoreable,'
   + 'not_scoreable_reason,graded_by,graded_at';
 
+// SimpleVOIP display names carry a " Metric" suffix (e.g. "Danny Metric", "Oscar
+// Metric") that isn't a real surname — it's just how the line is labelled. Strip
+// it so every grade groups under the name Lyndsay knows ("Danny"), matching how
+// agents self-identify on calls. Applied at the single storage point so both the
+// manual and auto-grade paths stay consistent.
+function normalizeAgentName(name) {
+  const n = String(name || '').trim();
+  if (!n) return null;
+  return n.replace(/\s+metric\s*$/i, '').trim() || n;
+}
+
 // Shapes a parsed grade + call metadata into a call_grades row. A call the AI
 // declines to score (vendor/utility/internal, or a different agent than the one
 // it's attributed to), or whose flags say the same, is stored as Not Scoreable:
@@ -4685,7 +4696,7 @@ function callGradeRow(parsed, meta) {
   if (notScoreable && !/not[\s_]*scoreable/i.test(flagStr)) flags.unshift('Not Scoreable — ' + reason);
   return {
     recording_id:      meta.recording_id,
-    agent_name:        meta.agent_name || null,
+    agent_name:        normalizeAgentName(meta.agent_name),
     call_date:         /^\d{4}-\d{2}-\d{2}$/.test(String(meta.call_date || '')) ? meta.call_date : null,
     call_direction:    meta.call_direction || null,
     duration_seconds:  Number.isFinite(+meta.duration_seconds) ? Math.round(+meta.duration_seconds) : null,
@@ -4809,7 +4820,7 @@ async function svDefaultLineOwner() {
       const db = supabaseAdmin || supabasePublic;
       const { data } = await db.from('simplevoip_users')
         .select('name').eq('user_id', uid).maybeSingle();
-      if (data && data.name) svDefaultOwnerCache = data.name;
+      if (data && data.name) svDefaultOwnerCache = normalizeAgentName(data.name);
     }
   } catch { /* leave null */ }
   return svDefaultOwnerCache;
@@ -4861,7 +4872,7 @@ async function svRosterUsers() {
   try {
     const { data } = await db.from('simplevoip_users')
       .select('user_id, name').eq('active', true).order('name');
-    users = (data || []).filter(u => u.user_id);
+    users = (data || []).filter(u => u.user_id).map(u => ({ user_id: u.user_id, name: normalizeAgentName(u.name) }));
   } catch { /* fall through to the default user */ }
   if (!users.length) {
     const uid = simplevoip.defaultUserId();
