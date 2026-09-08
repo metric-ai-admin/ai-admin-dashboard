@@ -426,7 +426,7 @@ const SEED_TOURS={
 // they hit "Reset to draft" to restore this text.
 const DEFAULT_NARRATIVE = `The guest cards report has finally arrived, so <b>Traffic and Follow-Up Calls are real for the first time back through Week 1</b> — no more frozen/estimated figures anywhere on this board. The numbers are bigger than what was being estimated before: <b>Ascent at Northgate (Yeni)</b> pulled 43 traffic last week alone (a 25 goal) and has run as high as 87 in a single week — real volume, but occupancy is still only 47.7% against an 85% goal (37.3 points behind), so most of that traffic isn't converting to tours or applications; this is now the clearest "fix the funnel, not the marketing" case in the portfolio. <b>The Highlander (Oscar)</b> has the widest gap — 49.0% against 85% (36.0 points) — with Traffic on pace (14 vs. a 14 goal) but zero applications last week. <b>Windy Hill (Sammy)</b> is at 48.6% against its 80% step goal (31.4 points, the goal stepped up from 66% to 80% on 8/1) — Traffic (30) and Applications (7) both beat pace last week, real momentum, but the Decision Pending backlog sits at 18 and needs active clearing, not just faster new submissions. <b>The Chateau (Rocio)</b> is at 60.0% against 85% (25.0 points) — steady, on-pace traffic and tours, but conversion through to move-ins remains the bottleneck. <b>Sunset Palms (Oscar)</b> continues to close ground — 69.4% now, only 15.6 points behind, the smallest gap of any off-pace property. <b>Hyde Park Square (Rocio)</b> has now passed its full goal outright — 89.6% against 85% — a real win worth calling out by name. <b>The Sidney (Rocio)</b> is close behind at 82.5% (2.5 points). <b>iConic Round Rock (Oscar)</b> remains just ahead of its 92% goal. <b>iConic Downtown (Oscar)</b> has fallen further behind — 85.0% against a 95% goal (10.0 points, the widest gap it's had all season) — and had zero traffic last week; this one needs attention now, not a "it'll recover on its own" assumption. <b>Windy Hill's Decision Pending backlog (18 applications) remains the single biggest operational risk in the portfolio</b> — several from early August still sitting untouched. <b>Ascent at Northgate also has 3 pending applications from 8/6–8/10.</b>`;
 
-const LASTWEEK_LABEL="8/2–8/8";
+let LASTWEEK_LABEL="8/2–8/8"; // reassigned by injectWeekData() to the live week
 const LASTWEEK={
  "Ascent at Northgate":{traffic:43,tours:5,apps:4,appr:3,den:0,canc:0},
  "Windy Hill Apartment":{traffic:30,tours:6,apps:7,appr:0,den:0,canc:0},
@@ -805,6 +805,11 @@ let wkMinAppliedV1=false;
 let week7CleanupApplied=false;
 let fbSeedApplied3=false;
 let narrativeText=null; // null = show DEFAULT_NARRATIVE; otherwise the person's edited version
+// Phase 4 — live week injection. When the dashboard calls injectWeekData(), the
+// board switches to LIVE_MODE: the selected week's real AppFolio data drives the
+// occupancy cards, Last-Week roll-up, agent performance, funnel column and chart.
+// Opened standalone (no injection) the board falls back to the hardcoded seeds.
+let LIVE_MODE=false, LIVE_WEEK_ENDING=null, LIVE_COL=null;
 
 function activeProps(){ return DATA.map(d=>d.p); }
 function getD(p){ return DATA.find(x=>x.p===p); }
@@ -947,7 +952,15 @@ function viewLabel(){
 
 /* ============ WEEK HELPERS ============ */
 function mondayOf(weekIdx){ const d=new Date(START.getTime()); d.setDate(d.getDate()+weekIdx*7); return d; } // returns the Sunday starting week `weekIdx` (name kept for minimal diff; START is now a Sunday)
-function weekEndDate(weekIdx){ const d=mondayOf(weekIdx); d.setDate(d.getDate()+6); return d; }
+function weekEndDate(weekIdx){
+  // In live mode the injected column carries its real AppFolio week-ending date,
+  // which may differ from START + weekIdx (e.g. a current week appended past the
+  // seeded 10-week history).
+  if(LIVE_MODE && LIVE_COL!==null && weekIdx===LIVE_COL && LIVE_WEEK_ENDING){
+    return new Date(LIVE_WEEK_ENDING+"T00:00:00");
+  }
+  const d=mondayOf(weekIdx); d.setDate(d.getDate()+6); return d;
+}
 function weekEndMD(weekIdx){ return fmtMD(weekEndDate(weekIdx)); }
 function isoOf(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,"0"), day=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}`; }
 function fmtMD(d){ return `${d.getMonth()+1}/${d.getDate()}`; }
@@ -1505,7 +1518,7 @@ function renderNarrative(){
   const el=document.getElementById("narrativeBody");
   const isFocused = document.activeElement===el;
   if(!isFocused){
-    el.innerHTML = narrativeText!==null? narrativeText : DEFAULT_NARRATIVE;
+    el.innerHTML = narrativeText!==null? narrativeText : (LIVE_MODE? liveNarrative() : DEFAULT_NARRATIVE);
   }
 }
 function bindNarrativeOnce(){
@@ -1932,6 +1945,87 @@ window.getLeasingPayload = function(){
   };
 };
 
+/* ===== Phase 4: full dynamic live-week injection =====
+   injectWeekData(payload) makes the WHOLE board render the selected week's real
+   AppFolio data. Payload shape:
+     { week_ending:"YYYY-MM-DD",
+       properties:[{name,traffic,tours,apps,approved,denied,calls,
+                    occupied,total_units,occupancy_pct,vacant_rented,notice_units}],
+       totals:{...} }
+   It reuses the board's own per-week machinery instead of rewriting render():
+   occupancy is written onto the DATA objects (drives the KPI cards, season line,
+   Net Move-Ins and goals via compute()); the Last-Week roll-up + Agent Performance
+   read LASTWEEK, LASTWEEK_CALLS and LASTWEEK_LABEL, which are overwritten; the
+   funnel grid reads `actuals` and the chart reads the SEED, HIST_OCC_UNITS and
+   CALLS_BY_WEEK series, all filled at the selected week's column; settings.wk grows
+   is shown. A week within the seeded history refreshes that column; a current week
+   past it is appended as one live column (capped at index 10, no sparse gaps).
+   Everything referenced is in scope inside this IIFE. */
+function weekIdxForEnding(weekEndingISO){
+  var end=new Date(weekEndingISO+"T00:00:00");
+  var w0=mondayOf(0); w0.setDate(w0.getDate()+6); // native Saturday of week 0
+  return Math.round((end - w0)/(7*24*3600*1000));
+}
+function liveNarrative(){
+  try{
+    var props=activeProps().map(getD);
+    var occN=0,occD=0,netSum=0;
+    props.forEach(function(d){ occN+=d.o; occD+=d.u; netSum+=compute(d).net; });
+    var occPct=occD? (occN/occD*100).toFixed(1):"0.0";
+    var behind=props.map(function(d){ var g=Math.round(goalFor(d.p)*100); var pct=d.u?(d.o/d.u*100):0; return {p:d.p,gap:+(g-pct).toFixed(1)}; })
+      .filter(function(x){ return x.gap>0; }).sort(function(a,b){ return b.gap-a.gap; }).slice(0,3);
+    var wk = LIVE_WEEK_ENDING? (" for the week ending "+LIVE_WEEK_ENDING):"";
+    var s="<b>Live from AppFolio"+wk+".</b> Portfolio occupancy is <b>"+occPct+"%</b> ("+occN+"/"+occD+" units), with <b>"+netSum+"</b> net move-ins needed to reach goal. ";
+    if(behind.length){ s+="Widest occupancy gaps: "+behind.map(function(x){ return "<b>"+x.p+"</b> ("+x.gap+" pts)"; }).join(", ")+". "; }
+    s+="Traffic, Calls and Applications on the roll-up and agent tables reflect the selected week's real, logged activity. Edit this box to add your own commentary — it saves automatically.";
+    return s;
+  }catch(e){ return DEFAULT_NARRATIVE; }
+}
+window.injectWeekData=function(payload){
+  try{
+    if(!payload || !Array.isArray(payload.properties)) return { error:"bad payload" };
+    var norm=function(s){ return String(s||"").trim().toLowerCase(); };
+    var num=function(v){ return (v==null||v===""||isNaN(v))?0:Number(v); };
+    var we=payload.week_ending||null;
+    var idx = we? weekIdxForEnding(we) : (settings.wk-1);
+    if(isNaN(idx)||idx<0) idx=0;
+    if(idx>10) idx=10;                 // append the current week as one live column
+    LIVE_MODE=true; LIVE_WEEK_ENDING=we; LIVE_COL=idx;
+    if(idx>=settings.wk) settings.wk=idx+1;
+    if(we){ var sat=new Date(we+"T00:00:00"); var sun=new Date(sat.getTime()); sun.setDate(sun.getDate()-6); LASTWEEK_LABEL=fmtMD(sun)+"–"+fmtMD(sat); }
+    var matched=0;
+    payload.properties.forEach(function(pp){
+      var key=norm(pp.name);
+      var d=DATA.find(function(x){ var n=norm(x.p); return n===key||n.indexOf(key)>-1||key.indexOf(n)>-1; });
+      if(!d) return; matched++;
+      var prop=d.p;
+      // occupancy → KPI cards, season line, Net Move-Ins, goals (compute())
+      if(pp.total_units!=null && !isNaN(pp.total_units)) d.u=Number(pp.total_units);
+      if(pp.occupied!=null && !isNaN(pp.occupied)) d.o=Number(pp.occupied);
+      if(pp.vacant_rented!=null && !isNaN(pp.vacant_rented)) d.vr=Number(pp.vacant_rented);
+      if(pp.notice_units!=null && !isNaN(pp.notice_units)) d.nu=Number(pp.notice_units);
+      // Last-Week roll-up + Agent Performance (single selected week)
+      LASTWEEK[prop]={traffic:num(pp.traffic),tours:num(pp.tours),apps:num(pp.apps),appr:num(pp.approved),den:num(pp.denied),canc:num(pp.canceled!=null?pp.canceled:pp.cancelled)};
+      LASTWEEK_CALLS[prop]=num(pp.calls);
+      // funnel grid actuals at the selected week's column (Follow-Up shows logged calls)
+      var setAct=function(m,v){ var a=ensureActuals(prop,m); a[idx]=num(v); };
+      setAct("traffic",pp.traffic); setAct("followup",pp.calls); setAct("tours",pp.tours); setAct("apps",pp.apps);
+      setAct("q_denial",pp.denied); setAct("q_cancel",pp.canceled!=null?pp.canceled:pp.cancelled);
+      // chart series at the selected week's column (pad any gap with null)
+      var seed=function(obj,v){ if(!obj[prop]) obj[prop]=[]; while(obj[prop].length<idx) obj[prop].push(null); obj[prop][idx]=num(v); };
+      seed(SEED_TRAFFIC,pp.traffic); seed(SEED_TOURS,pp.tours); seed(SEED_APPS,pp.apps); seed(SEED_MOVEIN,0); seed(CALLS_BY_WEEK,pp.calls);
+      if(!HIST_OCC_UNITS[prop]) HIST_OCC_UNITS[prop]=[];
+      while(HIST_OCC_UNITS[prop].length<idx) HIST_OCC_UNITS[prop].push(null);
+      HIST_OCC_UNITS[prop][idx]=(pp.occupied==null||isNaN(pp.occupied))?null:Number(pp.occupied);
+    });
+    var asof=document.querySelector(".asof");
+    if(asof) asof.textContent = we? ("Live from AppFolio · week ending "+we) : "Live from AppFolio";
+    render();
+    renderNarrative(); // render() doesn't touch the narrative; refresh the live summary
+    return { matched:matched, week_index:idx, week_ending:we };
+  }catch(e){ return { error:String((e&&e.message)||e) }; }
+};
+
 /* Inbound bridge: the parent dashboard pushes LIVE occupancy (from AppFolio's
    occupancy_summary via /api/leasing/occupancy) so the board's occupancy %,
    Move-Ins Needed and occupancy goals reflect current data instead of the
@@ -1939,6 +2033,7 @@ window.getLeasingPayload = function(){
    occupancy fields (units/occupied/vacant-rented/notice) are overridden — the
    weekly funnel history (traffic/tours/apps/calls) stays as the board's seeded
    10-week model. prev is left untouched so the "(vs 8/1)" delta stays meaningful.
+   Kept for back-compat; injectWeekData supersedes it with full week data.
    activeProps/DATA/render are in scope inside this IIFE. */
 window.applyLeasingLiveData = function(payload){
   try {

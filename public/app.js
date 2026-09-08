@@ -260,37 +260,37 @@ function loadLeasing() {
     wireLeasingFullscreen();
     leasingState.wired = true;
   }
-  // Supplementary roll-up table above the board.
+  // Supplementary roll-up table above the board (also injects the week into the
+  // full board below via injectWeekData).
   leasingLoadGoalBoard($('#leasing-gb-week')?.value || '');
-  // Lyndsay's full Goal Board is the primary view. Lazy-load its iframe once,
-  // then push live occupancy into it so it renders current numbers, not 8/8.
+  // Lyndsay's full Goal Board is the primary view. Lazy-load its iframe once;
+  // on load it gets the last fetched week injected so it renders live, not 8/8.
   const frame = $('#leasing-frame');
   if (frame && !frame.getAttribute('src')) {
-    frame.addEventListener('load', leasingPushLiveToBoard, { once: true });
+    frame.addEventListener('load', () => leasingInjectToBoard(), { once: true });
     frame.setAttribute('src', '/tools/weekly_leasing_goal_board.html');
   } else {
-    leasingPushLiveToBoard();
+    leasingInjectToBoard();
   }
 }
-// Push current occupancy into the same-origin Goal Board iframe via its inbound
-// bridge (applyLeasingLiveData), so occupancy %, Move-Ins Needed and goals show
-// live AppFolio data. Safe no-op if the iframe or bridge isn't ready yet.
-async function leasingPushLiveToBoard() {
+// Last goal-board payload fetched from the API, mapped to the board's
+// injectWeekData() shape. Held so it can be (re)injected whenever the iframe
+// becomes ready or is reloaded.
+let leasingBoardPayload = null;
+// Push the selected week's full data into the same-origin Goal Board iframe via
+// its injectWeekData() bridge. Safe no-op if the iframe/bridge isn't ready yet
+// (it retries on the iframe's next load).
+function leasingInjectToBoard() {
   const frame = $('#leasing-frame');
-  if (!frame) return;
-  try {
-    const { occupancy } = await api('/api/leasing/occupancy');
-    if (!occupancy || !occupancy.length) return;
-    const as_of = occupancy.find(o => o.as_of)?.as_of || null;
-    const send = () => {
-      try {
-        const win = frame.contentWindow;
-        if (win && typeof win.applyLeasingLiveData === 'function') { win.applyLeasingLiveData({ occupancy, as_of }); return true; }
-      } catch (_) {}
-      return false;
-    };
-    if (!send()) frame.addEventListener('load', send, { once: true });
-  } catch (_) { /* board keeps its baseline data */ }
+  if (!frame || !leasingBoardPayload) return;
+  const send = () => {
+    try {
+      const win = frame.contentWindow;
+      if (win && typeof win.injectWeekData === 'function') { win.injectWeekData(leasingBoardPayload); return true; }
+    } catch (_) {}
+    return false;
+  };
+  if (!send()) frame.addEventListener('load', send, { once: true });
 }
 
 // ── Weekly Leasing Goal Board (native) ──────────────────────────────────────
@@ -314,8 +314,7 @@ async function leasingSyncOccupancy() {
   try {
     const r = await api('/api/leasing/sync/occupancy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     toast(`Synced occupancy for ${r.properties} properties ✅`, 'success');
-    await leasingLoadGoalBoard($('#leasing-gb-week')?.value || '');
-    leasingPushLiveToBoard(); // refresh the full board's occupancy from the new sync
+    await leasingLoadGoalBoard($('#leasing-gb-week')?.value || ''); // re-injects the board
   } catch (err) {
     toast(err.message, 'error');
     if (status) status.textContent = '❌ ' + err.message;
@@ -331,6 +330,23 @@ async function leasingLoadGoalBoard(week) {
     const qs = week ? ('?week_ending=' + encodeURIComponent(week)) : '';
     const b = await api('/api/leasing/goal-board' + qs);
     const props = b.properties || [];
+    // Map the API response into the board's injectWeekData() shape and push it
+    // into the full Goal Board iframe so it renders this week's live data.
+    if (props.length) {
+      leasingBoardPayload = {
+        week_ending: b.week_ending,
+        properties: props.map(p => ({
+          name: p.property_name,
+          traffic: p.traffic, tours: 0, apps: p.apps,
+          approved: p.approved, denied: p.denied, calls: p.calls,
+          occupied: p.occupied_units, total_units: p.total_units,
+          occupancy_pct: p.occupancy_pct,
+          vacant_rented: p.vacant_rented, notice_units: p.notice_units,
+        })),
+        totals: b.totals || null,
+      };
+      leasingInjectToBoard();
+    }
     const status = $('#leasing-gb-status');
     if (status) {
       const occSync = b.occupancy_synced ? new Date(b.occupancy_synced).toLocaleString() : 'never';
