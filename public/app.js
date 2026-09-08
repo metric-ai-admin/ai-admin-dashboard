@@ -297,14 +297,12 @@ function leasingInjectToBoard() {
 function leasingWireGoalBoard() {
   $('#leasing-gb-sync-leads')?.addEventListener('click', leasingSyncFromAppFolio);
   $('#leasing-sync-occupancy')?.addEventListener('click', leasingSyncOccupancy);
-  $('#leasing-gb-week')?.addEventListener('change', e => leasingLoadGoalBoard(e.target.value));
-  // Populate the week selector from the distinct lead weeks.
-  api('/api/leasing/weeks').then(({ weeks }) => {
-    const sel = $('#leasing-gb-week');
-    if (!sel) return;
-    sel.innerHTML = '<option value="">— this week —</option>' +
-      (weeks || []).map(w => `<option value="${esc(w)}">Week ending ${esc(w)}</option>`).join('');
-  }).catch(() => {});
+  $('#leasing-gb-week')?.addEventListener('change', e => {
+    const wk = e.target.value;
+    const ws = $('#leasing-week-select'); if (ws) ws.value = wk; // keep both selectors in sync
+    leasingLoadGoalBoard(wk);
+  });
+  // Both week selectors are populated by leasingLoadWeeks() (called from leasingWireSync).
 }
 async function leasingSyncOccupancy() {
   const btn = $('#leasing-sync-occupancy'), status = $('#leasing-gb-status');
@@ -435,7 +433,11 @@ function leasingWireSync() {
   $('#leasing-sync-from')?.addEventListener('change', leasingLoadRange);
   $('#leasing-sync-to')?.addEventListener('change', leasingLoadRange);
   $('#leasing-week-select')?.addEventListener('change', e => {
-    if (e.target.value) leasingLoadLeads({ week_ending: e.target.value });
+    const wk = e.target.value;
+    if (!wk) return;
+    const gb = $('#leasing-gb-week'); if (gb) gb.value = wk;   // keep the roll-up selector in sync
+    leasingLoadGoalBoard(wk);            // drives the Portfolio Roll-Up table + Goal Board iframe
+    leasingLoadLeads({ week_ending: wk }); // updates the leads summary
   });
   leasingLoadWeeks();
 }
@@ -443,14 +445,25 @@ function leasingLoadRange() {
   const from = $('#leasing-sync-from')?.value, to = $('#leasing-sync-to')?.value;
   if (from && to) leasingLoadLeads({ date_from: from, date_to: to });
 }
-async function leasingLoadWeeks() {
-  const sel = $('#leasing-week-select');
-  if (!sel) return;
-  try {
-    const { weeks } = await api('/api/leasing/weeks');
-    sel.innerHTML = '<option value="">— recent weeks —</option>' +
-      (weeks || []).map(w => `<option value="${esc(w)}">Week ending ${esc(w)}</option>`).join('');
-  } catch (_) { /* leave the placeholder */ }
+// Populate BOTH week selectors (#leasing-week-select in the Leads panel and
+// #leasing-gb-week in the Portfolio Roll-Up) from the distinct lead weeks, and
+// optionally select a given week on both so they stay in lockstep.
+async function leasingLoadWeeks(selectWeek) {
+  let weeks = [];
+  try { const r = await api('/api/leasing/weeks'); weeks = r.weeks || []; } catch (_) { /* leave placeholders */ }
+  const optsHtml = placeholder => `<option value="">${placeholder}</option>` +
+    weeks.map(w => `<option value="${esc(w)}">Week ending ${esc(w)}</option>`).join('');
+  const ws = $('#leasing-week-select');
+  if (ws) { ws.innerHTML = optsHtml('— recent weeks —'); if (selectWeek) ws.value = selectWeek; }
+  const gb = $('#leasing-gb-week');
+  if (gb) { gb.innerHTML = optsHtml('— this week —'); if (selectWeek) gb.value = selectWeek; }
+  return weeks;
+}
+// Saturday (week_ending) of the Sun–Sat week that an ISO date falls in.
+function leasingSaturdayOf(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + (6 - d.getDay())); // 0=Sun..6=Sat
+  return d.toLocaleDateString('en-CA');
 }
 async function leasingSyncFromAppFolio() {
   const btn = $('#leasing-sync-btn'), status = $('#leasing-sync-status');
@@ -466,8 +479,11 @@ async function leasingSyncFromAppFolio() {
     });
     toast(`Synced ${r.synced} leads ✅`, 'success');
     if (status) status.textContent = `Synced ${r.synced} leads for ${from} → ${to}.`;
-    await leasingLoadWeeks();
-    leasingLoadRange();
+    // Jump both week selectors to the week just synced and refresh the board + summary.
+    const syncedWeek = leasingSaturdayOf(to);
+    await leasingLoadWeeks(syncedWeek);
+    await leasingLoadGoalBoard(syncedWeek);
+    leasingLoadLeads({ week_ending: syncedWeek });
   } catch (err) {
     toast(err.message, 'error');
     if (status) status.textContent = '❌ ' + err.message;
