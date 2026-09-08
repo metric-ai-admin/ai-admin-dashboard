@@ -5828,6 +5828,10 @@ function svgRender() {
   if (!el) return;
   const list = svgFiltered();
   el.innerHTML = `<div class="svg-tool">
+    ${currentUser?.role === 'admin' ? `<div class="svg-toolbar" style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:10px">
+      <span class="muted small" id="svg-backfill-status"></span>
+      <button class="btn-sm primary" id="svg-backfill-btn" title="Grade every ungraded call from the last 14 days">⚡ Grade All Calls</button>
+    </div>` : ''}
     ${svgKpiRowHtml(list)}
     ${svgFilterPillsHtml()}
     <div class="cqa-grid">
@@ -5847,6 +5851,31 @@ function svgRender() {
   el.querySelectorAll('[data-svg-mgmt]').forEach(b => b.addEventListener('click', () => { const m = b.dataset.svgMgmt; svgState.filters.management = svgState.filters.management === m ? null : m; svgRender(); }));
   $('#svg-f-agent')?.addEventListener('change', e => { svgState.filters.agent = e.target.value; svgRender(); });
   el.querySelectorAll('.cqa-row').forEach(r => r.addEventListener('click', () => svgSelect(r.dataset.rid)));
+  $('#svg-backfill-btn')?.addEventListener('click', svgBackfill);
+}
+
+// Admin-only: grade every ungraded, transcribed call from the last 14 days via
+// the backfill endpoint. Synchronous on the server (can take 1–2 min), so the
+// button shows a progress state and the list refreshes when it finishes.
+async function svgBackfill() {
+  const btn = $('#svg-backfill-btn'), status = $('#svg-backfill-status');
+  if (!btn) return;
+  if (!confirm('Grade all ungraded calls from the last 14 days?\n\nThis uses the Claude API (one call each) and can take 1–2 minutes.')) return;
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ Grading…';
+  if (status) status.textContent = 'Grading calls — this can take 1–2 minutes…';
+  try {
+    const d = await api('/api/sv/grade/backfill?days=14', { method: 'POST' });
+    toast(`Graded ${d.newly_graded} new call${d.newly_graded === 1 ? '' : 's'} · ${d.already_graded} already graded ✅`, 'success');
+    svgState.loaded = false;
+    await svgLoad(); // re-renders with the new grades (rebuilds this toolbar)
+    const s2 = $('#svg-backfill-status');
+    if (s2) s2.textContent = `Graded ${d.newly_graded} new · ${d.already_graded} already · ${d.errors} error${d.errors === 1 ? '' : 's'} (of ${d.total_calls} calls over ${d.days} days).`;
+  } catch (err) {
+    toast('Backfill failed: ' + err.message, 'error');
+    if (status) status.textContent = '❌ ' + err.message;
+    btn.disabled = false; btn.textContent = label;
+  }
 }
 
 function svgKpiRowHtml(list) {

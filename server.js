@@ -53,6 +53,7 @@ const { registerAllTools } = require('./mcp-tools.cjs');
 const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
+const simplevoip = require('./simplevoip.js');
 const teams = require('./teams-transcripts.js');
 const crmEngine = require('./crm-task-engine.js');
 const XLSX        = require('xlsx');
@@ -4759,6 +4760,114 @@ app.get('/api/calls/grades/:recording_id', requireAuth, async (req, res) => {
     res.json({ grade: data || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+// ── Auto-grading: backfill + nightly cron ───────────────────────────────────
+// Grading used to be manual (one click per call), so only a handful of calls
+// were ever graded. autoGradeCall() is the shared primitive used by both the
+// backfill endpoint and the nightly cron. Uses the same rubric selection as the
+// manual route: the self-identified agent (Danny = receptionist), else the line
+// owner.
+const svSleep = ms => new Promise(r => setTimeout(r, ms));
+// YYYY-MM-DD in Central time (Render runs UTC). offsetDays shifts by whole days.
+function ctDateStr(offsetDays = 0) {
+  const d = new Date(Date.now() + offsetDays * 86400000);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(d);
+}
+
+// Grade ONE call and save it. Returns { status:'graded'|'skipped'|'error', ... }.
+// call: a shaped SimpleVOIP call; transcript: the transcription text. Skips a
+// call that is already graded or has no transcript. Throws only on a save
+// failure (the caller counts it as an error).
+async function autoGradeCall(call, transcript, opts = {}) {
+  const recording_id = call && call.recording_id;
+  if (!recording_id) return { status: 'skipped', reason: 'no recording_id' };
+  const text = String(transcript || '').trim();
+  if (!text) return { status: 'skipped', reason: 'no transcript' };
+  const db = supabaseAdmin || supabasePublic;
+  const { data: existing } = await db.from('call_grades')
+    .select('id').eq('recording_id', recording_id).limit(1).maybeSingle();
+  if (existing) return { status: 'skipped', reason: 'already graded' };
+  // Self-identified agent picks the rubric; fall back to the line owner.
+  const identified = callGrading.detectAgentFromTranscript(text);
+  const agent = identified || opts.lineOwner || null;
+  const parsed = await callGrading.gradeTranscript({
+    callType: call.direction || null,
+    agent,
+    duration: call.duration,
+    transcript: text,
+  });
+  const row = callGradeRow(parsed, {
+    recording_id,
+    agent_name: agent,
+    call_date: opts.call_date || (call.datetime ? ctDateStr(0) : null),
+    call_direction: call.direction || null,
+    duration_seconds: call.duration,
+  });
+  await db.from('call_grades').delete().eq('recording_id', recording_id);
+  const { error } = await db.from('call_grades').insert(row);
+  if (error) throw new Error(error.message);
+  return { status: 'graded', agent };
+}
+
+// Grade every ungraded, transcribed call for one date. Rate-limited between
+// Claude calls. Returns { date, total, already_graded, newly_graded, errors }.
+async function autoGradeDay(date, { delayMs = 500 } = {}) {
+  const { calls } = await simplevoip.fetchCallsForDate(null, date);
+  const shaped = simplevoip.shapeCalls(calls).filter(c => c.has_transcript && c.recording_id);
+  const db = supabaseAdmin || supabasePublic;
+  let already = 0, graded = 0, errors = 0;
+  for (const c of shaped) {
+    try {
+      // Cheap existence check first, so already-graded calls skip the transcript
+      // fetch and the Claude call entirely.
+      const { data: ex } = await db.from('call_grades')
+        .select('id').eq('recording_id', c.recording_id).limit(1).maybeSingle();
+      if (ex) { already++; continue; }
+      const t = await simplevoip.fetchCallTranscript(null, c.recording_id);
+      const text = t && t.transcription ? t.transcription : '';
+      if (!String(text).trim()) continue; // transcript expired/absent — nothing to grade
+      const r = await autoGradeCall(c, text, { call_date: date });
+      if (r.status === 'graded') { graded++; await svSleep(delayMs); }
+      else if (r.reason === 'already graded') already++;
+    } catch (err) {
+      errors++;
+      console.error('[auto-grade]', c.recording_id, err.message);
+    }
+  }
+  return { date, total: shaped.length, already_graded: already, newly_graded: graded, errors };
+}
+
+// POST /api/sv/grade/backfill?days=N — grade all ungraded transcribed calls over
+// the last N days (default 7, max 30). Admin only. Runs synchronously; a large
+// backfill can take a minute or two, so the client shows a progress state.
+app.post('/api/sv/grade/backfill', requireMetricAdmin, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
+  if (!simplevoip.isConfigured()) return res.status(400).json({ ok: false, error: 'SimpleVOIP is not configured.' });
+  let days = parseInt(req.query.days, 10);
+  if (!Number.isFinite(days) || days < 1) days = 7;
+  if (days > 30) days = 30;
+  try {
+    let total = 0, already = 0, graded = 0, errors = 0;
+    for (let i = 0; i < days; i++) {
+      const r = await autoGradeDay(ctDateStr(-i), { delayMs: 500 });
+      total += r.total; already += r.already_graded; graded += r.newly_graded; errors += r.errors;
+    }
+    console.log(`[auto-grade] backfill ${days}d: ${graded} graded, ${already} already, ${errors} errors (of ${total})`);
+    res.json({ ok: true, days, total_calls: total, already_graded: already, newly_graded: graded, errors });
+  } catch (err) {
+    const status = /not configured/i.test(err.message) ? 503 : 500;
+    res.status(status).json({ ok: false, error: err.message });
+  }
+});
+
+// Nightly auto-grade at 2:00 AM Central (07:00 UTC): grade yesterday's calls.
+cron.schedule('0 2 * * *', () => {
+  if (!CRM_CONFIGURED || !simplevoip.isConfigured()) return;
+  const yesterday = ctDateStr(-1);
+  autoGradeDay(yesterday, { delayMs: 500 })
+    .then(r => console.log(`Auto-grade: ${r.newly_graded} calls graded, ${r.already_graded} skipped, ${r.errors} errors (${r.date})`))
+    .catch(err => console.error('[auto-grade] nightly failed:', err.message));
+}, { timezone: LYNDSAY_TIMEZONE });
 
 // =====================================================================
 // SOP REVIEW — Lyndsay's SOP Review Tracker (sop_review table)
