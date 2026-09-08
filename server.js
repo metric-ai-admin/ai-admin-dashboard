@@ -3878,27 +3878,26 @@ const leasingStatusIs = (status, ...needles) => {
   return needles.some(n => s.includes(n));
 };
 
-// Debug: sample of the leasing_leads.notes field, to confirm the format of the
-// activity log before locking a "Calls this week" parser (Phase 3). Admin-gated;
-// remove once the call-entry format is verified. ?week_ending= optional filter.
-app.get('/api/leasing/notes/sample', requireMetricAdmin, async (req, res) => {
-  if (!CRM_CONFIGURED) return res.json({ samples: [] });
-  try {
-    const db = supabaseAdmin || supabasePublic;
-    let q = db.from('leasing_leads')
-      .select('property,status,last_activity_type,notes')
-      .not('notes', 'is', null).limit(15);
-    if (req.query.week_ending) q = q.eq('week_ending', req.query.week_ending);
-    const { data, error } = await q;
-    if (error) throw new Error(error.message);
-    const samples = (data || []).map(r => ({
-      property: r.property, status: r.status, last_activity_type: r.last_activity_type,
-      notes_len: r.notes ? String(r.notes).length : 0,
-      notes: r.notes ? String(r.notes).slice(0, 1200) : null,
-    }));
-    res.json({ count: samples.length, samples });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
+// Count logged outbound calls in a guest card's notes that fall within a week.
+// AppFolio logs each activity as its own entry separated by ';', formatted as
+// "MM/DD/YYYY, Call\nMM/DD/YYYY HH:MM AM/PM\nProperty Name\n\nNote text". A call
+// is an entry whose first line is "MM/DD/YYYY, Call" (the leading date is the
+// activity date). weekStart/weekEnd are YYYY-MM-DD (inclusive).
+function leasingCountCalls(notes, weekStart, weekEnd) {
+  if (!notes) return 0;
+  let n = 0;
+  for (const rawEntry of String(notes).split(';')) {
+    const entry = rawEntry.trim();
+    if (!entry) continue;
+    const firstLine = entry.split('\n')[0].trim();
+    // First line must be a date followed by ", Call" (case-insensitive on Call).
+    const m = firstLine.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s*,\s*call\b/i);
+    if (!m) continue;
+    const iso = `${m[3]}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+    if (iso >= weekStart && iso <= weekEnd) n++;
+  }
+  return n;
+}
 
 // GET /api/leasing/goal-board?week_ending=YYYY-MM-DD — per-community leasing KPIs
 // for the given week joined with current occupancy. Powers the native Goal Board.
@@ -3916,6 +3915,13 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
     const leads = leadsRes.data || [];
     const occ = occRes.data || [];
 
+    // Week is Sun–Sat; week_ending is the Saturday. Calls are counted by their
+    // logged date within this inclusive range.
+    const weekEndD = new Date(week_ending + 'T00:00:00');
+    const weekStartD = new Date(weekEndD); weekStartD.setDate(weekEndD.getDate() - 6);
+    const weekStart = weekStartD.toLocaleDateString('en-CA');
+    const weekEnd = week_ending;
+
     // Occupancy indexed by clean community name (lowercased) and by property_id.
     const occByName = new Map(), occById = new Map();
     let occSynced = null;
@@ -3931,11 +3937,12 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
     for (const l of leads) {
       const name = communityName(l.property) || 'Unknown';
       let c = byComm.get(name);
-      if (!c) { c = { name, property_id: l.property_id != null ? String(l.property_id) : null, traffic: 0, apps: 0, approved: 0, denied: 0 }; byComm.set(name, c); }
+      if (!c) { c = { name, property_id: l.property_id != null ? String(l.property_id) : null, traffic: 0, apps: 0, approved: 0, denied: 0, calls: 0 }; byComm.set(name, c); }
       c.traffic += 1;
       if (leasingStatusIs(l.status, 'application', 'applied')) c.apps += 1;
       if (leasingStatusIs(l.status, 'approved')) c.approved += 1;
       if (leasingStatusIs(l.status, 'denied', 'declined')) c.denied += 1;
+      c.calls += leasingCountCalls(l.notes, weekStart, weekEnd);
       if (!c.property_id && l.property_id != null) c.property_id = String(l.property_id);
     }
 
@@ -3943,7 +3950,7 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
     const names = new Set([...byComm.keys(), ...occ.map(o => o.property_name).filter(Boolean)]);
     const properties = [];
     for (const name of names) {
-      const c = byComm.get(name) || { name, property_id: null, traffic: 0, apps: 0, approved: 0, denied: 0 };
+      const c = byComm.get(name) || { name, property_id: null, traffic: 0, apps: 0, approved: 0, denied: 0, calls: 0 };
       const o = (c.property_id && occById.get(c.property_id)) || occByName.get(String(name).trim().toLowerCase()) || null;
       const total_units = o && o.total_units != null ? o.total_units : null;
       const occupied_units = o && o.occupied_units != null ? o.occupied_units : null;
@@ -3954,7 +3961,7 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
       properties.push({
         property_name: name,
         property_id: c.property_id,
-        traffic: c.traffic, apps: c.apps, approved: c.approved, denied: c.denied,
+        traffic: c.traffic, apps: c.apps, approved: c.approved, denied: c.denied, calls: c.calls,
         occupancy_pct, occupied_units, total_units,
         vacant_rented: o && o.vacant_rented != null ? o.vacant_rented : null,
         notice_units: o && o.notice_units != null ? o.notice_units : null,
@@ -3968,12 +3975,12 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
       return av - bv;
     });
     const totals = properties.reduce((t, p) => {
-      t.traffic += p.traffic; t.apps += p.apps; t.approved += p.approved; t.denied += p.denied;
+      t.traffic += p.traffic; t.apps += p.apps; t.approved += p.approved; t.denied += p.denied; t.calls += p.calls;
       if (p.occupied_units != null) t.occupied_units += p.occupied_units;
       if (p.total_units != null) t.total_units += p.total_units;
       if (p.net_moveins_needed != null) t.net_moveins_needed += p.net_moveins_needed;
       return t;
-    }, { traffic: 0, apps: 0, approved: 0, denied: 0, occupied_units: 0, total_units: 0, net_moveins_needed: 0 });
+    }, { traffic: 0, apps: 0, approved: 0, denied: 0, calls: 0, occupied_units: 0, total_units: 0, net_moveins_needed: 0 });
     totals.occupancy_pct = totals.total_units > 0 ? Math.round((totals.occupied_units / totals.total_units) * 1000) / 10 : null;
 
     res.json({ week_ending, properties, totals, occupancy_synced: occSynced });

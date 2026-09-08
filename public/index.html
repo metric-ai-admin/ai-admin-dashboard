@@ -1698,12 +1698,12 @@
       <div id="leasing-sync-summary" style="margin-top:12px"></div>
     </div>
 
-    <!-- Panel — Weekly Leasing Goal Board (native, replaces the iframe) -->
+    <!-- Panel — Portfolio Roll-Up (native supplementary table above the board) -->
     <div class="card">
       <div class="view-head" style="margin:0 0 8px;align-items:flex-start">
         <div>
-          <h3 style="margin:0">Weekly Leasing Goal Board</h3>
-          <p class="muted small" style="margin:2px 0 0">Portfolio occupancy roll-up with this week's traffic and applications, sorted by tightest occupancy.</p>
+          <h3 style="margin:0">Portfolio Roll-Up</h3>
+          <p class="muted small" style="margin:2px 0 0">This week's traffic, calls and applications against live occupancy, sorted by tightest occupancy.</p>
         </div>
         <div class="view-actions" style="display:flex;gap:8px;align-items:center">
           <button class="btn-sm primary" id="leasing-gb-sync-leads">↺ Sync from AppFolio</button>
@@ -1719,19 +1719,21 @@
       <div id="leasing-gb-table" style="margin-top:12px"></div>
     </div>
 
-    <!-- Panel — Original iframe board, kept as a collapsible historical reference -->
+    <!-- Panel — Lyndsay's full Goal Board (primary), fed live occupancy via the bridge -->
     <div class="card">
-      <details id="leasing-original-board">
-        <summary style="cursor:pointer;font-weight:600">View Original Goal Board</summary>
-        <p class="muted small" style="margin:8px 0 0">Original 10-Week Plan (data through 8/8/2026 — historical reference only).</p>
-        <div class="view-actions" style="margin:8px 0">
+      <div class="view-head" style="margin:0 0 8px;align-items:flex-start">
+        <div>
+          <h3 style="margin:0">Weekly Leasing Goal Board</h3>
+          <p class="muted small" style="margin:2px 0 0">Full board with narrative, per-property cards, charts and marketing plan. Occupancy is fed live from AppFolio when you Sync Occupancy.</p>
+        </div>
+        <div class="view-actions">
           <button class="btn-sm" id="leasing-fullscreen-btn">⛶ Full Screen</button>
         </div>
-        <div id="leasing-frame-wrap">
-          <iframe id="leasing-frame" title="Weekly Leasing Goal Board"
-                  style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff"></iframe>
-        </div>
-      </details>
+      </div>
+      <div id="leasing-frame-wrap">
+        <iframe id="leasing-frame" title="Weekly Leasing Goal Board"
+                style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff"></iframe>
+      </div>
     </div>
   </section>
 

@@ -260,18 +260,37 @@ function loadLeasing() {
     wireLeasingFullscreen();
     leasingState.wired = true;
   }
-  // The native Goal Board is the primary view; load it on open.
+  // Supplementary roll-up table above the board.
   leasingLoadGoalBoard($('#leasing-gb-week')?.value || '');
-  // The original iframe board is now inside a collapsible <details> and only
-  // fetches its fonts/scripts the first time that section is expanded.
-  const details = $('#leasing-original-board');
+  // Lyndsay's full Goal Board is the primary view. Lazy-load its iframe once,
+  // then push live occupancy into it so it renders current numbers, not 8/8.
   const frame = $('#leasing-frame');
-  const lazyFrame = () => { if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/tools/weekly_leasing_goal_board.html'); };
-  if (details && !details.dataset.wired) {
-    details.dataset.wired = '1';
-    details.addEventListener('toggle', () => { if (details.open) lazyFrame(); });
+  if (frame && !frame.getAttribute('src')) {
+    frame.addEventListener('load', leasingPushLiveToBoard, { once: true });
+    frame.setAttribute('src', '/tools/weekly_leasing_goal_board.html');
+  } else {
+    leasingPushLiveToBoard();
   }
-  if (details && details.open) lazyFrame();
+}
+// Push current occupancy into the same-origin Goal Board iframe via its inbound
+// bridge (applyLeasingLiveData), so occupancy %, Move-Ins Needed and goals show
+// live AppFolio data. Safe no-op if the iframe or bridge isn't ready yet.
+async function leasingPushLiveToBoard() {
+  const frame = $('#leasing-frame');
+  if (!frame) return;
+  try {
+    const { occupancy } = await api('/api/leasing/occupancy');
+    if (!occupancy || !occupancy.length) return;
+    const as_of = occupancy.find(o => o.as_of)?.as_of || null;
+    const send = () => {
+      try {
+        const win = frame.contentWindow;
+        if (win && typeof win.applyLeasingLiveData === 'function') { win.applyLeasingLiveData({ occupancy, as_of }); return true; }
+      } catch (_) {}
+      return false;
+    };
+    if (!send()) frame.addEventListener('load', send, { once: true });
+  } catch (_) { /* board keeps its baseline data */ }
 }
 
 // ── Weekly Leasing Goal Board (native) ──────────────────────────────────────
@@ -296,6 +315,7 @@ async function leasingSyncOccupancy() {
     const r = await api('/api/leasing/sync/occupancy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     toast(`Synced occupancy for ${r.properties} properties ✅`, 'success');
     await leasingLoadGoalBoard($('#leasing-gb-week')?.value || '');
+    leasingPushLiveToBoard(); // refresh the full board's occupancy from the new sync
   } catch (err) {
     toast(err.message, 'error');
     if (status) status.textContent = '❌ ' + err.message;
@@ -330,6 +350,7 @@ async function leasingLoadGoalBoard(week) {
         <td style="text-align:right">${num(p.vacant_rented)}</td>
         <td style="text-align:right">${num(p.notice_units)}</td>
         <td style="text-align:right">${p.traffic}</td>
+        <td style="text-align:right">${p.calls == null ? '—' : p.calls}</td>
         <td style="text-align:right">${p.apps}</td>
         <td style="text-align:right">${p.approved}</td>
         <td style="text-align:right">${p.denied}</td>
@@ -344,6 +365,7 @@ async function leasingLoadGoalBoard(week) {
       <td style="text-align:right">${pct(t.occupancy_pct)}</td>
       <td colspan="2"></td>
       <td style="text-align:right">${t.traffic || 0}</td>
+      <td style="text-align:right">${t.calls || 0}</td>
       <td style="text-align:right">${t.apps || 0}</td>
       <td style="text-align:right">${t.approved || 0}</td>
       <td style="text-align:right">${t.denied || 0}</td>
@@ -354,7 +376,7 @@ async function leasingLoadGoalBoard(week) {
       <thead><tr>
         <th>Community</th><th style="text-align:right">Units</th><th style="text-align:right">Occupied</th>
         <th style="text-align:right">Occ%</th><th style="text-align:right">Vac. Rented</th><th style="text-align:right">Notice</th>
-        <th style="text-align:right">Traffic</th><th style="text-align:right">Apps</th>
+        <th style="text-align:right">Traffic</th><th style="text-align:right">Calls This Wk</th><th style="text-align:right">Apps</th>
         <th style="text-align:right">Approved</th><th style="text-align:right">Denied</th>
         <th style="text-align:right">Goal</th><th style="text-align:right">Net Move-ins Needed</th>
       </tr></thead>

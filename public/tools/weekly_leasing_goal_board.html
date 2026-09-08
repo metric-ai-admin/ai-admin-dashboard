@@ -1932,6 +1932,40 @@ window.getLeasingPayload = function(){
   };
 };
 
+/* Inbound bridge: the parent dashboard pushes LIVE occupancy (from AppFolio's
+   occupancy_summary via /api/leasing/occupancy) so the board's occupancy %,
+   Move-Ins Needed and occupancy goals reflect current data instead of the
+   hardcoded 8/8 snapshot. Matches by community name (case-insensitive). Only the
+   occupancy fields (units/occupied/vacant-rented/notice) are overridden — the
+   weekly funnel history (traffic/tours/apps/calls) stays as the board's seeded
+   10-week model. prev is left untouched so the "(vs 8/1)" delta stays meaningful.
+   activeProps/DATA/render are in scope inside this IIFE. */
+window.applyLeasingLiveData = function(payload){
+  try {
+    var occ = (payload && payload.occupancy) || [];
+    if(!occ.length) return { matched: 0 };
+    var norm = function(s){ return String(s||'').trim().toLowerCase(); };
+    var matched = 0;
+    occ.forEach(function(o){
+      var key = norm(o.property_name);
+      if(!key) return;
+      var d = DATA.find(function(x){ var n=norm(x.p); return n===key || n.indexOf(key)>-1 || key.indexOf(n)>-1; });
+      if(!d) return;
+      if(o.total_units != null && !isNaN(o.total_units)) d.u = Number(o.total_units);
+      if(o.occupied_units != null && !isNaN(o.occupied_units)) d.o = Number(o.occupied_units);
+      if(o.vacant_rented != null && !isNaN(o.vacant_rented)) d.vr = Number(o.vacant_rented);
+      if(o.notice_units != null && !isNaN(o.notice_units)) d.nu = Number(o.notice_units);
+      matched++;
+    });
+    if(matched){
+      var asof = document.querySelector('.asof');
+      if(asof) asof.textContent = payload.as_of ? ('Occupancy live from AppFolio · as of ' + payload.as_of) : 'Occupancy live from AppFolio';
+      render();
+    }
+    return { matched: matched };
+  } catch(e){ return { error: String((e && e.message) || e) }; }
+};
+
 })();
 </script>
 </body>
