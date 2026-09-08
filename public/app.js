@@ -295,6 +295,7 @@ function leasingInjectToBoard() {
 
 // ── Weekly Leasing Goal Board (native) ──────────────────────────────────────
 function leasingWireGoalBoard() {
+  $('#leasing-sync-all')?.addEventListener('click', leasingSyncAll);
   $('#leasing-gb-sync-leads')?.addEventListener('click', leasingSyncFromAppFolio);
   $('#leasing-sync-occupancy')?.addEventListener('click', leasingSyncOccupancy);
   $('#leasing-gb-week')?.addEventListener('change', e => {
@@ -303,6 +304,37 @@ function leasingWireGoalBoard() {
     leasingLoadGoalBoard(wk);
   });
   // Both week selectors are populated by leasingLoadWeeks() (called from leasingWireSync).
+}
+// Fire all six AppFolio syncs in sequence (leads, occupancy, tours, applications,
+// move-ins), then jump to the synced week and refresh the board. Each step is
+// independent — one failing doesn't abort the rest.
+async function leasingSyncAll() {
+  const btn = $('#leasing-sync-all'), status = $('#leasing-gb-status');
+  const label = btn ? btn.textContent : '';
+  const from = $('#leasing-sync-from')?.value, to = $('#leasing-sync-to')?.value;
+  const post = (url, body) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const steps = [
+    ['leads', () => (from && to) ? post('/api/leasing/sync', { date_from: from, date_to: to }) : Promise.resolve({ skipped: true })],
+    ['occupancy', () => post('/api/leasing/sync/occupancy')],
+    ['tours', () => post('/api/leasing/sync/showings')],
+    ['applications', () => post('/api/leasing/sync/applications', { from_date: '2026-01-01' })],
+    ['move-ins', () => post('/api/leasing/sync/lease-history')],
+  ];
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Syncing all…'; }
+  const done = [];
+  try {
+    for (const [name, fn] of steps) {
+      if (status) status.textContent = `Syncing ${name}…`;
+      try { await fn(); done.push(name); }
+      catch (e) { toast(`${name} sync failed: ${e.message}`, 'error'); }
+    }
+    toast(`Synced: ${done.join(', ') || 'nothing'} ✅`, 'success');
+    const wk = to ? leasingSaturdayOf(to) : ($('#leasing-gb-week')?.value || '');
+    await leasingLoadWeeks(wk || undefined);
+    await leasingLoadGoalBoard(wk || '');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
 }
 async function leasingSyncOccupancy() {
   const btn = $('#leasing-sync-occupancy'), status = $('#leasing-gb-status');
@@ -335,8 +367,8 @@ async function leasingLoadGoalBoard(week) {
         week_ending: b.week_ending,
         properties: props.map(p => ({
           name: p.property_name,
-          traffic: p.traffic, tours: 0, apps: p.apps,
-          approved: p.approved, denied: p.denied, calls: p.calls,
+          traffic: p.traffic, tours: p.tours, apps: p.apps,
+          approved: p.approved, denied: p.denied, calls: p.calls, move_ins: p.move_ins,
           occupied: p.occupied_units, total_units: p.total_units,
           occupancy_pct: p.occupancy_pct,
           vacant_rented: p.vacant_rented, notice_units: p.notice_units,
@@ -364,10 +396,12 @@ async function leasingLoadGoalBoard(week) {
         <td style="text-align:right">${num(p.vacant_rented)}</td>
         <td style="text-align:right">${num(p.notice_units)}</td>
         <td style="text-align:right">${p.traffic}</td>
+        <td style="text-align:right">${p.tours == null ? '—' : p.tours}</td>
         <td style="text-align:right">${p.calls == null ? '—' : p.calls}</td>
         <td style="text-align:right">${p.apps}</td>
         <td style="text-align:right">${p.approved}</td>
         <td style="text-align:right">${p.denied}</td>
+        <td style="text-align:right">${p.move_ins == null ? '—' : p.move_ins}</td>
         <td style="text-align:right">${p.goal_pct}%</td>
         <td style="text-align:right;${p.net_moveins_needed ? 'font-weight:600' : ''}">${p.net_moveins_needed == null ? '—' : p.net_moveins_needed}</td>
       </tr>`;
@@ -379,10 +413,12 @@ async function leasingLoadGoalBoard(week) {
       <td style="text-align:right">${pct(t.occupancy_pct)}</td>
       <td colspan="2"></td>
       <td style="text-align:right">${t.traffic || 0}</td>
+      <td style="text-align:right">${t.tours || 0}</td>
       <td style="text-align:right">${t.calls || 0}</td>
       <td style="text-align:right">${t.apps || 0}</td>
       <td style="text-align:right">${t.approved || 0}</td>
       <td style="text-align:right">${t.denied || 0}</td>
+      <td style="text-align:right">${t.move_ins || 0}</td>
       <td></td>
       <td style="text-align:right">${t.net_moveins_needed || 0}</td>
     </tr>`;
@@ -390,8 +426,8 @@ async function leasingLoadGoalBoard(week) {
       <thead><tr>
         <th>Community</th><th style="text-align:right">Units</th><th style="text-align:right">Occupied</th>
         <th style="text-align:right">Occ%</th><th style="text-align:right">Vac. Rented</th><th style="text-align:right">Notice</th>
-        <th style="text-align:right">Traffic</th><th style="text-align:right">Calls This Wk</th><th style="text-align:right">Apps</th>
-        <th style="text-align:right">Approved</th><th style="text-align:right">Denied</th>
+        <th style="text-align:right">Traffic</th><th style="text-align:right">Tours</th><th style="text-align:right">Calls This Wk</th><th style="text-align:right">Apps</th>
+        <th style="text-align:right">Approved</th><th style="text-align:right">Denied</th><th style="text-align:right">Move-ins</th>
         <th style="text-align:right">Goal</th><th style="text-align:right">Net Move-ins Needed</th>
       </tr></thead>
       <tbody>${rowsHtml}${totalRow}</tbody></table></div>`;

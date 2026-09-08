@@ -2005,15 +2005,15 @@ window.injectWeekData=function(payload){
       if(pp.vacant_rented!=null && !isNaN(pp.vacant_rented)) d.vr=Number(pp.vacant_rented);
       if(pp.notice_units!=null && !isNaN(pp.notice_units)) d.nu=Number(pp.notice_units);
       // Last-Week roll-up + Agent Performance (single selected week)
-      LASTWEEK[prop]={traffic:num(pp.traffic),tours:num(pp.tours),apps:num(pp.apps),appr:num(pp.approved),den:num(pp.denied),canc:num(pp.canceled!=null?pp.canceled:pp.cancelled)};
+      LASTWEEK[prop]={traffic:num(pp.traffic),tours:num(pp.tours),apps:num(pp.apps),appr:num(pp.approved),den:num(pp.denied),canc:num(pp.canceled!=null?pp.canceled:pp.cancelled),movein:num(pp.move_ins)};
       LASTWEEK_CALLS[prop]=num(pp.calls);
       // funnel grid actuals at the selected week's column (Follow-Up shows logged calls)
       var setAct=function(m,v){ var a=ensureActuals(prop,m); a[idx]=num(v); };
-      setAct("traffic",pp.traffic); setAct("followup",pp.calls); setAct("tours",pp.tours); setAct("apps",pp.apps);
+      setAct("traffic",pp.traffic); setAct("followup",pp.calls); setAct("tours",pp.tours); setAct("apps",pp.apps); setAct("movein",pp.move_ins);
       setAct("q_denial",pp.denied); setAct("q_cancel",pp.canceled!=null?pp.canceled:pp.cancelled);
       // chart series at the selected week's column (pad any gap with null)
       var seed=function(obj,v){ if(!obj[prop]) obj[prop]=[]; while(obj[prop].length<idx) obj[prop].push(null); obj[prop][idx]=num(v); };
-      seed(SEED_TRAFFIC,pp.traffic); seed(SEED_TOURS,pp.tours); seed(SEED_APPS,pp.apps); seed(SEED_MOVEIN,0); seed(CALLS_BY_WEEK,pp.calls);
+      seed(SEED_TRAFFIC,pp.traffic); seed(SEED_TOURS,pp.tours); seed(SEED_APPS,pp.apps); seed(SEED_MOVEIN,pp.move_ins); seed(CALLS_BY_WEEK,pp.calls);
       if(!HIST_OCC_UNITS[prop]) HIST_OCC_UNITS[prop]=[];
       while(HIST_OCC_UNITS[prop].length<idx) HIST_OCC_UNITS[prop].push(null);
       HIST_OCC_UNITS[prop][idx]=(pp.occupied==null||isNaN(pp.occupied))?null:Number(pp.occupied);

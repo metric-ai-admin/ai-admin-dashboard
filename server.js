@@ -3904,23 +3904,58 @@ function leasingCountCalls(notes, weekStart, weekEnd) {
 app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ week_ending: null, properties: [], totals: null, occupancy_synced: null });
   const week_ending = req.query.week_ending || leasingWeekEnding(new Date());
+  // Week is Sun–Sat; week_ending is the Saturday. Tours/apps/move-ins are counted
+  // by their date within this inclusive range.
+  const weekEndD = new Date(week_ending + 'T00:00:00');
+  const weekStartD = new Date(weekEndD); weekStartD.setDate(weekEndD.getDate() - 6);
+  const weekStart = weekStartD.toLocaleDateString('en-CA');
+  const weekEnd = week_ending;
   try {
     const db = supabaseAdmin || supabasePublic;
-    const [leadsRes, occRes] = await Promise.all([
+    const [leadsRes, occRes, showRes, appRes, lhRes] = await Promise.all([
       db.from('leasing_leads').select('*').eq('week_ending', week_ending).limit(10000),
       db.from('leasing_occupancy').select('*').limit(10000),
+      db.from('leasing_showings').select('property_name,property_id,showing_date,status').gte('showing_date', weekStart).lte('showing_date', weekEnd).limit(10000),
+      db.from('leasing_applications').select('property_name,property_id,application_date,status').gte('application_date', weekStart).lte('application_date', weekEnd).limit(10000),
+      db.from('leasing_lease_history').select('property_name,property_id,move_in_date,status').gte('move_in_date', weekStart).lte('move_in_date', weekEnd).limit(10000),
     ]);
     if (leadsRes.error) throw new Error(leadsRes.error.message);
     if (occRes.error) throw new Error(occRes.error.message);
+    // The 3 Phase-5 tables may not exist yet (migration 040 not run) — treat
+    // their errors as empty rather than failing the whole board.
     const leads = leadsRes.data || [];
     const occ = occRes.data || [];
+    const showings = (showRes && !showRes.error && showRes.data) ? showRes.data : [];
+    const applications = (appRes && !appRes.error && appRes.data) ? appRes.data : [];
+    const leaseHistory = (lhRes && !lhRes.error && lhRes.data) ? lhRes.data : [];
 
-    // Week is Sun–Sat; week_ending is the Saturday. Calls are counted by their
-    // logged date within this inclusive range.
-    const weekEndD = new Date(week_ending + 'T00:00:00');
-    const weekStartD = new Date(weekEndD); weekStartD.setDate(weekEndD.getDate() - 6);
-    const weekStart = weekStartD.toLocaleDateString('en-CA');
-    const weekEnd = week_ending;
+    // Count tours / move-ins / applications for the week, indexed by property_id
+    // and by clean community name so either can resolve a match.
+    const idKey = v => (v == null ? '' : String(v));
+    const nmKey = v => String(v || '').trim().toLowerCase();
+    const mkCounter = () => ({ byId: new Map(), byName: new Map() });
+    const addCount = (ctr, pid, pname, n) => {
+      const ik = idKey(pid); if (ik) ctr.byId.set(ik, (ctr.byId.get(ik) || 0) + n);
+      const nk = nmKey(pname); if (nk) ctr.byName.set(nk, (ctr.byName.get(nk) || 0) + n);
+    };
+    const getCount = (ctr, pid, name) => {
+      const ik = idKey(pid); if (ik && ctr.byId.has(ik)) return ctr.byId.get(ik);
+      const nk = nmKey(name); if (ctr.byName.has(nk)) return ctr.byName.get(nk);
+      return 0;
+    };
+    const toursC = mkCounter();
+    for (const s of showings) { if (!leasingStatusIs(s.status, 'cancel', 'no show', 'no-show', 'noshow')) addCount(toursC, s.property_id, s.property_name, 1); }
+    const moveC = mkCounter();
+    for (const lh of leaseHistory) { if (leasingStatusIs(lh.status, 'completed', 'current')) addCount(moveC, lh.property_id, lh.property_name, 1); }
+    // Applications table (authoritative for apps/approved/denied); Canceled excluded.
+    const appsC = mkCounter(), apprC = mkCounter(), denC = mkCounter();
+    for (const a of applications) {
+      if (leasingStatusIs(a.status, 'cancel')) continue;
+      addCount(appsC, a.property_id, a.property_name, 1);
+      if (leasingStatusIs(a.status, 'approved')) addCount(apprC, a.property_id, a.property_name, 1);
+      if (leasingStatusIs(a.status, 'denied', 'declined')) addCount(denC, a.property_id, a.property_name, 1);
+    }
+    const useAppsTable = applications.length > 0; // else fall back to leasing_leads status
 
     // Occupancy indexed by clean community name (lowercased) and by property_id.
     const occByName = new Map(), occById = new Map();
@@ -3946,8 +3981,14 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
       if (!c.property_id && l.property_id != null) c.property_id = String(l.property_id);
     }
 
-    // Union of communities that have leads OR occupancy this period.
-    const names = new Set([...byComm.keys(), ...occ.map(o => o.property_name).filter(Boolean)]);
+    // Union of communities that have leads OR occupancy OR any activity this period.
+    const names = new Set([
+      ...byComm.keys(),
+      ...occ.map(o => o.property_name).filter(Boolean),
+      ...showings.map(s => s.property_name).filter(Boolean),
+      ...applications.map(a => a.property_name).filter(Boolean),
+      ...leaseHistory.map(l => l.property_name).filter(Boolean),
+    ]);
     const properties = [];
     for (const name of names) {
       const c = byComm.get(name) || { name, property_id: null, traffic: 0, apps: 0, approved: 0, denied: 0, calls: 0 };
@@ -3958,10 +3999,17 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
       const goal_pct = leasingGoalPct(name);
       const net_moveins_needed = (total_units != null && occupied_units != null)
         ? Math.max(0, Math.ceil((goal_pct / 100) * total_units) - occupied_units) : null;
+      const tours = getCount(toursC, c.property_id, name);
+      const move_ins = getCount(moveC, c.property_id, name);
+      // Applications report is authoritative when present; otherwise use the
+      // guest-card-derived counts from leasing_leads.
+      const apps = useAppsTable ? getCount(appsC, c.property_id, name) : c.apps;
+      const approved = useAppsTable ? getCount(apprC, c.property_id, name) : c.approved;
+      const denied = useAppsTable ? getCount(denC, c.property_id, name) : c.denied;
       properties.push({
         property_name: name,
         property_id: c.property_id,
-        traffic: c.traffic, apps: c.apps, approved: c.approved, denied: c.denied, calls: c.calls,
+        traffic: c.traffic, tours, apps, approved, denied, calls: c.calls, move_ins,
         occupancy_pct, occupied_units, total_units,
         vacant_rented: o && o.vacant_rented != null ? o.vacant_rented : null,
         notice_units: o && o.notice_units != null ? o.notice_units : null,
@@ -3975,12 +4023,12 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
       return av - bv;
     });
     const totals = properties.reduce((t, p) => {
-      t.traffic += p.traffic; t.apps += p.apps; t.approved += p.approved; t.denied += p.denied; t.calls += p.calls;
+      t.traffic += p.traffic; t.tours += p.tours; t.apps += p.apps; t.approved += p.approved; t.denied += p.denied; t.calls += p.calls; t.move_ins += p.move_ins;
       if (p.occupied_units != null) t.occupied_units += p.occupied_units;
       if (p.total_units != null) t.total_units += p.total_units;
       if (p.net_moveins_needed != null) t.net_moveins_needed += p.net_moveins_needed;
       return t;
-    }, { traffic: 0, apps: 0, approved: 0, denied: 0, calls: 0, occupied_units: 0, total_units: 0, net_moveins_needed: 0 });
+    }, { traffic: 0, tours: 0, apps: 0, approved: 0, denied: 0, calls: 0, move_ins: 0, occupied_units: 0, total_units: 0, net_moveins_needed: 0 });
     totals.occupancy_pct = totals.total_units > 0 ? Math.round((totals.occupied_units / totals.total_units) * 1000) / 10 : null;
 
     res.json({ week_ending, properties, totals, occupancy_synced: occSynced });
@@ -4091,41 +4139,127 @@ app.get('/api/leasing/occupancy', requireMetricAccess, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Phase 5a: debug raw endpoints for the 3 remaining leasing reports ────────
-// Tours (Showings), Applications, and Move-ins (Lease History / box_score) still
-// come from hardcoded seeds on the Goal Board. Before locking a sync + field map
-// for each, these admin-gated endpoints return the raw first row so the exact
-// report slug + field names can be verified against a live response — the same
-// verify-first pattern used for occupancy and guest cards. Removed once locked.
-// A ?slug= override tries a different report path; ?from= sets a from_date filter
-// (rental_applications needs one), ?to= an optional to_date.
-async function leasingReportRawProbe(defaultSlug, req, res) {
-  const slug = (req.query.slug && String(req.query.slug).trim()) || defaultSlug;
-  const reportPath = '/api/v2/reports/' + slug + '.json';
-  // A tolerant filter: most leasing reports accept a date window + active
-  // visibility, and custom reports 404 on pagination, so keep it off.
-  const filter = { property_visibility: 'active', paginate_results: false };
-  if (req.query.from) filter.from_date = String(req.query.from);
-  if (req.query.to) filter.to_date = String(req.query.to);
+// ── Phase 5b: Tours (Showings), Applications, and Move-ins (Lease History) ───
+// Three more AppFolio reports feed the Goal Board's Tours / Apps / Move-ins.
+// Field names verified live; property_name stores the clean community name.
+const APPFOLIO_SHOWINGS_REPORT     = '/api/v2/reports/showings.json';
+const APPFOLIO_APPLICATIONS_REPORT = '/api/v2/reports/rental_applications.json';
+const APPFOLIO_LEASE_HISTORY_REPORT= '/api/v2/reports/lease_history.json';
+// property_id → integer or null.
+const leasingPropId = v => { const n = mwoNum(v); return n == null ? null : Math.round(n); };
+
+// POST /api/leasing/sync/showings — upsert leasing_showings on showing_id.
+app.post('/api/leasing/sync/showings', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   try {
-    const raw = await appfolioReportsFetch(reportPath, filter);
-    const first = raw[0] || null;
-    res.json({
-      ok: true, report_slug: slug, count: raw.length,
-      first_row_keys: first ? Object.keys(first) : null,
-      first_row: first,
-    });
+    const raw = await appfolioReportsFetch(APPFOLIO_SHOWINGS_REPORT, { property_visibility: 'active', paginate_results: false });
+    const now = new Date().toISOString();
+    const seen = new Set();
+    const rows = [];
+    for (const r of raw) {
+      const sid = leasingPropId(r.showing_id);
+      if (sid == null || seen.has(sid)) continue;
+      seen.add(sid);
+      rows.push({
+        showing_id: sid,
+        property_name: occCommunityName(r.property_name),
+        property_id: leasingPropId(r.property_id),
+        showing_date: leasingDateOnly(r.showing_time),
+        unit: r.showing_unit != null ? String(r.showing_unit) : null,
+        prospect: r.guest_card_name != null ? String(r.guest_card_name) : null,
+        status: r.status != null ? String(r.status) : null,
+        type: r.type != null ? String(r.type) : null,
+        synced_at: now,
+      });
+    }
+    const db = supabaseAdmin || supabasePublic;
+    let synced = 0;
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500); if (!chunk.length) break;
+      const { error } = await db.from('leasing_showings').upsert(chunk, { onConflict: 'showing_id' });
+      if (error) throw new Error(error.message);
+      synced += chunk.length;
+    }
+    res.json({ ok: true, synced, timestamp: now });
   } catch (err) {
-    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502)
-       .json({ ok: false, report_slug: slug, error: err.message });
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Showings sync failed: ' + err.message });
   }
-}
-// GET /api/leasing/showings/raw?slug=showings
-app.get('/api/leasing/showings/raw', requireMetricAdmin, (req, res) => leasingReportRawProbe('showings', req, res));
-// GET /api/leasing/applications/raw?slug=rental_applications&from=YYYY-MM-DD
-app.get('/api/leasing/applications/raw', requireMetricAdmin, (req, res) => leasingReportRawProbe('rental_applications', req, res));
-// GET /api/leasing/lease-history/raw?slug=lease_history  (try slug=box_score for move-ins)
-app.get('/api/leasing/lease-history/raw', requireMetricAdmin, (req, res) => leasingReportRawProbe('lease_history', req, res));
+});
+
+// POST /api/leasing/sync/applications — upsert leasing_applications on rental_application_id.
+app.post('/api/leasing/sync/applications', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
+  const from_date = (req.body && req.body.from_date) || '2026-01-01';
+  try {
+    const raw = await appfolioReportsFetch(APPFOLIO_APPLICATIONS_REPORT, { from_date, property_visibility: 'active', paginate_results: false });
+    const now = new Date().toISOString();
+    const seen = new Set();
+    const rows = [];
+    for (const r of raw) {
+      const aid = leasingPropId(r.rental_application_id);
+      if (aid == null || seen.has(aid)) continue;
+      seen.add(aid);
+      rows.push({
+        rental_application_id: aid,
+        property_name: occCommunityName(r.property_name),
+        property_id: leasingPropId(r.property_id),
+        application_date: leasingDateOnly(r.received),
+        status: r.application_status != null ? String(r.application_status) : null,
+        move_in_date: leasingDateOnly(r.move_in_date),
+        synced_at: now,
+      });
+    }
+    const db = supabaseAdmin || supabasePublic;
+    let synced = 0;
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500); if (!chunk.length) break;
+      const { error } = await db.from('leasing_applications').upsert(chunk, { onConflict: 'rental_application_id' });
+      if (error) throw new Error(error.message);
+      synced += chunk.length;
+    }
+    res.json({ ok: true, synced, from_date, timestamp: now });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Applications sync failed: ' + err.message });
+  }
+});
+
+// POST /api/leasing/sync/lease-history — upsert leasing_lease_history on lease_uuid.
+app.post('/api/leasing/sync/lease-history', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
+  try {
+    const raw = await appfolioReportsFetch(APPFOLIO_LEASE_HISTORY_REPORT, { property_visibility: 'active', paginate_results: false });
+    const now = new Date().toISOString();
+    const seen = new Set();
+    const rows = [];
+    for (const r of raw) {
+      const uuid = r.lease_uuid != null && String(r.lease_uuid).trim() !== '' ? String(r.lease_uuid).trim() : null;
+      if (!uuid || seen.has(uuid)) continue;
+      seen.add(uuid);
+      rows.push({
+        lease_uuid: uuid,
+        property_name: occCommunityName(r.property_name),
+        property_id: leasingPropId(r.property_id),
+        move_in_date: leasingDateOnly(r.move_in),
+        move_out_date: leasingDateOnly(r.move_out),
+        status: r.status != null ? String(r.status) : null,
+        renewal: r.renewal != null ? String(r.renewal) : null,
+        tenant_name: r.tenant_name != null ? String(r.tenant_name) : null,
+        synced_at: now,
+      });
+    }
+    const db = supabaseAdmin || supabasePublic;
+    let synced = 0;
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500); if (!chunk.length) break;
+      const { error } = await db.from('leasing_lease_history').upsert(chunk, { onConflict: 'lease_uuid' });
+      if (error) throw new Error(error.message);
+      synced += chunk.length;
+    }
+    res.json({ ok: true, synced, timestamp: now });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Lease-history sync failed: ' + err.message });
+  }
+});
 
 // =====================================================================
 // MAINTENANCE WORK ORDERS — synced from AppFolio's Reports API
