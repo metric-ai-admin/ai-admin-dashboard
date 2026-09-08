@@ -3878,6 +3878,28 @@ const leasingStatusIs = (status, ...needles) => {
   return needles.some(n => s.includes(n));
 };
 
+// Debug: sample of the leasing_leads.notes field, to confirm the format of the
+// activity log before locking a "Calls this week" parser (Phase 3). Admin-gated;
+// remove once the call-entry format is verified. ?week_ending= optional filter.
+app.get('/api/leasing/notes/sample', requireMetricAdmin, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ samples: [] });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    let q = db.from('leasing_leads')
+      .select('property,status,last_activity_type,notes')
+      .not('notes', 'is', null).limit(15);
+    if (req.query.week_ending) q = q.eq('week_ending', req.query.week_ending);
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    const samples = (data || []).map(r => ({
+      property: r.property, status: r.status, last_activity_type: r.last_activity_type,
+      notes_len: r.notes ? String(r.notes).length : 0,
+      notes: r.notes ? String(r.notes).slice(0, 1200) : null,
+    }));
+    res.json({ count: samples.length, samples });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/leasing/goal-board?week_ending=YYYY-MM-DD — per-community leasing KPIs
 // for the given week joined with current occupancy. Powers the native Goal Board.
 app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
