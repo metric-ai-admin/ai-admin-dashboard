@@ -3585,6 +3585,7 @@ const APPFOLIO_DELINQUENCY_MAP = {
   'Amount Receivable':           'amount_receivable',
   'Delinquent Rent':             'delinquent_rent',
   'Delinquency Notes':           'delinquency_notes',
+  'Occupancy Id':                'occupancy_id', // builds the AppFolio resident profile link
   // Fields not returned by this API endpoint — emitted blank:
   'AR Agent':                    null, // hardcoded to Karla for API syncs
   'Last Payment':                null,
