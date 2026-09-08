@@ -1235,17 +1235,33 @@ async function loadPlatform() {
 }
 
 function renderPlatform(projects) {
-  $('#platform-list').innerHTML = projects.map(p => {
+  // Phase → [badge class, label] and → visual group. Live is most prominent,
+  // Discovery the least.
+  const PHASE_BADGE = {
+    'Live':           ['badge-green', '✅ Live'],
+    'In Development': ['badge-amber', '🔧 In Dev'],
+    'Testing':        ['badge-amber', '🧪 Testing'],
+    'Discovery':      ['badge-gray',  '🔍 Discovery'],
+    'Not started':    ['badge-gray',  '◻ Not started'],
+  };
+  const groupOf = ph => ph === 'Live' ? 'live'
+    : (ph === 'In Development' || ph === 'Testing') ? 'dev' : 'discovery';
+
+  const cardHtml = p => {
     const subtasks = p.subtasks || [];
     const done = subtasks.filter(s => s.done).length;
     const pct = subtasks.length ? Math.round((done / subtasks.length) * 100) : 0;
     const isOpen = openProjects.has(p.id);
+    const grp = groupOf(p.phase);
+    const [badgeCls, badgeLabel] = PHASE_BADGE[p.phase] || ['badge-gray', esc(p.phase)];
     return `
-      <div class="project-card ${isOpen ? 'open' : ''}" data-id="${p.id}">
+      <div class="project-card project-card--${grp} ${isOpen ? 'open' : ''}" data-id="${p.id}">
         <div class="project-head" data-toggle>
-          <div>
-            <div class="project-title">${esc(p.module)} <span class="badge badge-blue">${esc(p.phase)}</span></div>
+          <div style="flex:1;min-width:0">
+            <div class="project-title">${esc(p.module)} <span class="badge ${badgeCls}">${badgeLabel}</span></div>
+            ${p.nextAction ? `<div class="project-next">→ ${esc(p.nextAction)}</div>` : ''}
             ${p.blockers ? `<div class="blockers-banner" style="margin-top:6px">⚠ ${esc(p.blockers)}</div>` : ''}
+            <div class="project-meta">Updated ${p.lastUpdate ? new Date(p.lastUpdate).toLocaleDateString() : '—'}</div>
           </div>
           <div style="display:flex;align-items:center;gap:10px;min-width:160px">
             <div class="progress-bar-track"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
@@ -1284,7 +1300,20 @@ function renderPlatform(projects) {
           <p class="muted small">Last update: ${p.lastUpdate ? new Date(p.lastUpdate).toLocaleString() : '—'}</p>
         </div>
       </div>`;
-  }).join('');
+  };
+
+  // Group by phase and render a section per non-empty group, most prominent first.
+  const SECTIONS = [['live', '🟢 Live Modules'], ['dev', '🛠 In Development'], ['discovery', '🔍 Discovery']];
+  const byGroup = { live: [], dev: [], discovery: [] };
+  projects.forEach(p => byGroup[groupOf(p.phase)].push(p));
+  $('#platform-list').innerHTML = SECTIONS.map(([key, label]) => {
+    const list = byGroup[key];
+    if (!list.length) return '';
+    return `<div class="project-group project-group--${key}">
+        <h3 class="project-group-head">${label} (${list.length})</h3>
+        ${list.map(cardHtml).join('')}
+      </div>`;
+  }).join('') || '<p class="muted small">No projects yet.</p>';
 
   $$('#platform-list .project-head').forEach(head => {
     head.addEventListener('click', () => {
