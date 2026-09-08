@@ -3852,6 +3852,92 @@ app.get('/api/leasing/weeks', requireMetricAccess, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Leasing occupancy — synced from AppFolio's Reports API ──────────────────
+// Occupancy comes from a different report than guest cards. The exact slug/field
+// names aren't verified here, so the debug endpoint returns raw keys and the sync
+// maps tolerantly. Reuses the Reports-API auth/pagination (appfolioReportsFetch).
+const APPFOLIO_OCC_REPORTS = {
+  occupancy_summary: '/api/v2/reports/occupancy_summary.json',
+  box_score:         '/api/v2/reports/box_score.json',
+};
+const APPFOLIO_OCC_FIELDS = {
+  property_name:  ['property_name', 'property'],
+  occupancy_pct:  ['occupancy', 'occupancy_percentage', 'occupancy_pct', 'percent_occupied', 'occupied_percentage', 'occupancy_rate'],
+  occupied_units: ['occupied_units', 'units_occupied', 'occupied', 'occupied_unit_count'],
+  total_units:    ['total_units', 'units', 'unit_count', 'total_unit_count'],
+  as_of:          ['as_of', 'as_of_date', 'occurred_on', 'report_date'],
+};
+const occPct = v => {
+  if (v == null || String(v).trim() === '') return null;
+  let n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+  if (isNaN(n)) return null;
+  if (n > 0 && n <= 1) n = n * 100; // fraction → percent
+  return Math.round(n * 10) / 10;
+};
+
+// Debug: raw first row from the occupancy report, to confirm the slug + field
+// names. ?report=occupancy_summary|box_score. Admin-gated; remove once verified.
+app.get('/api/leasing/occupancy/raw', requireMetricAdmin, async (req, res) => {
+  const key = APPFOLIO_OCC_REPORTS[req.query.report] ? req.query.report : 'occupancy_summary';
+  try {
+    const raw = await appfolioReportsFetch(APPFOLIO_OCC_REPORTS[key], { property_visibility: 'active', paginate_results: false });
+    const first = raw[0] || null;
+    res.json({ ok: true, report: key, count: raw.length, first_row_keys: first ? Object.keys(first) : null, first_row: first });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, report: key, error: err.message });
+  }
+});
+
+// POST /api/leasing/sync/occupancy — pull current occupancy per property and
+// upsert leasing_occupancy. ?report=occupancy_summary|box_score (default summary).
+app.post('/api/leasing/sync/occupancy', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
+  const key = APPFOLIO_OCC_REPORTS[req.body && req.body.report] ? req.body.report : 'occupancy_summary';
+  try {
+    const raw = await appfolioReportsFetch(APPFOLIO_OCC_REPORTS[key], { property_visibility: 'active', paginate_results: false });
+    const F = APPFOLIO_OCC_FIELDS;
+    const seen = new Set();
+    const rows = [];
+    for (const r of raw) {
+      const name = mwoPick(r, F.property_name);
+      if (!name || seen.has(String(name).trim())) continue;
+      seen.add(String(name).trim());
+      rows.push({
+        property_name: String(name).trim(),
+        occupancy_pct: occPct(mwoPick(r, F.occupancy_pct)),
+        occupied_units: (() => { const v = mwoNum(mwoPick(r, F.occupied_units)); return v == null ? null : Math.round(v); })(),
+        total_units: (() => { const v = mwoNum(mwoPick(r, F.total_units)); return v == null ? null : Math.round(v); })(),
+        as_of: leasingDateOnly(mwoPick(r, F.as_of)),
+        synced_at: new Date().toISOString(),
+      });
+    }
+    const db = supabaseAdmin || supabasePublic;
+    let synced = 0;
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500);
+      if (!chunk.length) break;
+      const { error } = await db.from('leasing_occupancy').upsert(chunk, { onConflict: 'property_name' });
+      if (error) throw new Error(error.message);
+      synced += chunk.length;
+    }
+    res.json({ ok: true, report: key, synced, timestamp: new Date().toISOString(), sample_keys: raw[0] ? Object.keys(raw[0]) : null });
+  } catch (err) {
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, report: key, error: 'Occupancy sync failed: ' + err.message });
+  }
+});
+
+// GET /api/leasing/occupancy — current occupancy per property (for the board).
+app.get('/api/leasing/occupancy', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ occupancy: [], last_synced: null });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('leasing_occupancy').select('*').order('property_name');
+    if (error) throw new Error(error.message);
+    const last = (data || []).reduce((m, r) => (r.synced_at && r.synced_at > m ? r.synced_at : m), '');
+    res.json({ occupancy: data || [], last_synced: last || null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // =====================================================================
 // MAINTENANCE WORK ORDERS — synced from AppFolio's Reports API
 // (work_order.json), replacing Erick's manual daily Excel upload. Uses the same
