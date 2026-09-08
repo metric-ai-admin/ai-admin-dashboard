@@ -3861,6 +3861,7 @@ const APPFOLIO_WORK_ORDER_FILTER = {
   work_order_statuses: ['0', '1', '2', '9', '11', '3'],
   work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
   property_visibility: 'active',
+  paginate_results: false, // return all rows in one response (some reports 404 on next_page_url)
 };
 // Response field -> column, locked to the live work_order.json keys (verified
 // against a real response). `issue` prefers work_order_issue and falls back to
@@ -3957,7 +3958,7 @@ const mwoNum = v => { if (v == null || String(v).trim() === '') return null; con
 const MAINT_SUPPORT_REPORTS = {
   inspections: {
     report: '/api/v2/reports/inspection_detail.json',
-    filter: { property_visibility: 'active' },
+    filter: { property_visibility: 'active', paginate_results: false },
     table: 'maintenance_inspections',
     map: r => ({
       inspection_id:    mwoStr(mwoPick(r, ['inspection_id', 'id'])),
@@ -3975,7 +3976,7 @@ const MAINT_SUPPORT_REPORTS = {
   },
   billable: {
     report: '/api/v2/reports/work_order_billable_detail.json',
-    filter: { work_order_statuses: ['0', '8', '12'], property_visibility: 'active' },
+    filter: { work_order_statuses: ['0', '8', '12'], property_visibility: 'active', paginate_results: false },
     table: 'maintenance_billable',
     map: r => ({
       work_order_number: mwoStr(mwoPick(r, ['work_order_number'])),
@@ -3994,7 +3995,7 @@ const MAINT_SUPPORT_REPORTS = {
   },
   labor: {
     report: '/api/v2/reports/work_order_labor_summary.json',
-    filter: { property_visibility: 'active' },
+    filter: { property_visibility: 'active', paginate_results: false },
     table: 'maintenance_labor',
     map: r => ({
       work_order_number: mwoStr(mwoPick(r, ['work_order_number'])),
@@ -4015,7 +4016,7 @@ const MAINT_SUPPORT_REPORTS = {
     report: '/api/v2/reports/work_order_custom_fields.json',
     // Custom fields hang off work orders; the report needs a work-order status
     // filter like the main report (property_visibility alone 400s).
-    filter: { work_order_statuses: ['0', '1', '2', '9', '11', '3'], property_visibility: 'active' },
+    filter: { work_order_statuses: ['0', '1', '2', '9', '11', '3'], property_visibility: 'active', paginate_results: false },
     table: 'maintenance_custom_fields',
     map: r => ({
       work_order_number:         mwoStr(mwoPick(r, ['work_order_number', 'work_order_#', 'work_order'])),
@@ -4029,7 +4030,7 @@ const MAINT_SUPPORT_REPORTS = {
   },
   inventory: {
     report: '/api/v2/reports/inventory_usage.json',
-    filter: { property_visibility: 'active' },
+    filter: { property_visibility: 'active', paginate_results: false },
     table: 'maintenance_inventory',
     map: r => ({
       item_name:          mwoPick(r, ['item_name']),
@@ -4050,7 +4051,7 @@ const MAINT_SUPPORT_REPORTS = {
   // "Unbilled over 30 days" task; only wo# + unbilled amount are needed.
   audit: {
     report: '/api/v2/reports/work_order_billable_detail.json',
-    filter: { work_order_statuses: ['8', '12'], property_visibility: 'active' },
+    filter: { work_order_statuses: ['8', '12'], property_visibility: 'active', paginate_results: false },
     table: 'maintenance_audit',
     map: r => ({
       work_order_number: mwoStr(mwoPick(r, ['work_order_number'])),
