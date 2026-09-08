@@ -256,12 +256,112 @@ function loadLeasing() {
   if (!$('#leasing-sync-btn')) return;
   if (!leasingState.wired) {
     leasingWireSync();
+    leasingWireGoalBoard();
     wireLeasingFullscreen();
     leasingState.wired = true;
   }
-  // Lazy-load the tool iframe (its fonts/scripts aren't fetched until needed).
+  // The native Goal Board is the primary view; load it on open.
+  leasingLoadGoalBoard($('#leasing-gb-week')?.value || '');
+  // The original iframe board is now inside a collapsible <details> and only
+  // fetches its fonts/scripts the first time that section is expanded.
+  const details = $('#leasing-original-board');
   const frame = $('#leasing-frame');
-  if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/tools/weekly_leasing_goal_board.html');
+  const lazyFrame = () => { if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/tools/weekly_leasing_goal_board.html'); };
+  if (details && !details.dataset.wired) {
+    details.dataset.wired = '1';
+    details.addEventListener('toggle', () => { if (details.open) lazyFrame(); });
+  }
+  if (details && details.open) lazyFrame();
+}
+
+// ── Weekly Leasing Goal Board (native) ──────────────────────────────────────
+function leasingWireGoalBoard() {
+  $('#leasing-gb-sync-leads')?.addEventListener('click', leasingSyncFromAppFolio);
+  $('#leasing-sync-occupancy')?.addEventListener('click', leasingSyncOccupancy);
+  $('#leasing-gb-week')?.addEventListener('change', e => leasingLoadGoalBoard(e.target.value));
+  // Populate the week selector from the distinct lead weeks.
+  api('/api/leasing/weeks').then(({ weeks }) => {
+    const sel = $('#leasing-gb-week');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— this week —</option>' +
+      (weeks || []).map(w => `<option value="${esc(w)}">Week ending ${esc(w)}</option>`).join('');
+  }).catch(() => {});
+}
+async function leasingSyncOccupancy() {
+  const btn = $('#leasing-sync-occupancy'), status = $('#leasing-gb-status');
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Syncing…'; }
+  if (status) status.textContent = 'Pulling current occupancy from AppFolio…';
+  try {
+    const r = await api('/api/leasing/sync/occupancy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    toast(`Synced occupancy for ${r.properties} properties ✅`, 'success');
+    await leasingLoadGoalBoard($('#leasing-gb-week')?.value || '');
+  } catch (err) {
+    toast(err.message, 'error');
+    if (status) status.textContent = '❌ ' + err.message;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+async function leasingLoadGoalBoard(week) {
+  const el = $('#leasing-gb-table');
+  if (!el) return;
+  el.innerHTML = '<p class="small muted">Loading goal board…</p>';
+  try {
+    const qs = week ? ('?week_ending=' + encodeURIComponent(week)) : '';
+    const b = await api('/api/leasing/goal-board' + qs);
+    const props = b.properties || [];
+    const status = $('#leasing-gb-status');
+    if (status) {
+      const occSync = b.occupancy_synced ? new Date(b.occupancy_synced).toLocaleString() : 'never';
+      status.textContent = `Week ending ${b.week_ending || '—'} · occupancy last synced ${occSync}`;
+    }
+    if (!props.length) { el.innerHTML = '<p class="small muted">No leasing or occupancy data yet. Sync from AppFolio and Sync Occupancy to populate the board.</p>'; return; }
+    const num = v => (v == null ? '—' : v);
+    const pct = v => (v == null ? '—' : v + '%');
+    const t = b.totals || {};
+    const rowsHtml = props.map(p => {
+      const low = p.occupancy_pct != null && p.occupancy_pct < p.goal_pct;
+      return `<tr>
+        <td>${esc(p.property_name)}</td>
+        <td style="text-align:right">${num(p.total_units)}</td>
+        <td style="text-align:right">${num(p.occupied_units)}</td>
+        <td style="text-align:right;${low ? 'color:#b91c1c;font-weight:600' : ''}">${pct(p.occupancy_pct)}</td>
+        <td style="text-align:right">${num(p.vacant_rented)}</td>
+        <td style="text-align:right">${num(p.notice_units)}</td>
+        <td style="text-align:right">${p.traffic}</td>
+        <td style="text-align:right">${p.apps}</td>
+        <td style="text-align:right">${p.approved}</td>
+        <td style="text-align:right">${p.denied}</td>
+        <td style="text-align:right">${p.goal_pct}%</td>
+        <td style="text-align:right;${p.net_moveins_needed ? 'font-weight:600' : ''}">${p.net_moveins_needed == null ? '—' : p.net_moveins_needed}</td>
+      </tr>`;
+    }).join('');
+    const totalRow = `<tr style="font-weight:700;border-top:2px solid var(--border)">
+      <td>TOTAL</td>
+      <td style="text-align:right">${num(t.total_units)}</td>
+      <td style="text-align:right">${num(t.occupied_units)}</td>
+      <td style="text-align:right">${pct(t.occupancy_pct)}</td>
+      <td colspan="2"></td>
+      <td style="text-align:right">${t.traffic || 0}</td>
+      <td style="text-align:right">${t.apps || 0}</td>
+      <td style="text-align:right">${t.approved || 0}</td>
+      <td style="text-align:right">${t.denied || 0}</td>
+      <td></td>
+      <td style="text-align:right">${t.net_moveins_needed || 0}</td>
+    </tr>`;
+    el.innerHTML = `<div class="crm-table-wrap"><table class="crm-sub-table">
+      <thead><tr>
+        <th>Community</th><th style="text-align:right">Units</th><th style="text-align:right">Occupied</th>
+        <th style="text-align:right">Occ%</th><th style="text-align:right">Vac. Rented</th><th style="text-align:right">Notice</th>
+        <th style="text-align:right">Traffic</th><th style="text-align:right">Apps</th>
+        <th style="text-align:right">Approved</th><th style="text-align:right">Denied</th>
+        <th style="text-align:right">Goal</th><th style="text-align:right">Net Move-ins Needed</th>
+      </tr></thead>
+      <tbody>${rowsHtml}${totalRow}</tbody></table></div>`;
+  } catch (err) {
+    el.innerHTML = `<p class="small muted">❌ ${esc(err.message)}</p>`;
+  }
 }
 
 // ── AppFolio Leads Sync (Guest Card Interests) ──────────────────────────────

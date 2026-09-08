@@ -1698,18 +1698,40 @@
       <div id="leasing-sync-summary" style="margin-top:12px"></div>
     </div>
 
-    <!-- Panel — Weekly Leasing Goal Board -->
+    <!-- Panel — Weekly Leasing Goal Board (native, replaces the iframe) -->
     <div class="card">
-      <div class="view-head" style="margin:0 0 8px">
-        <h3 style="margin:0">Weekly Leasing Goal Board</h3>
-        <div class="view-actions">
-          <button class="btn-sm" id="leasing-fullscreen-btn">⛶ Full Screen</button>
+      <div class="view-head" style="margin:0 0 8px;align-items:flex-start">
+        <div>
+          <h3 style="margin:0">Weekly Leasing Goal Board</h3>
+          <p class="muted small" style="margin:2px 0 0">Portfolio occupancy roll-up with this week's traffic and applications, sorted by tightest occupancy.</p>
+        </div>
+        <div class="view-actions" style="display:flex;gap:8px;align-items:center">
+          <button class="btn-sm primary" id="leasing-gb-sync-leads">↺ Sync from AppFolio</button>
+          <button class="btn-sm" id="leasing-sync-occupancy">🏠 Sync Occupancy</button>
         </div>
       </div>
-      <div id="leasing-frame-wrap">
-        <iframe id="leasing-frame" title="Weekly Leasing Goal Board"
-                style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff"></iframe>
+      <div class="crm-completed-range" style="flex-wrap:wrap;gap:12px;align-items:flex-end">
+        <label class="small">Week ending
+          <select id="leasing-gb-week" class="crm-select"><option value="">— this week —</option></select>
+        </label>
+        <span class="small muted" id="leasing-gb-status"></span>
       </div>
+      <div id="leasing-gb-table" style="margin-top:12px"></div>
+    </div>
+
+    <!-- Panel — Original iframe board, kept as a collapsible historical reference -->
+    <div class="card">
+      <details id="leasing-original-board">
+        <summary style="cursor:pointer;font-weight:600">View Original Goal Board</summary>
+        <p class="muted small" style="margin:8px 0 0">Original 10-Week Plan (data through 8/8/2026 — historical reference only).</p>
+        <div class="view-actions" style="margin:8px 0">
+          <button class="btn-sm" id="leasing-fullscreen-btn">⛶ Full Screen</button>
+        </div>
+        <div id="leasing-frame-wrap">
+          <iframe id="leasing-frame" title="Weekly Leasing Goal Board"
+                  style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff"></iframe>
+        </div>
+      </details>
     </div>
   </section>
 

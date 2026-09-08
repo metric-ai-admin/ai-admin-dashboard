@@ -3852,67 +3852,191 @@ app.get('/api/leasing/weeks', requireMetricAccess, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Leasing occupancy — synced from AppFolio's Reports API ──────────────────
-// Occupancy comes from a different report than guest cards. The exact slug/field
-// names aren't verified here, so the debug endpoint returns raw keys and the sync
-// maps tolerantly. Reuses the Reports-API auth/pagination (appfolioReportsFetch).
-const APPFOLIO_OCC_REPORTS = {
-  occupancy_summary: '/api/v2/reports/occupancy_summary.json',
-  box_score:         '/api/v2/reports/box_score.json',
+// Occupancy goal per community, as a fraction of total units. Hardcoded for now
+// (per spec); move to a leasing_goals table later if these need editing in-app.
+const LEASING_GOAL_PCT = {
+  'ascent at northgate': 85,
+  'windy hill apartment': 90,
+  'the highlander': 85,
+  'sunset palms': 85,
+  'the chateau': 85,
+  'hyde park square': 85,
+  'the sidney': 85,
+  'iconic round rock': 92,
+  'iconic downtown': 92,
+  'live with metric': 85,
 };
-const APPFOLIO_OCC_FIELDS = {
-  property_name:  ['property_name', 'property'],
-  occupancy_pct:  ['occupancy', 'occupancy_percentage', 'occupancy_pct', 'percent_occupied', 'occupied_percentage', 'occupancy_rate'],
-  occupied_units: ['occupied_units', 'units_occupied', 'occupied', 'occupied_unit_count'],
-  total_units:    ['total_units', 'units', 'unit_count', 'total_unit_count'],
-  as_of:          ['as_of', 'as_of_date', 'occurred_on', 'report_date'],
+const LEASING_GOAL_DEFAULT = 85;
+const leasingGoalPct = name => {
+  const k = String(name || '').trim().toLowerCase();
+  if (LEASING_GOAL_PCT[k] != null) return LEASING_GOAL_PCT[k];
+  for (const key of Object.keys(LEASING_GOAL_PCT)) if (k.includes(key)) return LEASING_GOAL_PCT[key];
+  return LEASING_GOAL_DEFAULT;
 };
-const occPct = v => {
-  if (v == null || String(v).trim() === '') return null;
-  let n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
-  if (isNaN(n)) return null;
-  if (n > 0 && n <= 1) n = n * 100; // fraction → percent
-  return Math.round(n * 10) / 10;
+const leasingStatusIs = (status, ...needles) => {
+  const s = String(status || '').toLowerCase();
+  return needles.some(n => s.includes(n));
 };
 
-// Debug: raw first row from the occupancy report, to confirm the slug + field
-// names. ?report=occupancy_summary|box_score. Admin-gated; remove once verified.
-app.get('/api/leasing/occupancy/raw', requireMetricAdmin, async (req, res) => {
-  const key = APPFOLIO_OCC_REPORTS[req.query.report] ? req.query.report : 'occupancy_summary';
+// GET /api/leasing/goal-board?week_ending=YYYY-MM-DD — per-community leasing KPIs
+// for the given week joined with current occupancy. Powers the native Goal Board.
+app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ week_ending: null, properties: [], totals: null, occupancy_synced: null });
+  const week_ending = req.query.week_ending || leasingWeekEnding(new Date());
   try {
-    const raw = await appfolioReportsFetch(APPFOLIO_OCC_REPORTS[key], { property_visibility: 'active', paginate_results: false });
-    const first = raw[0] || null;
-    res.json({ ok: true, report: key, count: raw.length, first_row_keys: first ? Object.keys(first) : null, first_row: first });
-  } catch (err) {
-    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, report: key, error: err.message });
-  }
+    const db = supabaseAdmin || supabasePublic;
+    const [leadsRes, occRes] = await Promise.all([
+      db.from('leasing_leads').select('*').eq('week_ending', week_ending).limit(10000),
+      db.from('leasing_occupancy').select('*').limit(10000),
+    ]);
+    if (leadsRes.error) throw new Error(leadsRes.error.message);
+    if (occRes.error) throw new Error(occRes.error.message);
+    const leads = leadsRes.data || [];
+    const occ = occRes.data || [];
+
+    // Occupancy indexed by clean community name (lowercased) and by property_id.
+    const occByName = new Map(), occById = new Map();
+    let occSynced = null;
+    for (const o of occ) {
+      if (o.property_name) occByName.set(String(o.property_name).trim().toLowerCase(), o);
+      if (o.property_id != null) occById.set(String(o.property_id), o);
+      if (o.synced_at && (!occSynced || o.synced_at > occSynced)) occSynced = o.synced_at;
+    }
+
+    // Roll up leads by community name (before " - ").
+    const communityName = full => { const s = String(full || '').trim(); const i = s.indexOf(' - '); return i > 0 ? s.slice(0, i).trim() : s; };
+    const byComm = new Map();
+    for (const l of leads) {
+      const name = communityName(l.property) || 'Unknown';
+      let c = byComm.get(name);
+      if (!c) { c = { name, property_id: l.property_id != null ? String(l.property_id) : null, traffic: 0, apps: 0, approved: 0, denied: 0 }; byComm.set(name, c); }
+      c.traffic += 1;
+      if (leasingStatusIs(l.status, 'application', 'applied')) c.apps += 1;
+      if (leasingStatusIs(l.status, 'approved')) c.approved += 1;
+      if (leasingStatusIs(l.status, 'denied', 'declined')) c.denied += 1;
+      if (!c.property_id && l.property_id != null) c.property_id = String(l.property_id);
+    }
+
+    // Union of communities that have leads OR occupancy this period.
+    const names = new Set([...byComm.keys(), ...occ.map(o => o.property_name).filter(Boolean)]);
+    const properties = [];
+    for (const name of names) {
+      const c = byComm.get(name) || { name, property_id: null, traffic: 0, apps: 0, approved: 0, denied: 0 };
+      const o = (c.property_id && occById.get(c.property_id)) || occByName.get(String(name).trim().toLowerCase()) || null;
+      const total_units = o && o.total_units != null ? o.total_units : null;
+      const occupied_units = o && o.occupied_units != null ? o.occupied_units : null;
+      const occupancy_pct = o && o.occupancy_pct != null ? o.occupancy_pct : null;
+      const goal_pct = leasingGoalPct(name);
+      const net_moveins_needed = (total_units != null && occupied_units != null)
+        ? Math.max(0, Math.ceil((goal_pct / 100) * total_units) - occupied_units) : null;
+      properties.push({
+        property_name: name,
+        property_id: c.property_id,
+        traffic: c.traffic, apps: c.apps, approved: c.approved, denied: c.denied,
+        occupancy_pct, occupied_units, total_units,
+        vacant_rented: o && o.vacant_rented != null ? o.vacant_rented : null,
+        notice_units: o && o.notice_units != null ? o.notice_units : null,
+        goal_pct, net_moveins_needed,
+      });
+    }
+    // Sort by occupancy% ascending (nulls last), so the tightest communities top.
+    properties.sort((a, b) => {
+      const av = a.occupancy_pct == null ? Infinity : a.occupancy_pct;
+      const bv = b.occupancy_pct == null ? Infinity : b.occupancy_pct;
+      return av - bv;
+    });
+    const totals = properties.reduce((t, p) => {
+      t.traffic += p.traffic; t.apps += p.apps; t.approved += p.approved; t.denied += p.denied;
+      if (p.occupied_units != null) t.occupied_units += p.occupied_units;
+      if (p.total_units != null) t.total_units += p.total_units;
+      if (p.net_moveins_needed != null) t.net_moveins_needed += p.net_moveins_needed;
+      return t;
+    }, { traffic: 0, apps: 0, approved: 0, denied: 0, occupied_units: 0, total_units: 0, net_moveins_needed: 0 });
+    totals.occupancy_pct = totals.total_units > 0 ? Math.round((totals.occupied_units / totals.total_units) * 1000) / 10 : null;
+
+    res.json({ week_ending, properties, totals, occupancy_synced: occSynced });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/leasing/sync/occupancy — pull current occupancy per property and
-// upsert leasing_occupancy. ?report=occupancy_summary|box_score (default summary).
+// ── Leasing occupancy — synced from AppFolio's occupancy_summary report ──────
+// The report returns ONE ROW PER UNIT TYPE per property (e.g. "1 Bedroom & 1
+// Bathroom"), so the sync aggregates rows by property_id: sum occupied and
+// number_of_units, then occupancy_pct = sum(occupied)/sum(total_units)*100.
+// The report's `property` field carries the address ("Sunset Palms - 902
+// Romeria Drive ..."); the community name is the substring before " - ".
+// Field names verified live via the (now-removed) raw debug endpoint.
+const APPFOLIO_OCC_REPORT = '/api/v2/reports/occupancy_summary.json';
+const APPFOLIO_OCC_FIELDS = {
+  property:         'property',          // full string incl. address
+  property_id:      'property_id',       // stable grouping key
+  total_units:      'number_of_units',   // per unit-type; summed per property
+  occupied:         'occupied',          // per unit-type; summed per property
+  percent:          'percent_occupied',  // string like "86.1" (unit-type level)
+  vacant_rented:    'vacant_rented',     // vacant but leased; summed per property
+  notice_rented:    'notice_rented',     // on notice, re-leased
+  notice_unrented:  'notice_unrented',   // on notice, not yet re-leased
+};
+// Community name = substring before " - " (drops the street address).
+const occCommunityName = full => {
+  const s = String(full || '').trim();
+  if (!s) return s;
+  const i = s.indexOf(' - ');
+  return i > 0 ? s.slice(0, i).trim() : s;
+};
+
+// POST /api/leasing/sync/occupancy — pull the occupancy_summary report, roll up
+// per-unit-type rows to one row per property_id, and upsert leasing_occupancy.
 app.post('/api/leasing/sync/occupancy', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
-  const key = APPFOLIO_OCC_REPORTS[req.body && req.body.report] ? req.body.report : 'occupancy_summary';
   try {
-    const raw = await appfolioReportsFetch(APPFOLIO_OCC_REPORTS[key], { property_visibility: 'active', paginate_results: false });
+    const raw = await appfolioReportsFetch(APPFOLIO_OCC_REPORT, { property_visibility: 'active', paginate_results: false });
     const F = APPFOLIO_OCC_FIELDS;
-    const seen = new Set();
-    const rows = [];
+    const byProp = new Map(); // property_id → aggregate
     for (const r of raw) {
-      const name = mwoPick(r, F.property_name);
-      if (!name || seen.has(String(name).trim())) continue;
-      seen.add(String(name).trim());
+      const pid = r[F.property_id];
+      const full = r[F.property];
+      const groupKey = (pid != null && String(pid).trim() !== '') ? String(pid).trim() : String(full || '').trim();
+      if (!groupKey) continue;
+      const occ = mwoNum(r[F.occupied]);
+      const tot = mwoNum(r[F.total_units]);
+      const vr = mwoNum(r[F.vacant_rented]);
+      const nr = mwoNum(r[F.notice_rented]);
+      const nu = mwoNum(r[F.notice_unrented]);
+      let agg = byProp.get(groupKey);
+      if (!agg) {
+        agg = { property_id: (pid != null && String(pid).trim() !== '') ? Math.round(mwoNum(pid)) : null,
+                property: String(full || '').trim(),
+                property_name: occCommunityName(full),
+                occupied_units: 0, total_units: 0, vacant_rented: 0, notice_units: 0 };
+        byProp.set(groupKey, agg);
+      }
+      if (occ != null) agg.occupied_units += Math.round(occ);
+      if (tot != null) agg.total_units += Math.round(tot);
+      if (vr != null) agg.vacant_rented += Math.round(vr);
+      if (nr != null) agg.notice_units += Math.round(nr);
+      if (nu != null) agg.notice_units += Math.round(nu);
+    }
+    const now = new Date().toISOString();
+    const rows = [];
+    for (const agg of byProp.values()) {
+      const pct = agg.total_units > 0 ? Math.round((agg.occupied_units / agg.total_units) * 1000) / 10 : null;
       rows.push({
-        property_name: String(name).trim(),
-        occupancy_pct: occPct(mwoPick(r, F.occupancy_pct)),
-        occupied_units: (() => { const v = mwoNum(mwoPick(r, F.occupied_units)); return v == null ? null : Math.round(v); })(),
-        total_units: (() => { const v = mwoNum(mwoPick(r, F.total_units)); return v == null ? null : Math.round(v); })(),
-        as_of: leasingDateOnly(mwoPick(r, F.as_of)),
-        synced_at: new Date().toISOString(),
+        property_id: agg.property_id,
+        property: agg.property,
+        property_name: agg.property_name,
+        occupied_units: agg.occupied_units,
+        total_units: agg.total_units,
+        occupancy_pct: pct,
+        vacant_rented: agg.vacant_rented,
+        notice_units: agg.notice_units,
+        as_of: now.slice(0, 10),
+        synced_at: now,
       });
     }
     const db = supabaseAdmin || supabasePublic;
     let synced = 0;
+    // Upsert on the clean property_name (unique per property). property_id is
+    // stored as data for joins to leasing_leads.
     for (let i = 0; i < rows.length; i += 500) {
       const chunk = rows.slice(i, i + 500);
       if (!chunk.length) break;
@@ -3920,9 +4044,9 @@ app.post('/api/leasing/sync/occupancy', requireMetricAccess, async (req, res) =>
       if (error) throw new Error(error.message);
       synced += chunk.length;
     }
-    res.json({ ok: true, report: key, synced, timestamp: new Date().toISOString(), sample_keys: raw[0] ? Object.keys(raw[0]) : null });
+    res.json({ ok: true, synced, properties: rows.length, timestamp: now });
   } catch (err) {
-    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, report: key, error: 'Occupancy sync failed: ' + err.message });
+    res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Occupancy sync failed: ' + err.message });
   }
 });
 
