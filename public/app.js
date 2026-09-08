@@ -877,12 +877,13 @@ function renderTasks() {
   if (taskTimeFilter === 'today') baseList = baseList.filter(t => inRange(t, today));
   else if (taskTimeFilter === 'week') baseList = baseList.filter(t => inRange(t, weekAgo));
 
-  // KPI bar — global snapshot
+  // KPI bar — reflects the active type/time filter, so the pill counts match the
+  // cards actually shown in each column (not the whole cache).
   const kc = {
-    critical: taskCache.filter(t => t.priority === '🔴 Critical').length,
-    followup: taskCache.filter(t => t.priority === '🟡 Follow-up').length,
-    inprogress: taskCache.filter(t => t.priority === '🟢 In Progress').length,
-    done: taskCache.filter(t => t.priority === '✅ Done').length,
+    critical: baseList.filter(t => t.priority === '🔴 Critical').length,
+    followup: baseList.filter(t => t.priority === '🟡 Follow-up').length,
+    inprogress: baseList.filter(t => t.priority === '🟢 In Progress').length,
+    done: baseList.filter(t => t.priority === '✅ Done').length,
   };
   $('#task-kpi-bar').innerHTML = [
     { label: 'Critical', count: kc.critical, cls: 'kpi-chip-red' },
