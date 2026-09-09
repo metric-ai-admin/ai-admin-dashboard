@@ -7557,10 +7557,21 @@ async function eodGather() {
   // 1 — EMAIL TRIAGE
   try {
     const s = { processed: 0, unreadTotal: 0, folders: [] };
-    // Match "today" by date-prefix in JS (robust whether session_date is a date
-    // or a timestamptz) so a CT-vs-UTC boundary doesn't zero out the count.
+    // Normalize each row's session_date to a CT calendar date: a plain
+    // 'YYYY-MM-DD' passes through; a timestamptz is converted through the CT
+    // timezone. This is robust whether the column is a date or a timestamp.
     const { data: ts } = await db.from('triage_sessions').select('emails_processed,session_date').order('session_date', { ascending: false }).limit(25);
-    s.processed = (ts || []).filter(r => String(r.session_date || '').slice(0, 10) === today).reduce((a, r) => a + (r.emails_processed || 0), 0);
+    const rowDateCT = sd => {
+      const raw = String(sd || '');
+      if (!raw) return '';
+      if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;               // date-only string
+      const d = new Date(raw);
+      return isNaN(d.getTime()) ? raw.slice(0, 10) : new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(d);
+    };
+    const todays = (ts || []).filter(r => rowDateCT(r.session_date) === today);
+    s.processed = todays.reduce((a, r) => a + (r.emails_processed || 0), 0);
+    console.log('[eod] triage — today(CT)=%s, latest session_dates=%j, matched=%d, processed=%d',
+      today, (ts || []).slice(0, 5).map(r => r.session_date), todays.length, s.processed);
     try {
       const token = await graphMailboxToken('lyndsay');
       const folders = await listMailFolders('lyndsay', token);
@@ -7652,12 +7663,18 @@ async function eodGather() {
       db.from('bd_phone_shops').select('property,shop_date'),
       db.from('bd_online_shops').select('property,shop_date'),
     ]);
-    const all = [...(ps.data || []), ...(os.data || [])].map(s => ({ p: (s.property || '').trim(), d: String(s.shop_date || '').slice(0, 10) })).filter(s => s.d);
+    // Only rows with a real (non-null, valid) shop_date count toward "latest shop".
+    const all = [...(ps.data || []), ...(os.data || [])]
+      .map(s => ({ p: (s.property || '').trim(), d: String(s.shop_date || '').slice(0, 10) }))
+      .filter(s => s.p && /^\d{4}-\d{2}-\d{2}$/.test(s.d));
     const shopsToday = all.filter(s => s.d === today).length;
-    const maxBy = {}; for (const s of all) { if (s.p && (!maxBy[s.p] || s.d > maxBy[s.p])) maxBy[s.p] = s.d; }
+    const maxBy = {}; for (const s of all) { if (!maxBy[s.p] || s.d > maxBy[s.p]) maxBy[s.p] = s.d; }
     const cutoff = eodAddDays(today, -7);
-    const staleList = Object.entries(maxBy).filter(([, d]) => d < cutoff).map(([p]) => p).sort();
-    S.bdcrm = { shopsToday, stale: staleList.length, staleList };
+    // Properties whose most-recent shop is strictly older than 7 days, oldest first.
+    const staleAll = Object.entries(maxBy).filter(([, d]) => d < cutoff).sort((a, b) => a[1].localeCompare(b[1]));
+    console.log('[eod] bdcrm — today=%s cutoff=%s props=%d shopsToday=%d stale=%d sampleDates=%j',
+      today, cutoff, Object.keys(maxBy).length, shopsToday, staleAll.length, staleAll.slice(0, 3).map(([p, d]) => `${p}:${d}`));
+    S.bdcrm = { shopsToday, stale: staleAll.length, staleList: staleAll.slice(0, 20).map(([p, d]) => `${p} (last ${d})`) };
   } catch (e) { S.bdcrm = { error: e.message }; }
 
   // 7 — ACCOUNTING (Claudia's accounting_tasks)
@@ -7718,7 +7735,7 @@ function eodRenderHtml(data) {
   const b6 = S.bdcrm || {};
   P.push(eodSectionHtml('🎯', 'BD CRM',
     b6.error ? eodErr(b6.error) : `${b6.shopsToday || 0} shops done today · ${b6.stale || 0} propert${b6.stale === 1 ? 'y' : 'ies'} needing follow-up (>7 days)`,
-    (b6.staleList && b6.staleList.length) ? `<div style="font-size:12px;color:${EOD.text}"><b>Needs follow-up:</b>${b6.staleList.slice(0, 15).map(p => `<div>• ${eodEsc(p)}</div>`).join('')}${b6.staleList.length > 15 ? `<div>+ ${b6.staleList.length - 15} more</div>` : ''}</div>` : ''));
+    (b6.staleList && b6.staleList.length) ? `<div style="font-size:12px;color:${EOD.text}"><b>Needs follow-up (showing ${b6.staleList.length} of ${b6.stale || b6.staleList.length}):</b>${b6.staleList.map(p => `<div>• ${eodEsc(p)}</div>`).join('')}${(b6.stale || 0) > b6.staleList.length ? `<div>+ ${b6.stale - b6.staleList.length} more</div>` : ''}</div>` : ''));
   const a7 = S.accounting || {};
   P.push(eodSectionHtml('💰', 'Accounting',
     a7.error ? eodErr(a7.error) : `${a7.open || 0} open · ${a7.dueWeek || 0} due this week · ${a7.completedToday || 0} completed today`,
