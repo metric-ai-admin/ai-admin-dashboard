@@ -7557,8 +7557,10 @@ async function eodGather() {
   // 1 — EMAIL TRIAGE
   try {
     const s = { processed: 0, unreadTotal: 0, folders: [] };
-    const { data: ts } = await db.from('triage_sessions').select('emails_processed').eq('session_date', today);
-    s.processed = (ts || []).reduce((a, r) => a + (r.emails_processed || 0), 0);
+    // Match "today" by date-prefix in JS (robust whether session_date is a date
+    // or a timestamptz) so a CT-vs-UTC boundary doesn't zero out the count.
+    const { data: ts } = await db.from('triage_sessions').select('emails_processed,session_date').order('session_date', { ascending: false }).limit(25);
+    s.processed = (ts || []).filter(r => String(r.session_date || '').slice(0, 10) === today).reduce((a, r) => a + (r.emails_processed || 0), 0);
     try {
       const token = await graphMailboxToken('lyndsay');
       const folders = await listMailFolders('lyndsay', token);
@@ -7621,26 +7623,41 @@ async function eodGather() {
     S.evictions = { active, list, completed, report_date: latest ? latest.report_date : null };
   } catch (e) { S.evictions = { error: e.message }; }
 
-  // 5 — MAINTENANCE (Erick's operational_tasks)
+  // 5 — MAINTENANCE (AppFolio work orders + labor)
   try {
-    const { data: mt } = await db.from('operational_tasks').select('title,priority,owner,completed_at').ilike('owner', '%erick%').is('completed_at', null);
-    const open = (mt || []).filter(t => String(t.priority || '').toLowerCase() !== 'done');
-    const critical = open.filter(t => String(t.priority || '').toLowerCase().includes('critical')).map(t => t.title);
-    S.maintenance = { open: open.length, critical };
+    const [woR, laborR] = await Promise.all([
+      db.from('maintenance_work_orders').select('work_order_number,property_name,unit,issue,status,priority,assigned_user,created_at_appfolio,updated_at'),
+      db.from('maintenance_labor').select('work_order_number,worked_hours,labor_date'),
+    ]);
+    const wos = woR.data || [];
+    const isClosed = st => { const s = String(st || '').toLowerCase(); return s === 'completed' || s === 'cancelled' || s === 'canceled'; };
+    const openWos = wos.filter(w => !isClosed(w.status));
+    const prank = p => ({ critical: 3, high: 2, normal: 1 }[String(p || '').toLowerCase()] || 0);
+    openWos.sort((a, b) => prank(b.priority) - prank(a.priority) || String(b.created_at_appfolio || '').localeCompare(String(a.created_at_appfolio || '')));
+    const completedToday = wos.filter(w => String(w.status || '').toLowerCase() === 'completed' && String(w.updated_at || '').slice(0, 10) === today).length;
+    const laborToday = (laborR.data || []).filter(l => String(l.labor_date || '').slice(0, 10) === today);
+    const wosWorked = new Set(laborToday.map(l => l.work_order_number).filter(Boolean)).size;
+    const totalHours = Math.round(laborToday.reduce((a, l) => a + (Number(l.worked_hours) || 0), 0) * 10) / 10;
+    S.maintenance = {
+      open: openWos.length, completedToday, wosWorked, totalHours,
+      critical: openWos.filter(w => String(w.priority || '').toLowerCase() === 'critical').map(w => w.issue || w.work_order_number),
+      table: openWos.slice(0, 20).map(w => ({ wo: w.work_order_number, property: w.property_name, unit: w.unit, issue: w.issue, priority: w.priority, assigned: w.assigned_user })),
+    };
   } catch (e) { S.maintenance = { error: e.message }; }
 
-  // 6 — BD CRM (phone/online shops; last_shop_date column doesn't exist, derive it)
+  // 6 — BD CRM (imported bd_phone_shops / bd_online_shops; no created_at column,
+  // so use shop_date — the actual date the shop happened).
   try {
     const [ps, os] = await Promise.all([
-      db.from('phone_shops').select('property_id,shop_date'),
-      db.from('online_shops').select('property_id,shop_date'),
+      db.from('bd_phone_shops').select('property,shop_date'),
+      db.from('bd_online_shops').select('property,shop_date'),
     ]);
-    const all = [...(ps.data || []), ...(os.data || [])].map(s => ({ p: s.property_id, d: String(s.shop_date || '').slice(0, 10) })).filter(s => s.d);
+    const all = [...(ps.data || []), ...(os.data || [])].map(s => ({ p: (s.property || '').trim(), d: String(s.shop_date || '').slice(0, 10) })).filter(s => s.d);
     const shopsToday = all.filter(s => s.d === today).length;
-    const maxBy = {}; for (const s of all) { if (!maxBy[s.p] || s.d > maxBy[s.p]) maxBy[s.p] = s.d; }
+    const maxBy = {}; for (const s of all) { if (s.p && (!maxBy[s.p] || s.d > maxBy[s.p])) maxBy[s.p] = s.d; }
     const cutoff = eodAddDays(today, -7);
-    const stale = Object.values(maxBy).filter(d => d < cutoff).length;
-    S.bdcrm = { shopsToday, stale };
+    const staleList = Object.entries(maxBy).filter(([, d]) => d < cutoff).map(([p]) => p).sort();
+    S.bdcrm = { shopsToday, stale: staleList.length, staleList };
   } catch (e) { S.bdcrm = { error: e.message }; }
 
   // 7 — ACCOUNTING (Claudia's accounting_tasks)
@@ -7696,11 +7713,12 @@ function eodRenderHtml(data) {
     eodTable(['Resident', 'Property', 'Balance', 'Step'], (e4.list || []).map(u => [eodEsc(u.resident), eodEsc(u.property), typeof u.balance === 'number' ? '$' + Math.round(u.balance).toLocaleString() : eodEsc(u.balance), eodEsc(u.step)]))));
   const m5 = S.maintenance || {};
   P.push(eodSectionHtml('🔧', 'Maintenance',
-    m5.error ? eodErr(m5.error) : `${m5.open || 0} open task(s)`,
-    (m5.critical && m5.critical.length ? `<div style="font-size:12px;color:${EOD.text}"><b>Critical:</b>${m5.critical.map(t => `<div>• ${eodEsc(t)}</div>`).join('')}</div>` : '')));
+    m5.error ? eodErr(m5.error) : `${m5.open || 0} open WO(s) · ${m5.completedToday || 0} completed today · ${m5.totalHours || 0}h logged today across ${m5.wosWorked || 0} WO(s)`,
+    eodTable(['WO#', 'Property', 'Unit', 'Issue', 'Priority', 'Assigned'], (m5.table || []).map(w => [eodEsc(w.wo), eodEsc(w.property), eodEsc(w.unit), eodEsc((w.issue || '').slice(0, 50)), eodEsc(w.priority), eodEsc(w.assigned)]))));
   const b6 = S.bdcrm || {};
   P.push(eodSectionHtml('🎯', 'BD CRM',
-    b6.error ? eodErr(b6.error) : `${b6.shopsToday || 0} shops done today · ${b6.stale || 0} propert${b6.stale === 1 ? 'y' : 'ies'} needing follow-up (>7 days)`, ''));
+    b6.error ? eodErr(b6.error) : `${b6.shopsToday || 0} shops done today · ${b6.stale || 0} propert${b6.stale === 1 ? 'y' : 'ies'} needing follow-up (>7 days)`,
+    (b6.staleList && b6.staleList.length) ? `<div style="font-size:12px;color:${EOD.text}"><b>Needs follow-up:</b>${b6.staleList.slice(0, 15).map(p => `<div>• ${eodEsc(p)}</div>`).join('')}${b6.staleList.length > 15 ? `<div>+ ${b6.staleList.length - 15} more</div>` : ''}</div>` : ''));
   const a7 = S.accounting || {};
   P.push(eodSectionHtml('💰', 'Accounting',
     a7.error ? eodErr(a7.error) : `${a7.open || 0} open · ${a7.dueWeek || 0} due this week · ${a7.completedToday || 0} completed today`,
