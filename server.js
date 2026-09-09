@@ -2055,30 +2055,48 @@ async function writeInboxTrackingToExcel() {
   return { column: colLetter, results, duplicateRowLabels: [...duplicateLabels] };
 }
 
-async function fetchFolderChildren(mailboxKey, token, parentId) {
-  const url = `${graphMailboxBase(mailboxKey)}/mailFolders/${encodeURIComponent(parentId)}/childFolders?$select=id,displayName,unreadItemCount,totalItemCount,childFolderCount&$top=50`;
-  const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
-  const json = await r.json().catch(() => ({}));
-  return r.ok ? (json.value || []) : [];
+// Fetch every page of a Graph collection, following @odata.nextLink. Throws only
+// if the FIRST page fails (so a mid-pagination hiccup still returns what we got).
+async function graphFetchAllPages(url, token) {
+  const out = [];
+  let next = url, guard = 0;
+  while (next && guard++ < 50) {
+    const r = await fetchFn(next, { headers: { Authorization: `Bearer ${token}` } });
+    const json = await r.json().catch(() => ({}));
+    if (!r.ok) { if (guard === 1) throw new Error(json.error?.message || `Graph error ${r.status}`); break; }
+    out.push(...(json.value || []));
+    next = json['@odata.nextLink'] || null;
+  }
+  return out;
 }
 
-// Graph's GET /mailFolders only returns TOP-LEVEL folders — several of
-// Lyndsay's real folders (Lyndsay Review, Need to File, Rhoxie To Do, etc.)
-// are nested one level down, typically under Inbox. Pull one level of
-// children for every top-level folder that has any, so all of them are
-// discoverable by name.
-async function listMailFolders(mailboxKey, token) {
-  const url = `${graphMailboxBase(mailboxKey)}/mailFolders?$select=id,displayName,unreadItemCount,totalItemCount,childFolderCount&$top=50`;
-  const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
-  const json = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(json.error?.message || `Graph error ${r.status}`);
-  const topLevel = json.value || [];
+async function fetchFolderChildren(mailboxKey, token, parentId) {
+  return graphFetchAllPages(
+    `${graphMailboxBase(mailboxKey)}/mailFolders/${encodeURIComponent(parentId)}/childFolders?$select=id,displayName,unreadItemCount,totalItemCount,childFolderCount&$top=100`,
+    token);
+}
 
-  const all = [...topLevel];
-  for (const folder of topLevel) {
-    if (!folder.childFolderCount) continue;
-    const children = await fetchFolderChildren(mailboxKey, token, folder.id);
-    all.push(...children.map(c => ({ ...c, parentName: folder.displayName })));
+// Graph's GET /mailFolders only returns TOP-LEVEL folders, and several of
+// Lyndsay's real folders (Lyndsay Review, Client Emails, Need to File, ...) are
+// nested — sometimes more than one level down. Walk the FULL tree (BFS) with
+// pagination so every folder is discoverable by name regardless of depth or how
+// many folders there are. `parentName` records where a nested folder lives.
+async function listMailFolders(mailboxKey, token) {
+  const topLevel = await graphFetchAllPages(
+    `${graphMailboxBase(mailboxKey)}/mailFolders?$select=id,displayName,unreadItemCount,totalItemCount,childFolderCount&$top=100`,
+    token);
+  const all = [], seen = new Set();
+  const queue = topLevel.map(f => ({ ...f, parentName: null }));
+  let guard = 0;
+  while (queue.length && guard++ < 2000) {
+    const folder = queue.shift();
+    if (!folder.id || seen.has(folder.id)) continue;
+    seen.add(folder.id);
+    all.push(folder);
+    if (folder.childFolderCount) {
+      const children = await fetchFolderChildren(mailboxKey, token, folder.id);
+      for (const c of children) queue.push({ ...c, parentName: folder.displayName });
+    }
   }
   return all;
 }
