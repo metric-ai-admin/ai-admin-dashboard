@@ -576,14 +576,16 @@ function wireLeasingFullscreen() {
 }
 
 // ── Accounting / Billing (Claudia) ─────────────────────────────────────────
-const acctState = { vendors: [], bills: [], tasks: [], vendorFilter: 'all', billFilter: 'all', wired: false };
+const acctState = { vendors: [], bills: [], tasks: [], vendorFilter: 'all', billFilter: 'all', taskTime: 'today', wired: false };
 
 async function loadAccounting() {
   if (!$('#acct-vendors-body')) return;
   if (!acctState.wired) {
     $('#acct-add-vendor')?.addEventListener('click', () => acctVendorModal());
     $('#acct-add-bill')?.addEventListener('click', () => acctBillModal());
-    $('#acct-add-task')?.addEventListener('click', () => acctTaskModal());
+    $('#acct-task-form')?.addEventListener('submit', acctAddTask);
+    $$('#acct-task-time-pills .pill').forEach(p =>
+      p.addEventListener('click', () => { acctState.taskTime = p.dataset.time; acctRenderTasks(); }));
     $('#acct-vendor-filter')?.addEventListener('change', e => { acctState.vendorFilter = e.target.value; acctRenderVendors(); });
     $('#acct-bill-filter')?.addEventListener('change', e => { acctState.billFilter = e.target.value; acctLoadBills(); });
     $('#acct-modal-close')?.addEventListener('click', acctCloseModal);
@@ -646,33 +648,149 @@ async function acctLoadTasks() {
   catch (err) { $('#acct-tasks-board').innerHTML = `<p class="small muted">${esc(err.message)}</p>`; return; }
   acctRenderTasks();
 }
+// Kanban columns — same priorities and colours as the main Task Manager, plus a
+// Done column (accounting keeps completed items on the board).
+const ACCT_TASK_COLUMNS = [
+  { key: '🔴 Critical', cls: 'col-critical' },
+  { key: '🟡 Follow-up', cls: 'col-followup' },
+  { key: '🟢 In Progress', cls: 'col-inprogress' },
+  { key: '✅ Done', cls: 'col-done' },
+];
+const ACCT_TYPE_ICONS = { qc_review: '🔍', vendor_payment: '💳', utility_billing: '💡', w9_followup: '📄', other: '📎' };
+
+function acctTaskCard(t) {
+  const prio = t.priority_label || '🟢 In Progress';
+  const isDone = prio === '✅ Done';
+  const nh = Array.isArray(t.note_history) ? t.note_history : [];
+  const recurring = t.recurrence && t.recurrence !== 'none';
+  const today = todayStr();
+  const overdue = t.due_date && t.due_date < today && !isDone;
+  return `
+    <div class="card ${PRIO_CLASS[prio] || ''} ${isDone ? 'completed' : ''}" data-id="${t.id}">
+      <div class="card-meta" style="justify-content:space-between">
+        <span class="badge badge-gray">${ACCT_TYPE_ICONS[t.type] || '📎'} ${esc(t.type || 'task')}</span>
+        ${recurring ? `<span class="badge badge-amber" title="Repeats ${esc(t.recurrence)}">🔁 ${esc(t.recurrence)}</span>` : ''}
+      </div>
+      <div class="card-title">${esc(t.title)}</div>
+      <div class="card-meta">
+        ${t.due_date
+          ? `<span class="${overdue ? 'badge badge-red' : ''}">${overdue ? '⚠ overdue ' : '📅 '}${esc(t.due_date)}</span>`
+          : `<span class="muted small">Created ${t.created_at ? new Date(t.created_at).toLocaleDateString() : ''}</span>`}
+        ${t.completed_at ? `<span class="muted small">✅ ${new Date(t.completed_at).toLocaleDateString()}</span>` : ''}
+      </div>
+      <details class="comments">
+        <summary>📝 Notes <span class="note-count">(${nh.length})</span></summary>
+        <div class="note-history">
+          ${nh.length ? [...nh].reverse().map(n => `
+            <div class="note-entry">
+              <span class="note-time">${n.createdAt ? new Date(n.createdAt).toLocaleString() : ''}</span>
+              <span>${esc(n.text)}</span>
+            </div>`).join('') : '<span class="muted small">No notes yet.</span>'}
+        </div>
+        <div class="note-add">
+          <input type="text" placeholder="Add note..." data-note-input>
+          <button class="btn-sm" data-act="add-note">+ Add</button>
+        </div>
+      </details>
+      <div class="card-actions">
+        ${!isDone ? `<button class="btn-sm primary" data-act="done">✓ Mark Done</button>` : ''}
+        <select data-prio>${['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '✅ Done'].map(p => `<option ${p === prio ? 'selected' : ''}>${p}</option>`).join('')}</select>
+        <button class="btn-sm" data-act="edit">✎</button>
+        <button class="btn-sm btn-danger" data-act="delete">🗑</button>
+      </div>
+    </div>`;
+}
+
 function acctRenderTasks() {
   const board = $('#acct-tasks-board');
-  const cols = [['open', 'Open'], ['in_progress', 'In Progress'], ['done', 'Done']];
-  board.innerHTML = cols.map(([key, label]) => {
-    const items = acctState.tasks.filter(t => t.status === key);
-    return `<div class="acct-col"><div class="acct-col-head">${label} <span class="muted small">(${items.length})</span></div>
-      ${items.map(t => `<div class="acct-task-card">
-        <div class="acct-task-title">${esc(t.title)}</div>
-        <div class="acct-task-meta">
-          ${t.type ? `<span class="badge badge-gray">${esc(t.type)}</span>` : ''}
-          <span class="badge ${PRIO_BADGE[t.priority] || 'badge-gray'}">${esc(t.priority || 'normal')}</span>
-          <span class="muted small">${esc(t.assigned_to || '')}</span>
-          ${t.due_date ? `<span class="muted small">· due ${esc(t.due_date)}</span>` : ''}
-        </div>
-        ${t.notes ? `<div class="small muted" style="margin-top:4px">${esc(t.notes.slice(0, 80))}</div>` : ''}
-        <div class="acct-task-actions">
-          <button class="btn-sm acct-edit-task" data-id="${t.id}">Edit</button>
-          ${t.status !== 'done' ? `<button class="btn-sm acct-done-task" data-id="${t.id}">✓ Done</button>` : ''}
-        </div></div>`).join('') || '<p class="small muted">—</p>'}</div>`;
+  if (!board) return;
+
+  // Time filter (Today / This Week / All), same rule as the main manager: keep
+  // Critical always; Done within the window by completed date; others by due/created.
+  const today = todayStr();
+  const d7 = new Date(); d7.setDate(d7.getDate() - 7);
+  const weekAgo = localDateStr(d7);
+  const inRange = (t, cutoff) => {
+    if (t.priority_label === '🔴 Critical') return true;
+    if (t.priority_label === '✅ Done') return t.completed_at && localDateStr(t.completed_at) >= cutoff;
+    if (t.due_date && t.due_date >= cutoff) return true;
+    return t.created_at && localDateStr(t.created_at) >= cutoff;
+  };
+  let list = acctState.tasks.slice();
+  if (acctState.taskTime === 'today') list = list.filter(t => inRange(t, today));
+  else if (acctState.taskTime === 'week') list = list.filter(t => inRange(t, weekAgo));
+
+  // KPI chips — reflect the filtered window (like the main manager).
+  const kc = ACCT_TASK_COLUMNS.map(c => ({ key: c.key, n: list.filter(t => t.priority_label === c.key).length }));
+  const chipCls = { '🔴 Critical': 'kpi-chip-red', '🟡 Follow-up': 'kpi-chip-amber', '🟢 In Progress': 'kpi-chip-blue', '✅ Done': 'kpi-chip-green' };
+  const kpi = $('#acct-task-kpi-bar');
+  if (kpi) kpi.innerHTML = kc.filter(c => c.n > 0).map(c =>
+    `<span class="kpi-chip ${chipCls[c.key]}"><span class="kpi-num">${c.n}</span> ${c.key.replace(/^\S+\s/, '')}</span>`).join('');
+  $$('#acct-task-time-pills .pill').forEach(p => p.classList.toggle('active', p.dataset.time === acctState.taskTime));
+
+  const grouped = {};
+  ACCT_TASK_COLUMNS.forEach(c => { grouped[c.key] = []; });
+  list.forEach(t => { (grouped[t.priority_label] || (grouped[t.priority_label] = [])).push(t); });
+
+  if (!list.length) { board.innerHTML = '<div class="empty-state">No accounting tasks for this window. Add one above ☝</div>'; return; }
+
+  board.className = 'kanban';
+  board.innerHTML = ACCT_TASK_COLUMNS.map(col => {
+    const items = grouped[col.key] || [];
+    return `<div class="kanban-column ${col.cls}" data-col-key="${col.key}">
+      <div class="kanban-col-head"><span>${col.key}</span><span class="kanban-col-count">${items.length}</span></div>
+      <div class="kanban-col-body">${items.length ? items.map(acctTaskCard).join('') : '<p class="kanban-col-empty">No tasks</p>'}</div>
+    </div>`;
   }).join('');
-  board.querySelectorAll('.acct-edit-task').forEach(b =>
-    b.addEventListener('click', () => acctTaskModal(acctState.tasks.find(t => t.id === b.dataset.id))));
-  board.querySelectorAll('.acct-done-task').forEach(b =>
-    b.addEventListener('click', async () => {
-      try { await api(`/api/accounting/tasks/${b.dataset.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'done' }) }); acctLoadTasks(); }
-      catch (err) { toast(err.message, 'error'); }
-    }));
+
+  board.querySelectorAll('.card').forEach(card => {
+    const id = card.dataset.id;
+    card.querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); acctTaskAction(btn.dataset.act, id, card); }));
+    card.querySelector('[data-prio]')?.addEventListener('change', e => acctPatchTask(id, { priority_label: e.target.value }));
+  });
+}
+
+async function acctPatchTask(id, body) {
+  try {
+    const r = await api(`/api/accounting/tasks/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (r && r._spawned) toast(`Done ✓ — next occurrence created for ${r._spawned.due_date || 'next period'}`, 'success');
+    await acctLoadTasks();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+async function acctTaskAction(act, id, card) {
+  if (act === 'done') return acctPatchTask(id, { status: 'done' });
+  if (act === 'edit') return acctTaskModal(acctState.tasks.find(t => t.id === id));
+  if (act === 'delete') {
+    if (!confirm('Delete this task? This cannot be undone.')) return;
+    try { await api(`/api/accounting/tasks/${id}`, { method: 'DELETE' }); await acctLoadTasks(); }
+    catch (err) { toast(err.message, 'error'); }
+    return;
+  }
+  if (act === 'add-note') {
+    const input = card.querySelector('[data-note-input]');
+    const text = input?.value.trim();
+    if (!text) return;
+    return acctPatchTask(id, { note: text });
+  }
+}
+
+async function acctAddTask(e) {
+  e.preventDefault();
+  const form = e.target;
+  const payload = {
+    title: form.elements.title.value.trim(),
+    priority_label: form.elements.priority_label.value,
+    due_date: form.elements.due_date.value || null,
+    recurrence: form.elements.recurrence.value,
+    notes: form.elements.notes.value.trim(),
+  };
+  if (!payload.title) { toast('Task title required', 'error'); return; }
+  try {
+    await api('/api/accounting/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    form.reset();
+    await acctLoadTasks();
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 // ── Shared modal ───────────────────────────────────────────────────────────
@@ -751,12 +869,14 @@ function acctTaskModal(t) {
   acctModal(edit ? 'Edit Task' : 'Add Task', [
     { name: 'title', label: 'Title', value: t?.title },
     { name: 'type', label: 'Type', type: 'select', options: ['qc_review', 'vendor_payment', 'utility_billing', 'w9_followup', 'other'], value: t?.type || 'qc_review' },
-    { name: 'status', label: 'Status', type: 'select', options: ['open', 'in_progress', 'done'], value: t?.status || 'open' },
-    { name: 'priority', label: 'Priority', type: 'select', options: ['urgent', 'normal', 'low'], value: t?.priority || 'normal' },
+    { name: 'priority_label', label: 'Priority', type: 'select', options: ['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '✅ Done'], value: t?.priority_label || '🟢 In Progress' },
     { name: 'assigned_to', label: 'Assigned to', value: t?.assigned_to || 'Claudia' },
     { name: 'due_date', label: 'Due Date', type: 'date', value: t?.due_date },
-    { name: 'notes', label: 'Notes', type: 'textarea', value: t?.notes },
+    { name: 'recurrence', label: 'Recurrence', type: 'select', options: ['none', 'weekly', 'monthly'], value: t?.recurrence || 'none' },
+    { name: 'notes', label: 'Add a note', type: 'textarea', value: '' },
   ], async (payload) => {
+    // In edit mode a typed note is appended (via `note`); leave notes untouched otherwise.
+    if (edit) { if (payload.notes && payload.notes.trim()) payload.note = payload.notes.trim(); delete payload.notes; }
     const url = edit ? `/api/accounting/tasks/${t.id}` : '/api/accounting/tasks';
     await api(url, { method: edit ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     acctLoadTasks();

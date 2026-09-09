@@ -5115,30 +5115,123 @@ app.patch('/api/accounting/bills/:id', requireAuth, async (req, res) => {
   res.json(data);
 });
 
-// ---- Tasks ----
+// ---- Tasks — Claudia's Accounting kanban (priority columns + recurrence) ----
+const ACCT_PRIORITIES = ['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '✅ Done'];
+const acctIsoDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// Next due for a recurring task: same weekday next week, or same day next month.
+function acctNextDue(recurrence, baseDateStr) {
+  const base = (baseDateStr && /^\d{4}-\d{2}-\d{2}$/.test(baseDateStr)) ? new Date(baseDateStr + 'T00:00:00') : new Date();
+  if (recurrence === 'weekly') base.setDate(base.getDate() + 7);
+  else if (recurrence === 'monthly') base.setMonth(base.getMonth() + 1);
+  else return null;
+  return acctIsoDate(base);
+}
+// Legacy rows predate priority_label/note_history — derive them so old tasks
+// still land in a column and show their note.
+function acctShapeTask(t) {
+  return {
+    ...t,
+    priority_label: t.priority_label
+      || (t.status === 'done' ? '✅ Done' : ({ urgent: '🔴 Critical', low: '🟡 Follow-up' }[t.priority] || '🟢 In Progress')),
+    note_history: Array.isArray(t.note_history) ? t.note_history
+      : (t.notes ? [{ text: t.notes, createdAt: t.created_at }] : []),
+    recurrence: t.recurrence || 'none',
+  };
+}
+
 app.get('/api/accounting/tasks', requireAuth, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
-  let q = acctDb().from('accounting_tasks').select('*').order('created_at', { ascending: false });
-  if (req.query.status && req.query.status !== 'all') q = q.eq('status', String(req.query.status));
-  const { data, error } = await q;
+  const { data, error } = await acctDb().from('accounting_tasks').select('*').order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
-  res.json({ tasks: data || [] });
+  res.json({ tasks: (data || []).map(acctShapeTask) });
 });
+
 app.post('/api/accounting/tasks', requireAuth, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
-  const row = acctPick(req.body || {}, TASK_COLS);
-  if (!row.title) return res.status(400).json({ error: 'title is required' });
+  const b = req.body || {};
+  if (!b.title || !String(b.title).trim()) return res.status(400).json({ error: 'title is required' });
+  const now = new Date().toISOString();
+  const notes = b.notes ? String(b.notes).trim() : '';
+  const priority_label = ACCT_PRIORITIES.includes(b.priority_label) ? b.priority_label : '🟢 In Progress';
+  const row = {
+    title: String(b.title).trim(),
+    type: b.type || 'other',
+    assigned_to: b.assigned_to || 'Claudia',
+    priority: b.priority || 'normal',                 // legacy column kept
+    priority_label,
+    status: priority_label === '✅ Done' ? 'done' : 'open',
+    due_date: b.due_date || null,
+    notes: notes || null,
+    note_history: notes ? [{ text: notes, createdAt: now }] : [],
+    recurrence: ['weekly', 'monthly'].includes(b.recurrence) ? b.recurrence : 'none',
+    recurrence_day: Number.isFinite(+b.recurrence_day) ? Math.round(+b.recurrence_day) : null,
+    completed_at: priority_label === '✅ Done' ? now : null,
+  };
   const { data, error } = await acctDb().from('accounting_tasks').insert(row).select().single();
   if (error) return res.status(400).json({ error: error.message });
-  res.status(201).json(data);
+  res.status(201).json(acctShapeTask(data));
 });
+
 app.patch('/api/accounting/tasks/:id', requireAuth, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
-  const row = acctPick(req.body || {}, TASK_COLS);
-  if (!Object.keys(row).length) return res.status(400).json({ error: 'No updatable fields sent' });
-  const { data, error } = await acctDb().from('accounting_tasks').update(row).eq('id', req.params.id).select().single();
+  const b = req.body || {};
+  const { data: cur, error: e0 } = await acctDb().from('accounting_tasks').select('*').eq('id', req.params.id).single();
+  if (e0 || !cur) return res.status(404).json({ error: 'Task not found' });
+  const now = new Date().toISOString();
+  const patch = {};
+  for (const k of ['title', 'type', 'due_date', 'recurrence', 'recurrence_day', 'assigned_to', 'priority']) {
+    if (k in b) patch[k] = b[k] === '' ? null : b[k];
+  }
+  // Kanban column change — via priority_label, or the status:'done' shorthand.
+  if ('priority_label' in b && ACCT_PRIORITIES.includes(b.priority_label)) {
+    patch.priority_label = b.priority_label;
+    patch.status = b.priority_label === '✅ Done' ? 'done' : 'open';
+  }
+  if (b.status === 'done') { patch.status = 'done'; patch.priority_label = '✅ Done'; }
+  const willBeDone = patch.status === 'done' || patch.priority_label === '✅ Done';
+  const wasDone = cur.status === 'done' || cur.priority_label === '✅ Done';
+  let markedDone = false;
+  if (willBeDone && !wasDone) { patch.completed_at = now; markedDone = true; }
+  else if (('priority_label' in patch || 'status' in patch) && !willBeDone) { patch.completed_at = null; }
+  // Append a single note (card composer) or replace notes (edit modal).
+  if (b.note && String(b.note).trim()) {
+    const nh = Array.isArray(cur.note_history) ? cur.note_history.slice() : [];
+    nh.push({ text: String(b.note).trim(), createdAt: now });
+    patch.note_history = nh; patch.notes = String(b.note).trim();
+  } else if ('notes' in b) {
+    const txt = b.notes ? String(b.notes).trim() : '';
+    patch.notes = txt || null;
+    if (txt) { const nh = Array.isArray(cur.note_history) ? cur.note_history.slice() : []; nh.push({ text: txt, createdAt: now }); patch.note_history = nh; }
+  }
+  const { data, error } = await acctDb().from('accounting_tasks').update(patch).eq('id', req.params.id).select().single();
   if (error) return res.status(400).json({ error: error.message });
-  res.json(data);
+
+  // Recurring task completed → spawn the next occurrence as a fresh Open task.
+  let spawned = null;
+  const rec = cur.recurrence || 'none';
+  if (markedDone && (rec === 'weekly' || rec === 'monthly')) {
+    const nextDue = acctNextDue(rec, cur.due_date || acctIsoDate(new Date()));
+    const nrow = {
+      title: cur.title, type: cur.type, assigned_to: cur.assigned_to || 'Claudia',
+      priority: cur.priority || 'normal',
+      priority_label: (cur.priority_label && cur.priority_label !== '✅ Done') ? cur.priority_label : '🟢 In Progress',
+      status: 'open', due_date: nextDue, notes: cur.notes || null,
+      note_history: [{ text: `Auto-created from recurring task — previous completed on ${now.slice(0, 10)}`, createdAt: now },
+        ...(Array.isArray(cur.note_history) ? cur.note_history : [])],
+      recurrence: rec, recurrence_day: cur.recurrence_day ?? null, completed_at: null,
+    };
+    const { data: nd, error: ne } = await acctDb().from('accounting_tasks').insert(nrow).select().single();
+    if (ne) console.error('[accounting] recurrence spawn failed', ne.message);
+    else spawned = acctShapeTask(nd);
+  }
+  res.json({ ...acctShapeTask(data), _spawned: spawned });
+});
+
+app.delete('/api/accounting/tasks/:id', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const { error } = await acctDb().from('accounting_tasks').delete().eq('id', req.params.id);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ ok: true });
 });
 
 

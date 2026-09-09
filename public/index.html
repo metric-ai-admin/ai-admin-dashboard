@@ -1811,13 +1811,37 @@
       </div>
     </div>
 
-    <!-- Panel C — Accounting Tasks -->
+    <!-- Panel C — Accounting Tasks (kanban, matches the main Task Manager) -->
     <div class="card">
       <div class="view-head" style="margin:0 0 8px">
         <h3 style="margin:0">Accounting Tasks</h3>
-        <div class="view-actions"><button class="btn-sm primary" id="acct-add-task">+ Add Task</button></div>
+        <p class="muted small" style="margin:2px 0 0">Claudia's board — priority columns, notes and recurring tasks.</p>
       </div>
-      <div id="acct-tasks-board" class="acct-board"></div>
+
+      <form id="acct-task-form" class="quick-add">
+        <input name="title" placeholder="Task title" required>
+        <select name="priority_label">
+          <option>🔴 Critical</option>
+          <option selected>🟢 In Progress</option>
+          <option>🟡 Follow-up</option>
+        </select>
+        <input type="date" name="due_date">
+        <select name="recurrence" title="Recurrence">
+          <option value="none">🔁 No repeat</option>
+          <option value="weekly">🔁 Weekly</option>
+          <option value="monthly">🔁 Monthly</option>
+        </select>
+        <input name="notes" placeholder="Notes (optional)">
+        <button type="submit">+ Add Task</button>
+      </form>
+
+      <div class="filter-pills" id="acct-task-time-pills">
+        <button class="pill active" data-time="today">📅 Today</button>
+        <button class="pill" data-time="week">📆 This Week</button>
+        <button class="pill" data-time="all">📋 All</button>
+      </div>
+      <div id="acct-task-kpi-bar" class="kpi-bar"></div>
+      <div id="acct-tasks-board"></div>
     </div>
   </section>
 
