@@ -5999,6 +5999,11 @@ app.get('/api/crm/tasks', requireCRM, requireAuth, async (req, res) => {
 
     let tasks = crmEngine.computeTasks(hydrated, {
       targetedCompanies: (targeted.data || []).map(r => r.company_name),
+      // Only surface tasks that are actually due (due today or overdue). A task
+      // scheduled for a future date — e.g. the next phone-shop attempt one day
+      // after the last shop — stays hidden until that day, then re-appears
+      // automatically. The property remains in the database throughout.
+      hideFuture: true,
     });
 
     // Agent filter stays a substring match, as before — the UI sends a name.

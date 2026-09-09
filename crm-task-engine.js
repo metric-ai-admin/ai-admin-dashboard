@@ -393,8 +393,17 @@ function computeTasks(properties, options = {}) {
     }
   }
 
-  tasks.sort((a, b) => (b.priority - a.priority) || String(a.due || '').localeCompare(String(b.due || '')));
-  return tasks;
+  // Date-based visibility (Lyndsay 09/09: "property won't have a task due until
+  // it's due, but the property is still in the database"). With hideFuture, a task
+  // only appears once it is actually due: completing a shop schedules the next
+  // attempt for a future date (e.g. phone attempt N+1 = last shop + 1 day), and
+  // that task stays out of the active queue until its due date — overdue and
+  // due-today still show. The property is never removed; the task simply
+  // re-appears on its next due date. Off by default so the tests (and any
+  // caller wanting the full forward-looking list) are unchanged.
+  const out = options.hideFuture ? tasks.filter(t => !t.due || t.due <= today) : tasks;
+  out.sort((a, b) => (b.priority - a.priority) || String(a.due || '').localeCompare(String(b.due || '')));
+  return out;
 }
 
 /** Per-agent rollup for the queue header: how many tasks and how many minutes. */
