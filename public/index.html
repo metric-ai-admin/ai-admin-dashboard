@@ -1023,6 +1023,7 @@
                   </select>
                 </label>
                 <label>Date<input id="pf-date" type="date" class="crm-input"></label>
+                <label>Time of Call<input id="pf-time" type="time" class="crm-input"></label>
                 <label>Connection Result
                   <select id="pf-connection" class="crm-select">
                     <option value="answered_agent">Answered by Agent</option>
@@ -1030,11 +1031,30 @@
                     <option value="voicemail">Voicemail Only</option>
                     <option value="no_answer">No Answer / No Voicemail</option>
                     <option value="wrong_number">Wrong / Disconnected</option>
+                    <option value="not_working">Number not working</option>
                   </select>
                 </label>
                 <label>Score (0-100)<input id="pf-score" type="number" min="0" max="100" class="crm-input"></label>
               </div>
               <label>Notes<textarea id="pf-notes" class="crm-textarea" rows="3"></textarea></label>
+              <div id="pf-quote" class="crm-entry-card hidden" style="margin-top:10px">
+                <label class="small" style="font-weight:600">💬 Quote Captured on the Call</label>
+                <div class="crm-detail-grid" style="margin-top:6px">
+                  <label id="pf-floorplan-label">Floorplan Quoted (required with price)
+                    <input id="pf-floorplan" type="text" class="crm-input" placeholder='e.g., 1×1 — 650 SF &quot;B2&quot;'>
+                  </label>
+                  <label>Price Offered ($/mo)<input id="pf-price" type="number" min="0" step="1" class="crm-input"></label>
+                  <label>Concession Offered
+                    <select id="pf-concession" class="crm-select">
+                      <option value="">None / not mentioned</option>
+                      <option value="1 week free">1 week free</option>
+                      <option value="2 weeks free">2 weeks free</option>
+                      <option value="1 month free">1 month free</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
               <div id="pf-scorecard" class="hidden"></div>
               <div style="display:flex;gap:8px;margin-top:8px;">
                 <button id="crm-phone-save" class="btn-sm primary">Save Call</button>

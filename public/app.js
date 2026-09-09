@@ -3783,15 +3783,33 @@ function crmRenderPhoneScorecard() {
     </div>`;
   crmPhoneUpdateScoreDisplay();
 }
+// Quote section shows only for an agent-answered call (same rule as the
+// scorecard). The Floorplan label turns orange when a price is entered without a
+// floorplan, since a quoted price should always name the floorplan.
+function crmPhoneToggleQuote() {
+  const q = $('#pf-quote'); if (q) q.classList.toggle('hidden', $('#pf-connection')?.value !== 'answered_agent');
+  crmPhoneFloorplanWarn();
+}
+function crmPhoneFloorplanWarn() {
+  const lbl = $('#pf-floorplan-label'); if (!lbl) return;
+  const price = ($('#pf-price')?.value || '').trim();
+  const fp = ($('#pf-floorplan')?.value || '').trim();
+  lbl.style.color = (price && !fp) ? '#d97706' : '';
+}
 function crmResetPhoneForm() {
   crmPhoneSC = { rating: '', answers: {} };
   const a = $('#pf-agent'); if (a) a.value = crmDefaultAgentName();
   const d = $('#pf-date'); if (d) d.value = new Date().toISOString().slice(0, 10);
+  const tm = $('#pf-time'); if (tm) tm.value = '';
   const c = $('#pf-caller'); if (c) c.value = '';
   const conn = $('#pf-connection'); if (conn) conn.value = 'answered_agent';
   const sc = $('#pf-score'); if (sc) sc.value = '';
   const nt = $('#pf-notes'); if (nt) nt.value = '';
+  const fp = $('#pf-floorplan'); if (fp) fp.value = '';
+  const pr = $('#pf-price'); if (pr) pr.value = '';
+  const cc = $('#pf-concession'); if (cc) cc.value = '';
   crmRenderPhoneScorecard();
+  crmPhoneToggleQuote();
 }
 // Delegated scorecard wiring (survives re-renders).
 (function wirePhoneScorecard() {
@@ -3806,7 +3824,9 @@ function crmResetPhoneForm() {
     if (e.target.hasAttribute('data-pf-item')) { crmPhoneSC.answers[e.target.dataset.crit] = e.target.value; crmPhoneUpdateScoreDisplay(); }
   });
 })();
-$('#pf-connection')?.addEventListener('change', crmRenderPhoneScorecard);
+$('#pf-connection')?.addEventListener('change', () => { crmRenderPhoneScorecard(); crmPhoneToggleQuote(); });
+$('#pf-price')?.addEventListener('input', crmPhoneFloorplanWarn);
+$('#pf-floorplan')?.addEventListener('input', crmPhoneFloorplanWarn);
 
 $('#crm-phone-add-btn').addEventListener('click', () => {
   const f = $('#crm-phone-form');
@@ -3825,15 +3845,21 @@ $('#crm-phone-save').addEventListener('click', async () => {
   const scFilled = !!(sc.rating || Object.values(sc.answers || {}).some(Boolean));
   let score = parseFloat($('#pf-score').value);
   if (isNaN(score)) score = (conn === 'answered_agent' && scFilled) ? crmPhoneScore(sc) : null;
+  const answered = conn === 'answered_agent';
   const body = {
     shop_date: $('#pf-date').value || new Date().toISOString().slice(0,10),
+    call_time: $('#pf-time').value || null,
     agent_name: agent,
     caller_name: $('#pf-caller').value.trim() || null,
     score,
     notes: JSON.stringify({ connection: conn, text: $('#pf-notes').value }),
+    // Quote is only relevant for an agent-answered call.
+    quote_floorplan: answered ? ($('#pf-floorplan').value.trim() || null) : null,
+    quote_price: answered ? (parseFloat($('#pf-price').value) || null) : null,
+    quote_concession: answered ? ($('#pf-concession').value || null) : null,
   };
   // Only persist a scorecard for an agent-answered call that was actually filled.
-  if (conn === 'answered_agent' && scFilled) body.scorecard = sc;
+  if (answered && scFilled) body.scorecard = sc;
   try {
     await crmFetch(`/api/crm/properties/${p.id}/phone-shops`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
