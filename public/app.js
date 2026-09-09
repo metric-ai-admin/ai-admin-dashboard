@@ -5874,7 +5874,11 @@ async function svgBackfill() {
     svgState.loaded = false;
     await svgLoad(); // re-renders with the new grades (rebuilds this toolbar)
     const s2 = $('#svg-backfill-status');
-    if (s2) s2.textContent = `Graded ${d.newly_graded} new · ${d.already_graded} already · ${d.skipped || 0} skipped (short) · ${d.not_scoreable || 0} not scoreable · ${d.errors} error${d.errors === 1 ? '' : 's'} — ${d.total_calls} eligible across ${d.users_processed || 0} agents over ${d.days} days.`;
+    if (s2) {
+      let msg = `Graded ${d.newly_graded} new · ${d.already_graded} already · ${d.skipped || 0} skipped (short) · ${d.not_scoreable || 0} not scoreable · ${d.errors} error${d.errors === 1 ? '' : 's'} — ${d.total_calls} eligible across ${d.users_processed || 0} agents over ${d.days} days.`;
+      if (d.errors && d.error_samples && d.error_samples.length) msg += ` First error: ${d.error_samples[0]}`;
+      s2.textContent = msg;
+    }
   } catch (err) {
     toast('Backfill failed: ' + err.message, 'error');
     if (status) status.textContent = '❌ ' + err.message;

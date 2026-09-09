@@ -4806,6 +4806,9 @@ function ctDateStr(offsetDays = 0) {
 // too thin to score — those come back as low/flagged noise and drag the averages.
 const AUTOGRADE_MIN_DURATION = 30;   // seconds
 const AUTOGRADE_MIN_TRANSCRIPT = 100; // characters
+// Last-resort line owner when the roster lookup yields nothing (e.g. the roster
+// table is empty). The default SimpleVOIP line is Rebekah's.
+const SV_DEFAULT_OWNER_FALLBACK = 'Rebekah Tuckner';
 
 // The line owner for the default SimpleVOIP user (resolveVoipUser returns null
 // for the default, and the manual flow fills the agent from the client dropdown
@@ -4844,6 +4847,9 @@ async function autoGradeCall(call, transcript, opts = {}) {
   // default user's roster name), never null-into-"Unidentified".
   const identified = callGrading.detectAgentFromTranscript(text);
   const agent = identified || opts.lineOwner || null;
+  // If no agent could be resolved even after the line-owner fallbacks, skip rather
+  // than grade an unattributed call (counts as skipped, not an error).
+  if (!agent) return { status: 'skipped', reason: 'no agent' };
   const parsed = await callGrading.gradeTranscript({
     callType: call.direction || null,
     agent,
@@ -4884,9 +4890,14 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
   // The transcript-length floor can't run in the query, so apply it here.
   const eligible = (rows || []).filter(r =>
     r.recording_id && String(r.transcript || '').trim().length >= AUTOGRADE_MIN_TRANSCRIPT);
-  const defaultOwner = await svDefaultLineOwner();
+  // Line-owner fallback chain: this call's archived user_name → the roster's
+  // default-line name → a hardcoded last resort, so agent attribution is never null.
+  const defaultOwner = (await svDefaultLineOwner()) || SV_DEFAULT_OWNER_FALLBACK;
+  if (eligible.length) {
+    console.log(`[auto-grade] ${date}: ${eligible.length} eligible; first row user_name=${JSON.stringify(eligible[0].user_name)} defaultOwner=${JSON.stringify(defaultOwner)}`);
+  }
   const agg = { date, users_processed: 0, total: eligible.length, already_graded: 0,
-    newly_graded: 0, skipped: 0, not_scoreable: 0, errors: 0, per_user: {} };
+    newly_graded: 0, skipped: 0, not_scoreable: 0, errors: 0, per_user: {}, error_samples: [] };
   for (const row of eligible) {
     try {
       const { data: ex } = await db.from('call_grades')
@@ -4894,10 +4905,10 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
       if (ex) { agg.already_graded++; continue; }
       // Direction + line owner now come from the archive (migration 043); call_date
       // is passed explicitly. autoGradeCall re-applies the duration/length/existence
-      // guards defensively. Line-owner fallback is this call's own line, else the
-      // default line owner.
+      // guards defensively.
       const call = { recording_id: row.recording_id, duration: row.duration, direction: row.call_direction || null };
-      const r = await autoGradeCall(call, row.transcript, { call_date: date, lineOwner: row.user_name || defaultOwner });
+      const lineOwner = row.user_name || defaultOwner || null;
+      const r = await autoGradeCall(call, row.transcript, { call_date: date, lineOwner });
       if (r.status === 'graded') {
         agg.newly_graded++; if (r.not_scoreable) agg.not_scoreable++;
         const key = r.agent || 'Unidentified';
@@ -4905,10 +4916,11 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
         pu.newly_graded++; if (r.not_scoreable) pu.not_scoreable++;
         await svSleep(delayMs);
       } else if (r.reason === 'already graded') agg.already_graded++;
-      else agg.skipped++; // too short / thin transcript
+      else agg.skipped++; // too short / thin transcript / no agent
     } catch (err) {
       agg.errors++;
       console.error('[auto-grade]', row.recording_id, err.message);
+      if (agg.error_samples.length < 5 && !agg.error_samples.includes(err.message)) agg.error_samples.push(err.message);
     }
   }
   agg.users_processed = Object.keys(agg.per_user).length; // distinct attributed agents
@@ -4927,6 +4939,7 @@ app.post('/api/sv/grade/backfill', requireMetricAdmin, async (req, res) => {
   try {
     let total = 0, already = 0, graded = 0, skipped = 0, notScoreable = 0, errors = 0;
     const perUser = {};
+    const errorSamples = [];
     for (let i = 0; i < days; i++) {
       const r = await autoGradeDay(ctDateStr(-i), { delayMs: 500 });
       total += r.total; already += r.already_graded; graded += r.newly_graded;
@@ -4935,11 +4948,13 @@ app.post('/api/sv/grade/backfill', requireMetricAdmin, async (req, res) => {
         const a = perUser[name] || (perUser[name] = { newly_graded: 0, not_scoreable: 0 });
         a.newly_graded += pu.newly_graded; a.not_scoreable += pu.not_scoreable;
       }
+      for (const m of (r.error_samples || [])) if (errorSamples.length < 5 && !errorSamples.includes(m)) errorSamples.push(m);
     }
     const usersProcessed = Object.keys(perUser).length; // distinct attributed agents
     console.log(`[auto-grade] backfill ${days}d, ${usersProcessed} agents: ${graded} graded, ${already} already, ${skipped} skipped, ${notScoreable} not-scoreable, ${errors} errors (of ${total})`);
     res.json({ ok: true, days, users_processed: usersProcessed, total_calls: total,
-      already_graded: already, newly_graded: graded, skipped, not_scoreable: notScoreable, errors, per_user: perUser });
+      already_graded: already, newly_graded: graded, skipped, not_scoreable: notScoreable, errors,
+      error_samples: errorSamples, per_user: perUser });
   } catch (err) {
     const status = /not configured/i.test(err.message) ? 503 : 500;
     res.status(status).json({ ok: false, error: err.message });
