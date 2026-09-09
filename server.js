@@ -4876,7 +4876,7 @@ async function autoGradeCall(call, transcript, opts = {}) {
 async function autoGradeDay(date, { delayMs = 500 } = {}) {
   const db = supabaseAdmin || supabasePublic;
   const { data: rows, error } = await db.from('simplevoip_daily_calls')
-    .select('recording_id, caller, duration, transcript')
+    .select('recording_id, caller, duration, transcript, user_name, call_direction')
     .eq('call_date', date)
     .gte('duration', AUTOGRADE_MIN_DURATION)
     .not('transcript', 'is', null);
@@ -4884,7 +4884,7 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
   // The transcript-length floor can't run in the query, so apply it here.
   const eligible = (rows || []).filter(r =>
     r.recording_id && String(r.transcript || '').trim().length >= AUTOGRADE_MIN_TRANSCRIPT);
-  const lineOwner = await svDefaultLineOwner();
+  const defaultOwner = await svDefaultLineOwner();
   const agg = { date, users_processed: 0, total: eligible.length, already_graded: 0,
     newly_graded: 0, skipped: 0, not_scoreable: 0, errors: 0, per_user: {} };
   for (const row of eligible) {
@@ -4892,11 +4892,12 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
       const { data: ex } = await db.from('call_grades')
         .select('id').eq('recording_id', row.recording_id).limit(1).maybeSingle();
       if (ex) { agg.already_graded++; continue; }
-      // Direction/datetime aren't archived; the rubric handles a null callType and
-      // call_date is passed explicitly. autoGradeCall re-applies the duration/
-      // length/existence guards defensively.
-      const call = { recording_id: row.recording_id, duration: row.duration, direction: null };
-      const r = await autoGradeCall(call, row.transcript, { call_date: date, lineOwner });
+      // Direction + line owner now come from the archive (migration 043); call_date
+      // is passed explicitly. autoGradeCall re-applies the duration/length/existence
+      // guards defensively. Line-owner fallback is this call's own line, else the
+      // default line owner.
+      const call = { recording_id: row.recording_id, duration: row.duration, direction: row.call_direction || null };
+      const r = await autoGradeCall(call, row.transcript, { call_date: date, lineOwner: row.user_name || defaultOwner });
       if (r.status === 'graded') {
         agg.newly_graded++; if (r.not_scoreable) agg.not_scoreable++;
         const key = r.agent || 'Unidentified';

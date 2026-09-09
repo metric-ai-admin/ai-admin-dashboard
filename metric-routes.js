@@ -1039,25 +1039,54 @@ function registerMetricRoutes(app, db) {
     res.json(shaped);
   });
 
+  // SimpleVOIP display names carry a " Metric" suffix (e.g. "Danny Metric") that
+  // isn't a surname — strip it so the archive stores the name agents identify by.
+  const svNormName = n => { const s = String(n || '').trim(); return s ? (s.replace(/\s+metric\s*$/i, '').trim() || s) : null; };
+
+  // Every active roster user, so the archive covers all lines — not just the
+  // default. Falls back to the default user when the roster is empty.
+  async function archiveRosterUsers() {
+    let users = [];
+    try {
+      const { data } = await db.from('simplevoip_users')
+        .select('user_id, name').eq('active', true).order('name');
+      users = (data || []).filter(u => u.user_id).map(u => ({ user_id: u.user_id, name: svNormName(u.name) }));
+    } catch { /* fall through to the default user */ }
+    if (!users.length) { const uid = simplevoip.defaultUserId(); if (uid) users = [{ user_id: uid, name: null }]; }
+    return users;
+  }
+
   // 6 PM Central. Timezone stated because Render runs UTC, where an unqualified
-  // hour would fire at lunchtime in Austin.
+  // hour would fire at lunchtime in Austin. Iterates every roster user so the
+  // archive holds all lines (auto-grade reads only this table), recording each
+  // call's line owner (user_name) and direction. Upserted on recording_id, so a
+  // call shared by a ring group stays one row (first user to store it wins).
   async function archiveTodaysCalls() {
     if (!simplevoip.isConfigured()) return { skipped: 'not configured' };
     const date = todayStr();
-    const { calls } = await simplevoip.fetchCallsForDate(null, date);
-    const shaped = simplevoip.shapeCalls(calls).filter(c => c.has_transcript && c.recording_id);
-    let stored = 0;
-    for (const c of shaped) {
-      const t = await simplevoip.fetchCallTranscript(null, c.recording_id);
-      const text = t?.transcription || '';
-      const { error } = await db.from('simplevoip_daily_calls').upsert({
-        call_date: date, recording_id: c.recording_id, caller: c.caller,
-        duration: c.duration, transcript: text, fetched_at: new Date().toISOString(),
-      }, { onConflict: 'recording_id' });
-      if (error) console.error('[simplevoip] store failed', c.recording_id, error.message);
-      else stored++;
+    const users = await archiveRosterUsers();
+    const done = new Set();
+    let seen = 0, stored = 0;
+    for (const u of users) {
+      const { calls } = await simplevoip.fetchCallsForDate(u.user_id, date);
+      const shaped = simplevoip.shapeCalls(calls).filter(c => c.has_transcript && c.recording_id);
+      for (const c of shaped) {
+        if (done.has(c.recording_id)) continue; // already archived under an earlier user
+        done.add(c.recording_id);
+        seen++;
+        const t = await simplevoip.fetchCallTranscript(u.user_id, c.recording_id);
+        const text = t?.transcription || '';
+        const { error } = await db.from('simplevoip_daily_calls').upsert({
+          call_date: date, recording_id: c.recording_id, caller: c.caller,
+          duration: c.duration, transcript: text,
+          user_name: u.name, call_direction: c.direction || null,
+          fetched_at: new Date().toISOString(),
+        }, { onConflict: 'recording_id' });
+        if (error) console.error('[simplevoip] store failed', c.recording_id, error.message);
+        else stored++;
+      }
     }
-    return { date, seen: shaped.length, stored };
+    return { date, users: users.length, seen, stored };
   }
 
   cron.schedule('0 18 * * *', () => {
