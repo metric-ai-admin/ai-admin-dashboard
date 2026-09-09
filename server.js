@@ -2381,34 +2381,41 @@ app.get('/api/copilot/export', requireCopilotApiKey, async (req, res) => {
 });
 
 // ---- POST /api/triage/log-session -----------------------------------------------
-// Inserts one triage session record into Supabase triage_sessions table.
+// Upserts today's triage session (one row per session_date). Using upsert rather
+// than insert means logging the same day twice updates the existing row instead
+// of creating a duplicate or silently failing — so the 6PM report always finds
+// today's counts. Requires the unique constraint on session_date (migration 045).
 app.post('/api/triage/log-session', async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   const db = supabaseAdmin || supabasePublic;
   const {
     session_date, emails_processed, lyndsay_review, bekah_follow_up,
-    rocio, mpm_team, clients, archive, unsubscribe, do_not_move,
-    manual_corrections, correction_notes, confidence_avg,
+    rocio, mpm_team, clients, financial, archive, archive_and_mark_read,
+    unsubscribe, do_not_move, manual_corrections, correction_notes, confidence_avg,
   } = req.body || {};
   if (!emails_processed && emails_processed !== 0) {
     return res.status(400).json({ error: 'emails_processed is required' });
   }
   const row = {
-    session_date:       session_date       || undefined,
-    emails_processed:   emails_processed   ?? 0,
-    lyndsay_review:     lyndsay_review     ?? 0,
-    bekah_follow_up:    bekah_follow_up    ?? 0,
-    rocio:              rocio              ?? 0,
-    mpm_team:           mpm_team           ?? 0,
-    clients:            clients            ?? 0,
-    archive:            archive            ?? 0,
-    unsubscribe:        unsubscribe        ?? 0,
-    do_not_move:        do_not_move        ?? 0,
-    manual_corrections: manual_corrections ?? 0,
-    correction_notes:   correction_notes   || null,
-    confidence_avg:     confidence_avg     ?? null,
+    // Default to today in Central time so the conflict target is deterministic.
+    session_date:          session_date || new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date()),
+    emails_processed:      emails_processed      ?? 0,
+    lyndsay_review:        lyndsay_review        ?? 0,
+    bekah_follow_up:       bekah_follow_up       ?? 0,
+    rocio:                 rocio                 ?? 0,
+    mpm_team:              mpm_team              ?? 0,
+    clients:               clients               ?? 0,
+    financial:             financial             ?? 0,
+    archive:               archive               ?? 0,
+    archive_and_mark_read: archive_and_mark_read ?? 0,
+    unsubscribe:           unsubscribe           ?? 0,
+    do_not_move:           do_not_move           ?? 0,
+    manual_corrections:    manual_corrections    ?? 0,
+    correction_notes:      correction_notes      || null,
+    confidence_avg:        confidence_avg        ?? null,
   };
-  const { data, error } = await db.from('triage_sessions').insert([row]).select().single();
+  const { data, error } = await db.from('triage_sessions')
+    .upsert([row], { onConflict: 'session_date' }).select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.status(201).json({ ok: true, session: data });
 });
