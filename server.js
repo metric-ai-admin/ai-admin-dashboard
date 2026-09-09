@@ -6786,49 +6786,100 @@ async function reportBuildSections(client) {
   return sections;
 }
 
-// Weekly Leasing Board roll-up for the Daily Report — reads the latest
-// submission. Freshness drives the badge: green if it covers the current week,
-// amber if last week, red if two or more weeks stale (or never submitted).
+// ── Shared live roll-ups (used by both the Daily Report and the EOD email) ──
+// Central-time today, and simple date add — self-contained so ordering is moot.
+function svcTodayCT() { return new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date()); }
+function svcAddDays(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
+
+// This week's leasing roll-up from the live tables (occupancy + leads + showings
+// + applications + lease history), with LEASING_EXCLUDED_FRAGMENTS removed. Week
+// starts Monday (matching Postgres date_trunc('week')). Returns { weekStart,
+// rows:[{property,occ,total_units,occupied_units,traffic,tours,apps,approved,
+// moveins}], totals }.
+async function leasingWeeklyRollup(db) {
+  const today = svcTodayCT();
+  const now = new Date(today + 'T00:00:00');
+  const weekStart = svcAddDays(today, -((now.getDay() + 6) % 7)); // back to Monday
+  const [occR, leadsR, showR, appR, lhR] = await Promise.all([
+    db.from('leasing_occupancy').select('property_name,occupancy_pct,total_units,occupied_units'),
+    db.from('leasing_leads').select('property,week_ending').gte('week_ending', weekStart),
+    db.from('leasing_showings').select('property_name,showing_date,status').gte('showing_date', weekStart),
+    db.from('leasing_applications').select('property_name,application_date,status').gte('application_date', weekStart),
+    db.from('leasing_lease_history').select('property_name,move_in_date').gte('move_in_date', weekStart),
+  ]);
+  const clean = full => { const t = String(full || '').trim(); const i = t.indexOf(' - '); return i > 0 ? t.slice(0, i).trim() : t; };
+  const bump = (m, k) => { if (k) m[k] = (m[k] || 0) + 1; };
+  const traffic = {}, tours = {}, apps = {}, approved = {}, moveins = {};
+  for (const l of (leadsR.data || [])) bump(traffic, clean(l.property));
+  for (const s of (showR.data || [])) { const st = String(s.status || '').toLowerCase(); if (st.includes('cancel') || st.includes('no show')) continue; bump(tours, clean(s.property_name)); }
+  for (const a of (appR.data || [])) { const n = clean(a.property_name); bump(apps, n); if (/approv/i.test(a.status || '')) bump(approved, n); }
+  for (const h of (lhR.data || [])) bump(moveins, clean(h.property_name));
+  const rows = (occR.data || []).filter(o => o.property_name && !leasingIsExcluded(o.property_name))
+    .map(o => ({ property: o.property_name, occ: o.occupancy_pct, total_units: o.total_units, occupied_units: o.occupied_units,
+      traffic: traffic[o.property_name] || 0, tours: tours[o.property_name] || 0, apps: apps[o.property_name] || 0, approved: approved[o.property_name] || 0, moveins: moveins[o.property_name] || 0 }))
+    .sort((a, b) => (a.occ == null ? 999 : a.occ) - (b.occ == null ? 999 : b.occ));
+  const totals = rows.reduce((t, r) => {
+    t.traffic += r.traffic; t.tours += r.tours; t.apps += r.apps; t.approved += r.approved; t.moveins += r.moveins;
+    if (r.total_units != null) t.units += r.total_units; if (r.occupied_units != null) t.occupied += r.occupied_units;
+    return t;
+  }, { traffic: 0, tours: 0, apps: 0, approved: 0, moveins: 0, units: 0, occupied: 0 });
+  totals.avg_occ = totals.units > 0 ? Math.round((totals.occupied / totals.units) * 1000) / 10 : null;
+  return { weekStart, rows, totals };
+}
+
+// Accounting summary: task counts, bills due within 7 days (unpaid), W9 issues.
+async function accountingSummary(db) {
+  const today = svcTodayCT();
+  const [tasksR, billsR, vendorsR] = await Promise.all([
+    db.from('accounting_tasks').select('priority,priority_label,status,completed_at'),
+    db.from('accounting_bills').select('amount,status,due_date,property,vendor_id'),
+    db.from('accounting_vendors').select('id,name,w9_status'),
+  ]);
+  const tasks = tasksR.data || [];
+  const completedToday = tasks.filter(t => t.completed_at && String(t.completed_at).slice(0, 10) === today).length;
+  const open = tasks.filter(t => !t.completed_at && String(t.status || '').toLowerCase() !== 'done');
+  const urgentOpen = open.filter(t => String(t.priority || '').toLowerCase() === 'urgent' || String(t.priority_label || '').toLowerCase().includes('critical')).length;
+  const vName = {}; for (const v of (vendorsR.data || [])) vName[v.id] = v.name;
+  const cutoff = svcAddDays(today, 7);
+  const bills = (billsR.data || [])
+    .filter(b => String(b.status || '').toLowerCase() !== 'paid' && b.due_date && b.due_date <= cutoff)
+    .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date))).slice(0, 10)
+    .map(b => ({ vendor: vName[b.vendor_id] || '—', property: b.property || '', amount: Number(b.amount) || 0, due: b.due_date, status: b.status }));
+  const billsDueAmount = bills.reduce((s, b) => s + b.amount, 0);
+  const missingW9 = (vendorsR.data || []).filter(v => v.w9_status === 'missing').length;
+  const outdatedW9 = (vendorsR.data || []).filter(v => v.w9_status === 'outdated').length;
+  return { completedToday, urgentOpen, totalOpen: open.length, bills, billsDueAmount, missingW9, outdatedW9 };
+}
+
+// Weekly Leasing roll-up for the Daily Report — now auto-populated live from the
+// leasing tables (was reading the retired leasing_submissions and always showing
+// "not submitted").
 async function reportLeasingSection() {
   const client = supabaseAdmin || supabasePublic;
-  const { data, error } = await client.from('leasing_submissions')
-    .select('week_ending,submitted_by,status,kpi_json,submitted_at')
-    .order('week_ending', { ascending: false }).limit(1).maybeSingle();
-  if (error) throw new Error(error.message);
-
   const base = { key: 'leasing_board', icon: '🎯', title: 'Weekly Leasing Board', owner: 'Katie',
     status: 'auto', last_updated: new Date().toISOString() };
-
-  // Current week's ending Sunday (today if today is Sunday), as YYYY-MM-DD.
-  const now = new Date();
-  const cur = new Date(now); cur.setDate(now.getDate() + ((7 - now.getDay()) % 7));
-  const curWeek = cur.toISOString().slice(0, 10);
-
-  if (!data) {
-    return { ...base, content: { leasing_board: true, severity: 'red',
-      message: 'Not yet submitted this week', latest: null } };
+  try {
+    const { rows, totals, weekStart } = await leasingWeeklyRollup(client);
+    const severity = totals.avg_occ == null ? 'amber' : (totals.avg_occ < 80 ? 'red' : (totals.avg_occ < 90 ? 'amber' : 'green'));
+    return { ...base, content: {
+      leasing_board: true, severity,
+      message: `Live from AppFolio — week of ${weekStart}`,
+      // Back-compat fields the existing card reads, now from live occupancy.
+      latest: {
+        week_ending: weekStart,
+        submitted_by: 'Auto (Supabase)',
+        status: 'live',
+        occupancy_pct: totals.avg_occ,
+        occupied: totals.occupied,
+        units: totals.units,
+        net_moveins_needed: null,
+        traffic_target: totals.traffic,
+      },
+      totals, rows,
+    } };
+  } catch (e) {
+    return { ...base, content: { leasing_board: true, severity: 'red', message: 'Leasing data unavailable: ' + e.message, latest: null } };
   }
-
-  // Whole weeks between the submission's week and the current week.
-  const weeksBehind = Math.round(
-    (Date.parse(curWeek) - Date.parse(data.week_ending)) / (7 * 24 * 3600 * 1000));
-  const severity = weeksBehind <= 0 ? 'green' : (weeksBehind === 1 ? 'amber' : 'red');
-  const message = weeksBehind <= 0 ? 'Submitted this week'
-    : weeksBehind === 1 ? 'Last submission was last week'
-    : `No submission for ${weeksBehind} weeks`;
-
-  const k = data.kpi_json || {};
-  return { ...base, content: { leasing_board: true, severity, message,
-    latest: {
-      week_ending: data.week_ending,
-      submitted_by: data.submitted_by,
-      status: data.status,
-      occupancy_pct: k.occupancy_pct ?? null,
-      occupied: k.occupied ?? null,
-      units: k.units ?? null,
-      net_moveins_needed: k.net_moveins_needed ?? null,
-      traffic_target: k.traffic_target ?? null,
-    } } };
 }
 
 // Accounting roll-up for the Daily Report — read live from the three accounting
@@ -6836,24 +6887,21 @@ async function reportLeasingSection() {
 // any bill is pending approval, green otherwise.
 async function reportAccountingSection() {
   const client = supabaseAdmin || supabasePublic;
-  const [tasksR, billsR, vendorsR] = await Promise.all([
-    client.from('accounting_tasks').select('priority,status'),
-    client.from('accounting_bills').select('status,amount'),
-    client.from('accounting_vendors').select('w9_status'),
-  ]);
-  for (const r of [tasksR, billsR, vendorsR]) if (r.error) throw new Error(r.error.message);
-  const openTasks = (tasksR.data || []).filter(t => t.status !== 'done');
-  const urgentTasks = openTasks.filter(t => t.priority === 'urgent').length;
-  const normalTasks = openTasks.filter(t => t.priority === 'normal').length;
-  const pending = (billsR.data || []).filter(b => b.status === 'pending');
-  const pendingBills = pending.length;
-  const pendingAmount = pending.reduce((sum, b) => sum + (Number(b.amount) || 0), 0);
-  const w9Issues = (vendorsR.data || []).filter(v => v.w9_status === 'missing' || v.w9_status === 'outdated').length;
-  const severity = urgentTasks > 0 ? 'red' : (pendingBills > 0 ? 'amber' : 'green');
+  const a = await accountingSummary(client);
+  const w9Issues = a.missingW9 + a.outdatedW9;
+  const severity = a.urgentOpen > 0 ? 'red' : (a.bills.length > 0 || w9Issues > 0 ? 'amber' : 'green');
   return {
-    key: 'accounting', icon: '💵', title: 'Accounting', owner: 'Claudia',
-    status: 'auto',
-    content: { accounting: true, severity, urgentTasks, normalTasks, pendingBills, pendingAmount, w9Issues },
+    key: 'accounting', icon: '💵', title: 'Accounting', owner: 'Claudia', status: 'auto',
+    content: {
+      accounting: true, severity,
+      // Back-compat fields the existing card reads.
+      urgentTasks: a.urgentOpen, normalTasks: Math.max(0, a.totalOpen - a.urgentOpen),
+      pendingBills: a.bills.length, pendingAmount: a.billsDueAmount, w9Issues,
+      // Enriched fields.
+      completedToday: a.completedToday, totalOpen: a.totalOpen,
+      billsDueAmount: a.billsDueAmount, bills: a.bills,
+      missingW9: a.missingW9, outdatedW9: a.outdatedW9,
+    },
     last_updated: new Date().toISOString(),
   };
 }
@@ -7606,24 +7654,9 @@ async function eodGather() {
     S.calls = { total: rows.length, agents, fViol };
   } catch (e) { S.calls = { error: e.message }; }
 
-  // 3 — LEASING
-  try {
-    const now = new Date(today + 'T00:00:00'); const dow = now.getDay();
-    const sat = new Date(now); sat.setDate(now.getDate() + (6 - dow)); const weekEnd = sat.toISOString().slice(0, 10);
-    const weekStart = eodAddDays(weekEnd, -6);
-    const [occR, leadsR, showR] = await Promise.all([
-      db.from('leasing_occupancy').select('property_name,occupancy_pct'),
-      db.from('leasing_leads').select('property,week_ending').eq('week_ending', weekEnd),
-      db.from('leasing_showings').select('property_name,showing_date,status').gte('showing_date', weekStart).lte('showing_date', weekEnd),
-    ]);
-    const clean = full => { const t = String(full || '').trim(); const i = t.indexOf(' - '); return i > 0 ? t.slice(0, i).trim() : t; };
-    const traffic = {}; for (const l of (leadsR.data || [])) { const n = clean(l.property); traffic[n] = (traffic[n] || 0) + 1; }
-    const tours = {}; for (const sh of (showR.data || [])) { const st = String(sh.status || '').toLowerCase(); if (st.includes('cancel') || st.includes('no show')) continue; const n = clean(sh.property_name); tours[n] = (tours[n] || 0) + 1; }
-    const rows = (occR.data || []).filter(o => o.property_name && !leasingIsExcluded(o.property_name))
-      .map(o => ({ property: o.property_name, occ: o.occupancy_pct, traffic: traffic[o.property_name] || 0, tours: tours[o.property_name] || 0 }))
-      .sort((a, b) => (a.occ == null ? 999 : a.occ) - (b.occ == null ? 999 : b.occ));
-    S.leasing = { rows };
-  } catch (e) { S.leasing = { error: e.message }; }
+  // 3 — LEASING (shared weekly roll-up: occupancy + traffic/tours/apps/move-ins)
+  try { S.leasing = await leasingWeeklyRollup(db); }
+  catch (e) { S.leasing = { error: e.message }; }
 
   // 4 — EVICTIONS / COLLECTIONS (latest uploaded session blob + completed log)
   try {
@@ -7684,17 +7717,9 @@ async function eodGather() {
     S.bdcrm = { shopsToday, stale: staleAll.length, staleList: staleAll.slice(0, 20).map(([p, d]) => `${p} (last ${d})`) };
   } catch (e) { S.bdcrm = { error: e.message }; }
 
-  // 7 — ACCOUNTING (Claudia's accounting_tasks)
-  try {
-    const { data: at } = await db.from('accounting_tasks').select('title,priority_label,due_date,completed_at');
-    const open = (at || []).filter(t => !t.completed_at);
-    const byPrio = {}; for (const t of open) { const p = t.priority_label || '—'; byPrio[p] = (byPrio[p] || 0) + 1; }
-    const overdue = open.filter(t => t.due_date && t.due_date < today).map(t => t.title);
-    const weekAhead = eodAddDays(today, 7);
-    const dueWeek = open.filter(t => t.due_date && t.due_date >= today && t.due_date <= weekAhead).length;
-    const completedToday = (at || []).filter(t => t.completed_at && String(t.completed_at).slice(0, 10) === today).length;
-    S.accounting = { open: open.length, byPrio, overdue, dueWeek, completedToday };
-  } catch (e) { S.accounting = { error: e.message }; }
+  // 7 — ACCOUNTING (shared summary: tasks + bills due + W9 issues)
+  try { S.accounting = await accountingSummary(db); }
+  catch (e) { S.accounting = { error: e.message }; }
 
   // 8 — TEAMS TRANSCRIPTS (today's meeting summaries)
   try {
@@ -7727,10 +7752,13 @@ function eodRenderHtml(data) {
     c2.error ? eodErr(c2.error) : `${c2.total || 0} calls graded today`,
     (c2.agents && c2.agents.length ? eodTable(['Agent', 'Calls', 'Avg', 'F'], c2.agents.map(a => [eodEsc(a.agent), a.calls, a.avg, a.f])) : '')
     + (c2.fViol && c2.fViol.length ? `<div style="margin-top:6px;font-size:12px;color:${EOD.text}"><b>F violations:</b>${c2.fViol.map(f => `<div style="margin-top:3px">⚠️ <b>${eodEsc(f.agent)}</b> — ${eodEsc((f.summary || '').slice(0, 120))}</div>`).join('')}</div>` : '')));
-  const l3 = S.leasing || {};
+  const l3 = S.leasing || {}; const lt = l3.totals || {};
   P.push(eodSectionHtml('🏢', 'Leasing',
-    l3.error ? eodErr(l3.error) : `${(l3.rows || []).length} communities`,
-    eodTable(['Property', 'Occ %', 'Traffic', 'Tours'], (l3.rows || []).map(r => [eodEsc(r.property), r.occ == null ? '—' : r.occ + '%', r.traffic, r.tours]))));
+    l3.error ? eodErr(l3.error) : `${lt.traffic || 0} traffic · ${lt.tours || 0} tours · ${lt.apps || 0} apps · ${lt.approved || 0} approved · ${lt.moveins || 0} move-ins · ${lt.avg_occ == null ? '—' : lt.avg_occ + '%'} avg occupancy`,
+    eodTable(['Property', 'Occ %', 'Traffic', 'Tours', 'Apps', 'Move-ins'], (l3.rows || []).map(r => {
+      const low = r.occ != null && r.occ < 80;
+      return [low ? `<b>${eodEsc(r.property)}</b>` : eodEsc(r.property), r.occ == null ? '—' : (low ? `<b>${r.occ}%</b>` : r.occ + '%'), r.traffic, r.tours, r.apps, r.moveins];
+    }))));
   const e4 = S.evictions || {};
   P.push(eodSectionHtml('⚖️', 'Evictions / Collections',
     e4.error ? eodErr(e4.error) : `${e4.active == null ? '—' : e4.active} active${e4.report_date ? ` · report ${eodEsc(e4.report_date)}` : ''} · ${e4.completed || 0} completed logged`,
@@ -7744,10 +7772,12 @@ function eodRenderHtml(data) {
     b6.error ? eodErr(b6.error) : `${b6.shopsToday || 0} shops done today · ${b6.stale || 0} propert${b6.stale === 1 ? 'y' : 'ies'} needing follow-up (>7 days)`,
     (b6.staleList && b6.staleList.length) ? `<div style="font-size:12px;color:${EOD.text}"><b>Needs follow-up (showing ${b6.staleList.length} of ${b6.stale || b6.staleList.length}):</b>${b6.staleList.map(p => `<div>• ${eodEsc(p)}</div>`).join('')}${(b6.stale || 0) > b6.staleList.length ? `<div>+ ${b6.stale - b6.staleList.length} more</div>` : ''}</div>` : ''));
   const a7 = S.accounting || {};
+  const eodMoney = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0 });
+  const w9total = (a7.missingW9 || 0) + (a7.outdatedW9 || 0);
   P.push(eodSectionHtml('💰', 'Accounting',
-    a7.error ? eodErr(a7.error) : `${a7.open || 0} open · ${a7.dueWeek || 0} due this week · ${a7.completedToday || 0} completed today`,
-    (a7.byPrio ? `<div>${Object.entries(a7.byPrio).map(([p, n]) => `<span style="display:inline-block;background:#eef6fc;border-radius:12px;padding:3px 10px;margin:2px 4px 2px 0;font-size:12px;color:${EOD.text}">${eodEsc(p)}: <b>${n}</b></span>`).join('')}</div>` : '')
-    + (a7.overdue && a7.overdue.length ? `<div style="margin-top:4px;font-size:12px;color:${EOD.text}"><b>Overdue:</b>${a7.overdue.map(t => `<div>• ${eodEsc(t)}</div>`).join('')}</div>` : '')));
+    a7.error ? eodErr(a7.error) : `${a7.completedToday || 0} completed today · ${a7.urgentOpen || 0} urgent open · ${eodMoney(a7.billsDueAmount)} in bills due this week · ${w9total} W9 issue${w9total === 1 ? '' : 's'}`,
+    eodTable(['Vendor', 'Property', 'Amount', 'Due', 'Status'], (a7.bills || []).map(b => [eodEsc(b.vendor), eodEsc(b.property), eodMoney(b.amount), eodEsc(b.due), eodEsc(b.status)]))
+    + (w9total > 0 ? `<div style="margin-top:6px;font-size:12px;color:#b45309"><b>⚠️ W9:</b> ${a7.missingW9 || 0} missing · ${a7.outdatedW9 || 0} outdated</div>` : '')));
   const teams = S.teams;
   P.push(eodSectionHtml('🎥', 'Teams Transcripts',
     (teams && teams.error) ? eodErr(teams.error) : `${Array.isArray(teams) ? teams.length : 0} meeting summary(ies) today`,

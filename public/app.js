@@ -7591,28 +7591,37 @@ function reportSectionBody(s) {
   // via reportSectionAutoBadge above.
   if (c.accounting) {
     const money = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2 });
+    const bills = Array.isArray(c.bills) ? c.bills : [];
+    const billsTable = bills.length ? `<div style="overflow-x:auto;margin-top:6px"><table class="crm-table">
+        <thead><tr><th>Vendor</th><th>Property</th><th style="text-align:right">Amount</th><th>Due</th><th>Status</th></tr></thead>
+        <tbody>${bills.map(b => `<tr><td>${esc(b.vendor)}</td><td>${esc(b.property || '')}</td><td style="text-align:right">${money(b.amount)}</td><td class="small muted">${esc(b.due || '')}</td><td class="small">${esc(b.status || '')}</td></tr>`).join('')}</tbody></table></div>` : '';
+    const w9 = (c.missingW9 || 0) + (c.outdatedW9 || 0);
     return `<div class="report-counts small muted">
-      <span>🗒️ Open tasks: <b>${(c.urgentTasks || 0) + (c.normalTasks || 0)}</b> (${c.urgentTasks || 0} urgent · ${c.normalTasks || 0} normal)</span>
-      <span>💵 Bills pending approval: <b>${c.pendingBills || 0}</b> · ${money(c.pendingAmount)}</span>
-      <span>📄 W9 issues: <b>${c.w9Issues || 0}</b> (missing + outdated)</span>
-    </div>`;
+      <span>✅ Completed today: <b>${c.completedToday || 0}</b></span>
+      <span>🗒️ Open tasks: <b>${c.totalOpen != null ? c.totalOpen : (c.urgentTasks || 0) + (c.normalTasks || 0)}</b> (${c.urgentTasks || 0} urgent)</span>
+      <span>💵 Bills due (7d): <b>${c.pendingBills || 0}</b> · ${money(c.billsDueAmount != null ? c.billsDueAmount : c.pendingAmount)}</span>
+      <span>📄 W9 issues: <b>${c.w9Issues || 0}</b></span>
+    </div>${billsTable}${w9 > 0 ? `<p class="small" style="color:#b45309;margin:6px 0 0">⚠️ W9: ${c.missingW9 || 0} missing · ${c.outdatedW9 || 0} outdated</p>` : ''}`;
   }
 
   // Weekly Leasing Board (Katie). Freshness message + the latest KPI snapshot.
   if (c.leasing_board) {
     const l = c.latest;
-    if (!l) return `<p class="report-group">⚠️ ${esc(c.message || 'Not yet submitted this week')}</p>`;
-    return `<div class="report-group"><b>${esc(c.message || '')}</b></div>
-      <div class="report-counts small muted">
-        <span>📅 Week ending: <b>${esc(l.week_ending || '—')}</b></span>
-        <span>🙋 Submitted by: <b>${esc(l.submitted_by || '—')}</b></span>
-        <span>🏷️ Status: <b>${esc(l.status || '—')}</b></span>
-      </div>
-      <div class="report-counts small muted">
-        ${l.occupancy_pct != null ? `<span>🏠 Occupancy: <b>${esc(l.occupancy_pct)}%</b>${l.occupied != null ? ` (${esc(l.occupied)}/${esc(l.units)})` : ''}</span>` : ''}
-        ${l.net_moveins_needed != null ? `<span>📈 Net move-ins needed: <b>${esc(l.net_moveins_needed)}</b></span>` : ''}
-        ${l.traffic_target != null ? `<span>🎯 Traffic target: <b>${esc(l.traffic_target)}</b></span>` : ''}
+    const t = c.totals || {};
+    const rows = Array.isArray(c.rows) ? c.rows : [];
+    if (!l && !rows.length) return `<p class="report-group">⚠️ ${esc(c.message || 'No leasing data')}</p>`;
+    const totalsLine = `<div class="report-counts small muted">
+        <span>🚶 Traffic: <b>${t.traffic || 0}</b></span>
+        <span>👀 Tours: <b>${t.tours || 0}</b></span>
+        <span>📝 Apps: <b>${t.apps || 0}</b></span>
+        <span>✅ Approved: <b>${t.approved || 0}</b></span>
+        <span>🔑 Move-ins: <b>${t.moveins || 0}</b></span>
+        <span>🏠 Avg occ: <b>${t.avg_occ == null ? '—' : t.avg_occ + '%'}</b></span>
       </div>`;
+    const table = rows.length ? `<div style="overflow-x:auto;margin-top:6px"><table class="crm-table">
+        <thead><tr><th>Property</th><th style="text-align:right">Occ%</th><th style="text-align:right">Traffic</th><th style="text-align:right">Tours</th><th style="text-align:right">Apps</th><th style="text-align:right">Move-ins</th></tr></thead>
+        <tbody>${rows.map(r => { const low = r.occ != null && r.occ < 80; return `<tr><td${low ? ' style="font-weight:700"' : ''}>${esc(r.property)}</td><td style="text-align:right${low ? ';color:#b91c1c;font-weight:700' : ''}">${r.occ == null ? '—' : r.occ + '%'}</td><td style="text-align:right">${r.traffic}</td><td style="text-align:right">${r.tours}</td><td style="text-align:right">${r.apps}</td><td style="text-align:right">${r.moveins}</td></tr>`; }).join('')}</tbody></table></div>` : '';
+    return `<div class="report-group"><b>${esc(c.message || '')}</b></div>${totalsLine}${table}`;
   }
 
   // Three sources, each with its own subsection. They used to share one block
