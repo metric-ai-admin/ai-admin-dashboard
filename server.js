@@ -7489,15 +7489,14 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
     for (const cat of LYNDSAY_TRIAGE_CATEGORIES) {
       const fList = foldersByCat[cat.key] || [];
       if (!fList.length) continue;
-      // No date filter: Outlook rules that auto-move mail don't reliably bump
-      // receivedDateTime OR lastModifiedDateTime, so a filtered query missed them.
-      // Show the latest few emails currently in the folder — a live snapshot of
-      // what's sitting in each category — with the true folder message count.
-      const folderCount = fList.reduce((s, f) => s + (f.totalItemCount || 0), 0);
+      // Unread only: the snapshot mirrors what Outlook shows as needing attention
+      // (unreadItemCount), not the folder's lifetime total. No date filter —
+      // Outlook auto-move rules don't reliably bump received/lastModified dates.
+      const folderCount = fList.reduce((s, f) => s + (f.unreadItemCount || 0), 0);
       const emails = [];
       for (const f of fList) {
         const url = `${graphMailboxBase('lyndsay')}/mailFolders/${encodeURIComponent(f.id)}/messages`
-          + `?$top=5&$select=${select}&$orderby=receivedDateTime desc`;
+          + `?$filter=isRead eq false&$orderby=receivedDateTime desc&$top=5&$select=${select}`;
         try {
           const r = await fetchFn(url, { headers });
           const j = await r.json().catch(() => ({}));
