@@ -7431,6 +7431,84 @@ app.get('/api/reports/daily-6pm/latest', requireAuth, requireRole('admin', 'oper
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/reports/lyndsay-triage-today — today's processed emails in Lyndsay's
+// triage folders, grouped by category, for the 6PM report's Lyndsay Inbox
+// section. requireRole('admin') ONLY: this exposes her senders/subjects, so the
+// data never leaves the server for the operations role (they keep the count-only
+// view). Folder names aren't hardcoded — Lyndsay's real folder list is fetched
+// and fuzzy-matched to the category labels.
+const LYNDSAY_TRIAGE_CATEGORIES = [
+  { key: 'lyndsay_review', label: 'Lyndsay Review', emoji: '🔴', badge: 'badge-red',   match: ['lyndsay review'] },
+  { key: 'clients',        label: 'Clients',        emoji: '🟣', badge: 'badge-gray',  match: ['client'] },
+  { key: 'mpm_team',       label: 'MPM Team',       emoji: '🟦', badge: 'badge-blue',  match: ['mpm team', 'mpm'] },
+  { key: 'follow_up',      label: 'Follow-up',      emoji: '🟡', badge: 'badge-amber', match: ['bekah follow', 'follow up', 'follow-up', 'followup'] },
+  { key: 'financial',      label: 'Financial',      emoji: '💰', badge: 'badge-green', match: ['financial'] },
+  { key: 'personal',       label: 'Personal',       emoji: '📳', badge: 'badge-gray',  match: ['personal'] },
+  { key: 'archive',        label: 'Archive',        emoji: '📦', badge: 'badge-gray',  match: ['archive'] },
+];
+// Start of "today" in Central time, as a UTC ISO instant for the Graph filter.
+function ctDayStartISO() {
+  const now = new Date();
+  const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(now); // YYYY-MM-DD (CT)
+  const offName = new Intl.DateTimeFormat('en-US', { timeZone: LYNDSAY_TIMEZONE, timeZoneName: 'shortOffset' })
+    .formatToParts(now).find(p => p.type === 'timeZoneName').value; // e.g. "GMT-5"
+  const m = offName.match(/GMT([+-]\d+)(?::(\d+))?/);
+  const sign = m && m[1].startsWith('-') ? -1 : 1;
+  const offMin = m ? (parseInt(m[1], 10) * 60 + sign * (m[2] ? parseInt(m[2], 10) : 0)) : 0;
+  const startMs = new Date(ymd + 'T00:00:00Z').getTime() - offMin * 60000;
+  return new Date(startMs).toISOString();
+}
+app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!GRAPH_CONFIGURED) return res.json({ configured: false, date: null, total: 0, categories: [] });
+  let token;
+  try { token = await graphMailboxToken('lyndsay'); }
+  catch (err) {
+    if (err instanceof GraphAuthRequiredError) return res.json({ configured: true, authRequired: true, message: err.message, categories: [] });
+    return res.status(500).json({ error: err.message });
+  }
+  try {
+    const folders = await listMailFolders('lyndsay', token);
+    const sinceISO = ctDayStartISO();
+    const date = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date());
+    const headers = { Authorization: `Bearer ${token}` };
+    const select = 'id,subject,sender,from,receivedDateTime,isRead';
+    const norm = s => String(s || '').toLowerCase();
+    // Each folder goes to the FIRST category it matches (labels ordered specific→broad).
+    const foldersByCat = {};
+    for (const f of folders) {
+      const cat = LYNDSAY_TRIAGE_CATEGORIES.find(c => c.match.some(mm => norm(f.displayName).includes(mm)));
+      if (cat) (foldersByCat[cat.key] || (foldersByCat[cat.key] = [])).push(f);
+    }
+    const categories = [];
+    let total = 0;
+    for (const cat of LYNDSAY_TRIAGE_CATEGORIES) {
+      const fList = foldersByCat[cat.key] || [];
+      if (!fList.length) continue;
+      const emails = [];
+      for (const f of fList) {
+        const url = `${graphMailboxBase('lyndsay')}/mailFolders/${encodeURIComponent(f.id)}/messages`
+          + `?$top=25&$select=${select}&$orderby=receivedDateTime desc&$filter=receivedDateTime ge ${sinceISO}`;
+        try {
+          const r = await fetchFn(url, { headers });
+          const j = await r.json().catch(() => ({}));
+          if (r.ok) emails.push(...(j.value || []).map(mm => shapeInboxMessage(mm, 'lyndsay')));
+        } catch { /* skip a folder that errors */ }
+      }
+      emails.sort((a, b) => String(b.receivedAt || '').localeCompare(String(a.receivedAt || '')));
+      total += emails.length;
+      categories.push({
+        key: cat.key, label: cat.label, emoji: cat.emoji, badge: cat.badge, count: emails.length,
+        emails: emails.slice(0, 5).map(e => ({
+          sender: e.sender.name || e.sender.email || '(unknown sender)',
+          subject: (e.subject || '(no subject)').slice(0, 60),
+        })),
+        more: Math.max(0, emails.length - 5),
+      });
+    }
+    res.json({ configured: true, date, total, categories });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // 6 PM Central, stated explicitly: Render runs UTC, so an unqualified "18 * * *"
 // would fire at noon or 1 PM in Austin depending on the season.
 cron.schedule('0 18 * * *', () => {

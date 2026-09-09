@@ -7868,7 +7868,9 @@ function sixpmRender() {
         ? 'No action items came out of today\'s meetings.'
         : 'Not extracted — ' + esc(s.action_items_reason || 'source unavailable') }</div>`;
 
-  // Inbox snapshot
+  // Inbox snapshot — count-only for everyone. Admins additionally get today's
+  // triage detail (senders + subjects), fetched separately and admin-gated on the
+  // server, so the operations role never receives Lyndsay's message contents.
   const ib = r.inbox_snapshot || {};
   const ly = ib.lyndsay;
   $('#sixpm-inbox').innerHTML = ly
@@ -7879,6 +7881,39 @@ function sixpmRender() {
        </div>
        <p class="muted small" style="margin-bottom:0">Counts only. Her messages are deliberately not in this report.</p></div>`
     : '<div class="empty-state">No inbox snapshot on this run.</div>';
+  if (currentUser?.role === 'admin') sixpmLoadTriage();
+}
+
+// Admin-only: today's triage detail for the Lyndsay Inbox section. Non-admins
+// never call this and the endpoint is requireRole('admin'), so the data doesn't
+// leave the server for them. Renders below the count summary; on any failure the
+// count-only view already in place is left untouched.
+async function sixpmLoadTriage() {
+  const el = $('#sixpm-inbox');
+  if (!el) return;
+  try {
+    const d = await api('/api/reports/lyndsay-triage-today');
+    if (!d || d.configured === false || d.authRequired) return; // keep count-only view
+    const cats = (d.categories || []).filter(c => c.count > 0);
+    const body = cats.length
+      ? cats.map(c => `
+          <div style="margin-top:12px">
+            <div class="card-meta"><span class="badge ${c.badge}">${c.emoji} ${esc(c.label)}</span>
+              <span class="muted small">${c.count}</span></div>
+            ${(c.emails || []).map(e => `<div class="small" style="padding:2px 0 2px 2px">
+              <b>${esc(e.sender)}</b> <span class="muted">—</span> ${esc(e.subject)}</div>`).join('')}
+            ${c.more > 0 ? `<div class="muted small" style="padding-left:2px">+ ${c.more} more</div>` : ''}
+          </div>`).join('')
+      : '<div class="empty-state" style="margin-top:8px">No emails processed today</div>';
+    el.innerHTML = `<div class="card">
+        <div class="card-meta" style="justify-content:space-between">
+          <span class="card-title" style="margin:0">LYNDSAY'S INBOX — Today's Triage</span>
+          <span class="muted small">${esc(d.date || '')} · ${d.total} processed</span>
+        </div>
+        ${body}
+        <p class="muted small" style="margin:12px 0 0">Admin-only view — the operations role sees counts only.</p>
+      </div>`;
+  } catch (_) { /* leave the count-only view in place */ }
 }
 
 $('#sixpm-refresh')?.addEventListener('click', sixpmLoad);
