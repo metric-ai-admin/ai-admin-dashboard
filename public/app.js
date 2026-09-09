@@ -3719,8 +3719,100 @@ function crmRenderPhoneList(shops) {
   }).join('') : '<p class="muted small">No calls logged yet.</p>';
 }
 
+// ── Perfect Phone Call scorecard (shows only when "Answered by Agent") ────────
+const PHONE_SC_RATINGS = ['Excellent', 'Good', 'Fair', 'Poor', 'Liability'];
+const PHONE_SC_ITEMS = [
+  ['ring3', 'Answered by the 3rd ring'],
+  ['greeting', 'Warm, enthusiastic greeting'],
+  ['gave_name', 'Agent gave their name'],
+  ['got_name', 'Got your name — and used it?'],
+  ['got_phone', 'Got your phone number?'],
+  ['got_email', 'Got your email address?'],
+  ['how_heard', 'Asked how you heard about them?'],
+  ['who_for', 'Asked who the apartment is for?'],
+  ['when_moving', 'Asked when you are moving?'],
+  ['visited_site', 'Asked if you had visited the website?'],
+  ['budget', 'Asked about your budget?'],
+  ['occupants', 'Asked how many occupants?'],
+  ['pets', 'Asked about pets?'],
+  ['specific_apt', 'Talked about a specific apartment / painted word pictures'],
+  ['value_before_price', 'Built value before quoting price (confident quote)'],
+  ['urgency', 'Created a sense of urgency?'],
+  ['invited_tour', 'Invited you to tour'],
+  ['ready_apply', 'Asked if you were ready to apply?'],
+  ['set_appt', 'Set a specific appointment date & time'],
+  ['directions', 'Offered directions / clear visit instructions'],
+  ['thanked_name', 'Thanked you by name at the end'],
+  ['led_call', 'Agent led the call overall'],
+];
+let crmPhoneSC = null; // { rating: '', answers: {} }
+function crmPhoneScore(sc) {
+  let yes = 0, tot = 0;
+  for (const [id] of PHONE_SC_ITEMS) { const v = (sc.answers || {})[id]; if (v === 'yes') { yes++; tot++; } else if (v === 'no') tot++; }
+  return tot ? Math.round(yes / tot * 100) : null;
+}
+function crmPhoneUpdateScoreDisplay() {
+  const el = $('#pf-score'); if (el) { const p = crmPhoneScore(crmPhoneSC || { answers: {} }); el.value = p == null ? '' : p; }
+}
+function crmRenderPhoneScorecard() {
+  const host = $('#pf-scorecard');
+  if (!host) return;
+  const show = $('#pf-connection')?.value === 'answered_agent';
+  host.classList.toggle('hidden', !show);
+  if (!show) return;
+  const sc = crmPhoneSC || (crmPhoneSC = { rating: '', answers: {} });
+  const ratingBtns = PHONE_SC_RATINGS.map(r =>
+    `<button type="button" class="crm-grade-btn ${sc.rating === r ? 'active' : ''}" data-pf-rating data-val="${esc(r)}">${esc(r)}</button>`).join('');
+  const items = PHONE_SC_ITEMS.map(([id, label]) => `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid var(--border)">
+      <span class="small" style="max-width:70%">${esc(label)}</span>
+      <select class="crm-select" style="width:auto" data-pf-item data-crit="${id}">
+        <option value="" ${!sc.answers[id] ? 'selected' : ''}>—</option>
+        <option value="yes" ${sc.answers[id] === 'yes' ? 'selected' : ''}>Yes</option>
+        <option value="no" ${sc.answers[id] === 'no' ? 'selected' : ''}>No</option>
+      </select>
+    </div>`).join('');
+  host.innerHTML = `
+    <div class="crm-entry-card" style="margin-top:10px">
+      <label class="small" style="font-weight:600">⭐ Perfect Phone Call</label>
+      <div style="margin:8px 0">
+        <div class="small" style="font-weight:600;margin-bottom:4px">Overall Call Rating</div>
+        <div class="crm-sc-btns" style="display:flex;gap:6px;flex-wrap:wrap">${ratingBtns}</div>
+      </div>
+      <div>${items}</div>
+    </div>`;
+  crmPhoneUpdateScoreDisplay();
+}
+function crmResetPhoneForm() {
+  crmPhoneSC = { rating: '', answers: {} };
+  const a = $('#pf-agent'); if (a) a.value = crmDefaultAgentName();
+  const d = $('#pf-date'); if (d) d.value = new Date().toISOString().slice(0, 10);
+  const c = $('#pf-caller'); if (c) c.value = '';
+  const conn = $('#pf-connection'); if (conn) conn.value = 'answered_agent';
+  const sc = $('#pf-score'); if (sc) sc.value = '';
+  const nt = $('#pf-notes'); if (nt) nt.value = '';
+  crmRenderPhoneScorecard();
+}
+// Delegated scorecard wiring (survives re-renders).
+(function wirePhoneScorecard() {
+  const host = document.getElementById('pf-scorecard');
+  if (!host) return;
+  host.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b || !crmPhoneSC) return;
+    if (b.hasAttribute('data-pf-rating')) { const v = b.dataset.val; crmPhoneSC.rating = crmPhoneSC.rating === v ? '' : v; crmRenderPhoneScorecard(); }
+  });
+  host.addEventListener('change', e => {
+    if (!crmPhoneSC) return;
+    if (e.target.hasAttribute('data-pf-item')) { crmPhoneSC.answers[e.target.dataset.crit] = e.target.value; crmPhoneUpdateScoreDisplay(); }
+  });
+})();
+$('#pf-connection')?.addEventListener('change', crmRenderPhoneScorecard);
+
 $('#crm-phone-add-btn').addEventListener('click', () => {
-  $('#crm-phone-form').classList.toggle('hidden');
+  const f = $('#crm-phone-form');
+  const willShow = f.classList.contains('hidden');
+  f.classList.toggle('hidden');
+  if (willShow) crmResetPhoneForm();
 });
 $('#crm-phone-cancel').addEventListener('click', () => $('#crm-phone-form').classList.add('hidden'));
 $('#crm-phone-save').addEventListener('click', async () => {
@@ -3728,12 +3820,20 @@ $('#crm-phone-save').addEventListener('click', async () => {
   if (!p) return;
   const agent = crmResolveAgent($('#pf-agent').value);
   if (!agent) return;
+  const conn = $('#pf-connection').value;
+  const sc = crmPhoneSC || { rating: '', answers: {} };
+  const scFilled = !!(sc.rating || Object.values(sc.answers || {}).some(Boolean));
+  let score = parseFloat($('#pf-score').value);
+  if (isNaN(score)) score = (conn === 'answered_agent' && scFilled) ? crmPhoneScore(sc) : null;
   const body = {
     shop_date: $('#pf-date').value || new Date().toISOString().slice(0,10),
     agent_name: agent,
-    score: parseFloat($('#pf-score').value) || null,
-    notes: JSON.stringify({ connection: $('#pf-connection').value, text: $('#pf-notes').value }),
+    caller_name: $('#pf-caller').value.trim() || null,
+    score,
+    notes: JSON.stringify({ connection: conn, text: $('#pf-notes').value }),
   };
+  // Only persist a scorecard for an agent-answered call that was actually filled.
+  if (conn === 'answered_agent' && scFilled) body.scorecard = sc;
   try {
     await crmFetch(`/api/crm/properties/${p.id}/phone-shops`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);

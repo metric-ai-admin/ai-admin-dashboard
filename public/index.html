@@ -1012,6 +1012,9 @@
             <!-- New call form (hidden by default) -->
             <div id="crm-phone-form" class="crm-entry-form hidden">
               <div class="crm-detail-grid">
+                <label>Caller Name (Fake)
+                  <input id="pf-caller" type="text" class="crm-input" placeholder="Fake name used on the call">
+                </label>
                 <label>Shopped By
                   <select id="pf-agent" class="crm-select">
                     <option value="" selected>— Select —</option>
@@ -1032,6 +1035,7 @@
                 <label>Score (0-100)<input id="pf-score" type="number" min="0" max="100" class="crm-input"></label>
               </div>
               <label>Notes<textarea id="pf-notes" class="crm-textarea" rows="3"></textarea></label>
+              <div id="pf-scorecard" class="hidden"></div>
               <div style="display:flex;gap:8px;margin-top:8px;">
                 <button id="crm-phone-save" class="btn-sm primary">Save Call</button>
                 <button id="crm-phone-cancel" class="btn-sm">Cancel</button>
