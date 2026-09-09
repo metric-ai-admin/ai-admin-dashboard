@@ -7927,11 +7927,12 @@ $('#eod-email-send')?.addEventListener('click', async () => {
   const btn = $('#eod-email-send');
   if (!confirm('Send the EOD report email to Lyndsay now?')) return;
   const label = btn.textContent; btn.disabled = true; btn.textContent = '⏳ Sending…';
+  toast('Sending EOD report… this can take ~30s', 'success');
   try {
     const r = await api('/api/reports/eod-email/send', { method: 'POST' });
-    toast(`EOD report emailed to ${r.sent_to} ✅`, 'success');
+    toast(`✅ EOD report emailed to ${r.sent_to} (from ${r.sender})`, 'success');
   } catch (err) {
-    toast('EOD email failed: ' + err.message, 'error');
+    toast('❌ EOD email failed: ' + err.message, 'error');
   } finally { btn.disabled = false; btn.textContent = label; }
 });
 $('#sixpm-refresh')?.addEventListener('click', sixpmLoad);

@@ -7769,22 +7769,38 @@ function eodRenderHtml(data) {
     </table></body></html>`;
 }
 
+// Sender/recipient are env-overridable so the sending mailbox can be changed
+// without a deploy if it lacks Mail.Send. graphMailToken() is an application
+// (client-credential) token, so /users/{sender}/sendMail is the correct call —
+// there is no signed-in user for me/sendMail.
+const EOD_SENDER = process.env.EOD_SENDER || 'support@livewithmetric.com';
+const EOD_RECIPIENT = process.env.EOD_RECIPIENT || 'lyndsay@metricpropertymanagement.com';
 async function eodSendEmail(html, subject) {
   const token = await graphMailToken();
   const payload = {
     message: {
       subject,
       body: { contentType: 'HTML', content: html },
-      toRecipients: [{ emailAddress: { address: 'lyndsay@metricpropertymanagement.com' } }],
+      toRecipients: [{ emailAddress: { address: EOD_RECIPIENT } }],
     },
     saveToSentItems: true,
   };
-  const r = await fetchFn('https://graph.microsoft.com/v1.0/users/support@livewithmetric.com/sendMail', {
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(EOD_SENDER)}/sendMail`;
+  console.log('[eod-send] calling Graph sendMail from %s to %s …', EOD_SENDER, EOD_RECIPIENT);
+  const r = await fetchFn(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`Graph sendMail ${r.status}: ${t.slice(0, 300)}`); }
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    console.log('[eod-send] ERROR: Graph sendMail %d — %s', r.status, body.slice(0, 500));
+    const e = new Error(`Graph sendMail ${r.status} (sender ${EOD_SENDER}): ${body.slice(0, 300) || r.statusText}`);
+    e.status = r.status;
+    throw e;
+  }
+  console.log('[eod-send] success — email sent from %s to %s', EOD_SENDER, EOD_RECIPIENT);
+  return { sender: EOD_SENDER, recipient: EOD_RECIPIENT };
 }
 
 // GET preview (admin) — renders the HTML in the browser.
@@ -7794,11 +7810,15 @@ app.get('/api/reports/eod-email', requireAuth, requireRole('admin'), async (req,
 });
 // POST send (admin) — build + email to Lyndsay.
 app.post('/api/reports/eod-email/send', requireAuth, requireRole('admin'), async (req, res) => {
+  console.log('[eod-send] triggered by %s', req.user?.email || req.user?.username || 'admin');
   try {
     const data = await eodGather();
-    await eodSendEmail(eodRenderHtml(data), `📊 Metric EOD Report — ${data.date}`);
-    res.json({ ok: true, sent_to: 'lyndsay@metricpropertymanagement.com', date: data.date });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+    const sent = await eodSendEmail(eodRenderHtml(data), `📊 Metric EOD Report — ${data.date}`);
+    res.json({ ok: true, sent_to: sent.recipient, sender: sent.sender, date: data.date });
+  } catch (err) {
+    console.log('[eod-send] ERROR:', err.message);
+    res.status(err.status && err.status >= 400 && err.status < 600 ? err.status : 500).json({ ok: false, error: err.message });
+  }
 });
 // 6 PM Central weekdays. Timezone-anchored (DST-safe) rather than a raw UTC hour.
 cron.schedule('0 18 * * 1-5', () => {
