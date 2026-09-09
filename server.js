@@ -7438,7 +7438,7 @@ app.get('/api/reports/daily-6pm/latest', requireAuth, requireRole('admin', 'oper
 // view). Folder names aren't hardcoded — Lyndsay's real folder list is fetched
 // and fuzzy-matched to the category labels.
 const LYNDSAY_TRIAGE_CATEGORIES = [
-  { key: 'lyndsay_review', label: 'Lyndsay Review', emoji: '🔴', badge: 'badge-red',   match: ['lyndsay review'] },
+  { key: 'lyndsay_review', label: 'Lyndsay Review', emoji: '🔴', badge: 'badge-red',   match: ['lyndsay review', 'lyndsay'] },
   { key: 'clients',        label: 'Clients',        emoji: '🟣', badge: 'badge-gray',  match: ['client'] },
   { key: 'mpm_team',       label: 'MPM Team',       emoji: '🟦', badge: 'badge-blue',  match: ['mpm team', 'mpm'] },
   { key: 'follow_up',      label: 'Follow-up',      emoji: '🟡', badge: 'badge-amber', match: ['bekah follow', 'follow up', 'follow-up', 'followup'] },
