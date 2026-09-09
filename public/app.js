@@ -7759,6 +7759,11 @@ const SIXPM_SOURCE_LABEL = {
 async function sixpmLoad() {
   const el = $('#sixpm-meetings');
   if (!el) return;
+  // Reveal the admin-only EOD email controls now that the role is known.
+  if (currentUser?.role === 'admin') {
+    $('#eod-email-send')?.removeAttribute('hidden');
+    $('#eod-email-preview')?.removeAttribute('hidden');
+  }
   el.innerHTML = '<p class="small muted">Loading…</p>';
   try {
     const data = await api('/api/reports/daily-6pm/latest');
@@ -7916,6 +7921,19 @@ async function sixpmLoadTriage() {
   } catch (_) { /* leave the count-only view in place */ }
 }
 
+// EOD email send — admin only (the buttons are revealed in sixpmLoad once the
+// session/role is known; the endpoint is also requireRole('admin') server-side).
+$('#eod-email-send')?.addEventListener('click', async () => {
+  const btn = $('#eod-email-send');
+  if (!confirm('Send the EOD report email to Lyndsay now?')) return;
+  const label = btn.textContent; btn.disabled = true; btn.textContent = '⏳ Sending…';
+  try {
+    const r = await api('/api/reports/eod-email/send', { method: 'POST' });
+    toast(`EOD report emailed to ${r.sent_to} ✅`, 'success');
+  } catch (err) {
+    toast('EOD email failed: ' + err.message, 'error');
+  } finally { btn.disabled = false; btn.textContent = label; }
+});
 $('#sixpm-refresh')?.addEventListener('click', sixpmLoad);
 $('#sixpm-generate')?.addEventListener('click', async () => {
   const btn = $('#sixpm-generate');

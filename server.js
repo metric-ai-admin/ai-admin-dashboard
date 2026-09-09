@@ -7522,6 +7522,251 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// =====================================================================
+// EOD EMAIL REPORT — a 9-section end-of-day digest emailed to Lyndsay at 6PM CT
+// on weekdays. Self-contained: reads the real Supabase tables + Graph, degrades
+// gracefully per section (a failing/empty source shows "No data", never crashes
+// the whole email), and sends via the app Graph token from support@livewithmetric.
+// Does not touch any existing endpoint. Admin-only.
+// =====================================================================
+const EOD = { bg: '#ffffff', text: '#0E2534', accent: '#009cf7', muted: '#6b7c88', border: '#e2e8ed' };
+const eodEsc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const eodDateCT = () => new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date());
+const eodAddDays = (iso, n) => { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+function eodTable(headers, rows) {
+  if (!rows || !rows.length) return `<p style="margin:6px 0;color:${EOD.muted};font-size:13px">No data.</p>`;
+  const th = headers.map(h => `<th style="text-align:left;padding:6px 8px;border-bottom:2px solid ${EOD.accent};font-size:12px;color:${EOD.text}">${eodEsc(h)}</th>`).join('');
+  const tr = rows.map(r => `<tr>${r.map(c => `<td style="padding:6px 8px;border-bottom:1px solid ${EOD.border};font-size:13px;color:${EOD.text}">${c}</td>`).join('')}</tr>`).join('');
+  return `<table role="presentation" style="width:100%;border-collapse:collapse;margin:6px 0 4px"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>`;
+}
+function eodSectionHtml(emoji, title, summaryHtml, bodyHtml) {
+  return `<tr><td style="padding:16px 20px 8px">
+    <div style="font-size:16px;font-weight:700;color:${EOD.accent};border-left:4px solid ${EOD.accent};padding-left:8px;margin-bottom:6px">${emoji} ${eodEsc(title)}</div>
+    ${summaryHtml ? `<div style="font-size:13px;color:${EOD.text};margin:2px 0 4px">${summaryHtml}</div>` : ''}
+    ${bodyHtml || ''}
+  </td></tr>`;
+}
+const eodErr = e => `<span style="color:#c0392b">${eodEsc(e)}</span>`;
+
+// Gather all 9 sections. Each is independent + guarded.
+async function eodGather() {
+  const db = supabaseAdmin || supabasePublic;
+  const today = eodDateCT();
+  const S = {};
+
+  // 1 — EMAIL TRIAGE
+  try {
+    const s = { processed: 0, unreadTotal: 0, folders: [] };
+    const { data: ts } = await db.from('triage_sessions').select('emails_processed').eq('session_date', today);
+    s.processed = (ts || []).reduce((a, r) => a + (r.emails_processed || 0), 0);
+    try {
+      const token = await graphMailboxToken('lyndsay');
+      const folders = await listMailFolders('lyndsay', token);
+      const norm = x => String(x || '').toLowerCase();
+      for (const cat of LYNDSAY_TRIAGE_CATEGORIES) {
+        if (cat.key === 'archive') continue;
+        const fl = folders.filter(f => !norm(f.displayName).includes('archive') && cat.match.some(m => norm(f.displayName).includes(m)));
+        if (!fl.length) continue;
+        const c = fl.reduce((a, f) => a + (f.unreadItemCount || 0), 0);
+        s.folders.push({ label: cat.label, emoji: cat.emoji, count: c });
+        s.unreadTotal += c;
+      }
+    } catch (e) { s.foldersError = e.message; }
+    S.triage = s;
+  } catch (e) { S.triage = { error: e.message }; }
+
+  // 2 — CALL ANALYZER
+  try {
+    const { data: g } = await db.from('call_grades').select('agent_name,overall_score,overall_grade,summary,not_scoreable').eq('call_date', today);
+    const rows = (g || []).filter(r => !r.not_scoreable);
+    const by = {};
+    for (const r of rows) { const a = r.agent_name || 'Unknown'; (by[a] || (by[a] = { n: 0, sum: 0, f: 0 })); by[a].n++; by[a].sum += Number(r.overall_score) || 0; if (r.overall_grade === 'F') by[a].f++; }
+    const agents = Object.entries(by).map(([a, v]) => ({ agent: a, calls: v.n, avg: v.n ? Math.round(v.sum / v.n) : 0, f: v.f })).sort((x, y) => y.calls - x.calls);
+    const fViol = rows.filter(r => r.overall_grade === 'F').map(r => ({ agent: r.agent_name || 'Unknown', summary: r.summary || '' }));
+    S.calls = { total: rows.length, agents, fViol };
+  } catch (e) { S.calls = { error: e.message }; }
+
+  // 3 — LEASING
+  try {
+    const now = new Date(today + 'T00:00:00'); const dow = now.getDay();
+    const sat = new Date(now); sat.setDate(now.getDate() + (6 - dow)); const weekEnd = sat.toISOString().slice(0, 10);
+    const weekStart = eodAddDays(weekEnd, -6);
+    const [occR, leadsR, showR] = await Promise.all([
+      db.from('leasing_occupancy').select('property_name,occupancy_pct'),
+      db.from('leasing_leads').select('property,week_ending').eq('week_ending', weekEnd),
+      db.from('leasing_showings').select('property_name,showing_date,status').gte('showing_date', weekStart).lte('showing_date', weekEnd),
+    ]);
+    const clean = full => { const t = String(full || '').trim(); const i = t.indexOf(' - '); return i > 0 ? t.slice(0, i).trim() : t; };
+    const traffic = {}; for (const l of (leadsR.data || [])) { const n = clean(l.property); traffic[n] = (traffic[n] || 0) + 1; }
+    const tours = {}; for (const sh of (showR.data || [])) { const st = String(sh.status || '').toLowerCase(); if (st.includes('cancel') || st.includes('no show')) continue; const n = clean(sh.property_name); tours[n] = (tours[n] || 0) + 1; }
+    const rows = (occR.data || []).filter(o => o.property_name && !leasingIsExcluded(o.property_name))
+      .map(o => ({ property: o.property_name, occ: o.occupancy_pct, traffic: traffic[o.property_name] || 0, tours: tours[o.property_name] || 0 }))
+      .sort((a, b) => (a.occ == null ? 999 : a.occ) - (b.occ == null ? 999 : b.occ));
+    S.leasing = { rows };
+  } catch (e) { S.leasing = { error: e.message }; }
+
+  // 4 — EVICTIONS / COLLECTIONS (latest uploaded session blob + completed log)
+  try {
+    const { data: sess } = await db.from('eviction_sessions').select('report_date,data,uploaded_at').order('uploaded_at', { ascending: false }).limit(1);
+    const latest = (sess || [])[0];
+    let active = null, list = [];
+    if (latest && latest.data) {
+      const d = latest.data;
+      const units = Array.isArray(d) ? d : (Array.isArray(d.units) ? d.units : (Array.isArray(d.rows) ? d.rows : []));
+      active = units.length;
+      list = units.slice(0, 8).map(u => ({ resident: u.name || u.resident || '', property: u.property || '', balance: u.totalAR ?? u.balance ?? '', step: u.stage || u.step || '' }));
+    }
+    let completed = 0;
+    try { const { count } = await db.from('eviction_completed').select('id', { count: 'exact', head: true }); completed = count || 0; } catch {}
+    S.evictions = { active, list, completed, report_date: latest ? latest.report_date : null };
+  } catch (e) { S.evictions = { error: e.message }; }
+
+  // 5 — MAINTENANCE (Erick's operational_tasks)
+  try {
+    const { data: mt } = await db.from('operational_tasks').select('title,priority,owner,completed_at').ilike('owner', '%erick%').is('completed_at', null);
+    const open = (mt || []).filter(t => String(t.priority || '').toLowerCase() !== 'done');
+    const critical = open.filter(t => String(t.priority || '').toLowerCase().includes('critical')).map(t => t.title);
+    S.maintenance = { open: open.length, critical };
+  } catch (e) { S.maintenance = { error: e.message }; }
+
+  // 6 — BD CRM (phone/online shops; last_shop_date column doesn't exist, derive it)
+  try {
+    const [ps, os] = await Promise.all([
+      db.from('phone_shops').select('property_id,shop_date'),
+      db.from('online_shops').select('property_id,shop_date'),
+    ]);
+    const all = [...(ps.data || []), ...(os.data || [])].map(s => ({ p: s.property_id, d: String(s.shop_date || '').slice(0, 10) })).filter(s => s.d);
+    const shopsToday = all.filter(s => s.d === today).length;
+    const maxBy = {}; for (const s of all) { if (!maxBy[s.p] || s.d > maxBy[s.p]) maxBy[s.p] = s.d; }
+    const cutoff = eodAddDays(today, -7);
+    const stale = Object.values(maxBy).filter(d => d < cutoff).length;
+    S.bdcrm = { shopsToday, stale };
+  } catch (e) { S.bdcrm = { error: e.message }; }
+
+  // 7 — ACCOUNTING (Claudia's accounting_tasks)
+  try {
+    const { data: at } = await db.from('accounting_tasks').select('title,priority_label,due_date,completed_at');
+    const open = (at || []).filter(t => !t.completed_at);
+    const byPrio = {}; for (const t of open) { const p = t.priority_label || '—'; byPrio[p] = (byPrio[p] || 0) + 1; }
+    const overdue = open.filter(t => t.due_date && t.due_date < today).map(t => t.title);
+    const weekAhead = eodAddDays(today, 7);
+    const dueWeek = open.filter(t => t.due_date && t.due_date >= today && t.due_date <= weekAhead).length;
+    const completedToday = (at || []).filter(t => t.completed_at && String(t.completed_at).slice(0, 10) === today).length;
+    S.accounting = { open: open.length, byPrio, overdue, dueWeek, completedToday };
+  } catch (e) { S.accounting = { error: e.message }; }
+
+  // 8 — TEAMS TRANSCRIPTS (today's meeting summaries)
+  try {
+    const { data: ms } = await db.from('meeting_summaries').select('subject,key_decisions,action_items,status').eq('meeting_date', today);
+    S.teams = (ms || []).filter(m => m.status === 'summarized').map(m => ({ subject: m.subject, key: m.key_decisions }));
+  } catch (e) { S.teams = { error: e.message }; }
+
+  // 9 — OPEN PRIORITIES (operational_tasks Critical / Follow-up, flag stale)
+  try {
+    const { data: op } = await db.from('operational_tasks').select('title,priority,updated_at,completed_at').is('completed_at', null);
+    const active = (op || []).filter(t => { const p = String(t.priority || '').toLowerCase(); return p.includes('critical') || p.includes('follow'); });
+    const critical = active.filter(t => String(t.priority || '').toLowerCase().includes('critical')).map(t => t.title);
+    const staleCut = eodAddDays(today, -3);
+    const stale = active.filter(t => String(t.priority || '').toLowerCase().includes('follow') && t.updated_at && String(t.updated_at).slice(0, 10) < staleCut).map(t => t.title);
+    S.priorities = { critical, stale };
+  } catch (e) { S.priorities = { error: e.message }; }
+
+  return { date: today, sections: S };
+}
+
+function eodRenderHtml(data) {
+  const S = data.sections || {};
+  const P = [];
+  const t1 = S.triage || {};
+  P.push(eodSectionHtml('📧', 'Email Triage',
+    t1.error ? eodErr(t1.error) : `${t1.processed || 0} emails processed today · ${t1.unreadTotal || 0} unread across folders`,
+    (t1.folders && t1.folders.length) ? `<div>${t1.folders.map(f => `<span style="display:inline-block;background:#eef6fc;border-radius:12px;padding:3px 10px;margin:2px 4px 2px 0;font-size:12px;color:${EOD.text}">${f.emoji} ${eodEsc(f.label)}: <b>${f.count}</b></span>`).join('')}</div>` : ''));
+  const c2 = S.calls || {};
+  P.push(eodSectionHtml('📞', 'Call Analyzer',
+    c2.error ? eodErr(c2.error) : `${c2.total || 0} calls graded today`,
+    (c2.agents && c2.agents.length ? eodTable(['Agent', 'Calls', 'Avg', 'F'], c2.agents.map(a => [eodEsc(a.agent), a.calls, a.avg, a.f])) : '')
+    + (c2.fViol && c2.fViol.length ? `<div style="margin-top:6px;font-size:12px;color:${EOD.text}"><b>F violations:</b>${c2.fViol.map(f => `<div style="margin-top:3px">⚠️ <b>${eodEsc(f.agent)}</b> — ${eodEsc((f.summary || '').slice(0, 120))}</div>`).join('')}</div>` : '')));
+  const l3 = S.leasing || {};
+  P.push(eodSectionHtml('🏢', 'Leasing',
+    l3.error ? eodErr(l3.error) : `${(l3.rows || []).length} communities`,
+    eodTable(['Property', 'Occ %', 'Traffic', 'Tours'], (l3.rows || []).map(r => [eodEsc(r.property), r.occ == null ? '—' : r.occ + '%', r.traffic, r.tours]))));
+  const e4 = S.evictions || {};
+  P.push(eodSectionHtml('⚖️', 'Evictions / Collections',
+    e4.error ? eodErr(e4.error) : `${e4.active == null ? '—' : e4.active} active${e4.report_date ? ` · report ${eodEsc(e4.report_date)}` : ''} · ${e4.completed || 0} completed logged`,
+    eodTable(['Resident', 'Property', 'Balance', 'Step'], (e4.list || []).map(u => [eodEsc(u.resident), eodEsc(u.property), typeof u.balance === 'number' ? '$' + Math.round(u.balance).toLocaleString() : eodEsc(u.balance), eodEsc(u.step)]))));
+  const m5 = S.maintenance || {};
+  P.push(eodSectionHtml('🔧', 'Maintenance',
+    m5.error ? eodErr(m5.error) : `${m5.open || 0} open task(s)`,
+    (m5.critical && m5.critical.length ? `<div style="font-size:12px;color:${EOD.text}"><b>Critical:</b>${m5.critical.map(t => `<div>• ${eodEsc(t)}</div>`).join('')}</div>` : '')));
+  const b6 = S.bdcrm || {};
+  P.push(eodSectionHtml('🎯', 'BD CRM',
+    b6.error ? eodErr(b6.error) : `${b6.shopsToday || 0} shops done today · ${b6.stale || 0} propert${b6.stale === 1 ? 'y' : 'ies'} needing follow-up (>7 days)`, ''));
+  const a7 = S.accounting || {};
+  P.push(eodSectionHtml('💰', 'Accounting',
+    a7.error ? eodErr(a7.error) : `${a7.open || 0} open · ${a7.dueWeek || 0} due this week · ${a7.completedToday || 0} completed today`,
+    (a7.byPrio ? `<div>${Object.entries(a7.byPrio).map(([p, n]) => `<span style="display:inline-block;background:#eef6fc;border-radius:12px;padding:3px 10px;margin:2px 4px 2px 0;font-size:12px;color:${EOD.text}">${eodEsc(p)}: <b>${n}</b></span>`).join('')}</div>` : '')
+    + (a7.overdue && a7.overdue.length ? `<div style="margin-top:4px;font-size:12px;color:${EOD.text}"><b>Overdue:</b>${a7.overdue.map(t => `<div>• ${eodEsc(t)}</div>`).join('')}</div>` : '')));
+  const teams = S.teams;
+  P.push(eodSectionHtml('🎥', 'Teams Transcripts',
+    (teams && teams.error) ? eodErr(teams.error) : `${Array.isArray(teams) ? teams.length : 0} meeting summary(ies) today`,
+    (Array.isArray(teams) && teams.length) ? teams.map(m => `<div style="margin-bottom:8px"><b style="color:${EOD.text}">${eodEsc(m.subject || 'Meeting')}</b>${m.key ? `<div style="font-size:12px;color:${EOD.muted}">${eodEsc((typeof m.key === 'string' ? m.key : JSON.stringify(m.key)).slice(0, 200))}</div>` : ''}</div>`).join('') : ''));
+  const p9 = S.priorities || {};
+  P.push(eodSectionHtml('🚩', 'Open Priorities',
+    p9.error ? eodErr(p9.error) : `${(p9.critical || []).length} critical · ${(p9.stale || []).length} stale follow-up(s)`,
+    (p9.critical && p9.critical.length ? `<div style="font-size:12px;color:${EOD.text}"><b>Critical:</b>${p9.critical.map(t => `<div>• ${eodEsc(t)}</div>`).join('')}</div>` : '')
+    + (p9.stale && p9.stale.length ? `<div style="margin-top:4px;font-size:12px;color:${EOD.text}"><b>Stale (&gt;3d):</b>${p9.stale.map(t => `<div>• ${eodEsc(t)}</div>`).join('')}</div>` : '')));
+
+  const stamp = new Date().toLocaleString('en-US', { timeZone: LYNDSAY_TIMEZONE });
+  return `<!doctype html><html><body style="margin:0;background:#f2f5f7;padding:16px">
+    <table role="presentation" width="100%" style="max-width:600px;margin:0 auto;background:${EOD.bg};border-radius:10px;overflow:hidden;font-family:Arial,Helvetica,sans-serif">
+      <tr><td style="background:${EOD.accent};padding:18px 20px">
+        <div style="color:#ffffff;font-size:20px;font-weight:800">📊 Metric EOD Report</div>
+        <div style="color:#e6f4ff;font-size:13px">${eodEsc(data.date)}</div></td></tr>
+      ${P.join('')}
+      <tr><td style="padding:14px 20px;border-top:1px solid ${EOD.border};color:${EOD.muted};font-size:11px">Generated by Metric AI Admin Dashboard | ${eodEsc(stamp)} CT</td></tr>
+    </table></body></html>`;
+}
+
+async function eodSendEmail(html, subject) {
+  const token = await graphMailToken();
+  const payload = {
+    message: {
+      subject,
+      body: { contentType: 'HTML', content: html },
+      toRecipients: [{ emailAddress: { address: 'lyndsay@metricpropertymanagement.com' } }],
+    },
+    saveToSentItems: true,
+  };
+  const r = await fetchFn('https://graph.microsoft.com/v1.0/users/support@livewithmetric.com/sendMail', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error(`Graph sendMail ${r.status}: ${t.slice(0, 300)}`); }
+}
+
+// GET preview (admin) — renders the HTML in the browser.
+app.get('/api/reports/eod-email', requireAuth, requireRole('admin'), async (req, res) => {
+  try { res.set('Content-Type', 'text/html').send(eodRenderHtml(await eodGather())); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+// POST send (admin) — build + email to Lyndsay.
+app.post('/api/reports/eod-email/send', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const data = await eodGather();
+    await eodSendEmail(eodRenderHtml(data), `📊 Metric EOD Report — ${data.date}`);
+    res.json({ ok: true, sent_to: 'lyndsay@metricpropertymanagement.com', date: data.date });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+// 6 PM Central weekdays. Timezone-anchored (DST-safe) rather than a raw UTC hour.
+cron.schedule('0 18 * * 1-5', () => {
+  if (!CRM_CONFIGURED) return;
+  eodGather()
+    .then(d => eodSendEmail(eodRenderHtml(d), `📊 Metric EOD Report — ${d.date}`))
+    .then(() => logLine('[eod-email] sent to Lyndsay'))
+    .catch(err => console.error('[eod-email] failed:', err.message));
+}, { timezone: LYNDSAY_TIMEZONE });
+
 // 6 PM Central, stated explicitly: Render runs UTC, so an unqualified "18 * * *"
 // would fire at noon or 1 PM in Austin depending on the season.
 cron.schedule('0 18 * * *', () => {
