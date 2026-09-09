@@ -7907,11 +7907,11 @@ async function sixpmLoadTriage() {
       : '<div class="empty-state" style="margin-top:8px">No emails processed today</div>';
     el.innerHTML = `<div class="card">
         <div class="card-meta" style="justify-content:space-between">
-          <span class="card-title" style="margin:0">LYNDSAY'S INBOX — Today's Triage</span>
-          <span class="muted small">${esc(d.date || '')} · ${d.total} processed</span>
+          <span class="card-title" style="margin:0">LYNDSAY'S INBOX — Current Snapshot</span>
+          <span class="muted small">${esc(d.date || '')} · ${d.total} in triage folders</span>
         </div>
         ${body}
-        <p class="muted small" style="margin:12px 0 0">Admin-only view — the operations role sees counts only.</p>
+        <p class="muted small" style="margin:12px 0 0">Latest items per category folder. Admin-only view — the operations role sees counts only.</p>
       </div>`;
   } catch (_) { /* leave the count-only view in place */ }
 }

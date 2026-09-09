@@ -7464,18 +7464,6 @@ const LYNDSAY_TRIAGE_CATEGORIES = [
   { key: 'personal',       label: 'Personal',       emoji: '📳', badge: 'badge-gray',  match: ['personal'] },
   { key: 'archive',        label: 'Archive',        emoji: '📦', badge: 'badge-gray',  match: ['archive'] },
 ];
-// Start of "today" in Central time, as a UTC ISO instant for the Graph filter.
-function ctDayStartISO() {
-  const now = new Date();
-  const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(now); // YYYY-MM-DD (CT)
-  const offName = new Intl.DateTimeFormat('en-US', { timeZone: LYNDSAY_TIMEZONE, timeZoneName: 'shortOffset' })
-    .formatToParts(now).find(p => p.type === 'timeZoneName').value; // e.g. "GMT-5"
-  const m = offName.match(/GMT([+-]\d+)(?::(\d+))?/);
-  const sign = m && m[1].startsWith('-') ? -1 : 1;
-  const offMin = m ? (parseInt(m[1], 10) * 60 + sign * (m[2] ? parseInt(m[2], 10) : 0)) : 0;
-  const startMs = new Date(ymd + 'T00:00:00Z').getTime() - offMin * 60000;
-  return new Date(startMs).toISOString();
-}
 app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), async (req, res) => {
   if (!GRAPH_CONFIGURED) return res.json({ configured: false, date: null, total: 0, categories: [] });
   let token;
@@ -7486,7 +7474,6 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
   }
   try {
     const folders = await listMailFolders('lyndsay', token);
-    const sinceISO = ctDayStartISO();
     const date = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date());
     const headers = { Authorization: `Bearer ${token}` };
     const select = 'id,subject,sender,from,receivedDateTime,lastModifiedDateTime,isRead';
@@ -7502,13 +7489,15 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
     for (const cat of LYNDSAY_TRIAGE_CATEGORIES) {
       const fList = foldersByCat[cat.key] || [];
       if (!fList.length) continue;
+      // No date filter: Outlook rules that auto-move mail don't reliably bump
+      // receivedDateTime OR lastModifiedDateTime, so a filtered query missed them.
+      // Show the latest few emails currently in the folder — a live snapshot of
+      // what's sitting in each category — with the true folder message count.
+      const folderCount = fList.reduce((s, f) => s + (f.totalItemCount || 0), 0);
       const emails = [];
       for (const f of fList) {
-        // Filter on lastModifiedDateTime, not receivedDateTime: a triage report
-        // wants emails PROCESSED (moved into the category folder) today, which is
-        // when they were last modified — not when they originally arrived.
         const url = `${graphMailboxBase('lyndsay')}/mailFolders/${encodeURIComponent(f.id)}/messages`
-          + `?$top=25&$select=${select}&$orderby=lastModifiedDateTime desc&$filter=lastModifiedDateTime ge ${sinceISO}`;
+          + `?$top=5&$select=${select}&$orderby=receivedDateTime desc`;
         try {
           const r = await fetchFn(url, { headers });
           const j = await r.json().catch(() => ({}));
@@ -7516,14 +7505,15 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
         } catch { /* skip a folder that errors */ }
       }
       emails.sort((a, b) => String(b.receivedAt || '').localeCompare(String(a.receivedAt || '')));
-      total += emails.length;
+      const shown = emails.slice(0, 5);
+      total += folderCount;
       categories.push({
-        key: cat.key, label: cat.label, emoji: cat.emoji, badge: cat.badge, count: emails.length,
-        emails: emails.slice(0, 5).map(e => ({
+        key: cat.key, label: cat.label, emoji: cat.emoji, badge: cat.badge, count: folderCount,
+        emails: shown.map(e => ({
           sender: e.sender.name || e.sender.email || '(unknown sender)',
           subject: (e.subject || '(no subject)').slice(0, 60),
         })),
-        more: Math.max(0, emails.length - 5),
+        more: Math.max(0, folderCount - shown.length),
       });
     }
     res.json({ configured: true, date, total, categories });
