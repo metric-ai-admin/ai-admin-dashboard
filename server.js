@@ -7479,8 +7479,11 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
     const select = 'id,subject,sender,from,receivedDateTime,lastModifiedDateTime,isRead';
     const norm = s => String(s || '').toLowerCase();
     // Each folder goes to the FIRST category it matches (labels ordered specific→broad).
+    // Archive / "Archive + Mark Read" folders aren't actionable — skip them so they
+    // neither appear in the snapshot nor count toward the header unread total.
     const foldersByCat = {};
     for (const f of folders) {
+      if (norm(f.displayName).includes('archive')) continue;
       const cat = LYNDSAY_TRIAGE_CATEGORIES.find(c => c.match.some(mm => norm(f.displayName).includes(mm)));
       if (cat) (foldersByCat[cat.key] || (foldersByCat[cat.key] = [])).push(f);
     }
