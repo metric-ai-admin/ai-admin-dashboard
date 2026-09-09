@@ -1648,6 +1648,36 @@ function exportSession(enriched, qualifying, notes, reportDate, completed, activ
   XLSX.writeFile(wb, `Metric_Eviction_Tracker_${iso}.xlsx`);
 }
 
+/* Flat export of the rows currently visible (respects the active property /
+   stage / agent / search filters). One sheet, the columns Karla asked for.
+   Days Delinquent is derived from days since the last payment — the delinquency
+   report has no explicit aging column. */
+function exportVisibleRows(rows) {
+  const stageLabel = id => (STAGES.find(s => s.id === id) || {}).label || id || '';
+  const daysDelinquent = u => {
+    if (!u.lastPmtDate) return '';
+    const ms = Date.now() - startOfDay(u.lastPmtDate).getTime();
+    return ms > 0 ? Math.floor(ms / 86400000) : 0;
+  };
+  const headers = ['Property', 'Resident Name', 'Unit', 'Balance', 'Days Delinquent', 'Status', 'AppFolio Link', 'Notes'];
+  const aoa = [headers, ...(rows || []).map(u => [
+    u.property || '',
+    u.name || '',
+    u.unit || '',
+    Math.round((u.totalAR || 0) * 100) / 100,
+    daysDelinquent(u),
+    stageLabel(u.stage),
+    u.profileLink || '',
+    (u.notes || '').toString().replace(/\s+/g, ' ').trim(),
+  ])];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{ wch: 24 }, { wch: 22 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 18 }, { wch: 52 }, { wch: 60 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Evictions');
+  const iso = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `evictions_${iso}.xlsx`);
+}
+
 /* =========================================================
    SMALL UI PIECES
 ========================================================= */
@@ -2629,6 +2659,11 @@ function App() {
   }, "↓ Export Session"), /*#__PURE__*/React.createElement("button", {
     className: `btn ${!rawUnits ? 'disabled' : ''}`,
     disabled: !rawUnits,
+    onClick: () => exportVisibleRows(visible),
+    title: "Export the currently visible rows (respects the property filter) to Excel"
+  }, "↓ Export to Excel"), /*#__PURE__*/React.createElement("button", {
+    className: `btn ${!rawUnits ? 'disabled' : ''}`,
+    disabled: !rawUnits,
     style: { opacity: 0.7, fontSize: '0.85em' },
     onClick: clearSession,
     title: "Wipe the saved session and start fresh"
@@ -2718,6 +2753,24 @@ function App() {
     className: `tab ${activeTab === 'grades' ? 'active' : ''}`,
     onClick: () => setActiveTab('grades')
   }, "Performance Grades")), activeTab === 'tracker' ? /*#__PURE__*/React.createElement(Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "evx-summary",
+    style: { display: 'flex', gap: 10, flexWrap: 'wrap', padding: '0 20px 8px' }
+  }, /*#__PURE__*/React.createElement(StatCard, {
+    label: "Total Active Cases",
+    value: visible.length
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Completed This Session",
+    value: visible.filter(u => completed.has(u.id)).length,
+    colorClass: "completed",
+    small: true
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Highest Balance",
+    value: fmtMoney(visible.reduce((m, u) => Math.max(m, u.totalAR || 0), 0)),
+    small: true
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "Properties Affected",
+    value: new Set(visible.map(u => u.property)).size
+  })), /*#__PURE__*/React.createElement("div", {
     className: "filter-bar"
   }, /*#__PURE__*/React.createElement("div", {
     className: "pill-row"
