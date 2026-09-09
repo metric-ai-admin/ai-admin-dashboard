@@ -1061,9 +1061,9 @@ function registerMetricRoutes(app, db) {
   // archive holds all lines (auto-grade reads only this table), recording each
   // call's line owner (user_name) and direction. Upserted on recording_id, so a
   // call shared by a ring group stays one row (first user to store it wins).
-  async function archiveTodaysCalls() {
+  async function archiveCallsForDate(date) {
     if (!simplevoip.isConfigured()) return { skipped: 'not configured' };
-    const date = todayStr();
+    date = date || todayStr();
     const users = await archiveRosterUsers();
     const done = new Set();
     let seen = 0, stored = 0;
@@ -1090,10 +1090,38 @@ function registerMetricRoutes(app, db) {
   }
 
   cron.schedule('0 18 * * *', () => {
-    archiveTodaysCalls()
+    archiveCallsForDate()
       .then(r => console.log('[simplevoip] archive:', JSON.stringify(r)))
       .catch(err => console.error('[simplevoip] archive failed:', err.message));
   }, { timezone: 'America/Chicago' });
+
+  // POST /api/sv/archive/backfill?days=N — re-run the archive for the last N days
+  // (default 7, max 30) so existing rows pick up the user_name + call_direction
+  // fields (migration 043) without waiting for the 6 PM cron. Admin only.
+  // NOTE: the SimpleVOIP CDR API does not reliably return older dates, so a day it
+  // no longer serves comes back with seen=0 and its rows keep their null fields —
+  // auto-grade still handles those via the default-line-owner fallback.
+  app.post('/api/sv/archive/backfill', requireMetricAdmin, async (req, res) => {
+    if (!simplevoip.isConfigured()) return res.status(400).json({ ok: false, error: 'SimpleVOIP is not configured.' });
+    let days = parseInt(req.query.days, 10);
+    if (!Number.isFinite(days) || days < 1) days = 7;
+    if (days > 30) days = 30;
+    try {
+      let seen = 0, stored = 0, users = 0;
+      const per_day = {};
+      for (let i = 0; i < days; i++) {
+        const d = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago' })
+          .format(new Date(Date.now() - i * 86400000));
+        const r = await archiveCallsForDate(d);
+        seen += r.seen || 0; stored += r.stored || 0; users = Math.max(users, r.users || 0);
+        per_day[d] = { seen: r.seen || 0, stored: r.stored || 0 };
+      }
+      console.log(`[simplevoip] archive backfill ${days}d: ${stored} stored (${seen} seen) over ${users} users`);
+      res.json({ ok: true, days, users, seen, stored, updated: stored, per_day });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
 
 }
 
