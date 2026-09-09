@@ -7489,7 +7489,7 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
     const sinceISO = ctDayStartISO();
     const date = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date());
     const headers = { Authorization: `Bearer ${token}` };
-    const select = 'id,subject,sender,from,receivedDateTime,isRead';
+    const select = 'id,subject,sender,from,receivedDateTime,lastModifiedDateTime,isRead';
     const norm = s => String(s || '').toLowerCase();
     // Each folder goes to the FIRST category it matches (labels ordered specific→broad).
     const foldersByCat = {};
@@ -7504,8 +7504,11 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
       if (!fList.length) continue;
       const emails = [];
       for (const f of fList) {
+        // Filter on lastModifiedDateTime, not receivedDateTime: a triage report
+        // wants emails PROCESSED (moved into the category folder) today, which is
+        // when they were last modified — not when they originally arrived.
         const url = `${graphMailboxBase('lyndsay')}/mailFolders/${encodeURIComponent(f.id)}/messages`
-          + `?$top=25&$select=${select}&$orderby=receivedDateTime desc&$filter=receivedDateTime ge ${sinceISO}`;
+          + `?$top=25&$select=${select}&$orderby=lastModifiedDateTime desc&$filter=lastModifiedDateTime ge ${sinceISO}`;
         try {
           const r = await fetchFn(url, { headers });
           const j = await r.json().catch(() => ({}));
