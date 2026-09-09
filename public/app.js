@@ -5870,11 +5870,11 @@ async function svgBackfill() {
   if (status) status.textContent = 'Grading calls — this can take 1–2 minutes…';
   try {
     const d = await api('/api/sv/grade/backfill?days=14', { method: 'POST' });
-    toast(`Graded ${d.newly_graded} new call${d.newly_graded === 1 ? '' : 's'} across ${d.users_processed || 0} users ✅`, 'success');
+    toast(`Graded ${d.newly_graded} new call${d.newly_graded === 1 ? '' : 's'} across ${d.users_processed || 0} agents ✅`, 'success');
     svgState.loaded = false;
     await svgLoad(); // re-renders with the new grades (rebuilds this toolbar)
     const s2 = $('#svg-backfill-status');
-    if (s2) s2.textContent = `Graded ${d.newly_graded} new · ${d.already_graded} already · ${d.skipped || 0} skipped (short) · ${d.not_scoreable || 0} not scoreable · ${d.errors} error${d.errors === 1 ? '' : 's'} — ${d.total_calls} eligible across ${d.users_processed || 0} users over ${d.days} days.`;
+    if (s2) s2.textContent = `Graded ${d.newly_graded} new · ${d.already_graded} already · ${d.skipped || 0} skipped (short) · ${d.not_scoreable || 0} not scoreable · ${d.errors} error${d.errors === 1 ? '' : 's'} — ${d.total_calls} eligible across ${d.users_processed || 0} agents over ${d.days} days.`;
   } catch (err) {
     toast('Backfill failed: ' + err.message, 'error');
     if (status) status.textContent = '❌ ' + err.message;
