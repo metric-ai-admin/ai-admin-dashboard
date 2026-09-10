@@ -7706,27 +7706,20 @@ async function mrAsana() {
   return { configured: true, tasks: (raw || []).map(t => shapeTask(t, null)).filter(t => !t.completed) };
 }
 
-// operational_tasks is SHARED: Erick's maintenance board (types in OPS_TYPES —
-// WO Follow-up, Translation, Escalation, …) and Arturo's admin tasks (added via
-// the dashboard's add_operational_task) live in the same table, told apart only
-// by `type`. The morning report is Arturo's, so it allowlists his admin types —
-// which also drops maintenance rows typed 'Other' (maintenance's default). A
-// denylist of 'Maintenance' would match nothing: no row carries that literal type.
-const MR_ARTURO_TYPES = ['Lyndsay Review', 'To Review Together', 'Admin Request', 'Email Follow-up', 'Platform Build', 'Asana Import'];
-
-// 4 — Arturo's ops-board items flagged 🔴/🟡 and not yet done (critical-first).
-async function mrOps(db) {
-  const { data, error } = await db.from('operational_tasks')
-    .select('title, type, priority, notes, completed_at')
-    .in('type', MR_ARTURO_TYPES);
-  if (error) throw new Error(error.message);
-  // Priority is matched in JS, not the DB query: a PostgREST emoji `ilike`/`eq`
-  // was returning zero rows (encoding/normalization of the multi-byte emoji), so
-  // we pull all open Arturo rows and test the priority string here instead.
+// 4 — Arturo's Task Manager items, open and flagged 🔴/🟡/🟢 (critical-first).
+//
+// SOURCE: data/tasks.json (TASKS_FILE) — the SAME store the Tasks tab (GET
+// /api/tasks) and the add_operational_task MCP tool read/write. It is NOT the
+// Supabase `operational_tasks` table: that one is Erick's maintenance board
+// (types WO Follow-up, Translation, …), which is why querying it returned
+// maintenance rows unfiltered and zero rows once filtered to Arturo's types.
+// Every task in this file is already Arturo's, so no type allowlist is needed;
+// priority is matched in JS (a DB-side emoji predicate is moot here anyway).
+async function mrOps() {
+  const tasks = await readJSON(TASKS_FILE, []);
   const pri = t => String(t.priority || '');
-  return (data || [])
-    .filter(t => MR_ARTURO_TYPES.includes(t.type)   // defensive: never surface a maintenance row
-      && !t.completed_at
+  return (tasks || [])
+    .filter(t => !t.completed_at
       && (pri(t).includes('🔴') || pri(t).includes('🟡') || pri(t).includes('🟢')))
     .map(t => {
       const p = pri(t);
@@ -7790,13 +7783,12 @@ app.get('/api/morning-report', requireAuth, requireRole('admin'), async (req, re
   const date = new Date().toLocaleDateString('en-US', {
     timeZone: LYNDSAY_TIMEZONE, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
-  const db = supabaseAdmin || supabasePublic;
   const errors = {};
   const [mR, eR, aR, oR] = await Promise.allSettled([
     GRAPH_CONFIGURED ? mrMeetings() : Promise.resolve([]),
     GRAPH_CONFIGURED ? mrEmails()   : Promise.resolve({}),
     mrAsana(),
-    CRM_CONFIGURED ? mrOps(db)      : Promise.resolve([]),
+    mrOps(),   // reads data/tasks.json — no DB dependency
   ]);
 
   const meetings = mR.status === 'fulfilled' ? mR.value : (errors.meetings = mrReason(mR.reason), []);
@@ -7804,7 +7796,6 @@ app.get('/api/morning-report', requireAuth, requireRole('admin'), async (req, re
   const asana    = aR.status === 'fulfilled' ? aR.value : (errors.asana    = mrReason(aR.reason), { configured: true, tasks: [] });
   const ops      = oR.status === 'fulfilled' ? oR.value : (errors.ops      = mrReason(oR.reason), []);
   if (!GRAPH_CONFIGURED) { errors.meetings = errors.emails = 'Microsoft Graph is not configured.'; }
-  if (!CRM_CONFIGURED)   { errors.ops = 'Supabase is not configured.'; }
 
   const report = mrFormat({ date, meetings, emails, asana, ops, errors });
   res.json({ report, generatedAt: new Date().toISOString(), date, errors });
