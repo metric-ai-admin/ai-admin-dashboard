@@ -3753,18 +3753,31 @@ function crmRenderPhoneList(shops) {
     </div>`;
   }).join('') : '<p class="muted small">No calls logged yet.</p>';
 
-  $('#crm-phone-list').querySelectorAll('.crm-phone-toggle').forEach(h => h.addEventListener('click', () => {
-    const card = h.closest('.crm-entry-card');
-    const det = card?.querySelector('.crm-phone-detail');
-    const caret = h.querySelector('.crm-phone-caret');
-    if (det) { det.classList.toggle('hidden'); if (caret) caret.textContent = det.classList.contains('hidden') ? '▸' : '▾'; }
-  }));
-  $('#crm-phone-list').querySelectorAll('.crm-phone-edit').forEach(b => b.addEventListener('click', e => {
-    e.stopPropagation();
-    const shop = (crmState.activeProperty?.phone_shops || []).find(x => String(x.id) === String(b.dataset.shopId));
-    if (shop) crmEditPhoneShop(shop);
-  }));
 }
+// Expand/collapse + Edit are wired once via delegation on the list container, not
+// per-row after each render. Per-row wiring silently dropped the handlers whenever
+// the wiring pass didn't run (any earlier throw/short-circuit in the render path, or
+// a repopulation by another code path) — which is why rows could render but stay
+// static. A single delegated listener survives every innerHTML replacement.
+(function wirePhoneListDelegation() {
+  const list = document.getElementById('crm-phone-list');
+  if (!list) return;
+  list.addEventListener('click', e => {
+    const editBtn = e.target.closest('.crm-phone-edit');
+    if (editBtn && list.contains(editBtn)) {
+      e.stopPropagation();
+      const shop = (crmState.activeProperty?.phone_shops || []).find(x => String(x.id) === String(editBtn.dataset.shopId));
+      if (shop) crmEditPhoneShop(shop);
+      return;
+    }
+    const head = e.target.closest('.crm-phone-toggle');
+    if (head && list.contains(head)) {
+      const det = head.closest('.crm-entry-card')?.querySelector('.crm-phone-detail');
+      const caret = head.querySelector('.crm-phone-caret');
+      if (det) { det.classList.toggle('hidden'); if (caret) caret.textContent = det.classList.contains('hidden') ? '▸' : '▾'; }
+    }
+  });
+})();
 
 // ── Perfect Phone Call scorecard (shows only when "Answered by Agent") ────────
 const PHONE_SC_RATINGS = ['Excellent', 'Good', 'Fair', 'Poor', 'Liability'];
