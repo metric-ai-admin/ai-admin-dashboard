@@ -5503,7 +5503,7 @@ app.post('/api/crm/properties/:id/phone-shops', requireCRM, async (req, res) => 
 // Only the editable fields are touched (never property_id/phone_number_version,
 // so an edit can't move a shop or break the 3-attempt cycle counting).
 const PHONE_SHOP_EDITABLE = ['shop_date', 'call_time', 'agent_name', 'caller_name', 'score', 'notes',
-  'quote_floorplan', 'quote_price', 'quote_concession', 'scorecard'];
+  'quote_floorplan', 'quote_price', 'quote_concession', 'quote_concession_other', 'scorecard'];
 app.patch('/api/crm/phone-shops/:id', requireCRM, async (req, res) => {
   try {
     const db = supabaseAdmin || supabasePublic;

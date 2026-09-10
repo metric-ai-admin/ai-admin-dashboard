@@ -3706,6 +3706,7 @@ function crmParseScorecard(sc) {
   return null;
 }
 function crmRenderPhoneList(shops) {
+  shops = Array.isArray(shops) ? shops : [];
   crmRenderPhoneInstruction(crmState.activeProperty);
   $('#crm-phone-count').textContent = `${shops.length} call(s) logged`;
   const drow = (label, val) => (val == null || val === '') ? '' :
@@ -3722,8 +3723,10 @@ function crmRenderPhoneList(shops) {
       }).join('');
       scHtml = `<div style="margin-top:6px"><b class="small">Perfect Phone Call${sc.rating ? ` — ${esc(sc.rating)}` : ''}</b>${items}</div>`;
     }
+    const concLabel = s.quote_concession === 'Other' && s.quote_concession_other
+      ? `Other — ${s.quote_concession_other}` : s.quote_concession;
     const quoteHtml = (answered && (s.quote_floorplan || s.quote_price != null || s.quote_concession))
-      ? `<div style="margin-top:6px"><b class="small">Quote</b>${drow('Floorplan', s.quote_floorplan)}${drow('Price ($/mo)', s.quote_price != null ? '$' + s.quote_price : '')}${drow('Concession', s.quote_concession)}</div>` : '';
+      ? `<div style="margin-top:6px"><b class="small">Quote</b>${drow('Floorplan', s.quote_floorplan)}${drow('Price ($/mo)', s.quote_price != null ? '$' + s.quote_price : '')}${drow('Concession', concLabel)}</div>` : '';
     return `
     <div class="crm-entry-card" data-shop-id="${esc(s.id)}">
       <div class="crm-entry-card-head crm-phone-toggle" style="cursor:pointer">
@@ -3855,8 +3858,10 @@ function crmResetPhoneForm() {
   const fp = $('#pf-floorplan'); if (fp) fp.value = '';
   const pr = $('#pf-price'); if (pr) pr.value = '';
   const cc = $('#pf-concession'); if (cc) cc.value = '';
+  const co = $('#pf-concession-other'); if (co) co.value = '';
   crmRenderPhoneScorecard();
   crmPhoneToggleQuote();
+  crmPhoneToggleConcessionOther();
 }
 // Load an existing logged call into the form for editing (PATCH on save).
 function crmEditPhoneShop(s) {
@@ -3875,8 +3880,10 @@ function crmEditPhoneShop(s) {
   set('#pf-floorplan', s.quote_floorplan || '');
   set('#pf-price', s.quote_price != null ? s.quote_price : '');
   set('#pf-concession', s.quote_concession || '');
+  set('#pf-concession-other', s.quote_concession_other || '');
   crmRenderPhoneScorecard();
   crmPhoneToggleQuote();
+  crmPhoneToggleConcessionOther();
   const sb = $('#crm-phone-save'); if (sb) sb.textContent = 'Update Call';
   const f = $('#crm-phone-form'); if (f) { f.classList.remove('hidden'); f.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
 }
@@ -3893,6 +3900,15 @@ function crmEditPhoneShop(s) {
     if (e.target.hasAttribute('data-pf-item')) { crmPhoneSC.answers[e.target.dataset.crit] = e.target.value; crmPhoneUpdateScoreDisplay(); }
   });
 })();
+// Show the "Other — Describe" input only when the Other concession is selected.
+function crmPhoneToggleConcessionOther() {
+  const lbl = $('#pf-concession-other-label');
+  if (!lbl) return;
+  const isOther = ($('#pf-concession')?.value === 'Other');
+  lbl.classList.toggle('hidden', !isOther);
+  if (!isOther) { const o = $('#pf-concession-other'); if (o) o.value = ''; }
+}
+$('#pf-concession')?.addEventListener('change', crmPhoneToggleConcessionOther);
 $('#pf-connection')?.addEventListener('change', () => { crmRenderPhoneScorecard(); crmPhoneToggleQuote(); });
 $('#pf-price')?.addEventListener('input', crmPhoneFloorplanWarn);
 $('#pf-floorplan')?.addEventListener('input', crmPhoneFloorplanWarn);
@@ -3926,6 +3942,9 @@ $('#crm-phone-save').addEventListener('click', async () => {
     quote_floorplan: answered ? ($('#pf-floorplan').value.trim() || null) : null,
     quote_price: answered ? (parseFloat($('#pf-price').value) || null) : null,
     quote_concession: answered ? ($('#pf-concession').value || null) : null,
+    // Free-text detail, only kept when the concession is "Other".
+    quote_concession_other: (answered && $('#pf-concession').value === 'Other')
+      ? ($('#pf-concession-other').value.trim() || null) : null,
   };
   const editing = crmPhoneEditId;
   // On edit, always send scorecard (sc when applicable, else null) so clearing it
