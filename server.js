@@ -7706,12 +7706,23 @@ async function mrAsana() {
   return { configured: true, tasks: (raw || []).map(t => shapeTask(t, null)).filter(t => !t.completed) };
 }
 
-// 4 — Ops board items flagged 🔴/🟡 and not yet done (critical-first).
+// operational_tasks is SHARED: Erick's maintenance board (types in OPS_TYPES —
+// WO Follow-up, Translation, Escalation, …) and Arturo's admin tasks (added via
+// the dashboard's add_operational_task) live in the same table, told apart only
+// by `type`. The morning report is Arturo's, so it allowlists his admin types —
+// which also drops maintenance rows typed 'Other' (maintenance's default). A
+// denylist of 'Maintenance' would match nothing: no row carries that literal type.
+const MR_ARTURO_TYPES = ['Lyndsay Review', 'To Review Together', 'Admin Request', 'Email Follow-up', 'Platform Build', 'Asana Import'];
+
+// 4 — Arturo's ops-board items flagged 🔴/🟡 and not yet done (critical-first).
 async function mrOps(db) {
-  const { data, error } = await db.from('operational_tasks').select('title, priority, notes, completed_at');
+  const { data, error } = await db.from('operational_tasks')
+    .select('title, type, priority, notes, completed_at')
+    .in('type', MR_ARTURO_TYPES);
   if (error) throw new Error(error.message);
   return (data || [])
-    .filter(t => !t.completed_at && (String(t.priority || '').includes('🔴') || String(t.priority || '').includes('🟡')))
+    .filter(t => MR_ARTURO_TYPES.includes(t.type)   // defensive: never surface a maintenance row
+      && !t.completed_at && (String(t.priority || '').includes('🔴') || String(t.priority || '').includes('🟡')))
     .map(t => ({
       priority: String(t.priority || '').includes('🔴') ? '🔴' : '🟡',
       item: t.title || '(untitled)',
