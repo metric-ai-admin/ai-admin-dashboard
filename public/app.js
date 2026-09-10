@@ -54,7 +54,7 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'accounting', 'leasing'],
+  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'accounting', 'leasing'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
   operations:  ['tasks', 'platform', 'email', 'eod', 'reports', 'sixpm', 'calls'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
@@ -195,6 +195,7 @@ function loadTab(tab) {
     const caret = $('#maint-subnav-caret');
     if (caret) caret.textContent = '›';
   }
+  if (tab === 'morning') loadMorning();
   if (tab === 'tasks') loadTasks();
   if (tab === 'sops') loadSops();
   if (tab === 'platform') loadPlatform();
@@ -210,6 +211,40 @@ function loadTab(tab) {
   if (tab === 'leasing') loadLeasing();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
+
+// ---- Morning Report ---------------------------------------------------------
+// Read-only. One call to /api/morning-report fans out to Lyndsay's calendar +
+// triage folders, Arturo's Asana, and the ops board (server-side, in parallel)
+// and returns a single pre-formatted text block for copy/paste.
+let morningLoaded = false;
+async function loadMorning(force = false) {
+  if (morningLoaded && !force) return;   // only auto-load once; Refresh forces
+  morningLoaded = true;
+  const out = $('#morning-output');
+  const spin = $('#morning-loading');
+  const stamp = $('#morning-generated');
+  if (spin) spin.style.display = 'flex';
+  if (stamp) stamp.textContent = '';
+  try {
+    const data = await api('/api/morning-report', { credentials: 'same-origin' });
+    if (out) out.value = data.report || '(empty report)';
+    if (stamp) stamp.textContent = data.generatedAt
+      ? `Last generated ${new Date(data.generatedAt).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' })}`
+      : '';
+  } catch (err) {
+    if (out) out.value = '';
+    toast('Could not load Morning Report: ' + err.message, 'error');
+    if (stamp) stamp.textContent = 'Failed to generate — try Refresh.';
+  } finally {
+    if (spin) spin.style.display = 'none';
+  }
+}
+$('#morning-refresh')?.addEventListener('click', () => loadMorning(true));
+$('#morning-copy')?.addEventListener('click', () => {
+  const out = $('#morning-output');
+  if (out && out.value.trim()) copyToClipboard(out.value);
+  else toast('Nothing to copy yet', 'error');
+});
 
 // The eviction app is a self-contained React tool in an iframe. Load it lazily
 // the first time the tab opens so its CDN scripts aren't fetched on every page

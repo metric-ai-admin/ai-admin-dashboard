@@ -51,6 +51,7 @@
       </div>
     </div>
     <nav class="sidebar-nav" id="tabs">
+      <button data-tab="morning"><span class="nav-dot"></span>🌅 Morning Report</button>
       <button data-tab="tasks" class="active"><span class="nav-dot"></span>Tasks</button>
       <button data-tab="sops"><span class="nav-dot"></span>SOP Review</button>
       <button data-tab="platform"><span class="nav-dot"></span>Projects</button>
@@ -198,6 +199,26 @@
   </section>
 
   <!-- ============ DAILY 6 PM REPORT ============ -->
+  <!-- ============ MORNING REPORT ============ -->
+  <section id="tab-morning" class="tab">
+    <div class="view-head">
+      <div>
+        <h2>🌅 Morning Report</h2>
+        <p class="muted small" id="morning-meta">Lyndsay&rsquo;s Daily Activity Report &mdash; assembled from her calendar, triage folders, Asana, and the ops board.</p>
+      </div>
+      <div class="view-actions">
+        <button class="btn-sm primary" id="morning-copy">&#128203; Copy to Clipboard</button>
+        <button class="btn-sm" id="morning-refresh">&#128260; Refresh</button>
+      </div>
+    </div>
+    <div id="morning-loading" class="muted small" style="display:none;align-items:center;gap:8px;padding:10px 0">
+      <span class="spinner" aria-hidden="true"></span> Fetching calendar, emails, Asana &amp; ops board&hellip;
+    </div>
+    <textarea id="morning-output" readonly wrap="off"
+      style="width:100%;min-height:520px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.5;white-space:pre;overflow:auto;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--card,#fff);color:inherit;resize:vertical"></textarea>
+    <p class="muted small" id="morning-generated" style="margin-top:8px"></p>
+  </section>
+
   <section id="tab-sixpm" class="tab">
     <div class="view-head">
       <div>

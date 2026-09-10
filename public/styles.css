@@ -1982,3 +1982,16 @@ tr.ca-sel { background: var(--accent-glow); }
   font-weight: 600;
   cursor: pointer;
 }
+
+/* Inline loading spinner (Morning Report + reuse). */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent, #009cf7);
+  border-radius: 50%;
+  animation: spinner-rotate 0.7s linear infinite;
+  vertical-align: middle;
+}
+@keyframes spinner-rotate { to { transform: rotate(360deg); } }

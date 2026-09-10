@@ -7604,6 +7604,193 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
 });
 
 // =====================================================================
+// MORNING REPORT — "Lyndsay's Daily Activity Report", assembled by Arturo.
+// Read-only. Fetches four sources in PARALLEL (Lyndsay's calendar + triage
+// folders via Graph, Arturo's Asana My Tasks, and the ops board), degrades
+// per-source, and returns one pre-formatted text block for copy/paste.
+// Admin-only: exposes Lyndsay's meetings + email senders/subjects, same as the
+// triage snapshot beside it. No writes.
+// =====================================================================
+const MR_FOLDERS = [
+  { label: 'Lyndsay Review', match: ['lyndsay review', 'lyndsay'] },
+  { label: 'Clients',        match: ['client'] },
+  { label: 'MPM Team',       match: ['mpm team', 'mpm'] },
+];
+const mrTimeCT  = iso => { try { return new Date(iso).toLocaleTimeString('en-US', { timeZone: LYNDSAY_TIMEZONE, hour: 'numeric', minute: '2-digit' }); } catch { return ''; } };
+const mrDateShort = iso => { try { return new Date(iso).toLocaleDateString('en-US', { timeZone: LYNDSAY_TIMEZONE, month: 'short', day: 'numeric' }); } catch { return ''; } };
+const mrClean = s => String(s || '').replace(/\s+/g, ' ').trim();
+const mrReason = r => (r && r.message) ? r.message : String(r || 'failed');
+
+// 1 — Today's meetings on Lyndsay's calendar (CT). A wide UTC window is pulled
+// then filtered to the CT calendar day, so Render's UTC clock can't roll the day.
+async function mrMeetings() {
+  const token = await graphAccessToken();
+  const now = Date.now();
+  const start = new Date(now - 24 * 3600e3);
+  const end   = new Date(now + 36 * 3600e3);
+  const url = `https://graph.microsoft.com/v1.0/users/${MAILBOX_LYNDSAY}/calendarView`
+    + `?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
+    + '&$select=subject,start,end,location,onlineMeeting,bodyPreview,organizer,isAllDay,isCancelled'
+    + '&$orderby=start/dateTime&$top=100';
+  const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message || `calendar returned ${r.status}`);
+  const todayCT = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date());
+  return (j.value || [])
+    .map(e => {
+      const startIso = normalizeGraphDateTime(e.start?.dateTime);
+      const { platform } = detectMeetingPlatform(e);
+      return {
+        subject: e.subject || '(no title)',
+        organizer: e.organizer?.emailAddress?.name || e.organizer?.emailAddress?.address || '—',
+        format: platform,
+        startIso,
+        allDay: !!e.isAllDay,
+        cancelled: !!e.isCancelled || /^cancel(l)?ed:/i.test(e.subject || ''),
+      };
+    })
+    .filter(m => m.startIso && !m.cancelled && ctDateOf(m.startIso) === todayCT)
+    .sort((a, b) => String(a.startIso).localeCompare(String(b.startIso)));
+}
+
+// 2 — Unread/flagged emails in Lyndsay's Review / Clients / MPM Team folders.
+async function mrEmails() {
+  const token = await graphMailboxToken('lyndsay');
+  const folders = await listMailFolders('lyndsay', token);
+  const headers = { Authorization: `Bearer ${token}` };
+  const select = 'id,subject,sender,from,receivedDateTime,isRead,bodyPreview,flag';
+  const norm = s => String(s || '').toLowerCase();
+  const out = {};
+  for (const def of MR_FOLDERS) {
+    const matched = folders.filter(f => !norm(f.displayName).includes('archive') && def.match.some(m => norm(f.displayName).includes(m)));
+    const collected = [];
+    for (const f of matched) {
+      // isRead eq false OR flagged — Graph can't OR across properties in one
+      // $filter cleanly, so pull unread (the common case) and flagged separately.
+      for (const filter of ['isRead eq false', "flag/flagStatus eq 'flagged'"]) {
+        const url = `${graphMailboxBase('lyndsay')}/mailFolders/${encodeURIComponent(f.id)}/messages`
+          + `?$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime desc&$top=10&$select=${select}`;
+        try {
+          const rr = await fetchFn(url, { headers });
+          const jj = await rr.json().catch(() => ({}));
+          if (rr.ok) collected.push(...(jj.value || []));
+        } catch { /* skip a folder/filter that errors */ }
+      }
+    }
+    const seen = new Set();
+    out[def.label] = collected
+      .filter(m => m.id && !seen.has(m.id) && seen.add(m.id))
+      .sort((a, b) => String(b.receivedDateTime || '').localeCompare(String(a.receivedDateTime || '')))
+      .slice(0, 10)
+      .map(m => ({
+        sender: m.sender?.emailAddress?.name || m.from?.emailAddress?.name || m.sender?.emailAddress?.address || '(unknown)',
+        date: mrDateShort(m.receivedDateTime),
+        subject: m.subject || '(no subject)',
+        summary: mrClean(m.bodyPreview).slice(0, 90),
+        status: m.flag?.flagStatus === 'flagged' ? 'Flagged' : 'Unread',
+      }));
+  }
+  return out;
+}
+
+// 3 — Arturo's incomplete Asana "My Tasks" (same pull as /api/asana/tasks).
+async function mrAsana() {
+  if (!ASANA_TOKEN) return { configured: false, tasks: [] };
+  const me = await getMe(ASANA_TOKEN);
+  if (!me.gid || !me.workspaceGid) return { configured: true, tasks: [] };
+  const list = await asanaRequest('GET', `/users/me/user_task_list?workspace=${me.workspaceGid}&opt_fields=gid`, null, ASANA_TOKEN);
+  if (!list?.gid) return { configured: true, tasks: [] };
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const raw = await asanaGetAll(
+    `/user_task_lists/${list.gid}/tasks?opt_fields=${ASANA_OPT_FIELDS}&completed_since=${encodeURIComponent(midnight.toISOString())}`, ASANA_TOKEN);
+  return { configured: true, tasks: (raw || []).map(t => shapeTask(t, null)).filter(t => !t.completed) };
+}
+
+// 4 — Ops board items flagged 🔴/🟡 and not yet done (critical-first).
+async function mrOps(db) {
+  const { data, error } = await db.from('operational_tasks').select('title, priority, notes, completed_at');
+  if (error) throw new Error(error.message);
+  return (data || [])
+    .filter(t => !t.completed_at && (String(t.priority || '').includes('🔴') || String(t.priority || '').includes('🟡')))
+    .map(t => ({
+      priority: String(t.priority || '').includes('🔴') ? '🔴' : '🟡',
+      item: t.title || '(untitled)',
+      pending: mrClean(t.notes).slice(0, 80) || '—',
+      rank: String(t.priority || '').includes('🔴') ? 0 : 1,
+    }))
+    .sort((a, b) => a.rank - b.rank);
+}
+
+function mrFormat({ date, meetings, emails, asana, ops, errors }) {
+  const L = [];
+  L.push(`📋 *Lyndsay's Daily Activity Report — ${date}*`);
+  L.push('');
+
+  L.push(`*TODAY'S MEETINGS*`);
+  if (errors.meetings) L.push(`  ⚠ ${errors.meetings}`);
+  else if (!meetings.length) L.push('  No meetings on the calendar today.');
+  else meetings.forEach(m => L.push(`  ${mrTimeCT(m.startIso).padEnd(9)}| ${m.subject}  —  ${m.organizer}  [${m.format}]`));
+  L.push('❓ Let me know if you will NOT be attending any meetings. Any critical meetings you need me to repeatedly call you to attend?');
+  L.push('');
+
+  L.push('*PENDING CRITICAL EMAILS*');
+  const crit = [...(emails['Lyndsay Review'] || []), ...(emails['Clients'] || [])];
+  if (errors.emails) L.push(`  ⚠ ${errors.emails}`);
+  else if (!crit.length) L.push('  No unread or flagged critical emails.');
+  else crit.slice(0, 10).forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}  |  ${e.summary}  [${e.status}]`));
+  L.push('');
+
+  L.push('*EMAIL REMINDERS — Might need attention*');
+  const team = emails['MPM Team'] || [];
+  if (errors.emails) L.push(`  ⚠ ${errors.emails}`);
+  else if (!team.length) L.push('  Nothing new from MPM Team.');
+  else team.forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}`));
+  L.push('');
+
+  L.push('*PENDING CRITICAL ASANA TASKS*');
+  if (errors.asana) L.push(`  ⚠ ${errors.asana}`);
+  else if (!asana.configured) L.push('  Asana not configured.');
+  else if (!asana.tasks.length) L.push('  No critical Asana tasks pending.');
+  else asana.tasks.forEach(t => L.push(`  ${t.name}  |  Due: ${t.due_on || '—'}  |  ${mrClean(t.notes_preview) || '—'}  [Open]`));
+  L.push('');
+
+  L.push('*PENDING CRITICAL WHATSAPP / APPFOLIO*');
+  L.push('  [ manual fill ]');
+  L.push('');
+
+  L.push(`*ARTURO'S PENDING ITEMS LIST*`);
+  if (errors.ops) L.push(`  ⚠ ${errors.ops}`);
+  else if (!ops.length) L.push('  No 🔴/🟡 items pending.');
+  else ops.forEach(o => L.push(`  ${o.priority}  ${o.item}  —  ${o.pending}`));
+
+  return L.join('\n');
+}
+
+app.get('/api/morning-report', requireAuth, requireRole('admin'), async (req, res) => {
+  const date = new Date().toLocaleDateString('en-US', {
+    timeZone: LYNDSAY_TIMEZONE, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+  });
+  const db = supabaseAdmin || supabasePublic;
+  const errors = {};
+  const [mR, eR, aR, oR] = await Promise.allSettled([
+    GRAPH_CONFIGURED ? mrMeetings() : Promise.resolve([]),
+    GRAPH_CONFIGURED ? mrEmails()   : Promise.resolve({}),
+    mrAsana(),
+    CRM_CONFIGURED ? mrOps(db)      : Promise.resolve([]),
+  ]);
+
+  const meetings = mR.status === 'fulfilled' ? mR.value : (errors.meetings = mrReason(mR.reason), []);
+  const emails   = eR.status === 'fulfilled' ? eR.value : (errors.emails   = mrReason(eR.reason), {});
+  const asana    = aR.status === 'fulfilled' ? aR.value : (errors.asana    = mrReason(aR.reason), { configured: true, tasks: [] });
+  const ops      = oR.status === 'fulfilled' ? oR.value : (errors.ops      = mrReason(oR.reason), []);
+  if (!GRAPH_CONFIGURED) { errors.meetings = errors.emails = 'Microsoft Graph is not configured.'; }
+  if (!CRM_CONFIGURED)   { errors.ops = 'Supabase is not configured.'; }
+
+  const report = mrFormat({ date, meetings, emails, asana, ops, errors });
+  res.json({ report, generatedAt: new Date().toISOString(), date, errors });
+});
+
+// =====================================================================
 // EOD EMAIL REPORT — a 9-section end-of-day digest emailed to Lyndsay at 6PM CT
 // on weekdays. Self-contained: reads the real Supabase tables + Graph, degrades
 // gracefully per section (a failing/empty source shows "No data", never crashes
