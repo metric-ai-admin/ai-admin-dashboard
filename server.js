@@ -456,6 +456,9 @@ async function readJSON(file, fallback) {
 async function writeJSON(file, data) {
   // Write to a temp file then rename — atomic on NTFS, prevents OneDrive
   // from locking the target file mid-write and causing EBUSY crashes.
+  // Ensure the directory exists first: on Render's ephemeral disk the target
+  // dir (e.g. /var/data) may not be there, which made the write/rename ENOENT.
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp';
   await fsp.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
   await fsp.rename(tmp, file);
@@ -1251,7 +1254,13 @@ const msalCachePlugin = {
   },
   afterCacheAccess: async (ctx) => {
     if (ctx.cacheHasChanged) {
-      await writeJSON(GRAPH_TOKEN_CACHE_FILE, JSON.parse(ctx.tokenCache.serialize()));
+      // A cache-write failure (e.g. a read-only/ephemeral disk) must not crash the
+      // token acquisition or the jobs that depend on it (auto-move, EOD email …).
+      try {
+        await writeJSON(GRAPH_TOKEN_CACHE_FILE, JSON.parse(ctx.tokenCache.serialize()));
+      } catch (err) {
+        console.error('[graph] token cache write failed (continuing):', err.message);
+      }
     }
   },
 };
