@@ -2652,7 +2652,10 @@ async function updateReminderAlerts() {
   } catch {
     return; // dashboard unreachable — leave whatever was last shown
   }
-  const pending = queue.filter(q => !q.sent).length;
+  // Today only: the queue auto-creates 'today' AND 'tomorrow' meeting reminders,
+  // but the alert should reflect the current CT date, not tomorrow's meetings.
+  // 'today' reminders + manual items (no reminderType) count; 'tomorrow' don't.
+  const pending = queue.filter(q => !q.sent && q.reminderType !== 'tomorrow').length;
 
   const badge = $('#reminder-badge');
   if (pending > 0) { badge.textContent = String(pending); badge.classList.remove('hidden'); }
