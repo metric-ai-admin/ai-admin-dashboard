@@ -7272,51 +7272,88 @@ async function captureMeetingTranscripts() {
   try { appToken = await graphMailToken(); }
   catch (err) { out.error = 'app token: ' + err.message; return out; }
 
-  // The onlineMeetings endpoint needs Lyndsay's Object ID (GUID), not her UPN.
-  // Resolve it once from the UPN and cache it (an optional MEETING_ORGANIZER_ID
-  // env short-circuits the lookup — never hardcoded).
+  // onlineMeetings/transcripts live UNDER THE MEETING ORGANIZER's user, and the
+  // endpoint needs their Azure AD Object ID (GUID), not a UPN. The organizer is
+  // NOT always Lyndsay — many invites are sent from officecalendar@… — so we
+  // resolve each event's own organizer and try that first, falling back to the
+  // configured default (MEETING_ORGANIZER_ID / Lyndsay). Object IDs are cached
+  // per email. A wrong/default user id is exactly why a meeting resolved to
+  // nothing and its transcript never landed.
   if (!meetingOrganizerId) {
     try { meetingOrganizerId = process.env.MEETING_ORGANIZER_ID || await teams.resolveUserId(fetchFn, appToken, MAILBOX_LYNDSAY); }
-    catch (err) { out.error = 'resolve organizer Object ID: ' + err.message; return out; }
+    catch (err) { console.warn('[meetings] default organizer id resolve failed:', err.message); }
   }
-  const userId = meetingOrganizerId;
+  const orgIdCache = new Map();
+  async function resolveOrgId(email) {
+    if (!email) return null;
+    const key = email.toLowerCase();
+    if (orgIdCache.has(key)) return orgIdCache.get(key);
+    let id = null;
+    try { id = await teams.resolveUserId(fetchFn, appToken, email); }
+    catch (err) { console.warn(`[meetings] resolve organizer id failed for ${email}: ${err.message}`); }
+    orgIdCache.set(key, id);
+    return id;
+  }
+
+  console.log(`[meetings] capture start — ${meetings.length} meeting(s) scanned over ${MEETING_CAPTURE_DAYS} day(s)`);
 
   for (const m of meetings) {
     if (!meetingIsCapturable(m)) { out.skipped++; continue; }
     out.capturable++;
+    const subj = (m.subject || '(no subject)').slice(0, 60);
+    const mdate = ctDateOf(m.start?.dateTime) || '?';
+    const orgEmail = m.organizer?.emailAddress?.address || '';
     try {
-      const om = await teams.resolveOnlineMeeting(fetchFn, appToken, userId, m.onlineMeeting.joinUrl);
-      if (!om) { out.skipped++; continue; }
+      // Try the meeting's actual organizer first, then the configured default.
+      const orgId = await resolveOrgId(orgEmail);
+      const candidates = [...new Set([orgId, meetingOrganizerId].filter(Boolean))];
+      if (!candidates.length) { console.warn(`[meetings] "${subj}" ${mdate} — no organizer id to query (organizer=${orgEmail || '?'})`); out.skipped++; continue; }
+      let om = null, ownerId = null, lastErr = null;
+      for (const uid of candidates) {
+        try {
+          const found = await teams.resolveOnlineMeeting(fetchFn, appToken, uid, m.onlineMeeting.joinUrl);
+          if (found) { om = found; ownerId = uid; break; }
+        } catch (err) { lastErr = err; }
+      }
+      if (!om) {
+        console.warn(`[meetings] "${subj}" ${mdate} organizer=${orgEmail || '?'} — onlineMeeting not resolved under [${candidates.join(', ')}]${lastErr ? ` (last error: ${lastErr.message})` : ''}`);
+        out.skipped++; continue;
+      }
       out.resolved++;
-      const transcripts = await teams.listTranscripts(fetchFn, appToken, userId, om.id);
+      const transcripts = await teams.listTranscripts(fetchFn, appToken, ownerId, om.id);
+      console.log(`[meetings] "${subj}" ${mdate} organizer=${orgEmail || '?'} resolved under ${ownerId} — ${transcripts.length} transcript(s)`);
       for (const t of transcripts) {
         out.transcripts++;
         const { data: existing } = await db.from('meeting_summaries').select('id').eq('transcript_id', t.id).maybeSingle();
         if (existing) continue;   // already captured
-        const vtt = await teams.fetchTranscriptVtt(fetchFn, appToken, userId, om.id, t.id);
+        const vtt = await teams.fetchTranscriptVtt(fetchFn, appToken, ownerId, om.id, t.id);
         const text = teams.parseVtt(vtt);
         const date = ctDateOf(m.start?.dateTime) || null;
         const base = {
           meeting_id: om.id, transcript_id: t.id, join_url: m.onlineMeeting.joinUrl,
           subject: m.subject || null, category: (m.categories || [])[0] || null,
           meeting_date: date, start_at: m.start?.dateTime || null, end_at: m.end?.dateTime || null,
-          organizer: m.organizer?.emailAddress?.name || null,
+          organizer: m.organizer?.emailAddress?.name || orgEmail || null,
           source: 'teams', updated_at: new Date().toISOString(),
         };
         if (!text.trim()) {
-          await db.from('meeting_summaries').upsert({ ...base, status: 'no_transcript', error: 'empty transcript' }, { onConflict: 'transcript_id' });
+          const { error: upErr } = await db.from('meeting_summaries').upsert({ ...base, status: 'no_transcript', error: 'empty transcript' }, { onConflict: 'transcript_id' });
+          console.warn(`[meetings] "${subj}" transcript ${t.id} — empty VTT${upErr ? `, upsert error: ${upErr.message}` : ''}`);
           continue;
         }
         const s = await summarizeMeetingTranscript({ subject: m.subject, date }, text);
-        await db.from('meeting_summaries').upsert({
+        const { error: upErr } = await db.from('meeting_summaries').upsert({
           ...base, attendees: s.attendees, key_decisions: s.key_decisions, action_items: s.action_items,
           summary: s.summary, transcript_text: text.slice(0, 200000), status: 'summarized', error: null,
         }, { onConflict: 'transcript_id' });
+        if (upErr) { out.errors++; console.error(`[meetings] "${subj}" upsert FAILED: ${upErr.message}`); continue; }
         out.summarized++;
         out.items.push({ subject: m.subject, actions: s.action_items.length });
+        console.log(`[meetings] "${subj}" ${mdate} — summarized & stored (${s.action_items.length} action items)`);
       }
-    } catch (err) { out.errors++; out.items.push({ subject: m.subject, error: err.message }); }
+    } catch (err) { out.errors++; out.items.push({ subject: m.subject, error: err.message }); console.error(`[meetings] "${subj}" ${mdate} capture error: ${err.message}`); }
   }
+  console.log(`[meetings] capture done — scanned ${out.scanned}, capturable ${out.capturable}, resolved ${out.resolved}, transcripts ${out.transcripts}, summarized ${out.summarized}, skipped ${out.skipped}, errors ${out.errors}`);
   return out;
 }
 
