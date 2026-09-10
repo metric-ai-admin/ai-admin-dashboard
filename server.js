@@ -7696,25 +7696,44 @@ async function eodGather() {
     };
   } catch (e) { S.maintenance = { error: e.message }; }
 
-  // 6 — BD CRM (imported bd_phone_shops / bd_online_shops; no created_at column,
-  // so use shop_date — the actual date the shop happened).
+  // 6 — BD CRM weekly activity: this week's live phone shops (properties +
+  // phone_shops, connection parsed from notes) + top stale properties ranked by
+  // the engine's computed lead score (no lead_score column exists).
   try {
-    const [ps, os] = await Promise.all([
-      db.from('bd_phone_shops').select('property,shop_date'),
-      db.from('bd_online_shops').select('property,shop_date'),
+    const now = new Date(today + 'T00:00:00');
+    const weekStart = eodAddDays(today, -((now.getDay() + 6) % 7)); // back to Monday
+    const [propsR, psR, fuR, apptR, dmR] = await Promise.all([
+      db.from('properties').select('*'),
+      db.from('phone_shops').select('property_id,shop_date,agent_name,score,notes'),
+      db.from('follow_ups').select('*'),
+      db.from('appointments').select('*'),
+      db.from('dm_reviews').select('*'),
     ]);
-    // Only rows with a real (non-null, valid) shop_date count toward "latest shop".
-    const all = [...(ps.data || []), ...(os.data || [])]
-      .map(s => ({ p: (s.property || '').trim(), d: String(s.shop_date || '').slice(0, 10) }))
-      .filter(s => s.p && /^\d{4}-\d{2}-\d{2}$/.test(s.d));
-    const shopsToday = all.filter(s => s.d === today).length;
-    const maxBy = {}; for (const s of all) { if (!maxBy[s.p] || s.d > maxBy[s.p]) maxBy[s.p] = s.d; }
+    const props = propsR.data || [];
+    const nameById = {}; for (const p of props) nameById[p.id] = p.property_name;
+    const group = rows => { const m = {}; for (const r of (rows || [])) { const k = r.property_id; if (!m[k]) m[k] = []; m[k].push(r); } return m; };
+    const phoneBy = group(psR.data), fuBy = group(fuR.data), apptBy = group(apptR.data);
+    const dmBy = {}; for (const d of (dmR.data || [])) dmBy[d.property_id] = d;
+    const connLabel = { answered_agent: 'Answered', answered_ai: 'AI/Service', voicemail: 'Voicemail', no_answer: 'No Answer', wrong_number: 'Wrong #', not_working: 'Not Working' };
+    const parseConn = notes => { try { return JSON.parse(notes || '{}').connection || null; } catch { return null; } };
+    const shopsThisWeek = (psR.data || [])
+      .filter(s => s.shop_date && String(s.shop_date).slice(0, 10) >= weekStart)
+      .map(s => ({ property: nameById[s.property_id] || '—', shopped_by: s.agent_name || '—', date: String(s.shop_date).slice(0, 10), connection: (c => connLabel[c] || c || '—')(parseConn(s.notes)), score: s.score }))
+      .sort((a, b) => b.date.localeCompare(a.date));
     const cutoff = eodAddDays(today, -7);
-    // Properties whose most-recent shop is strictly older than 7 days, oldest first.
-    const staleAll = Object.entries(maxBy).filter(([, d]) => d < cutoff).sort((a, b) => a[1].localeCompare(b[1]));
-    console.log('[eod] bdcrm — today=%s cutoff=%s props=%d shopsToday=%d stale=%d sampleDates=%j',
-      today, cutoff, Object.keys(maxBy).length, shopsToday, staleAll.length, staleAll.slice(0, 3).map(([p, d]) => `${p}:${d}`));
-    S.bdcrm = { shopsToday, stale: staleAll.length, staleList: staleAll.slice(0, 20).map(([p, d]) => `${p} (last ${d})`) };
+    const stale = [];
+    for (const p of props) {
+      if (p.management_type === 'owner-managed') continue; // engine's isActive
+      const dates = (phoneBy[p.id] || []).map(s => String(s.shop_date || '').slice(0, 10)).filter(Boolean).sort();
+      const last = dates.length ? dates[dates.length - 1] : null;
+      if (last && last >= cutoff) continue; // shopped within 7 days
+      let ls = null;
+      try { ls = crmEngine.getLeadScore({ ...p, phone_shops: phoneBy[p.id] || [], follow_ups: fuBy[p.id] || [], appointments: apptBy[p.id] || [], dm_review: dmBy[p.id] || null }).score; } catch { /* leave null */ }
+      stale.push({ property: p.property_name, lead_score: ls, last_shop: last, days_since: last ? Math.floor((Date.parse(today) - Date.parse(last)) / 86400000) : null });
+    }
+    stale.sort((a, b) => (b.lead_score || 0) - (a.lead_score || 0));
+    console.log('[eod] bdcrm — weekStart=%s shopsThisWeek=%d stale=%d', weekStart, shopsThisWeek.length, stale.length);
+    S.bdcrm = { shopsThisWeek, shopsCount: shopsThisWeek.length, staleCount: stale.length, stale: stale.slice(0, 5) };
   } catch (e) { S.bdcrm = { error: e.message }; }
 
   // 7 — ACCOUNTING (shared summary: tasks + bills due + W9 issues)
@@ -7768,9 +7787,13 @@ function eodRenderHtml(data) {
     m5.error ? eodErr(m5.error) : `${m5.open || 0} open WO(s) · ${m5.completedToday || 0} completed today · ${m5.totalHours || 0}h logged today across ${m5.wosWorked || 0} WO(s)`,
     eodTable(['WO#', 'Property', 'Unit', 'Issue', 'Priority', 'Assigned'], (m5.table || []).map(w => [eodEsc(w.wo), eodEsc(w.property), eodEsc(w.unit), eodEsc((w.issue || '').slice(0, 50)), eodEsc(w.priority), eodEsc(w.assigned)]))));
   const b6 = S.bdcrm || {};
-  P.push(eodSectionHtml('🎯', 'BD CRM',
-    b6.error ? eodErr(b6.error) : `${b6.shopsToday || 0} shops done today · ${b6.stale || 0} propert${b6.stale === 1 ? 'y' : 'ies'} needing follow-up (>7 days)`,
-    (b6.staleList && b6.staleList.length) ? `<div style="font-size:12px;color:${EOD.text}"><b>Needs follow-up (showing ${b6.staleList.length} of ${b6.stale || b6.staleList.length}):</b>${b6.staleList.map(p => `<div>• ${eodEsc(p)}</div>`).join('')}${(b6.stale || 0) > b6.staleList.length ? `<div>+ ${b6.stale - b6.staleList.length} more</div>` : ''}</div>` : ''));
+  P.push(eodSectionHtml('📊', 'BD CRM — Weekly Activity',
+    b6.error ? eodErr(b6.error) : `${b6.shopsCount || 0} shops completed this week · ${b6.staleCount || 0} properties still need a shop (>7 days)`,
+    b6.error ? '' :
+      `<div style="font-weight:600;font-size:12px;margin:8px 0 2px;color:${EOD.text}">This Week's Shops</div>`
+      + eodTable(['Property', 'Shopped By', 'Date', 'Connection', 'Score'], (b6.shopsThisWeek || []).map(s => [eodEsc(s.property), eodEsc(s.shopped_by), eodEsc(s.date), eodEsc(s.connection), s.score == null ? '—' : s.score]))
+      + `<div style="font-weight:600;font-size:12px;margin:12px 0 2px;color:${EOD.text}">Top 5 Stale Properties (no shop in 7+ days, highest lead score first)</div>`
+      + eodTable(['Property', 'Lead Score', 'Last Shop', 'Days Since'], (b6.stale || []).map(s => [eodEsc(s.property), s.lead_score == null ? '—' : s.lead_score, s.last_shop ? eodEsc(s.last_shop) : 'never', s.days_since == null ? '—' : s.days_since]))));
   const a7 = S.accounting || {};
   const eodMoney = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0 });
   const w9total = (a7.missingW9 || 0) + (a7.outdatedW9 || 0);
