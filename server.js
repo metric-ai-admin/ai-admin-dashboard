@@ -7362,6 +7362,26 @@ cron.schedule('*/45 13-23 * * *', async () => {
   } catch (err) { console.error('[meetings] capture failed:', err.message); }
 });
 
+// One-time backfill on boot: the 7-day capture window means a fresh deploy (or a
+// day the cron didn't run) should sweep the last week immediately rather than
+// waiting for the next :45 tick — that's what makes a late/older transcript
+// appear right after deploy. Fire-and-forget, delayed so startup isn't blocked,
+// and guarded so a failure only logs. Env MEETING_BACKFILL_ON_BOOT=0 disables it.
+if (process.env.MEETING_BACKFILL_ON_BOOT !== '0') {
+  setTimeout(() => {
+    captureMeetingTranscripts()
+      .then(s => console.log(`[meetings] startup backfill — ${s.summarized} summarized, ${s.errors} errors, ${s.scanned} scanned${s.error ? ', error: ' + s.error : ''}`))
+      .catch(err => console.error('[meetings] startup backfill failed:', err.message));
+  }, 20000);
+}
+
+// Named manual trigger (admin) — alias of POST /api/meetings/capture, sweeps the
+// last MEETING_CAPTURE_DAYS days on demand from the dashboard.
+app.post('/api/capture-transcripts', requireAuth, requireRole('admin'), async (req, res) => {
+  try { res.json({ ok: true, days: MEETING_CAPTURE_DAYS, summary: await captureMeetingTranscripts() }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // =====================================================================
 // MODULE — DAILY 6 PM REPORT
 // =====================================================================
@@ -7482,14 +7502,20 @@ async function sixPmBuild() {
   const cal = await sixPmMeetings();
   const inbox = refreshState.inboxCounts || null;
   const ai = await sixPmActionItems(cal.meetings);
-  // Today's captured Teams meeting summaries (populated by the polling job).
+  // Captured Teams meeting summaries over the last 7 days (populated by the
+  // polling job). Widened from today-only to match the 7-day capture window, so
+  // a transcript that lands a day or two late still shows in the report.
   let meetingSummaries = [];
   try {
     const db = supabaseAdmin || supabasePublic;
     if (CRM_CONFIGURED) {
+      const todayStr = reportDateStr();
+      const wk = new Date(todayStr + 'T00:00:00'); wk.setDate(wk.getDate() - 6);
+      const weekAgoStr = wk.toISOString().slice(0, 10);
       const { data } = await db.from('meeting_summaries')
-        .select('subject,category,summary,key_decisions,action_items,attendees,start_at,status')
-        .eq('meeting_date', reportDateStr()).order('start_at', { ascending: true });
+        .select('subject,category,summary,key_decisions,action_items,attendees,meeting_date,start_at,status')
+        .gte('meeting_date', weekAgoStr).lte('meeting_date', todayStr)
+        .order('meeting_date', { ascending: false }).order('start_at', { ascending: true });
       meetingSummaries = (data || []).filter(m => m.status === 'summarized');
     }
   } catch (err) { console.error('[6pm] meeting summaries unavailable:', err.message); }
@@ -7507,7 +7533,7 @@ async function sixPmBuild() {
       categories: SIXPM_CATEGORIES,
       transcripts: meetingSummaries.length ? 'ok' : 'none',
       transcripts_reason: meetingSummaries.length ? null
-        : 'No transcripts captured yet today (internal/ops meetings only; transcription must have been on).',
+        : 'No transcripts in the last 7 days (transcription must have been on for the meeting).',
       action_items: ai.reason ? 'unavailable' : 'ok',
       action_items_reason: ai.reason,
       inbox: inbox ? 'ok' : 'unavailable',

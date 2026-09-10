@@ -2626,7 +2626,7 @@ async function loadEodMeetings() {
     const list = (d.summaries || []).filter(m => m.status === 'summarized');
     el.innerHTML = list.length
       ? list.map(mtgSummaryCardHtml).join('')
-      : '<div class="empty-state">No meeting transcripts captured today (internal/ops meetings only; transcription must have been on).</div>';
+      : '<div class="empty-state">No meeting transcripts in the last 7 days (transcription must have been on for the meeting).</div>';
   } catch (err) {
     el.innerHTML = `<p class="small muted">Could not load meeting summaries: ${esc(err.message)}</p>`;
   }
@@ -8130,12 +8130,12 @@ function sixpmRender() {
         ? 'The calendar could not be read: ' + esc(s.meetings_error || '')
         : 'No meetings today carried one of the three report categories.'}</div>`;
 
-  // Today's Meeting Summaries (auto-captured from Teams transcripts)
+  // Recent Meeting Summaries — last 7 days (auto-captured from Teams transcripts)
   const summaries = r.meeting_summaries || [];
   const sm = $('#sixpm-summaries');
   if (sm) sm.innerHTML = summaries.length
     ? summaries.map(mtgSummaryCardHtml).join('')
-    : `<div class="empty-state">${s.transcripts === 'ok' ? 'No summaries.' : esc(s.transcripts_reason || 'No transcripts captured yet today.')}</div>`;
+    : `<div class="empty-state">${s.transcripts === 'ok' ? 'No summaries.' : esc(s.transcripts_reason || 'No transcripts in the last 7 days.')}</div>`;
 
   // Action items
   const actions = r.action_items || [];
