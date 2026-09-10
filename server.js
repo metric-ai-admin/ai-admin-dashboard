@@ -7194,27 +7194,37 @@ const MEETING_EXCLUDE_KEYWORDS = (process.env.MEETING_EXCLUDE_KEYWORDS || 'clien
 // capture job). Not hardcoded — looked up at first run.
 let meetingOrganizerId = null;
 
+// Every non-cancelled Teams meeting is now captured (the 7-day EOD transcript
+// digest wants them all), EXCEPT ones matching an exclude keyword — 'client' by
+// default, so client calls stay private. (The positive MEETING_CAPTURE_KEYWORDS
+// list is no longer required for capture; it stays defined for env compatibility.)
 function meetingIsCapturable(m) {
   const hay = `${m.subject || ''} ${(m.categories || []).join(' ')}`.toLowerCase();
   if (MEETING_EXCLUDE_KEYWORDS.some(k => hay.includes(k))) return false;
-  return MEETING_CAPTURE_KEYWORDS.some(k => hay.includes(k));
+  return true;
 }
 
-// Today's meetings with a Teams join URL (delegated calendar read, as Arturo).
-// No Prefer-timezone header, so dateTimes come back as UTC and store cleanly;
-// the Central-time meeting_date is derived separately.
+// Teams meetings over the last MEETING_CAPTURE_DAYS days (delegated calendar
+// read, as Arturo). A 7-day window (not just today) so a transcript that became
+// available a day or two after the meeting — or a day the capture cron didn't
+// run — is still picked up. No Prefer-timezone header, so dateTimes come back as
+// UTC and store cleanly; the Central-time meeting_date is derived per meeting.
+const MEETING_CAPTURE_DAYS = Math.max(1, parseInt(process.env.MEETING_CAPTURE_DAYS || '7', 10));
 async function captureCalendarMeetings() {
   const token = await graphAccessToken();
-  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const start = new Date(); start.setDate(start.getDate() - (MEETING_CAPTURE_DAYS - 1)); start.setHours(0, 0, 0, 0);
   const end = new Date(); end.setHours(23, 59, 59, 999);
   const url = `https://graph.microsoft.com/v1.0/users/${MAILBOX_LYNDSAY}/calendarView`
     + `?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
-    + '&$select=subject,start,end,onlineMeeting,categories,organizer,attendees,isAllDay'
-    + '&$orderby=start/dateTime&$top=100';
+    + '&$select=subject,start,end,onlineMeeting,categories,organizer,attendees,isAllDay,isCancelled'
+    + '&$orderby=start/dateTime&$top=250';
   const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j?.error?.message || `calendar returned ${r.status}`);
-  return (j.value || []).filter(e => !e.isAllDay && e.onlineMeeting?.joinUrl);
+  // Non-cancelled online meetings only. A cancelled event keeps its joinUrl, so
+  // isCancelled (and the "Canceled:" subject prefix) is filtered explicitly.
+  return (j.value || []).filter(e => !e.isAllDay && e.onlineMeeting?.joinUrl
+    && !e.isCancelled && !/^cancel(l)?ed:/i.test(e.subject || ''));
 }
 
 const ctDateOf = (iso) => {
@@ -7964,10 +7974,20 @@ async function eodGather() {
   try { S.accounting = await accountingSummary(db); }
   catch (e) { S.accounting = { error: e.message }; }
 
-  // 8 — TEAMS TRANSCRIPTS (today's meeting summaries)
+  // 8 — TEAMS TRANSCRIPTS (last 7 days of meeting summaries)
   try {
-    const { data: ms } = await db.from('meeting_summaries').select('subject,key_decisions,action_items,status').eq('meeting_date', today);
-    S.teams = (ms || []).filter(m => m.status === 'summarized').map(m => ({ subject: m.subject, key: m.key_decisions }));
+    const weekAgo = eodAddDays(today, -6);   // 7-day window, inclusive of today
+    const { data: ms } = await db.from('meeting_summaries')
+      .select('subject,meeting_date,attendees,key_decisions,summary,status')
+      .gte('meeting_date', weekAgo).lte('meeting_date', today)
+      .order('meeting_date', { ascending: false });
+    S.teams = (ms || []).filter(m => m.status === 'summarized').map(m => ({
+      subject: m.subject,
+      date: m.meeting_date,
+      attendees: Array.isArray(m.attendees) ? m.attendees : [],
+      key: Array.isArray(m.key_decisions) ? m.key_decisions : (m.key_decisions ? [m.key_decisions] : []),
+      summary: m.summary || '',
+    }));
   } catch (e) { S.teams = { error: e.message }; }
 
   // 9 — OPEN PRIORITIES (operational_tasks Critical / Follow-up, flag stale)
@@ -8027,8 +8047,19 @@ function eodRenderHtml(data) {
     + (w9total > 0 ? `<div style="margin-top:6px;font-size:12px;color:#b45309"><b>⚠️ W9:</b> ${a7.missingW9 || 0} missing · ${a7.outdatedW9 || 0} outdated</div>` : '')));
   const teams = S.teams;
   P.push(eodSectionHtml('🎥', 'Teams Transcripts',
-    (teams && teams.error) ? eodErr(teams.error) : `${Array.isArray(teams) ? teams.length : 0} meeting summary(ies) today`,
-    (Array.isArray(teams) && teams.length) ? teams.map(m => `<div style="margin-bottom:8px"><b style="color:${EOD.text}">${eodEsc(m.subject || 'Meeting')}</b>${m.key ? `<div style="font-size:12px;color:${EOD.muted}">${eodEsc((typeof m.key === 'string' ? m.key : JSON.stringify(m.key)).slice(0, 200))}</div>` : ''}</div>`).join('') : ''));
+    (teams && teams.error) ? eodErr(teams.error) : `${Array.isArray(teams) ? teams.length : 0} meeting summary(ies) — last 7 days`,
+    (Array.isArray(teams) && teams.length)
+      ? teams.map(m => {
+          const parts = (m.attendees || []).filter(Boolean).join(', ');
+          const keys = (m.key || []).map(k => typeof k === 'string' ? k : JSON.stringify(k)).filter(Boolean);
+          return `<div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${EOD.border}">
+            <b style="color:${EOD.text}">${eodEsc(m.subject || 'Meeting')}</b>${m.date ? `<span style="font-size:12px;color:${EOD.muted}"> · ${eodEsc(m.date)}</span>` : ''}
+            ${parts ? `<div style="font-size:12px;color:${EOD.muted};margin-top:2px"><b>Participants:</b> ${eodEsc(parts.slice(0, 220))}</div>` : ''}
+            ${m.summary ? `<div style="font-size:12px;color:${EOD.text};margin-top:2px">${eodEsc(m.summary.slice(0, 320))}</div>` : ''}
+            ${keys.length ? `<div style="font-size:12px;color:${EOD.text};margin-top:2px"><b>Key points:</b>${keys.map(k => `<div>• ${eodEsc(k.slice(0, 160))}</div>`).join('')}</div>` : ''}
+          </div>`;
+        }).join('')
+      : `<p style="margin:6px 0;color:${EOD.muted};font-size:13px">No meeting transcripts in the last 7 days.</p>`));
   const p9 = S.priorities || {};
   P.push(eodSectionHtml('🚩', 'Open Priorities',
     p9.error ? eodErr(p9.error) : `${(p9.critical || []).length} critical · ${(p9.stale || []).length} stale follow-up(s)`,
