@@ -7720,15 +7720,24 @@ async function mrOps(db) {
     .select('title, type, priority, notes, completed_at')
     .in('type', MR_ARTURO_TYPES);
   if (error) throw new Error(error.message);
+  // Priority is matched in JS, not the DB query: a PostgREST emoji `ilike`/`eq`
+  // was returning zero rows (encoding/normalization of the multi-byte emoji), so
+  // we pull all open Arturo rows and test the priority string here instead.
+  const pri = t => String(t.priority || '');
   return (data || [])
     .filter(t => MR_ARTURO_TYPES.includes(t.type)   // defensive: never surface a maintenance row
-      && !t.completed_at && (String(t.priority || '').includes('🔴') || String(t.priority || '').includes('🟡')))
-    .map(t => ({
-      priority: String(t.priority || '').includes('🔴') ? '🔴' : '🟡',
-      item: t.title || '(untitled)',
-      pending: mrClean(t.notes).slice(0, 80) || '—',
-      rank: String(t.priority || '').includes('🔴') ? 0 : 1,
-    }))
+      && !t.completed_at
+      && (pri(t).includes('🔴') || pri(t).includes('🟡') || pri(t).includes('🟢')))
+    .map(t => {
+      const p = pri(t);
+      const emoji = p.includes('🔴') ? '🔴' : p.includes('🟡') ? '🟡' : '🟢';
+      return {
+        priority: emoji,
+        item: t.title || '(untitled)',
+        pending: mrClean(t.notes).slice(0, 80) || '—',
+        rank: emoji === '🔴' ? 0 : emoji === '🟡' ? 1 : 2,   // critical → follow-up → in-progress
+      };
+    })
     .sort((a, b) => a.rank - b.rank);
 }
 
@@ -7771,7 +7780,7 @@ function mrFormat({ date, meetings, emails, asana, ops, errors }) {
 
   L.push(`*ARTURO'S PENDING ITEMS LIST*`);
   if (errors.ops) L.push(`  ⚠ ${errors.ops}`);
-  else if (!ops.length) L.push('  No 🔴/🟡 items pending.');
+  else if (!ops.length) L.push('  No 🔴/🟡/🟢 items pending.');
   else ops.forEach(o => L.push(`  ${o.priority}  ${o.item}  —  ${o.pending}`));
 
   return L.join('\n');
