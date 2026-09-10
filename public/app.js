@@ -3697,26 +3697,70 @@ async function crmSaveNewPhoneNumber() {
   } catch (err) { toast(err.message, 'error'); }
 }
 
+const CRM_CONN_LABEL = { answered_agent: 'Answered', answered_ai: 'AI/Service', voicemail: 'Voicemail', no_answer: 'No Answer', wrong_number: 'Wrong #', not_working: 'Not Working' };
+const CRM_CONN_CLS   = { answered_agent: 'conn-answered', answered_ai: 'conn-answered', voicemail: 'conn-voicemail', no_answer: 'conn-noanswer', wrong_number: 'conn-noanswer', not_working: 'conn-noanswer' };
+// A saved scorecard may arrive as an object or a JSON string.
+function crmParseScorecard(sc) {
+  if (sc && typeof sc === 'object') return sc;
+  if (typeof sc === 'string') { try { return JSON.parse(sc); } catch { return null; } }
+  return null;
+}
 function crmRenderPhoneList(shops) {
   crmRenderPhoneInstruction(crmState.activeProperty);
-  const connLabel = { answered_agent: 'Answered', answered_ai: 'AI/Service', voicemail: 'Voicemail', no_answer: 'No Answer', wrong_number: 'Wrong #' };
-  const connCls   = { answered_agent: 'conn-answered', answered_ai: 'conn-answered', voicemail: 'conn-voicemail', no_answer: 'conn-noanswer', wrong_number: 'conn-noanswer' };
   $('#crm-phone-count').textContent = `${shops.length} call(s) logged`;
+  const drow = (label, val) => (val == null || val === '') ? '' :
+    `<div class="small" style="display:flex;justify-content:space-between;gap:12px;padding:2px 0"><span class="muted">${esc(label)}</span><b>${esc(val)}</b></div>`;
   $('#crm-phone-list').innerHTML = shops.length ? shops.map(s => {
     const nt = parseNotes(s.notes);
+    const sc = crmParseScorecard(s.scorecard);
+    const answered = nt.connection === 'answered_agent';
+    let scHtml = '';
+    if (answered && sc && (sc.rating || (sc.answers && Object.keys(sc.answers).length))) {
+      const items = (typeof PHONE_SC_ITEMS !== 'undefined' ? PHONE_SC_ITEMS : []).map(([id, label]) => {
+        const v = (sc.answers || {})[id];
+        return v ? `<div class="small" style="display:flex;justify-content:space-between;gap:12px;padding:1px 0"><span class="muted" style="max-width:74%">${esc(label)}</span><b>${v === 'yes' ? 'Yes' : v === 'no' ? 'No' : '—'}</b></div>` : '';
+      }).join('');
+      scHtml = `<div style="margin-top:6px"><b class="small">Perfect Phone Call${sc.rating ? ` — ${esc(sc.rating)}` : ''}</b>${items}</div>`;
+    }
+    const quoteHtml = (answered && (s.quote_floorplan || s.quote_price != null || s.quote_concession))
+      ? `<div style="margin-top:6px"><b class="small">Quote</b>${drow('Floorplan', s.quote_floorplan)}${drow('Price ($/mo)', s.quote_price != null ? '$' + s.quote_price : '')}${drow('Concession', s.quote_concession)}</div>` : '';
     return `
-    <div class="crm-entry-card">
-      <div class="crm-entry-card-head">
-        <span class="crm-entry-meta">${fmtDate(s.shop_date)} · ${esc(s.agent_name||'—')}</span>
-        <span class="crm-connection-badge ${connCls[nt.connection] || 'conn-noanswer'}">${esc(nt.connection ? (connLabel[nt.connection] || nt.connection) : '—')}</span>
+    <div class="crm-entry-card" data-shop-id="${esc(s.id)}">
+      <div class="crm-entry-card-head crm-phone-toggle" style="cursor:pointer">
+        <span class="crm-entry-meta"><span class="crm-phone-caret">▸</span> ${fmtDate(s.shop_date)}${s.call_time ? ` · ${esc(s.call_time)}` : ''} · ${esc(s.agent_name || '—')}</span>
+        <span class="crm-connection-badge ${CRM_CONN_CLS[nt.connection] || 'conn-noanswer'}">${esc(nt.connection ? (CRM_CONN_LABEL[nt.connection] || nt.connection) : '—')}</span>
       </div>
       <div class="crm-entry-card-head" style="margin-top:2px">
         ${s.score != null ? `<span class="crm-entry-meta">Score: ${s.score}</span>` : '<span></span>'}
         ${nt.appointment_set === 'yes' ? '<span class="crm-entry-meta">📅 Appointment set</span>' : ''}
       </div>
       ${nt.text ? `<p class="small" style="margin-top:4px;">${esc(nt.text)}</p>` : ''}
+      <div class="crm-phone-detail hidden" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px">
+        ${drow('Caller Name (Fake)', s.caller_name)}
+        ${drow('Date', fmtDate(s.shop_date))}
+        ${drow('Time of Call', s.call_time)}
+        ${drow('Shopped By', s.agent_name)}
+        ${drow('Connection', nt.connection ? (CRM_CONN_LABEL[nt.connection] || nt.connection) : '')}
+        ${drow('Score', s.score)}
+        ${quoteHtml}
+        ${scHtml}
+        ${nt.text ? `<div style="margin-top:6px"><b class="small">Notes</b><p class="small" style="margin:2px 0 0">${esc(nt.text)}</p></div>` : ''}
+        <div style="margin-top:8px"><button class="btn-sm primary crm-phone-edit" data-shop-id="${esc(s.id)}">✎ Edit</button></div>
+      </div>
     </div>`;
   }).join('') : '<p class="muted small">No calls logged yet.</p>';
+
+  $('#crm-phone-list').querySelectorAll('.crm-phone-toggle').forEach(h => h.addEventListener('click', () => {
+    const card = h.closest('.crm-entry-card');
+    const det = card?.querySelector('.crm-phone-detail');
+    const caret = h.querySelector('.crm-phone-caret');
+    if (det) { det.classList.toggle('hidden'); if (caret) caret.textContent = det.classList.contains('hidden') ? '▸' : '▾'; }
+  }));
+  $('#crm-phone-list').querySelectorAll('.crm-phone-edit').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const shop = (crmState.activeProperty?.phone_shops || []).find(x => String(x.id) === String(b.dataset.shopId));
+    if (shop) crmEditPhoneShop(shop);
+  }));
 }
 
 // ── Perfect Phone Call scorecard (shows only when "Answered by Agent") ────────
@@ -3746,6 +3790,7 @@ const PHONE_SC_ITEMS = [
   ['led_call', 'Agent led the call overall'],
 ];
 let crmPhoneSC = null; // { rating: '', answers: {} }
+let crmPhoneEditId = null; // set when the form is editing an existing call (PATCH)
 function crmPhoneScore(sc) {
   let yes = 0, tot = 0;
   for (const [id] of PHONE_SC_ITEMS) { const v = (sc.answers || {})[id]; if (v === 'yes') { yes++; tot++; } else if (v === 'no') tot++; }
@@ -3798,6 +3843,8 @@ function crmPhoneFloorplanWarn() {
 }
 function crmResetPhoneForm() {
   crmPhoneSC = { rating: '', answers: {} };
+  crmPhoneEditId = null;
+  const sb = $('#crm-phone-save'); if (sb) sb.textContent = 'Save Call';
   const a = $('#pf-agent'); if (a) a.value = crmDefaultAgentName();
   const d = $('#pf-date'); if (d) d.value = new Date().toISOString().slice(0, 10);
   const tm = $('#pf-time'); if (tm) tm.value = '';
@@ -3810,6 +3857,28 @@ function crmResetPhoneForm() {
   const cc = $('#pf-concession'); if (cc) cc.value = '';
   crmRenderPhoneScorecard();
   crmPhoneToggleQuote();
+}
+// Load an existing logged call into the form for editing (PATCH on save).
+function crmEditPhoneShop(s) {
+  const nt = parseNotes(s.notes);
+  const sc = crmParseScorecard(s.scorecard);
+  crmPhoneEditId = s.id;
+  crmPhoneSC = { rating: (sc && sc.rating) || '', answers: { ...((sc && sc.answers) || {}) } };
+  const set = (id, v) => { const el = $(id); if (el) el.value = (v == null ? '' : v); };
+  set('#pf-agent', s.agent_name || '');
+  set('#pf-date', (s.shop_date || '').slice(0, 10));
+  set('#pf-time', s.call_time || '');
+  set('#pf-caller', s.caller_name || '');
+  set('#pf-connection', nt.connection || 'answered_agent');
+  set('#pf-score', s.score != null ? s.score : '');
+  set('#pf-notes', nt.text || '');
+  set('#pf-floorplan', s.quote_floorplan || '');
+  set('#pf-price', s.quote_price != null ? s.quote_price : '');
+  set('#pf-concession', s.quote_concession || '');
+  crmRenderPhoneScorecard();
+  crmPhoneToggleQuote();
+  const sb = $('#crm-phone-save'); if (sb) sb.textContent = 'Update Call';
+  const f = $('#crm-phone-form'); if (f) { f.classList.remove('hidden'); f.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
 }
 // Delegated scorecard wiring (survives re-renders).
 (function wirePhoneScorecard() {
@@ -3858,12 +3927,18 @@ $('#crm-phone-save').addEventListener('click', async () => {
     quote_price: answered ? (parseFloat($('#pf-price').value) || null) : null,
     quote_concession: answered ? ($('#pf-concession').value || null) : null,
   };
-  // Only persist a scorecard for an agent-answered call that was actually filled.
-  if (answered && scFilled) body.scorecard = sc;
+  const editing = crmPhoneEditId;
+  // On edit, always send scorecard (sc when applicable, else null) so clearing it
+  // persists; on a new shop, only attach it when the agent actually filled one.
+  if (editing) body.scorecard = (answered && scFilled) ? sc : null;
+  else if (answered && scFilled) body.scorecard = sc;
   try {
-    await crmFetch(`/api/crm/properties/${p.id}/phone-shops`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const url = editing ? `/api/crm/phone-shops/${editing}` : `/api/crm/properties/${p.id}/phone-shops`;
+    await crmFetch(url, { method: editing ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const updated = await crmFetch(`/api/crm/properties/${p.id}`);
     crmState.activeProperty = updated;
+    crmPhoneEditId = null;
+    const sb = $('#crm-phone-save'); if (sb) sb.textContent = 'Save Call';
     crmRenderPhoneList(updated.phone_shops);
     $('#crm-phone-form').classList.add('hidden');
     crmReloadTaskView(); // phone task advances (attempt N of 3) / drops off at 3

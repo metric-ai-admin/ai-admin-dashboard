@@ -5499,6 +5499,23 @@ app.post('/api/crm/properties/:id/phone-shops', requireCRM, async (req, res) => 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- PATCH /api/crm/phone-shops/:id — edit a logged call -----------------------
+// Only the editable fields are touched (never property_id/phone_number_version,
+// so an edit can't move a shop or break the 3-attempt cycle counting).
+const PHONE_SHOP_EDITABLE = ['shop_date', 'call_time', 'agent_name', 'caller_name', 'score', 'notes',
+  'quote_floorplan', 'quote_price', 'quote_concession', 'scorecard'];
+app.patch('/api/crm/phone-shops/:id', requireCRM, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const patch = {};
+    for (const k of PHONE_SHOP_EDITABLE) if (k in (req.body || {})) patch[k] = req.body[k];
+    if (!Object.keys(patch).length) return res.status(400).json({ error: 'No updatable fields sent' });
+    const { data, error } = await db.from('phone_shops').update(patch).eq('id', req.params.id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- POST /api/crm/properties/:id/new-phone-number -----------------------------
 // Save a new leasing-line number and bump phone_number_version, which resets the
 // 3-attempt phone-shop cycle (the engine only counts shops from the current
