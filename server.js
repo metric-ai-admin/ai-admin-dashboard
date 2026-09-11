@@ -7927,7 +7927,20 @@ async function mrResolveSgLink(sgUrl) {
   const timer = setTimeout(() => ctrl.abort(), 2000);
   try {
     const resp = await fetchFn(sgUrl, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal });
-    return (resp && resp.url && /appfolio\.com/i.test(resp.url) && !/sg\.appfolio\.com/i.test(resp.url)) ? resp.url : '';
+    const resolved = (resp && resp.url) || '';
+    if (!/appfolio\.com/i.test(resolved) || /sg\.appfolio\.com/i.test(resolved)) return '';
+    // An unauthenticated HEAD lands on the AppFolio OAuth login page; the real
+    // activity path is the (double-encoded) `state` query param — decode it twice
+    // (%252F → %2F → /) and hang it off the AppFolio host.
+    if (/account\.appfolio\.com/i.test(resolved) || /openid-connect\/auth/i.test(resolved)) {
+      const stateParam = new URL(resolved).searchParams.get('state');
+      if (stateParam) {
+        const path = decodeURIComponent(decodeURIComponent(stateParam));
+        return /^https?:\/\//i.test(path) ? path : 'https://metricpropertymanagement.appfolio.com' + path;
+      }
+      return '';   // login URL but no usable state — prefer the static fallback
+    }
+    return resolved;
   } catch { return ''; }
   finally { clearTimeout(timer); }
 }
