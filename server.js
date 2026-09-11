@@ -86,6 +86,9 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 const ASANA_TOKEN = process.env.ASANA_TOKEN;
+// Project the Task Manager mirrors new tasks into. Find its gid via
+// GET /api/asana/projects; unset → tasks are created in the workspace (My Tasks).
+const ASANA_PROJECT_GID = process.env.ASANA_PROJECT_GID;
 // Erick's personal Asana account. Optional — when unset, the maintenance
 // Asana view reports that it needs connecting instead of showing an empty board.
 const ASANA_TOKEN_ERICK = process.env.ASANA_TOKEN_ERICK;
@@ -565,6 +568,30 @@ async function getMe(token = ASANA_TOKEN) {
   return shaped;
 }
 
+// ── Task Manager ⇄ Asana bidirectional sync ──────────────────────────────────
+// Best-effort mirror of the local tasks.json Task Manager into Arturo's Asana.
+// Every helper is guarded by the caller so a sync failure never blocks the local
+// write. Uses the same asanaRequest/ASANA_TOKEN plumbing as the read routes.
+async function asanaSyncCreate(task) {
+  if (!ASANA_TOKEN) return null;
+  const data = { name: task.title, notes: task.notes || '', assignee: 'me' };
+  if (ASANA_PROJECT_GID) data.projects = [ASANA_PROJECT_GID];
+  else { const me = await getMe(); if (me.workspaceGid) data.workspace = me.workspaceGid; }
+  const created = await asanaRequest('POST', '/tasks', data);
+  return created?.gid || null;
+}
+async function asanaSyncUpdate(gid, fields) {
+  if (!ASANA_TOKEN || !gid) return;
+  await asanaRequest('PUT', `/tasks/${encodeURIComponent(gid)}`, fields);
+}
+async function asanaSyncComplete(gid) {
+  if (!ASANA_TOKEN || !gid) return;
+  // Follow first so the completion is attributed/visible, then mark complete.
+  try { await asanaRequest('POST', `/tasks/${encodeURIComponent(gid)}/addFollowers`, { followers: ['me'] }); }
+  catch { /* addFollowers is best-effort */ }
+  await asanaRequest('PUT', `/tasks/${encodeURIComponent(gid)}`, { completed: true });
+}
+
 // =====================================================================
 // MODULE 1 — TASK MANAGER
 // =====================================================================
@@ -611,6 +638,11 @@ app.post('/api/tasks', async (req, res) => {
   tasks.unshift(task);
   await writeJSON(TASKS_FILE, tasks);
   await logActivity({ kind: 'task_created', taskId: task.id, title: task.title });
+  // Mirror into Asana — non-blocking: the local task is already saved.
+  try {
+    const gid = await asanaSyncCreate(task);
+    if (gid) { task.asana_gid = gid; await writeJSON(TASKS_FILE, tasks); }
+  } catch (err) { console.error('[asana-sync] create failed:', err.message); }
   res.json(task);
 });
 
@@ -637,6 +669,14 @@ app.put('/api/tasks/:id', async (req, res) => {
   }
 
   await writeJSON(TASKS_FILE, tasks);
+  // Mirror name/notes/completion to Asana — non-blocking.
+  const t = tasks[idx];
+  if (t.asana_gid) {
+    try {
+      if (t.completed_at) await asanaSyncComplete(t.asana_gid);
+      await asanaSyncUpdate(t.asana_gid, { name: t.title, notes: t.notes || '', ...(t.completed_at ? {} : { completed: false }) });
+    } catch (err) { console.error('[asana-sync] update failed:', err.message); }
+  }
   res.json(tasks[idx]);
 });
 
@@ -648,6 +688,11 @@ app.post('/api/tasks/:id/done', async (req, res) => {
   tasks[idx].completed_at = new Date().toISOString();
   await writeJSON(TASKS_FILE, tasks);
   await logActivity({ kind: 'task_completed', taskId: tasks[idx].id, title: tasks[idx].title });
+  // Mirror completion to Asana — non-blocking; skipped silently when unsynced.
+  if (tasks[idx].asana_gid) {
+    try { await asanaSyncComplete(tasks[idx].asana_gid); }
+    catch (err) { console.error('[asana-sync] complete failed:', err.message); }
+  }
   res.json(tasks[idx]);
 });
 
@@ -849,6 +894,26 @@ function shapeTask(t, projectLabel) {
 app.get('/api/asana/me', async (req, res) => {
   try {
     res.json(await getMe());
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+// Setup helper: list the projects in Arturo's workspace so the right
+// ASANA_PROJECT_GID can be found and set on Render. Flags the configured one.
+app.get('/api/asana/projects', async (req, res) => {
+  try {
+    if (!ASANA_TOKEN) return res.json({ configured: false, projects: [], message: 'ASANA_TOKEN is not set.' });
+    const me = await getMe();
+    if (!me.workspaceGid) return res.json({ configured: true, projects: [], message: 'No Asana workspace resolved.' });
+    const projects = await asanaGetAll(`/projects?workspace=${me.workspaceGid}&opt_fields=name`);
+    res.json({
+      configured: true,
+      workspace: { gid: me.workspaceGid, name: me.workspaceName },
+      currentProjectGid: ASANA_PROJECT_GID || null,
+      count: projects.length,
+      projects: projects.map(p => ({ gid: p.gid, name: p.name, current: p.gid === ASANA_PROJECT_GID })),
+    });
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
