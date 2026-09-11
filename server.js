@@ -6251,10 +6251,14 @@ app.get('/api/crm/completed', requireCRM, requireAuth, async (req, res) => {
     const items = [];
     // agentKey: 'agent_name' (live) or 'agent' (bd_). dateKey: a column name or a
     // fn(row). propField: the archive's own property-name column, else look it up.
+    // Bidirectional, case-insensitive partial match: the session name may be
+    // longer OR shorter than the stored agent_name (e.g. session "Katrina Lopez"
+    // vs stored "Katrina", or vice-versa), so match if either contains the other.
+    const agentMatches = a => { const aLc = a.toLowerCase(); return aLc.includes(agentLc) || agentLc.includes(aLc); };
     const add = (rows, type, agentKey, dateKey, propField) => (rows || []).forEach(r => {
       const a = String(r[agentKey] || '').trim();
       if (!a) return;   // only agent-attributed rows count as "completed by agent"
-      if (agent && !a.toLowerCase().includes(agentLc)) return;
+      if (agent && !agentMatches(a)) return;
       const dv = typeof dateKey === 'function' ? dateKey(r) : r[dateKey];
       items.push({ type, agent: a, date: String(dv || '').slice(0, 10),
         property_id: r.property_id || null,
