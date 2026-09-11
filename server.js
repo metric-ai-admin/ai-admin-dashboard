@@ -7845,18 +7845,6 @@ async function mrOps() {
 // (assigned to Lyndsay OR description/notes mention her), then de-dupe by id.
 const MR_AF_LYNDSAY = (process.env.MR_APPFOLIO_LYNDSAY_NAME || 'Lyndsay Hanes');
 const MR_AF_OPEN_STATUSES = ['pending', 'queued', 'in progress'];
-// Pick the first non-empty value among candidate keys. Arrays/objects (e.g. a
-// comments array) are stringified so a value picked for display still shows text.
-const mrAfVal = (row, keys) => {
-  for (const k of keys) {
-    const v = row?.[k];
-    if (v == null) continue;
-    if (Array.isArray(v)) { const s = v.map(x => (x && typeof x === 'object') ? Object.values(x).join(' ') : String(x)).join(' · ').trim(); if (s) return s; continue; }
-    if (typeof v === 'object') { const s = Object.values(v).join(' ').trim(); if (s) return s; continue; }
-    if (String(v).trim() !== '') return v;
-  }
-  return '';
-};
 // Automated AppFolio workflow steps — noise, never actionable for Lyndsay. Matched
 // case-insensitively against the activity's label/subject/title (exact match).
 const MR_AF_EXCLUDE_LABELS = new Set([
@@ -7872,44 +7860,33 @@ const MR_AF_EXCLUDE_LABELS = new Set([
 const MR_AF_PRIORITY_LABELS = ['regional manager approve app', 'verify income', 'verify identity'];
 async function mrAppFolio() {
  try {
-  console.log('[mrAppFolio] starting fetch');
   const rows = await appfolioReportsFetch('/api/v2/reports/upcoming_activities.json', {});
-  console.log('[mrAppFolio] raw count:', (rows || []).length, 'first row keys:', rows && rows[0] ? Object.keys(rows[0]).join(',') : 'none');
   const lynFirst = MR_AF_LYNDSAY.split(/\s+/)[0].toLowerCase();   // "lyndsay"
   const seen = new Set();
   const picked = [];
-  let excluded = 0;
   for (const r of (rows || [])) {
-    // Open statuses only. A blank status is kept (better to surface than hide).
-    const status = String(mrAfVal(r, ['activity_status', 'status'])).toLowerCase();
+    // Confirmed upcoming_activities field names: status, assigned_user, label,
+    // activity_date, property_name/property_address, activity/activity_for.
+    // Open statuses only (a blank status is kept — better to surface than hide).
+    const status = String(r.status || '').toLowerCase();
     if (status && !MR_AF_OPEN_STATUSES.some(s => status.includes(s))) continue;
 
-    // Keep tasks assigned to Lyndsay OR whose posted notes mention her. Full
-    // Activity-History comments live behind a separate endpoint the report doesn't
-    // return, but the report's own notes/remarks DO carry posted notes — search
-    // those for "lyndsay" and the @Lyndsay.Hanes mention style.
-    const assigned = String(mrAfVal(r, ['assigned_user', 'assigned_to', 'assigned', 'user_name']));
-    const notesBlob = String(mrAfVal(r, ['notes', 'remarks', 'note', 'comments'])).toLowerCase();
-    const assignedMatch = assigned.toLowerCase().includes(lynFirst);
-    const notesMention = notesBlob.includes('@lyndsay') || notesBlob.includes(lynFirst);
-    if (!assignedMatch && !notesMention) continue;
+    // Assigned to Lyndsay only. This report has no notes/comments field (those
+    // live in the separate Activity History endpoint), so there is no mention
+    // search — it could never work here.
+    const assigned = String(r.assigned_user || '');
+    if (!assigned.toLowerCase().includes(lynFirst)) continue;
 
-    const label = String(mrAfVal(r, ['label', 'subject', 'title', 'activity_type', 'activity', 'name', 'description'])).trim();
+    const label = String(r.label || '').trim();
     const labelLc = label.toLowerCase();
-    // Priority rank: listed high-value labels first (by their order), then the rest.
     const li = MR_AF_PRIORITY_LABELS.indexOf(labelLc);
     // Drop automated workflow steps by exact label — but a priority label ALWAYS
     // wins over the exclude list (safeguard so "Regional Manager Approve App" and
     // the like can never be filtered out even if it also appeared in the excludes).
-    if (li === -1 && MR_AF_EXCLUDE_LABELS.has(labelLc)) {
-      excluded++;
-      console.log('[mrAppFolio excluded]', label);   // temporary: verify the exclude list
-      continue;
-    }
+    if (li === -1 && MR_AF_EXCLUDE_LABELS.has(labelLc)) continue;
 
-    const dateRaw = mrAfVal(r, ['due_at', 'due_date', 'scheduled_start', 'date', 'created_at']);
-    const id = String(mrAfVal(r, ['activity_id', 'id', 'uuid', 'activity_uuid'])
-      || `${assigned}|${dateRaw}|${label.slice(0, 40)}`);   // synthesize when no id field
+    const dateRaw = r.activity_date || '';
+    const id = String(r.activity_id || r.id || `${assigned}|${dateRaw}|${label.slice(0, 40)}`);
     if (seen.has(id)) continue;
     seen.add(id);
 
@@ -7917,12 +7894,13 @@ async function mrAppFolio() {
       _rank: li === -1 ? MR_AF_PRIORITY_LABELS.length : li,
       _sort: String(dateRaw || ''),
       date: dateRaw ? mrDateShort(dateRaw) : '—',
-      assignedBy: String(mrAfVal(r, ['created_by', 'assigned_by', 'owner', 'created_by_name', 'author'])) || '—',
-      where: [mrAfVal(r, ['property', 'property_name']), mrAfVal(r, ['unit', 'unit_name'])].filter(Boolean).join(' / ') || '—',
-      summary: mrClean(mrAfVal(r, ['description', 'remarks', 'subject', 'summary', 'activity_type', 'activity', 'notes'])).slice(0, 80) || '—',
+      assignedBy: assigned || '—',
+      where: String(r.property_name || r.property_address || '').trim() || '—',
+      // The label (task name, e.g. "Verify Income") leads the summary so the row
+      // is identifiable; the activity/activity_for field follows when present.
+      summary: (mrClean([label, mrClean(r.activity || r.activity_for)].filter(Boolean).join(' — ')) || '—').slice(0, 80),
     });
   }
-  console.log('[mrAppFolio] after filter:', picked.length, 'kept,', excluded, 'excluded');
   // High-value labels first (by MR_AF_PRIORITY_LABELS order), then newest first.
   picked.sort((a, b) => (a._rank - b._rank) || b._sort.localeCompare(a._sort));
   return picked.slice(0, 10);
