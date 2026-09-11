@@ -7837,7 +7837,53 @@ async function mrOps() {
     .sort((a, b) => a.rank - b.rank);
 }
 
-function mrFormat({ date, meetings, emails, asana, ops, errors }) {
+// 5 — AppFolio upcoming activities assigned to or mentioning Lyndsay.
+// Uses the Reports API (appfolioReportsFetch, APPFOLIO_REPORTS_* creds) — the same
+// path metric-routes uses for upcoming_activities. AppFolio's report filters cover
+// assigned_user + activity_status but have NO free-text "mentions" filter, so we
+// pull the pending upcoming activities once and union the two criteria locally
+// (assigned to Lyndsay OR description/notes mention her), then de-dupe by id.
+const MR_AF_LYNDSAY = (process.env.MR_APPFOLIO_LYNDSAY_NAME || 'Lyndsay Hanes');
+const MR_AF_OPEN_STATUSES = ['pending', 'queued', 'in progress'];
+const mrAfVal = (row, keys) => {
+  for (const k of keys) { const v = row?.[k]; if (v != null && String(v).trim() !== '') return v; }
+  return '';
+};
+async function mrAppFolio() {
+  const rows = await appfolioReportsFetch('/api/v2/reports/upcoming_activities.json', {});
+  const lynFirst = MR_AF_LYNDSAY.split(/\s+/)[0].toLowerCase();   // "lyndsay"
+  const seen = new Set();
+  const picked = [];
+  for (const r of (rows || [])) {
+    // Open statuses only. A blank status is kept (better to surface than hide).
+    const status = String(mrAfVal(r, ['activity_status', 'status'])).toLowerCase();
+    if (status && !MR_AF_OPEN_STATUSES.some(s => status.includes(s))) continue;
+
+    const assigned = String(mrAfVal(r, ['assigned_user', 'assigned_to', 'assigned', 'user_name']));
+    const textBlob = String(mrAfVal(r, ['description', 'remarks', 'notes', 'subject', 'summary', 'comments', 'activity', 'activity_type'])).toLowerCase();
+    const assignedMatch = assigned.toLowerCase().includes(lynFirst);
+    const mentionMatch = textBlob.includes(lynFirst) || textBlob.includes('lyndsay@');
+    if (!assignedMatch && !mentionMatch) continue;
+
+    const dateRaw = mrAfVal(r, ['due_at', 'due_date', 'scheduled_start', 'date', 'created_at']);
+    const id = String(mrAfVal(r, ['activity_id', 'id', 'uuid', 'activity_uuid'])
+      || `${assigned}|${dateRaw}|${textBlob.slice(0, 40)}`);   // synthesize when no id field
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    picked.push({
+      _sort: String(dateRaw || ''),
+      date: dateRaw ? mrDateShort(dateRaw) : '—',
+      assignedBy: String(mrAfVal(r, ['created_by', 'assigned_by', 'owner', 'created_by_name', 'author'])) || '—',
+      where: [mrAfVal(r, ['property', 'property_name']), mrAfVal(r, ['unit', 'unit_name'])].filter(Boolean).join(' / ') || '—',
+      summary: mrClean(mrAfVal(r, ['description', 'remarks', 'subject', 'summary', 'activity_type', 'activity', 'notes'])).slice(0, 80) || '—',
+    });
+  }
+  picked.sort((a, b) => b._sort.localeCompare(a._sort));   // newest first
+  return picked.slice(0, 10);
+}
+
+function mrFormat({ date, meetings, emails, asana, ops, appfolio, errors }) {
   const L = [];
   L.push(`📋 *Lyndsay's Daily Activity Report — ${date}*`);
   L.push('');
@@ -7870,8 +7916,10 @@ function mrFormat({ date, meetings, emails, asana, ops, errors }) {
   else asana.tasks.forEach(t => L.push(`  ${t.name}  |  Due: ${t.due_on || '—'}  |  ${mrClean(t.notes_preview) || '—'}  [Open]`));
   L.push('');
 
-  L.push('*PENDING CRITICAL WHATSAPP / APPFOLIO*');
-  L.push('  [ manual fill ]');
+  L.push('*PENDING APPFOLIO TASKS — LYNDSAY*');
+  if (errors.appfolio) L.push('  AppFolio unavailable — check manually');
+  else if (!appfolio || !appfolio.length) L.push('  No AppFolio tasks assigned to or mentioning Lyndsay.');
+  else appfolio.forEach(a => L.push(`  ${a.date} | ${a.assignedBy} | ${a.where} | ${a.summary}`));
   L.push('');
 
   L.push(`*ARTURO'S PENDING ITEMS LIST*`);
@@ -7887,20 +7935,22 @@ app.get('/api/morning-report', requireAuth, requireRole('admin'), async (req, re
     timeZone: LYNDSAY_TIMEZONE, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
   const errors = {};
-  const [mR, eR, aR, oR] = await Promise.allSettled([
+  const [mR, eR, aR, oR, fR] = await Promise.allSettled([
     GRAPH_CONFIGURED ? mrMeetings() : Promise.resolve([]),
     GRAPH_CONFIGURED ? mrEmails()   : Promise.resolve({}),
     mrAsana(),
     mrOps(),   // reads data/tasks.json — no DB dependency
+    mrAppFolio(),
   ]);
 
   const meetings = mR.status === 'fulfilled' ? mR.value : (errors.meetings = mrReason(mR.reason), []);
   const emails   = eR.status === 'fulfilled' ? eR.value : (errors.emails   = mrReason(eR.reason), {});
   const asana    = aR.status === 'fulfilled' ? aR.value : (errors.asana    = mrReason(aR.reason), { configured: true, tasks: [] });
   const ops      = oR.status === 'fulfilled' ? oR.value : (errors.ops      = mrReason(oR.reason), []);
+  const appfolio = fR.status === 'fulfilled' ? fR.value : (errors.appfolio = mrReason(fR.reason), []);
   if (!GRAPH_CONFIGURED) { errors.meetings = errors.emails = 'Microsoft Graph is not configured.'; }
 
-  const report = mrFormat({ date, meetings, emails, asana, ops, errors });
+  const report = mrFormat({ date, meetings, emails, asana, ops, appfolio, errors });
   res.json({ report, generatedAt: new Date().toISOString(), date, errors });
 });
 
