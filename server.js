@@ -7916,6 +7916,8 @@ async function mrAppFolio() {
 // Those comments don't live in the upcoming_activities report, so we read them
 // from her mailbox (last 7 days) — same Graph pattern as mrEmails.
 async function mrAppFolioMentions() {
+ try {
+  console.log('[mrAppFolioMentions] starting');
   const token = await graphMailboxToken('lyndsay');
   const cutoff = new Date(Date.now() - 7 * 86400e3).toISOString();
   // Graph $filter can't do contains(subject,…), so filter by sender + date here
@@ -7944,7 +7946,12 @@ async function mrAppFolioMentions() {
     });
   }
   out.sort((a, b) => b._sort.localeCompare(a._sort));   // newest first
+  console.log('[mrAppFolioMentions] matched:', out.length);
   return out.slice(0, 10);
+ } catch (e) {
+   console.error('[mrAppFolioMentions] error:', e.message);
+   throw e;   // route renders "AppFolio mentions unavailable — check manually"
+ }
 }
 
 function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, errors }) {
