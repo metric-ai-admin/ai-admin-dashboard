@@ -718,6 +718,27 @@ app.delete('/api/tasks/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+// One-time backfill: create Asana tasks for existing open tasks that were never
+// synced (predate the sync feature). Admin-only. Idempotent — a task that already
+// has an asana_gid, or is completed, is skipped; re-running only fills the gaps.
+app.post('/api/tasks/asana-backfill', requireAuth, requireRole('admin'), async (req, res) => {
+  const tasks = await readJSON(TASKS_FILE, []);
+  let synced = 0, skipped = 0, changed = false;
+  const errors = [];
+  for (const task of tasks) {
+    if (task.completed_at || task.asana_gid) { skipped++; continue; }
+    try {
+      const gid = await asanaSyncCreate(task);
+      if (gid) { task.asana_gid = gid; changed = true; synced++; }
+      else { skipped++; }   // Asana not configured — asanaSyncCreate returned null
+    } catch (err) {
+      errors.push({ id: task.id, title: task.title, error: err.message });
+    }
+  }
+  if (changed) await writeJSON(TASKS_FILE, tasks);
+  res.json({ synced, skipped, errors });
+});
+
 // Bulk import preserving exact ids/timestamps — for migrating data between
 // instances (e.g. local -> cloud). Unlike POST /api/tasks (which always
 // mints a fresh id/created_at), this upserts by id so it's safe to re-run.
