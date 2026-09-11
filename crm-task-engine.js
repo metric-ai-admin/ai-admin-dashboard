@@ -46,6 +46,13 @@ function daysSince(dateStr) {
 
 const dateOf = v => (v ? String(v).slice(0, 10) : null);
 
+// Digital marketing reviews recur on a cadence — a completed review is "done"
+// only until it ages past this many days, after which the property is due for a
+// fresh review and the DM task regenerates. Without this, a single complete
+// review (including the 09/03 historical import) suppressed the DM task forever.
+// Env-tunable; 30 days by default.
+const DM_REVIEW_CADENCE_DAYS = Number(process.env.DM_REVIEW_CADENCE_DAYS) || 30;
+
 /**
  * Ported verbatim. Strips the filler words that make the same company look
  * like two ("Oak Ridge Apartments" vs "Oak Ridge"), so targeting matches the
@@ -153,6 +160,20 @@ function dmComplete(p) {
     const v = dm[s];
     return v && typeof v === 'object' && Object.keys(v).length > 0;
   });
+}
+
+// A property's DM review is "current" only when it is both complete AND within the
+// cadence window. This — not dmComplete alone — gates the DM TASK, so a property
+// with no review, an incomplete review, or a review older than the cadence all
+// regenerate the task. (readyChecklist still uses dmComplete, so "ready for
+// Lyndsay" continues to mean the property has ever been fully reviewed.)
+// A complete-but-undated review is treated as stale so it doesn't suppress forever.
+function dmReviewCurrent(p) {
+  if (!dmComplete(p)) return false;
+  const dm = p.dm_review;
+  const when = dateOf(dm.reviewed_at || dm.updated_at || dm.created_at);
+  const age = daysSince(when);
+  return age !== null && age < DM_REVIEW_CADENCE_DAYS;
 }
 
 // ── Missed tours ─────────────────────────────────────────────────────────────
@@ -380,7 +401,7 @@ function computeTasks(properties, options = {}) {
         due: addDays(dateOf(os[0].shop_date), 7), priority: pri.priority });
     }
 
-    if (!holdShops && !rc.dmDone) {
+    if (!holdShops && !dmReviewCurrent(p)) {
       tasks.push({ ...base, type: 'dm', label: 'Digital marketing review',
         agent: p.online_dm_assignee || 'Erick', tab: 'dm', minutes: TASK_TARGET_MINUTES.dm,
         due: today, priority: pri.priority });
