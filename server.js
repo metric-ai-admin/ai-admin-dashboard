@@ -719,9 +719,9 @@ app.delete('/api/tasks/:id', async (req, res) => {
 });
 
 // One-time backfill: create Asana tasks for existing open tasks that were never
-// synced (predate the sync feature). Admin-only. Idempotent — a task that already
-// has an asana_gid, or is completed, is skipped; re-running only fills the gaps.
-app.post('/api/tasks/asana-backfill', requireAuth, requireRole('admin'), async (req, res) => {
+// synced (predate the sync feature). Idempotent — a task that already has an
+// asana_gid, or is completed, is skipped; re-running only fills the gaps.
+async function asanaBackfillTasks() {
   const tasks = await readJSON(TASKS_FILE, []);
   let synced = 0, skipped = 0, changed = false;
   const errors = [];
@@ -736,8 +736,28 @@ app.post('/api/tasks/asana-backfill', requireAuth, requireRole('admin'), async (
     }
   }
   if (changed) await writeJSON(TASKS_FILE, tasks);
-  res.json({ synced, skipped, errors });
-});
+  return { synced, skipped, errors };
+}
+// Admin-only. GET is offered alongside POST so it can be triggered from the
+// browser address bar while authenticated.
+const asanaBackfillHandler = async (req, res) => {
+  try { res.json(await asanaBackfillTasks()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+};
+app.post('/api/tasks/asana-backfill', requireAuth, requireRole('admin'), asanaBackfillHandler);
+app.get('/api/tasks/asana-backfill', requireAuth, requireRole('admin'), asanaBackfillHandler);
+
+// One-time on-boot backfill: 30s after startup, sync any open, unsynced tasks to
+// Asana so a deploy fills the gap without a manual call. Fire-and-forget, guarded,
+// and idempotent — a second boot with nothing to do is a no-op. Disable with
+// ASANA_BACKFILL_ON_BOOT=0.
+if (ASANA_TOKEN && process.env.ASANA_BACKFILL_ON_BOOT !== '0') {
+  setTimeout(() => {
+    asanaBackfillTasks()
+      .then(r => console.log(`[asana-sync] startup backfill — ${r.synced} synced, ${r.skipped} skipped, ${r.errors.length} errors`))
+      .catch(err => console.error('[asana-sync] startup backfill failed:', err.message));
+  }, 30000);
+}
 
 // Bulk import preserving exact ids/timestamps — for migrating data between
 // instances (e.g. local -> cloud). Unlike POST /api/tasks (which always
