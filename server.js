@@ -6284,6 +6284,56 @@ app.get('/api/crm/completed', requireCRM, requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- One-time cleanup: stale/placeholder DM reviews blocking an agent's tasks ---
+// A completed dm_review permanently suppresses the DM task (see dmReviewCurrent).
+// The 09/03 historical import left "complete" but scoreless placeholder rows for
+// Katrina's properties, so her DM tasks never regenerate. This removes the rows
+// that match the agent AND are either scoreless (overall_score null/0) OR were
+// bulk-created in the import window without meaningful scorecard data.
+// GET = dry run (lists what would go); POST = execute. Admin-only.
+const DM_CLEANUP_SECTIONS = ['website_scores', 'floorplan_scores', 'gbp_scores', 'facebook_scores', 'ils_scores'];
+const dmHasMeaningfulScorecard = r =>
+  DM_CLEANUP_SECTIONS.every(s => r[s] && typeof r[s] === 'object' && Object.keys(r[s]).length > 0)
+  && Number(r.overall_score) > 0;
+async function dmReviewCleanup({ agentLike, importFrom, importTo, execute }) {
+  const db = supabaseAdmin || supabasePublic;
+  const like = `%${agentLike}%`;
+  // Scope: rows attributed to the agent, OR on a property assigned to them.
+  const { data: props } = await db.from('properties').select('id').ilike('online_dm_assignee', like);
+  const propIds = new Set((props || []).map(p => p.id));
+  const { data: rows, error } = await db.from('dm_reviews').select('*');
+  if (error) throw new Error(error.message);
+  const inWindow = ts => { const d = String(ts || '').slice(0, 10); return d && d >= importFrom && d <= importTo; };
+  const scoped = (rows || []).filter(r =>
+    String(r.agent_name || '').toLowerCase().includes(agentLike.toLowerCase()) || propIds.has(r.property_id));
+  const targets = scoped.filter(r => {
+    const scoreless = r.overall_score == null || Number(r.overall_score) === 0;
+    const importPlaceholder = inWindow(r.created_at) && !dmHasMeaningfulScorecard(r);
+    return scoreless || importPlaceholder;
+  });
+  const preview = targets.map(r => ({ id: r.id, property_id: r.property_id, agent_name: r.agent_name || null, overall_score: r.overall_score ?? null, created_at: r.created_at || null }));
+  if (!execute) return { dryRun: true, matched: targets.length, scoped: scoped.length, rows: preview };
+  let deleted = 0;
+  for (const r of targets) {
+    const { error: delErr } = await db.from('dm_reviews').delete().eq('id', r.id);
+    if (!delErr) deleted++;
+  }
+  return { dryRun: false, deleted, matched: targets.length, rows: preview };
+}
+const dmCleanupOpts = req => ({
+  agentLike: String(req.query.agent || 'katrina'),
+  importFrom: /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : '2026-08-01',
+  importTo: /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : '2026-09-04',
+});
+app.get('/api/crm/dm-reviews/cleanup', requireCRM, requireAuth, requireRole('admin'), async (req, res) => {
+  try { res.json(await dmReviewCleanup({ ...dmCleanupOpts(req), execute: false })); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/crm/dm-reviews/cleanup', requireCRM, requireAuth, requireRole('admin'), async (req, res) => {
+  try { res.json(await dmReviewCleanup({ ...dmCleanupOpts(req), execute: true })); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ---- Targeted management companies ---------------------------------------------
 // Worth +150 in the task engine. This list previously lived in each person's
 // browser localStorage, so it was per-user and the server could never see it.
