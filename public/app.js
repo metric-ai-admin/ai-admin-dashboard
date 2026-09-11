@@ -56,7 +56,7 @@ const TAB_ACCESS = {
   // there is no role to grant — revisit when Jay confirms theirs.
   admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'accounting', 'leasing'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
-  operations:  ['tasks', 'platform', 'email', 'eod', 'reports', 'sixpm', 'calls'],
+  operations:  ['tasks', 'sops', 'platform', 'email', 'eod', 'reports', 'sixpm', 'calls'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
   maintenance: ['maintenance'],
   bd_agent:    ['crm'],
