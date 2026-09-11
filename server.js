@@ -7917,6 +7917,20 @@ async function mrAppFolio() {
 // Lyndsay with subject "<Name> mentioned you in a note on Upcoming Activity".
 // Those comments don't live in the upcoming_activities report, so we read them
 // from her mailbox (last 7 days) — same Graph pattern as mrEmails.
+const MR_AF_ACTIVITIES_URL = 'https://metricpropertymanagement.appfolio.com/buffered_reports/upcoming_activities?customize=true';
+// Resolve the AppFolio "View Note" button — a SendGrid tracking URL that redirects
+// to the real activity link. HEAD + redirect:follow gets the final URL without
+// downloading the page; a 2s timeout keeps a slow/hung redirect from stalling the
+// whole report. Returns the resolved URL, or '' on any failure/timeout.
+async function mrResolveSgLink(sgUrl) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 2000);
+  try {
+    const resp = await fetchFn(sgUrl, { method: 'HEAD', redirect: 'follow', signal: ctrl.signal });
+    return (resp && resp.url && /appfolio\.com/i.test(resp.url) && !/sg\.appfolio\.com/i.test(resp.url)) ? resp.url : '';
+  } catch { return ''; }
+  finally { clearTimeout(timer); }
+}
 async function mrAppFolioMentions() {
   const token = await graphMailboxToken('lyndsay');
   const cutoff = new Date(Date.now() - 7 * 86400e3).toISOString();
@@ -7951,11 +7965,28 @@ async function mrAppFolioMentions() {
     }
     comment = comment.replace(/^@lyndsay(?:[.\s]?hanes)?[:,\s-]*/i, '').trim();
 
+    // Fetch the HTML body, pull the "View Note" SendGrid tracking URL, and resolve
+    // its redirect to the direct AppFolio activity link. Any failure falls back to
+    // the static Upcoming Activities report URL — a bad link never breaks the row.
+    let link = MR_AF_ACTIVITIES_URL;
+    try {
+      const bUrl = `${graphMailboxBase('lyndsay')}/messages/${encodeURIComponent(m.id)}?$select=body`;
+      const br = await fetchFn(bUrl, { headers: { Authorization: `Bearer ${token}` } });
+      const bj = await br.json().catch(() => ({}));
+      const html = bj?.body?.content || '';
+      const sg = html.match(/https?:\/\/sg\.appfolio\.com\/[^"'\s<>]+/i);
+      if (sg) {
+        const resolved = await mrResolveSgLink(sg[0].replace(/&amp;/g, '&'));
+        if (resolved) link = resolved;
+      }
+    } catch { /* keep the static fallback */ }
+
     out.push({
       _sort: String(m.receivedDateTime || ''),
       date: mrDateShort(m.receivedDateTime),
       who,
       comment: comment.slice(0, 120) || '—',
+      link,
     });
   }
   out.sort((a, b) => b._sort.localeCompare(a._sort));   // newest first
@@ -7999,7 +8030,7 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   // @mention notifications first, then assigned-to-Lyndsay tasks.
   const mentions = appfolioMentions || [];
   if (errors.appfolioMentions) L.push('  ⚠ AppFolio mentions unavailable — check manually');
-  else mentions.forEach(m => L.push(`  [mention] | ${m.date} | ${m.who} | ${m.comment} | https://metricpropertymanagement.appfolio.com/buffered_reports/upcoming_activities?customize=true`));
+  else mentions.forEach(m => L.push(`  [mention] | ${m.date} | ${m.who} | ${m.comment} | ${m.link || MR_AF_ACTIVITIES_URL}`));
   if (errors.appfolio) L.push('  AppFolio unavailable — check manually');
   else if (!appfolio || !appfolio.length) {
     if (!mentions.length && !errors.appfolioMentions) L.push('  No AppFolio tasks assigned to or mentioning Lyndsay.');
