@@ -7880,15 +7880,27 @@ async function mrAppFolio() {
     const status = String(mrAfVal(r, ['activity_status', 'status'])).toLowerCase();
     if (status && !MR_AF_OPEN_STATUSES.some(s => status.includes(s))) continue;
 
-    // Only "assigned to Lyndsay" — the deep-text mentions search was removed: AppFolio
-    // comments live behind a separate endpoint the report doesn't return, so it never
-    // reached them and only added noise from unrelated rows.
+    // Keep tasks assigned to Lyndsay OR whose posted notes mention her. Full
+    // Activity-History comments live behind a separate endpoint the report doesn't
+    // return, but the report's own notes/remarks DO carry posted notes — search
+    // those for "lyndsay" and the @Lyndsay.Hanes mention style.
     const assigned = String(mrAfVal(r, ['assigned_user', 'assigned_to', 'assigned', 'user_name']));
-    if (!assigned.toLowerCase().includes(lynFirst)) continue;
+    const notesBlob = String(mrAfVal(r, ['notes', 'remarks', 'note', 'comments'])).toLowerCase();
+    const assignedMatch = assigned.toLowerCase().includes(lynFirst);
+    const notesMention = notesBlob.includes('@lyndsay') || notesBlob.includes(lynFirst);
+    if (!assignedMatch && !notesMention) continue;
 
-    // Drop automated workflow steps by their exact label.
     const label = String(mrAfVal(r, ['label', 'subject', 'title', 'activity_type', 'activity', 'name', 'description'])).trim();
-    if (MR_AF_EXCLUDE_LABELS.has(label.toLowerCase())) continue;
+    const labelLc = label.toLowerCase();
+    // Priority rank: listed high-value labels first (by their order), then the rest.
+    const li = MR_AF_PRIORITY_LABELS.indexOf(labelLc);
+    // Drop automated workflow steps by exact label — but a priority label ALWAYS
+    // wins over the exclude list (safeguard so "Regional Manager Approve App" and
+    // the like can never be filtered out even if it also appeared in the excludes).
+    if (li === -1 && MR_AF_EXCLUDE_LABELS.has(labelLc)) {
+      console.log('[mrAppFolio excluded]', label);   // temporary: verify the exclude list
+      continue;
+    }
 
     const dateRaw = mrAfVal(r, ['due_at', 'due_date', 'scheduled_start', 'date', 'created_at']);
     const id = String(mrAfVal(r, ['activity_id', 'id', 'uuid', 'activity_uuid'])
@@ -7896,8 +7908,6 @@ async function mrAppFolio() {
     if (seen.has(id)) continue;
     seen.add(id);
 
-    // Priority rank: listed high-value labels first (by their order), then the rest.
-    const li = MR_AF_PRIORITY_LABELS.indexOf(label.toLowerCase());
     picked.push({
       _rank: li === -1 ? MR_AF_PRIORITY_LABELS.length : li,
       _sort: String(dateRaw || ''),
