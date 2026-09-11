@@ -6161,8 +6161,16 @@ app.get('/api/crm/tasks', requireCRM, requireAuth, async (req, res) => {
     const byFollow  = groupBy(follows.data);
     const byAppt    = groupBy(appts.data);
     const byInsp    = groupBy(insps.data);
+    // Keep the MOST RECENT dm_review per property (not whichever row happens to
+    // come last): the DM-task cadence in the engine measures age from this row's
+    // date, so an arbitrary pick would regenerate/suppress inconsistently for a
+    // property that has been reviewed more than once.
     const byDm      = {};
-    (dms.data || []).forEach(r => { byDm[r.property_id] = r; });
+    const dmWhen    = r => String(r.reviewed_at || r.updated_at || r.created_at || '');
+    (dms.data || []).forEach(r => {
+      const cur = byDm[r.property_id];
+      if (!cur || dmWhen(r) > dmWhen(cur)) byDm[r.property_id] = r;
+    });
 
     // Same restriction as /api/crm/properties, applied before the engine runs so
     // a restricted caller cannot see tasks for properties they do not shop. The
