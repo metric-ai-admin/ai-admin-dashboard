@@ -981,6 +981,12 @@ async function loadTasks() {
   renderTasks();
 }
 
+// "2026-09-15" → "Sep 15". Parsed as local midnight so it doesn't roll a day.
+function fmtDueShort(due) {
+  try { return new Date(due + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
+  catch { return due; }
+}
+
 function renderTaskCard(t) {
   const today = todayStr();
   const isDone = t.priority === '✅ Done';
@@ -998,6 +1004,10 @@ function renderTaskCard(t) {
         ${t.due_on ? `<span class="${overdue ? 'badge badge-red' : dueToday ? 'badge badge-amber' : ''}">${overdue ? '⚠ overdue ' : '📅 '}${t.due_on}</span>` : `<span class="muted small">Created ${new Date(t.created_at).toLocaleDateString()}</span>`}
       </div>
       ${t.notes ? `<div class="card-notes">${esc(t.notes.length > 100 ? t.notes.slice(0, 100) + '…' : t.notes)}</div>` : ''}
+      <div class="card-due" data-due-wrap>
+        <span class="card-due-display" data-due-display tabindex="0" title="Click to set a due date">${t.due_on ? '📅 Due: ' + fmtDueShort(t.due_on) : '📅 No due date'}</span>
+        <input type="date" class="card-due-input" data-due-input value="${t.due_on || ''}" hidden>
+      </div>
       <details class="comments">
         <summary>📝 Notes <span class="note-count">(${(t.noteHistory || []).length})</span></summary>
         <div class="note-history">
@@ -1107,6 +1117,29 @@ function renderTasks() {
     const id = card.dataset.id;
     card.querySelectorAll('[data-act]').forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); handleTaskAction(btn.dataset.act, id, card); }));
     card.querySelector('[data-prio]')?.addEventListener('change', e => updateTask(id, { priority: e.target.value }));
+
+    // Inline due-date editor: click the text to reveal a date input; on change
+    // or Enter, PUT the new due_on (which also syncs to Asana). No change → close.
+    const dueDisplay = card.querySelector('[data-due-display]');
+    const dueInput = card.querySelector('[data-due-input]');
+    if (dueDisplay && dueInput) {
+      const reveal = () => {
+        dueDisplay.hidden = true; dueInput.hidden = false; dueInput.focus();
+        try { dueInput.showPicker?.(); } catch { /* not supported — the field is still usable */ }
+      };
+      dueDisplay.addEventListener('click', reveal);
+      dueDisplay.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); reveal(); } });
+      let done = false;
+      const commit = () => {
+        if (done) return; done = true;
+        const v = dueInput.value || null;
+        if (v !== (dueInput.defaultValue || null)) updateTask(id, { due_on: v });   // reload re-renders the card
+        else { dueInput.hidden = true; dueDisplay.hidden = false; }                  // unchanged — just close
+      };
+      dueInput.addEventListener('change', commit);
+      dueInput.addEventListener('blur', commit);
+      dueInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+    }
   });
 }
 

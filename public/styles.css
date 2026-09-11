@@ -2015,3 +2015,12 @@ tr.ca-sel { background: var(--accent-glow); }
   color: var(--text-secondary);
   white-space: nowrap;
 }
+
+/* Inline due-date editor on task cards. */
+.card-due { margin: 6px 0 2px; }
+.card-due-display {
+  font-size: 12px; color: var(--text-secondary); cursor: pointer;
+  border-bottom: 1px dashed transparent; border-radius: 3px; padding: 1px 2px;
+}
+.card-due-display:hover { color: var(--text-primary); border-bottom-color: var(--border-accent); }
+.card-due-input { font-size: 12px; padding: 2px 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: inherit; }
