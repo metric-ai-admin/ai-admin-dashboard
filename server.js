@@ -7959,12 +7959,10 @@ async function mrAppFolioMentions() {
       const br = await fetchFn(bUrl, { headers: { Authorization: `Bearer ${token}` } });
       const bj = await br.json().catch(() => ({}));
       const html = bj?.body?.content || '';
-      console.log('[mrAppFolioMentions] html snippet:', html?.slice(0, 500));   // temporary
-      // Prefer the upcoming_activities URL; fall back to any appfolio URL. Broad
-      // char class (stops only at quotes/space/<>) keeps &amp;-encoded query
+      // Only the upcoming_activities link — no fallback, so the AppFolio logo/CDN
+      // image URLs never get picked up. Broad char class keeps &amp;-encoded query
       // strings intact, which we then decode.
-      const hit = html.match(/https?:\/\/[^"'\s<>]*appfolio[^"'\s<>]*upcoming_activities[^"'\s<>]*/i)
-                || html.match(/https?:\/\/[^"'\s<>]*appfolio[^"'\s<>]*/i);
+      const hit = html.match(/https?:\/\/[^"'\s<>]*appfolio[^"'\s<>]*\/upcoming_activities\/[^"'\s<>]*/i);
       if (hit) link = hit[0].replace(/&amp;/g, '&');
     } catch { /* link is optional */ }
 
