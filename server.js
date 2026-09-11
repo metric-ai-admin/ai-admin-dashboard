@@ -572,13 +572,23 @@ async function getMe(token = ASANA_TOKEN) {
 // Best-effort mirror of the local tasks.json Task Manager into Arturo's Asana.
 // Every helper is guarded by the caller so a sync failure never blocks the local
 // write. Uses the same asanaRequest/ASANA_TOKEN plumbing as the read routes.
+// Arturo's section ("José Arturo Mendoza Carvajal") in the Team's Priorities
+// Tracker — new tasks are moved here so they don't land in "Untitled section".
+const ASANA_ARTURO_SECTION_GID = process.env.ASANA_ARTURO_SECTION_GID || '1215929025116518';
 async function asanaSyncCreate(task) {
   if (!ASANA_TOKEN) return null;
   const data = { name: task.title, notes: task.notes || '', assignee: 'me' };
+  if (task.due_on) data.due_on = task.due_on;   // YYYY-MM-DD, set at creation time
   if (ASANA_PROJECT_GID) data.projects = [ASANA_PROJECT_GID];
   else { const me = await getMe(); if (me.workspaceGid) data.workspace = me.workspaceGid; }
   const created = await asanaRequest('POST', '/tasks', data);
-  return created?.gid || null;
+  const gid = created?.gid || null;
+  // Move it into Arturo's section — best-effort, never fails the create.
+  if (gid && ASANA_ARTURO_SECTION_GID) {
+    try { await asanaRequest('POST', `/sections/${ASANA_ARTURO_SECTION_GID}/addTask`, { task: gid }); }
+    catch (err) { console.error('[asana-sync] section move failed:', err.message); }
+  }
+  return gid;
 }
 async function asanaSyncUpdate(gid, fields) {
   if (!ASANA_TOKEN || !gid) return;

@@ -2005,3 +2005,13 @@ tr.ca-sel { background: var(--accent-glow); }
   vertical-align: middle;
 }
 @keyframes spinner-rotate { to { transform: rotate(360deg); } }
+
+/* Due-date field label in the quick-add task form. */
+.quick-add-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
