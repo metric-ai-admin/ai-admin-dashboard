@@ -7786,7 +7786,9 @@ async function mrEmails() {
         sender: m.sender?.emailAddress?.name || m.from?.emailAddress?.name || m.sender?.emailAddress?.address || '(unknown)',
         date: mrDateShort(m.receivedDateTime),
         subject: m.subject || '(no subject)',
-        summary: mrClean(m.bodyPreview).slice(0, 90),
+        // Kept generous here (200) for the Critical section; the Reminders
+        // section slices it to 150 at render time.
+        summary: mrClean(m.bodyPreview).slice(0, 200),
         status: m.flag?.flagStatus === 'flagged' ? 'Flagged' : 'Unread',
       }));
   }
@@ -7957,7 +7959,12 @@ async function mrAppFolioMentions() {
       const br = await fetchFn(bUrl, { headers: { Authorization: `Bearer ${token}` } });
       const bj = await br.json().catch(() => ({}));
       const html = bj?.body?.content || '';
-      const hit = html.match(/https?:\/\/[a-z0-9.-]*appfolio\.com\/upcoming_activities\/[^"'\s<>]+/i);
+      console.log('[mrAppFolioMentions] html snippet:', html?.slice(0, 500));   // temporary
+      // Prefer the upcoming_activities URL; fall back to any appfolio URL. Broad
+      // char class (stops only at quotes/space/<>) keeps &amp;-encoded query
+      // strings intact, which we then decode.
+      const hit = html.match(/https?:\/\/[^"'\s<>]*appfolio[^"'\s<>]*upcoming_activities[^"'\s<>]*/i)
+                || html.match(/https?:\/\/[^"'\s<>]*appfolio[^"'\s<>]*/i);
       if (hit) link = hit[0].replace(/&amp;/g, '&');
     } catch { /* link is optional */ }
 
@@ -7996,7 +8003,7 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   const team = emails['MPM Team'] || [];
   if (errors.emails) L.push(`  ⚠ ${errors.emails}`);
   else if (!team.length) L.push('  Nothing new from MPM Team.');
-  else team.forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}`));
+  else team.forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}  |  ${(e.summary || '').slice(0, 150)}`));
   L.push('');
 
   L.push('*PENDING CRITICAL ASANA TASKS*');
