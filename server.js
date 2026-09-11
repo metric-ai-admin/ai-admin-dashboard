@@ -7934,14 +7934,39 @@ async function mrAppFolioMentions() {
     if (!/mentioned you in a note/i.test(subject)) continue;
     // "<Name> mentioned you in a note on Upcoming Activity" → <Name>
     const who = mrClean(subject.split(/\s+mentioned you/i)[0]) || 'Someone';
-    // bodyPreview leads with the comment; drop an "@Lyndsay.Hanes" mention prefix.
-    let comment = mrClean(m.bodyPreview);
+
+    // The real comment sits after "The note says:" on its own line in bodyPreview,
+    // e.g. "…The note says:\r\n\r\n\r\n@Lyndsay.Hanes TEST COMMENT\r\n\r\nView Note…".
+    // Take the first non-empty line after that marker; strip the @Lyndsay mention.
+    const raw = String(m.bodyPreview || '');
+    let comment;
+    const idx = raw.indexOf('The note says:');
+    if (idx !== -1) {
+      const after = raw.slice(idx + 'The note says:'.length).replace(/^[\s\r\n]+/, '');
+      comment = (after.split(/\r?\n/)[0] || '').trim();
+    } else {
+      comment = mrClean(raw);
+    }
     comment = comment.replace(/^@lyndsay(?:[.\s]?hanes)?[:,\s-]*/i, '').trim();
+
+    // Fetch the HTML body (only for these few mention emails) to pull the AppFolio
+    // "View Note" link → the upcoming_activities URL. Optional — never fatal.
+    let link = '';
+    try {
+      const bUrl = `${graphMailboxBase('lyndsay')}/messages/${encodeURIComponent(m.id)}?$select=body`;
+      const br = await fetchFn(bUrl, { headers: { Authorization: `Bearer ${token}` } });
+      const bj = await br.json().catch(() => ({}));
+      const html = bj?.body?.content || '';
+      const hit = html.match(/https?:\/\/[a-z0-9.-]*appfolio\.com\/upcoming_activities\/[^"'\s<>]+/i);
+      if (hit) link = hit[0].replace(/&amp;/g, '&');
+    } catch { /* link is optional */ }
+
     out.push({
       _sort: String(m.receivedDateTime || ''),
       date: mrDateShort(m.receivedDateTime),
       who,
-      comment: comment.slice(0, 90) || '—',
+      comment: comment.slice(0, 120) || '—',
+      link,
     });
   }
   out.sort((a, b) => b._sort.localeCompare(a._sort));   // newest first
@@ -7985,7 +8010,7 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   // @mention notifications first, then assigned-to-Lyndsay tasks.
   const mentions = appfolioMentions || [];
   if (errors.appfolioMentions) L.push('  ⚠ AppFolio mentions unavailable — check manually');
-  else mentions.forEach(m => L.push(`  [mention] | ${m.date} | ${m.who} | ${m.comment}`));
+  else mentions.forEach(m => L.push(`  [mention] | ${m.date} | ${m.who} | ${m.comment}${m.link ? ` | ${m.link}` : ''}`));
   if (errors.appfolio) L.push('  AppFolio unavailable — check manually');
   else if (!appfolio || !appfolio.length) {
     if (!mentions.length && !errors.appfolioMentions) L.push('  No AppFolio tasks assigned to or mentioning Lyndsay.');
