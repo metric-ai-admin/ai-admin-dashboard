@@ -51,36 +51,48 @@
       </div>
     </div>
     <nav class="sidebar-nav" id="tabs">
-      <button data-tab="morning"><span class="nav-dot"></span>🌅 Morning Report</button>
-      <button data-tab="tasks" class="active"><span class="nav-dot"></span>Tasks</button>
-      <button data-tab="sops"><span class="nav-dot"></span>SOP Review</button>
-      <button data-tab="platform"><span class="nav-dot"></span>Projects</button>
-      <button data-tab="email"><span class="nav-dot"></span>Email / Cal<span id="reminder-badge" class="reminder-badge hidden">0</span></button>
-      <button data-tab="eod"><span class="nav-dot"></span>End of Day</button>
-      <button data-tab="sixpm"><span class="nav-dot"></span>6PM Report</button>
-      <button data-tab="calls"><span class="nav-dot"></span>Call Analyzer</button>
-      <div class="subnav-group" id="maintenance-nav-group">
-        <button data-tab="maintenance"><span class="nav-dot"></span>Maintenance <span class="subnav-caret" id="maint-subnav-caret">›</span></button>
-        <div class="subnav hidden" id="maintenance-subnav">
-          <button data-maint-view="asana">Asana Tasks</button>
-          <button data-maint-view="daily-ops">Daily Operations</button>
-          <button data-maint-view="appfolio">AppFolio Analyzer</button>
-          <button data-maint-view="eod">End of Day</button>
-          <button data-maint-view="report">Daily Work Report</button>
-          <button data-maint-view="sops">SOPs Library</button>
-          <button data-maint-view="properties">Properties</button>
-          <button data-maint-view="coverage">Coverage Map</button>
-          <button data-maint-view="efficiency">Maintenance Efficiency</button>
-          <button data-maint-view="technician">Technician Activity</button>
-          <button data-maint-view="reports-sync">Reports Sync</button>
-          <button data-maint-view="command-center">Command Center</button>
-        </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Operations</div>
+        <button data-tab="morning"><span class="nav-ico">🌅</span>Morning Report</button>
+        <button data-tab="email"><span class="nav-ico">📬</span>Email / Cal<span id="reminder-badge" class="reminder-badge hidden">0</span></button>
+        <button data-tab="tasks" class="active"><span class="nav-ico">✅</span>Tasks</button>
+        <button data-tab="platform"><span class="nav-ico">📁</span>Projects</button>
+        <button data-tab="sops"><span class="nav-ico">📖</span>SOP Review</button>
       </div>
-      <button data-tab="accounting"><span class="nav-dot"></span>Accounting</button>
-      <button data-tab="reports"><span class="nav-dot"></span>Daily Report</button>
-      <button data-tab="crm"><span class="nav-dot"></span>BD CRM</button>
-      <button data-tab="leasing"><span class="nav-dot"></span>Leasing</button>
-      <button data-tab="evictions"><span class="nav-dot"></span>Evictions</button>
+      <div class="nav-group">
+        <div class="nav-group-label">Reports</div>
+        <button data-tab="eod"><span class="nav-ico">📅</span>End of Day</button>
+        <button data-tab="sixpm"><span class="nav-ico">📈</span>6PM Report</button>
+        <button data-tab="reports"><span class="nav-ico">📋</span>Daily Report</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">Departments</div>
+        <div class="subnav-group" id="maintenance-nav-group">
+          <button data-tab="maintenance"><span class="nav-ico">🔧</span>Maintenance <span class="subnav-caret" id="maint-subnav-caret">›</span></button>
+          <div class="subnav hidden" id="maintenance-subnav">
+            <button data-maint-view="asana">Asana Tasks</button>
+            <button data-maint-view="daily-ops">Daily Operations</button>
+            <button data-maint-view="appfolio">AppFolio Analyzer</button>
+            <button data-maint-view="eod">End of Day</button>
+            <button data-maint-view="report">Daily Work Report</button>
+            <button data-maint-view="sops">SOPs Library</button>
+            <button data-maint-view="properties">Properties</button>
+            <button data-maint-view="coverage">Coverage Map</button>
+            <button data-maint-view="efficiency">Maintenance Efficiency</button>
+            <button data-maint-view="technician">Technician Activity</button>
+            <button data-maint-view="reports-sync">Reports Sync</button>
+            <button data-maint-view="command-center">Command Center</button>
+          </div>
+        </div>
+        <button data-tab="accounting"><span class="nav-ico">💰</span>Accounting</button>
+        <button data-tab="leasing"><span class="nav-ico">🏘️</span>Leasing</button>
+        <button data-tab="evictions"><span class="nav-ico">⚖️</span>Evictions</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">BD &amp; Performance</div>
+        <button data-tab="crm"><span class="nav-ico">🎯</span>BD CRM</button>
+        <button data-tab="calls"><span class="nav-ico">📞</span>Call Analyzer</button>
+      </div>
     </nav>
     <div class="sidebar-foot">
       <div class="sync-status">

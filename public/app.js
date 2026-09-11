@@ -123,6 +123,12 @@ async function initAuth() {
   allTabBtns.forEach(btn => {
     if (!allowed.includes(btn.dataset.tab)) btn.style.display = 'none';
   });
+  // Hide a category section (label + wrapper) when every item in it is hidden for
+  // this role, so a lone header never floats over an empty group.
+  $$('#tabs .nav-group').forEach(group => {
+    const anyVisible = [...group.querySelectorAll('button[data-tab]')].some(b => b.style.display !== 'none');
+    group.style.display = anyVisible ? '' : 'none';
+  });
 
   // Activate first allowed tab
   const firstAllowed = allTabBtns.find(b => allowed.includes(b.dataset.tab));
