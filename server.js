@@ -7916,15 +7916,14 @@ async function mrAppFolio() {
 // Those comments don't live in the upcoming_activities report, so we read them
 // from her mailbox (last 7 days) — same Graph pattern as mrEmails.
 async function mrAppFolioMentions() {
- try {
-  console.log('[mrAppFolioMentions] starting');
   const token = await graphMailboxToken('lyndsay');
   const cutoff = new Date(Date.now() - 7 * 86400e3).toISOString();
   // Graph $filter can't do contains(subject,…), so filter by sender + date here
-  // and match the subject text locally.
+  // and match the subject text locally. No $orderby: Graph rejects it combined
+  // with a from/emailAddress/address filter — the local sort below handles order.
   const filter = `from/emailAddress/address eq 'donotreply@appfolio.com' and receivedDateTime ge ${cutoff}`;
   const url = `${graphMailboxBase('lyndsay')}/mailFolders/Inbox/messages`
-    + `?$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime desc&$top=25`
+    + `?$filter=${encodeURIComponent(filter)}&$top=25`
     + `&$select=id,subject,from,receivedDateTime,bodyPreview`;
   const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
   const j = await r.json().catch(() => ({}));
@@ -7946,12 +7945,7 @@ async function mrAppFolioMentions() {
     });
   }
   out.sort((a, b) => b._sort.localeCompare(a._sort));   // newest first
-  console.log('[mrAppFolioMentions] matched:', out.length);
   return out.slice(0, 10);
- } catch (e) {
-   console.error('[mrAppFolioMentions] error:', e.message);
-   throw e;   // route renders "AppFolio mentions unavailable — check manually"
- }
 }
 
 function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, errors }) {
