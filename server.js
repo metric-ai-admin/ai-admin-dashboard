@@ -7910,7 +7910,44 @@ async function mrAppFolio() {
  }
 }
 
-function mrFormat({ date, meetings, emails, asana, ops, appfolio, errors }) {
+// 5b — AppFolio @mention notifications from Lyndsay's inbox. When someone writes
+// "@Lyndsay" in an Activity note, AppFolio emails donotreply@appfolio.com →
+// Lyndsay with subject "<Name> mentioned you in a note on Upcoming Activity".
+// Those comments don't live in the upcoming_activities report, so we read them
+// from her mailbox (last 7 days) — same Graph pattern as mrEmails.
+async function mrAppFolioMentions() {
+  const token = await graphMailboxToken('lyndsay');
+  const cutoff = new Date(Date.now() - 7 * 86400e3).toISOString();
+  // Graph $filter can't do contains(subject,…), so filter by sender + date here
+  // and match the subject text locally.
+  const filter = `from/emailAddress/address eq 'donotreply@appfolio.com' and receivedDateTime ge ${cutoff}`;
+  const url = `${graphMailboxBase('lyndsay')}/mailFolders/Inbox/messages`
+    + `?$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime desc&$top=25`
+    + `&$select=id,subject,from,receivedDateTime,bodyPreview`;
+  const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message || `mail returned ${r.status}`);
+  const out = [];
+  for (const m of (j.value || [])) {
+    const subject = m.subject || '';
+    if (!/mentioned you in a note/i.test(subject)) continue;
+    // "<Name> mentioned you in a note on Upcoming Activity" → <Name>
+    const who = mrClean(subject.split(/\s+mentioned you/i)[0]) || 'Someone';
+    // bodyPreview leads with the comment; drop an "@Lyndsay.Hanes" mention prefix.
+    let comment = mrClean(m.bodyPreview);
+    comment = comment.replace(/^@lyndsay(?:[.\s]?hanes)?[:,\s-]*/i, '').trim();
+    out.push({
+      _sort: String(m.receivedDateTime || ''),
+      date: mrDateShort(m.receivedDateTime),
+      who,
+      comment: comment.slice(0, 90) || '—',
+    });
+  }
+  out.sort((a, b) => b._sort.localeCompare(a._sort));   // newest first
+  return out.slice(0, 10);
+}
+
+function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, errors }) {
   const L = [];
   L.push(`📋 *Lyndsay's Daily Activity Report — ${date}*`);
   L.push('');
@@ -7944,9 +7981,14 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, errors }) {
   L.push('');
 
   L.push('*PENDING APPFOLIO TASKS — LYNDSAY*');
+  // @mention notifications first, then assigned-to-Lyndsay tasks.
+  const mentions = appfolioMentions || [];
+  if (errors.appfolioMentions) L.push('  ⚠ AppFolio mentions unavailable — check manually');
+  else mentions.forEach(m => L.push(`  [mention] | ${m.date} | ${m.who} | ${m.comment}`));
   if (errors.appfolio) L.push('  AppFolio unavailable — check manually');
-  else if (!appfolio || !appfolio.length) L.push('  No AppFolio tasks assigned to or mentioning Lyndsay.');
-  else appfolio.forEach(a => L.push(`  ${a.date} | ${a.assignedBy} | ${a.where} | ${a.summary}`));
+  else if (!appfolio || !appfolio.length) {
+    if (!mentions.length && !errors.appfolioMentions) L.push('  No AppFolio tasks assigned to or mentioning Lyndsay.');
+  } else appfolio.forEach(a => L.push(`  ${a.date} | ${a.assignedBy} | ${a.where} | ${a.summary}`));
   L.push('');
 
   L.push(`*ARTURO'S PENDING ITEMS LIST*`);
@@ -7962,12 +8004,13 @@ app.get('/api/morning-report', requireAuth, requireRole('admin'), async (req, re
     timeZone: LYNDSAY_TIMEZONE, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
   const errors = {};
-  const [mR, eR, aR, oR, fR] = await Promise.allSettled([
+  const [mR, eR, aR, oR, fR, fmR] = await Promise.allSettled([
     GRAPH_CONFIGURED ? mrMeetings() : Promise.resolve([]),
     GRAPH_CONFIGURED ? mrEmails()   : Promise.resolve({}),
     mrAsana(),
     mrOps(),   // reads data/tasks.json — no DB dependency
     mrAppFolio(),
+    GRAPH_CONFIGURED ? mrAppFolioMentions() : Promise.resolve([]),
   ]);
 
   const meetings = mR.status === 'fulfilled' ? mR.value : (errors.meetings = mrReason(mR.reason), []);
@@ -7975,9 +8018,10 @@ app.get('/api/morning-report', requireAuth, requireRole('admin'), async (req, re
   const asana    = aR.status === 'fulfilled' ? aR.value : (errors.asana    = mrReason(aR.reason), { configured: true, tasks: [] });
   const ops      = oR.status === 'fulfilled' ? oR.value : (errors.ops      = mrReason(oR.reason), []);
   const appfolio = fR.status === 'fulfilled' ? fR.value : (errors.appfolio = mrReason(fR.reason), []);
+  const appfolioMentions = fmR.status === 'fulfilled' ? fmR.value : (errors.appfolioMentions = mrReason(fmR.reason), []);
   if (!GRAPH_CONFIGURED) { errors.meetings = errors.emails = 'Microsoft Graph is not configured.'; }
 
-  const report = mrFormat({ date, meetings, emails, asana, ops, appfolio, errors });
+  const report = mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, errors });
   res.json({ report, generatedAt: new Date().toISOString(), date, errors });
 });
 
