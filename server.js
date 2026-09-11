@@ -7687,8 +7687,26 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
 const MR_FOLDERS = [
   { label: 'Lyndsay Review', match: ['lyndsay review', 'lyndsay'] },
   { label: 'Clients',        match: ['client'] },
-  { label: 'MPM Team',       match: ['mpm team', 'mpm'] },
+  // MPM Team feeds the "Email Reminders" section — recentOnly caps it to the last
+  // 5 days so resolved/older threads don't linger.
+  { label: 'MPM Team',       match: ['mpm team', 'mpm'], recentOnly: true },
 ];
+// Personal / automated noise that should never surface in the morning report.
+const MR_EMAIL_EXCLUDE_DOMAINS = ['georgetownisd.org', 'parentsquare.com'];
+const MR_EMAIL_EXCLUDE_SUBJECTS = ['grading notification', 'digest', 'holiday party', 'jingle', 'yearbook', 'shipment', 'shipped:'];
+const MR_REMINDER_MAX_AGE_DAYS = 5;
+function mrEmailExcluded(m) {
+  const addr = (m.sender?.emailAddress?.address || m.from?.emailAddress?.address || '').toLowerCase();
+  if (addr) {
+    const domain = addr.split('@')[1] || '';
+    if (MR_EMAIL_EXCLUDE_DOMAINS.some(d => domain === d || domain.endsWith('.' + d))) return true;
+    const local = addr.split('@')[0] || '';
+    if (local === 'noreply' || local === 'no-reply' || local.startsWith('noreply') || local.startsWith('no-reply')) return true;
+  }
+  const subj = (m.subject || '').toLowerCase();
+  if (MR_EMAIL_EXCLUDE_SUBJECTS.some(k => subj.includes(k))) return true;
+  return false;
+}
 const mrTimeCT  = iso => { try { return new Date(iso).toLocaleTimeString('en-US', { timeZone: LYNDSAY_TIMEZONE, hour: 'numeric', minute: '2-digit' }); } catch { return ''; } };
 const mrDateShort = iso => { try { return new Date(iso).toLocaleDateString('en-US', { timeZone: LYNDSAY_TIMEZONE, month: 'short', day: 'numeric' }); } catch { return ''; } };
 const mrClean = s => String(s || '').replace(/\s+/g, ' ').trim();
@@ -7750,9 +7768,18 @@ async function mrEmails() {
         } catch { /* skip a folder/filter that errors */ }
       }
     }
+    // Recent-only cutoff (CT calendar date) for the reminders folder.
+    let cutoffCT = null;
+    if (def.recentOnly) {
+      const c = new Date(); c.setDate(c.getDate() - MR_REMINDER_MAX_AGE_DAYS);
+      cutoffCT = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(c);
+    }
+    const recvCT = iso => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date(iso)); } catch { return ''; } };
     const seen = new Set();
     out[def.label] = collected
-      .filter(m => m.id && !seen.has(m.id) && seen.add(m.id))
+      .filter(m => m.id && !seen.has(m.id) && seen.add(m.id))   // de-dupe by message id
+      .filter(m => !mrEmailExcluded(m))                          // drop personal/automated noise
+      .filter(m => !cutoffCT || (recvCT(m.receivedDateTime) && recvCT(m.receivedDateTime) >= cutoffCT))
       .sort((a, b) => String(b.receivedDateTime || '').localeCompare(String(a.receivedDateTime || '')))
       .slice(0, 10)
       .map(m => ({
@@ -7792,7 +7819,10 @@ async function mrOps() {
   const tasks = await readJSON(TASKS_FILE, []);
   const pri = t => String(t.priority || '');
   return (tasks || [])
+    // A task marked "✅ Done" via the dashboard may set priority without setting
+    // completed_at, so exclude on both signals.
     .filter(t => !t.completed_at
+      && !pri(t).includes('✅') && !pri(t).toLowerCase().includes('done')
       && (pri(t).includes('🔴') || pri(t).includes('🟡') || pri(t).includes('🟢')))
     .map(t => {
       const p = pri(t);
