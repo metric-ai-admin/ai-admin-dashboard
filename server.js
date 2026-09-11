@@ -7900,6 +7900,9 @@ const MR_FOLDERS = [
 // Personal / automated noise that should never surface in the morning report.
 const MR_EMAIL_EXCLUDE_DOMAINS = ['georgetownisd.org', 'parentsquare.com'];
 const MR_EMAIL_EXCLUDE_SUBJECTS = ['grading notification', 'digest', 'holiday party', 'jingle', 'yearbook', 'shipment', 'shipped:'];
+// Known-resolved threads that keep resurfacing because the email still sits in the
+// folder. Substring match on the subject. '4260729334' — ACH form completed 09/10.
+const MR_EMAIL_RESOLVED_SUBJECTS = ['4260729334'];
 const MR_REMINDER_MAX_AGE_DAYS = 5;
 function mrEmailExcluded(m) {
   const addr = (m.sender?.emailAddress?.address || m.from?.emailAddress?.address || '').toLowerCase();
@@ -7911,6 +7914,7 @@ function mrEmailExcluded(m) {
   }
   const subj = (m.subject || '').toLowerCase();
   if (MR_EMAIL_EXCLUDE_SUBJECTS.some(k => subj.includes(k))) return true;
+  if (MR_EMAIL_RESOLVED_SUBJECTS.some(k => subj.includes(k.toLowerCase()))) return true;
   return false;
 }
 const mrTimeCT  = iso => { try { return new Date(iso).toLocaleTimeString('en-US', { timeZone: LYNDSAY_TIMEZONE, hour: 'numeric', minute: '2-digit' }); } catch { return ''; } };
@@ -7982,11 +7986,24 @@ async function mrEmails() {
     }
     const recvCT = iso => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date(iso)); } catch { return ''; } };
     const seen = new Set();
+    // For the reminders folder, also collapse the same thread that arrives as
+    // separate messages (different ids, same subject). Sorted newest-first below,
+    // so the first occurrence kept is the most recent. "Re:"/"Fwd:" are stripped
+    // so a reply and its original collapse together.
+    const subjSeen = new Set();
+    const normSubj = s => String(s || '').toLowerCase().replace(/^\s*(re|fwd|fw)\s*:\s*/i, '').trim();
     out[def.label] = collected
       .filter(m => m.id && !seen.has(m.id) && seen.add(m.id))   // de-dupe by message id
-      .filter(m => !mrEmailExcluded(m))                          // drop personal/automated noise
+      .filter(m => !mrEmailExcluded(m))                          // drop personal/automated/resolved noise
       .filter(m => !cutoffCT || (recvCT(m.receivedDateTime) && recvCT(m.receivedDateTime) >= cutoffCT))
       .sort((a, b) => String(b.receivedDateTime || '').localeCompare(String(a.receivedDateTime || '')))
+      .filter(m => {                                             // subject de-dupe (reminders only)
+        if (!def.recentOnly) return true;
+        const k = normSubj(m.subject);
+        if (subjSeen.has(k)) return false;
+        subjSeen.add(k);
+        return true;
+      })
       .slice(0, 10)
       .map(m => ({
         sender: m.sender?.emailAddress?.name || m.from?.emailAddress?.name || m.sender?.emailAddress?.address || '(unknown)',
