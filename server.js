@@ -7857,26 +7857,21 @@ const mrAfVal = (row, keys) => {
   }
   return '';
 };
-// Field-agnostic search text: recursively collect EVERY string value in the row
-// (including nested arrays/objects — e.g. comments/notes added after creation,
-// which live under names we can't enumerate) into one lowercased blob.
-function mrDeepText(value, depth = 0) {
-  if (value == null || depth > 6) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return value.map(v => mrDeepText(v, depth + 1)).join(' ');
-  if (typeof value === 'object') return Object.values(value).map(v => mrDeepText(v, depth + 1)).join(' ');
-  return '';
-}
+// Automated AppFolio workflow steps — noise, never actionable for Lyndsay. Matched
+// case-insensitively against the activity's label/subject/title (exact match).
+const MR_AF_EXCLUDE_LABELS = new Set([
+  'obtain electric account number',
+  'add other rent charges to profile',
+  'verify obligo paid',
+  'add utility charges to profile',
+  'send welcome letter',
+  'create move-in inspection',
+].map(s => s.toLowerCase()));
+// High-value labels float to the top of the list (in this order); everything else
+// that survives the filters follows, newest first.
+const MR_AF_PRIORITY_LABELS = ['regional manager approve app', 'verify income', 'verify identity'];
 async function mrAppFolio() {
   const rows = await appfolioReportsFetch('/api/v2/reports/upcoming_activities.json', {});
-  // Debug aid: field names are not sensitive, so log the keys of the first few
-  // rows so the available AppFolio fields are visible in the Render logs. Set
-  // MR_APPFOLIO_DEBUG=1 to additionally dump the first 3 full rows as JSON.
-  try {
-    (rows || []).slice(0, 3).forEach((r, i) => console.log(`[mrAppFolio debug] row ${i} keys:`, Object.keys(r || {}).join(', ')));
-    if (process.env.MR_APPFOLIO_DEBUG === '1') console.log('[mrAppFolio debug]', JSON.stringify((rows || []).slice(0, 3), null, 2));
-  } catch { /* logging must never break the section */ }
   const lynFirst = MR_AF_LYNDSAY.split(/\s+/)[0].toLowerCase();   // "lyndsay"
   const seen = new Set();
   const picked = [];
@@ -7885,21 +7880,26 @@ async function mrAppFolio() {
     const status = String(mrAfVal(r, ['activity_status', 'status'])).toLowerCase();
     if (status && !MR_AF_OPEN_STATUSES.some(s => status.includes(s))) continue;
 
+    // Only "assigned to Lyndsay" — the deep-text mentions search was removed: AppFolio
+    // comments live behind a separate endpoint the report doesn't return, so it never
+    // reached them and only added noise from unrelated rows.
     const assigned = String(mrAfVal(r, ['assigned_user', 'assigned_to', 'assigned', 'user_name']));
-    // "Mentions" is matched over the WHOLE row, not a hardcoded field list, so a
-    // comment/note added later (any field, any nesting) is still caught.
-    const deepBlob = mrDeepText(r).toLowerCase();
-    const assignedMatch = assigned.toLowerCase().includes(lynFirst);
-    const mentionMatch = deepBlob.includes(lynFirst) || deepBlob.includes('lyndsay@');
-    if (!assignedMatch && !mentionMatch) continue;
+    if (!assigned.toLowerCase().includes(lynFirst)) continue;
+
+    // Drop automated workflow steps by their exact label.
+    const label = String(mrAfVal(r, ['label', 'subject', 'title', 'activity_type', 'activity', 'name', 'description'])).trim();
+    if (MR_AF_EXCLUDE_LABELS.has(label.toLowerCase())) continue;
 
     const dateRaw = mrAfVal(r, ['due_at', 'due_date', 'scheduled_start', 'date', 'created_at']);
     const id = String(mrAfVal(r, ['activity_id', 'id', 'uuid', 'activity_uuid'])
-      || `${assigned}|${dateRaw}|${deepBlob.slice(0, 40)}`);   // synthesize when no id field
+      || `${assigned}|${dateRaw}|${label.slice(0, 40)}`);   // synthesize when no id field
     if (seen.has(id)) continue;
     seen.add(id);
 
+    // Priority rank: listed high-value labels first (by their order), then the rest.
+    const li = MR_AF_PRIORITY_LABELS.indexOf(label.toLowerCase());
     picked.push({
+      _rank: li === -1 ? MR_AF_PRIORITY_LABELS.length : li,
       _sort: String(dateRaw || ''),
       date: dateRaw ? mrDateShort(dateRaw) : '—',
       assignedBy: String(mrAfVal(r, ['created_by', 'assigned_by', 'owner', 'created_by_name', 'author'])) || '—',
@@ -7907,7 +7907,8 @@ async function mrAppFolio() {
       summary: mrClean(mrAfVal(r, ['description', 'remarks', 'subject', 'summary', 'activity_type', 'activity', 'notes'])).slice(0, 80) || '—',
     });
   }
-  picked.sort((a, b) => b._sort.localeCompare(a._sort));   // newest first
+  // High-value labels first (by MR_AF_PRIORITY_LABELS order), then newest first.
+  picked.sort((a, b) => (a._rank - b._rank) || b._sort.localeCompare(a._sort));
   return picked.slice(0, 10);
 }
 
