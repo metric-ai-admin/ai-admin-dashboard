@@ -7871,10 +7871,14 @@ const MR_AF_EXCLUDE_LABELS = new Set([
 // that survives the filters follows, newest first.
 const MR_AF_PRIORITY_LABELS = ['regional manager approve app', 'verify income', 'verify identity'];
 async function mrAppFolio() {
+ try {
+  console.log('[mrAppFolio] starting fetch');
   const rows = await appfolioReportsFetch('/api/v2/reports/upcoming_activities.json', {});
+  console.log('[mrAppFolio] raw count:', (rows || []).length, 'first row keys:', rows && rows[0] ? Object.keys(rows[0]).join(',') : 'none');
   const lynFirst = MR_AF_LYNDSAY.split(/\s+/)[0].toLowerCase();   // "lyndsay"
   const seen = new Set();
   const picked = [];
+  let excluded = 0;
   for (const r of (rows || [])) {
     // Open statuses only. A blank status is kept (better to surface than hide).
     const status = String(mrAfVal(r, ['activity_status', 'status'])).toLowerCase();
@@ -7898,6 +7902,7 @@ async function mrAppFolio() {
     // wins over the exclude list (safeguard so "Regional Manager Approve App" and
     // the like can never be filtered out even if it also appeared in the excludes).
     if (li === -1 && MR_AF_EXCLUDE_LABELS.has(labelLc)) {
+      excluded++;
       console.log('[mrAppFolio excluded]', label);   // temporary: verify the exclude list
       continue;
     }
@@ -7917,9 +7922,14 @@ async function mrAppFolio() {
       summary: mrClean(mrAfVal(r, ['description', 'remarks', 'subject', 'summary', 'activity_type', 'activity', 'notes'])).slice(0, 80) || '—',
     });
   }
+  console.log('[mrAppFolio] after filter:', picked.length, 'kept,', excluded, 'excluded');
   // High-value labels first (by MR_AF_PRIORITY_LABELS order), then newest first.
   picked.sort((a, b) => (a._rank - b._rank) || b._sort.localeCompare(a._sort));
   return picked.slice(0, 10);
+ } catch (e) {
+   console.error('[mrAppFolio] error:', e.message);
+   throw e;   // let the route render "AppFolio unavailable — check manually"
+ }
 }
 
 function mrFormat({ date, meetings, emails, asana, ops, appfolio, errors }) {
