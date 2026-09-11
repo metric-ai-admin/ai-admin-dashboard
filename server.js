@@ -726,7 +726,9 @@ async function asanaBackfillTasks() {
   let synced = 0, skipped = 0, changed = false;
   const errors = [];
   for (const task of tasks) {
-    if (task.completed_at || task.asana_gid) { skipped++; continue; }
+    // Skip done tasks: completed_at, or a "✅ Done" priority that never set it.
+    const p = String(task.priority || '');
+    if (task.completed_at || task.asana_gid || p.includes('✅') || p.toLowerCase().includes('done')) { skipped++; continue; }
     try {
       const gid = await asanaSyncCreate(task);
       if (gid) { task.asana_gid = gid; changed = true; synced++; }
@@ -746,6 +748,26 @@ const asanaBackfillHandler = async (req, res) => {
 };
 app.post('/api/tasks/asana-backfill', requireAuth, requireRole('admin'), asanaBackfillHandler);
 app.get('/api/tasks/asana-backfill', requireAuth, requireRole('admin'), asanaBackfillHandler);
+
+// Cleanup: for tasks already done locally but synced to Asana as open, mark the
+// Asana task complete (doesn't delete). Admin-only. Fixes rows synced before the
+// done-check above was added.
+app.post('/api/tasks/asana-cleanup', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const tasks = await readJSON(TASKS_FILE, []);
+    let cleaned = 0;
+    const errors = [];
+    for (const task of tasks) {
+      if (!task.asana_gid) continue;
+      const p = String(task.priority || '');
+      const done = task.completed_at || p.includes('✅') || p.toLowerCase().includes('done');
+      if (!done) continue;
+      try { await asanaSyncUpdate(task.asana_gid, { completed: true }); cleaned++; }
+      catch (err) { errors.push({ id: task.id, title: task.title, error: err.message }); }
+    }
+    res.json({ cleaned, errors });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // One-time on-boot backfill: 30s after startup, sync any open, unsynced tasks to
 // Asana so a deploy fills the gap without a manual call. Fire-and-forget, guarded,
