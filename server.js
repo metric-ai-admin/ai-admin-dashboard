@@ -8510,44 +8510,80 @@ async function eodGather() {
     };
   } catch (e) { S.maintenance = { error: e.message }; }
 
-  // 6 — BD CRM weekly activity: this week's live phone shops (properties +
-  // phone_shops, connection parsed from notes) + top stale properties ranked by
-  // the engine's computed lead score (no lead_score column exists).
+  // 6 — BD CRM: (1) weekly activity by agent (this Mon–Sun, by created_at),
+  // (2) hot properties (top score, no contact in 7+ days), (3) overdue tasks.
   try {
     const now = new Date(today + 'T00:00:00');
     const weekStart = eodAddDays(today, -((now.getDay() + 6) % 7)); // back to Monday
-    const [propsR, psR, fuR, apptR, dmR] = await Promise.all([
+    const cutoff7 = eodAddDays(today, -7);
+    const dstr = v => String(v || '').slice(0, 10);
+    const [propsR, psR, osR, dmR, fuR, apptR, inspR] = await Promise.all([
       db.from('properties').select('*'),
-      db.from('phone_shops').select('property_id,shop_date,agent_name,score,notes'),
+      db.from('phone_shops').select('*'),
+      db.from('online_shops').select('*'),
+      db.from('dm_reviews').select('*'),
       db.from('follow_ups').select('*'),
       db.from('appointments').select('*'),
-      db.from('dm_reviews').select('*'),
+      db.from('inspections').select('*'),
     ]);
     const props = propsR.data || [];
-    const nameById = {}; for (const p of props) nameById[p.id] = p.property_name;
-    const group = rows => { const m = {}; for (const r of (rows || [])) { const k = r.property_id; if (!m[k]) m[k] = []; m[k].push(r); } return m; };
-    const phoneBy = group(psR.data), fuBy = group(fuR.data), apptBy = group(apptR.data);
+    const group = rows => { const m = {}; for (const r of (rows || [])) { (m[r.property_id] = m[r.property_id] || []).push(r); } return m; };
+    const phoneBy = group(psR.data), onlineBy = group(osR.data), fuBy = group(fuR.data), apptBy = group(apptR.data), inspBy = group(inspR.data);
     const dmBy = {}; for (const d of (dmR.data || [])) dmBy[d.property_id] = d;
-    const connLabel = { answered_agent: 'Answered', answered_ai: 'AI/Service', voicemail: 'Voicemail', no_answer: 'No Answer', wrong_number: 'Wrong #', not_working: 'Not Working' };
-    const parseConn = notes => { try { return JSON.parse(notes || '{}').connection || null; } catch { return null; } };
-    const shopsThisWeek = (psR.data || [])
-      .filter(s => s.shop_date && String(s.shop_date).slice(0, 10) >= weekStart)
-      .map(s => ({ property: nameById[s.property_id] || '—', shopped_by: s.agent_name || '—', date: String(s.shop_date).slice(0, 10), connection: (c => connLabel[c] || c || '—')(parseConn(s.notes)), score: s.score }))
-      .sort((a, b) => b.date.localeCompare(a.date));
-    const cutoff = eodAddDays(today, -7);
-    const stale = [];
-    for (const p of props) {
-      if (p.management_type === 'owner-managed') continue; // engine's isActive
-      const dates = (phoneBy[p.id] || []).map(s => String(s.shop_date || '').slice(0, 10)).filter(Boolean).sort();
-      const last = dates.length ? dates[dates.length - 1] : null;
-      if (last && last >= cutoff) continue; // shopped within 7 days
-      let ls = null;
-      try { ls = crmEngine.getLeadScore({ ...p, phone_shops: phoneBy[p.id] || [], follow_ups: fuBy[p.id] || [], appointments: apptBy[p.id] || [], dm_review: dmBy[p.id] || null }).score; } catch { /* leave null */ }
-      stale.push({ property: p.property_name, lead_score: ls, last_shop: last, days_since: last ? Math.floor((Date.parse(today) - Date.parse(last)) / 86400000) : null });
-    }
-    stale.sort((a, b) => (b.lead_score || 0) - (a.lead_score || 0));
-    console.log('[eod] bdcrm — weekStart=%s shopsThisWeek=%d stale=%d', weekStart, shopsThisWeek.length, stale.length);
-    S.bdcrm = { shopsThisWeek, shopsCount: shopsThisWeek.length, staleCount: stale.length, stale: stale.slice(0, 5) };
+    const dmDate = d => dstr(d.reviewed_at || d.updated_at || d.created_at);
+
+    // Component 1 — weekly activity counted by agent (created_at within the week,
+    // falling back to the activity's own date column if created_at is missing).
+    const countByAgent = (rows, dateOf) => {
+      const m = {};
+      for (const r of (rows || [])) {
+        if (dstr(dateOf(r)) < weekStart) continue;
+        const a = (String(r.agent_name || '').trim()) || '—';
+        m[a] = (m[a] || 0) + 1;
+      }
+      return Object.entries(m).map(([agent, count]) => ({ agent, count })).sort((x, y) => y.count - x.count);
+    };
+    const phone  = countByAgent(psR.data, r => r.created_at || r.shop_date);
+    const online = countByAgent(osR.data, r => r.created_at || r.shop_date);
+    const dm     = countByAgent(dmR.data, r => r.created_at || r.reviewed_at || r.updated_at);
+    const sum = a => a.reduce((s, x) => s + x.count, 0);
+
+    // Component 2 — hot properties: highest score, no contact in the last 7 days.
+    const contactedRecently = p =>
+      (phoneBy[p.id] || []).some(s => dstr(s.shop_date) >= cutoff7)
+      || (onlineBy[p.id] || []).some(s => dstr(s.shop_date) >= cutoff7)
+      || (dmBy[p.id] && dmDate(dmBy[p.id]) >= cutoff7);
+    const scoreOf = p => {
+      if (typeof p.score === 'number') return p.score;   // use the stored score when present
+      try { return crmEngine.getLeadScore({ ...p, phone_shops: phoneBy[p.id] || [], online_shops: onlineBy[p.id] || [], follow_ups: fuBy[p.id] || [], appointments: apptBy[p.id] || [], dm_review: dmBy[p.id] || null }).score; }
+      catch { return null; }
+    };
+    const hot = props
+      .filter(p => p.management_type !== 'owner-managed' && !contactedRecently(p))
+      .map(p => ({ score: scoreOf(p), property: p.property_name, submarket: p.submarket || '—' }))
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 5);
+
+    // Component 3 — overdue tasks (past their due date) from the task engine.
+    let overdue = [];
+    try {
+      const hydrated = props.map(p => ({ ...p,
+        phone_shops: phoneBy[p.id] || [], online_shops: onlineBy[p.id] || [],
+        follow_ups: fuBy[p.id] || [], appointments: apptBy[p.id] || [],
+        inspections: inspBy[p.id] || [], dm_review: dmBy[p.id] || null }));
+      overdue = crmEngine.computeTasks(hydrated)
+        .filter(t => t.due && t.due < today)
+        .sort((a, b) => String(a.due).localeCompare(String(b.due)))
+        .slice(0, 5)
+        .map(t => ({ property: t.property_name, label: t.label, due: t.due,
+          days: Math.floor((Date.parse(today) - Date.parse(t.due)) / 86400000) }));
+    } catch { /* engine failure — leave overdue empty */ }
+
+    console.log('[eod] bdcrm — week %s: phone=%d online=%d dm=%d, hot=%d, overdue=%d', weekStart, sum(phone), sum(online), sum(dm), hot.length, overdue.length);
+    S.bdcrm = {
+      activity: { phone, online, dm, phoneTotal: sum(phone), onlineTotal: sum(online), dmTotal: sum(dm) },
+      hot, overdue,
+    };
   } catch (e) { S.bdcrm = { error: e.message }; }
 
   // 7 — ACCOUNTING (shared summary: tasks + bills due + W9 issues)
@@ -8611,13 +8647,22 @@ function eodRenderHtml(data) {
     m5.error ? eodErr(m5.error) : `${m5.open || 0} open WO(s) · ${m5.completedToday || 0} completed today · ${m5.totalHours || 0}h logged today across ${m5.wosWorked || 0} WO(s)`,
     eodTable(['WO#', 'Property', 'Unit', 'Issue', 'Priority', 'Assigned'], (m5.table || []).map(w => [eodEsc(w.wo), eodEsc(w.property), eodEsc(w.unit), eodEsc((w.issue || '').slice(0, 50)), eodEsc(w.priority), eodEsc(w.assigned)]))));
   const b6 = S.bdcrm || {};
-  P.push(eodSectionHtml('📊', 'BD CRM — Weekly Activity',
-    b6.error ? eodErr(b6.error) : `${b6.shopsCount || 0} shops completed this week · ${b6.staleCount || 0} properties still need a shop (>7 days)`,
+  const b6ag = b6.activity || {};
+  const agLine = list => (list && list.length) ? list.map(a => `${eodEsc(a.agent)} (${a.count})`).join(', ') : '—';
+  P.push(eodSectionHtml('📊', 'BD CRM',
+    b6.error ? eodErr(b6.error)
+      : `This week — ${b6ag.phoneTotal || 0} phone · ${b6ag.onlineTotal || 0} online · ${b6ag.dmTotal || 0} DM reviews`,
     b6.error ? '' :
-      `<div style="font-weight:600;font-size:12px;margin:8px 0 2px;color:${EOD.text}">This Week's Shops</div>`
-      + eodTable(['Property', 'Shopped By', 'Date', 'Connection', 'Score'], (b6.shopsThisWeek || []).map(s => [eodEsc(s.property), eodEsc(s.shopped_by), eodEsc(s.date), eodEsc(s.connection), s.score == null ? '—' : s.score]))
-      + `<div style="font-weight:600;font-size:12px;margin:12px 0 2px;color:${EOD.text}">Top 5 Stale Properties (no shop in 7+ days, highest lead score first)</div>`
-      + eodTable(['Property', 'Lead Score', 'Last Shop', 'Days Since'], (b6.stale || []).map(s => [eodEsc(s.property), s.lead_score == null ? '—' : s.lead_score, s.last_shop ? eodEsc(s.last_shop) : 'never', s.days_since == null ? '—' : s.days_since]))));
+      `<div style="font-weight:600;font-size:12px;margin:8px 0 2px;color:${EOD.text}">Weekly Activity by Agent (Mon–Sun)</div>`
+      + eodTable(['Type', 'By agent', 'Total'], [
+          ['Phone shops', agLine(b6ag.phone), b6ag.phoneTotal || 0],
+          ['Online shops', agLine(b6ag.online), b6ag.onlineTotal || 0],
+          ['DM reviews', agLine(b6ag.dm), b6ag.dmTotal || 0],
+        ].map(r => [eodEsc(r[0]), r[1], r[2]]))
+      + `<div style="font-weight:600;font-size:12px;margin:12px 0 2px;color:${EOD.text}">🔥 Hot Properties (top score, no contact in 7+ days)</div>`
+      + eodTable(['Score', 'Property', 'Submarket'], (b6.hot || []).map(h => [h.score == null ? '—' : h.score, eodEsc(h.property), eodEsc(h.submarket)]))
+      + `<div style="font-weight:600;font-size:12px;margin:12px 0 2px;color:${EOD.text}">⏰ Overdue Tasks</div>`
+      + eodTable(['Property', 'Task', 'Due', 'Days late'], (b6.overdue || []).map(o => [eodEsc(o.property), eodEsc(o.label), eodEsc(o.due), o.days]))));
   const a7 = S.accounting || {};
   const eodMoney = n => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0 });
   const w9total = (a7.missingW9 || 0) + (a7.outdatedW9 || 0);
