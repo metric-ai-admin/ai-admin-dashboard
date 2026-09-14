@@ -7906,7 +7906,7 @@ const MR_EMAIL_EXCLUDE_SUBJECTS = ['grading notification', 'digest', 'holiday pa
 // Known-resolved threads that keep resurfacing because the email still sits in the
 // folder. Substring match on the subject. '4260729334' — ACH form completed 09/10.
 const MR_EMAIL_RESOLVED_SUBJECTS = ['4260729334'];
-const MR_REMINDER_MAX_AGE_DAYS = 5;
+const MR_REMINDER_MAX_AGE_DAYS = 3;
 function mrEmailExcluded(m) {
   const addr = (m.sender?.emailAddress?.address || m.from?.emailAddress?.address || '').toLowerCase();
   if (addr) {
@@ -8119,6 +8119,18 @@ async function mrOps() {
     .sort((a, b) => a.rank - b.rank);
 }
 
+// 4b — SOP Review Slab-link coverage (a health snapshot atop Arturo's items).
+async function mrSopReview() {
+  const db = supabaseAdmin || supabasePublic;
+  const [totalRes, linkedRes] = await Promise.all([
+    db.from('sop_review').select('*', { count: 'exact', head: true }),
+    db.from('sop_review').select('*', { count: 'exact', head: true }).not('slab_url', 'is', null),
+  ]);
+  if (totalRes.error) throw new Error(totalRes.error.message);
+  if (linkedRes.error) throw new Error(linkedRes.error.message);
+  return { total: totalRes.count || 0, linked: linkedRes.count || 0 };
+}
+
 // 5 — AppFolio upcoming activities assigned to or mentioning Lyndsay.
 // Uses the Reports API (appfolioReportsFetch, APPFOLIO_REPORTS_* creds) — the same
 // path metric-routes uses for upcoming_activities. AppFolio's report filters cover
@@ -8286,7 +8298,7 @@ async function mrAppFolioMentions() {
   return out.slice(0, 10);
 }
 
-function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, errors }) {
+function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, sopReview, errors }) {
   const L = [];
   L.push(`📋 *Lyndsay's Daily Activity Report — ${date}*`);
   L.push('');
@@ -8337,6 +8349,7 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   L.push('');
 
   L.push(`*ARTURO'S PENDING ITEMS LIST*`);
+  if (sopReview && !errors.sopReview) L.push(`  📖 SOP Review: ${sopReview.linked}/${sopReview.total} Slab links`);
   if (errors.ops) L.push(`  ⚠ ${errors.ops}`);
   else if (!ops.length) L.push('  No 🔴/🟡/🟢 items pending.');
   else ops.forEach(o => L.push(`  ${o.priority}  ${o.item}  —  ${o.pending}`));
@@ -8349,13 +8362,14 @@ app.get('/api/morning-report', requireAuth, requireRole('admin'), async (req, re
     timeZone: LYNDSAY_TIMEZONE, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
   const errors = {};
-  const [mR, eR, aR, oR, fR, fmR] = await Promise.allSettled([
+  const [mR, eR, aR, oR, fR, fmR, srR] = await Promise.allSettled([
     GRAPH_CONFIGURED ? mrMeetings() : Promise.resolve([]),
     GRAPH_CONFIGURED ? mrEmails()   : Promise.resolve({}),
     mrAsana(),
     mrOps(),   // reads data/tasks.json — no DB dependency
     mrAppFolio(),
     GRAPH_CONFIGURED ? mrAppFolioMentions() : Promise.resolve([]),
+    CRM_CONFIGURED ? mrSopReview() : Promise.resolve(null),
   ]);
 
   const meetings = mR.status === 'fulfilled' ? mR.value : (errors.meetings = mrReason(mR.reason), []);
@@ -8364,9 +8378,10 @@ app.get('/api/morning-report', requireAuth, requireRole('admin'), async (req, re
   const ops      = oR.status === 'fulfilled' ? oR.value : (errors.ops      = mrReason(oR.reason), []);
   const appfolio = fR.status === 'fulfilled' ? fR.value : (errors.appfolio = mrReason(fR.reason), []);
   const appfolioMentions = fmR.status === 'fulfilled' ? fmR.value : (errors.appfolioMentions = mrReason(fmR.reason), []);
+  const sopReview = srR.status === 'fulfilled' ? srR.value : (errors.sopReview = mrReason(srR.reason), null);
   if (!GRAPH_CONFIGURED) { errors.meetings = errors.emails = 'Microsoft Graph is not configured.'; }
 
-  const report = mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, errors });
+  const report = mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, sopReview, errors });
   res.json({ report, generatedAt: new Date().toISOString(), date, errors });
 });
 
