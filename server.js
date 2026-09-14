@@ -7915,12 +7915,24 @@ function mrEmailExcluded(m) {
   const subj = (m.subject || '').toLowerCase();
   if (MR_EMAIL_EXCLUDE_SUBJECTS.some(k => subj.includes(k))) return true;
   if (MR_EMAIL_RESOLVED_SUBJECTS.some(k => subj.includes(k.toLowerCase()))) return true;
+
+  // Internal/automated senders and our own reports — noise for Lyndsay's morning view.
+  if (addr.includes('support@livewithmetric.com')) return true;
+  if (['end of day report', 'eod report', 'metric eod', 'asana task tracking'].some(k => subj.includes(k))) return true;
+  const senderName = (m.sender?.emailAddress?.name || m.from?.emailAddress?.name || '').toLowerCase();
+  if (senderName.includes('metric accounting') && subj.includes('bill audit')) return true;
+  if (senderName.includes('maintenance coordinator') && subj.includes('reports')) return true;
   return false;
 }
 const mrTimeCT  = iso => { try { return new Date(iso).toLocaleTimeString('en-US', { timeZone: LYNDSAY_TIMEZONE, hour: 'numeric', minute: '2-digit' }); } catch { return ''; } };
 const mrDateShort = iso => { try { return new Date(iso).toLocaleDateString('en-US', { timeZone: LYNDSAY_TIMEZONE, month: 'short', day: 'numeric' }); } catch { return ''; } };
 const mrClean = s => String(s || '').replace(/\s+/g, ' ').trim();
 const mrReason = r => (r && r.message) ? r.message : String(r || 'failed');
+
+// Personal / private calendar items to keep out of the morning brief, plus the
+// consumer email domains that mark an event as organized from a personal account.
+const MR_MEETING_EXCLUDE_SUBJECTS = ['dr visit', 'doctor', 'medical', 'appointment', 'focus time'];
+const MR_PERSONAL_EMAIL_DOMAINS = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com', 'aol.com', 'me.com', 'proton.me', 'protonmail.com'];
 
 // 1 — Today's meetings on Lyndsay's calendar (CT). A wide UTC window is pulled
 // then filtered to the CT calendar day, so Render's UTC clock can't roll the day.
@@ -7931,7 +7943,7 @@ async function mrMeetings() {
   const end   = new Date(now + 36 * 3600e3);
   const url = `https://graph.microsoft.com/v1.0/users/${MAILBOX_LYNDSAY}/calendarView`
     + `?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
-    + '&$select=subject,start,end,location,onlineMeeting,bodyPreview,organizer,isAllDay,isCancelled'
+    + '&$select=subject,start,end,location,onlineMeeting,bodyPreview,organizer,isAllDay,isCancelled,showAs'
     + '&$orderby=start/dateTime&$top=100';
   const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
   const j = await r.json().catch(() => ({}));
@@ -7944,13 +7956,25 @@ async function mrMeetings() {
       return {
         subject: e.subject || '(no title)',
         organizer: e.organizer?.emailAddress?.name || e.organizer?.emailAddress?.address || '—',
+        organizerEmail: e.organizer?.emailAddress?.address || '',
+        showAs: e.showAs || '',
         format: platform,
         startIso,
         allDay: !!e.isAllDay,
         cancelled: !!e.isCancelled || /^cancel(l)?ed:/i.test(e.subject || ''),
       };
     })
-    .filter(m => m.startIso && !m.cancelled && ctDateOf(m.startIso) === todayCT)
+    .filter(m => {
+      if (!m.startIso || m.cancelled || ctDateOf(m.startIso) !== todayCT) return false;
+      // Personal/private events: subject markers, "free" (not a real commitment),
+      // or organized from a personal (non-Metric consumer) email account.
+      const s = (m.subject || '').toLowerCase();
+      if (MR_MEETING_EXCLUDE_SUBJECTS.some(k => s.includes(k))) return false;
+      if (String(m.showAs).toLowerCase() === 'free') return false;
+      const od = (m.organizerEmail.split('@')[1] || '').toLowerCase();
+      if (od && MR_PERSONAL_EMAIL_DOMAINS.includes(od)) return false;
+      return true;
+    })
     .sort((a, b) => String(a.startIso).localeCompare(String(b.startIso)));
 }
 
@@ -8028,7 +8052,16 @@ async function mrAsana() {
   const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
   const raw = await asanaGetAll(
     `/user_task_lists/${list.gid}/tasks?opt_fields=${ASANA_OPT_FIELDS}&completed_since=${encodeURIComponent(midnight.toISOString())}`, ASANA_TOKEN);
-  return { configured: true, tasks: (raw || []).map(t => shapeTask(t, null)).filter(t => !t.completed) };
+  const all = (raw || []).map(t => shapeTask(t, null)).filter(t => !t.completed)
+    // Most urgent first: soonest due date, tasks with no due date last.
+    .sort((a, b) => {
+      const ad = a.due_on || '', bd = b.due_on || '';
+      if (ad && bd) return ad.localeCompare(bd);
+      if (ad) return -1;
+      if (bd) return 1;
+      return 0;
+    });
+  return { configured: true, tasks: all.slice(0, 5), more: Math.max(0, all.length - 5) };
 }
 
 // 4 — Arturo's Task Manager items, open and flagged 🔴/🟡/🟢 (critical-first).
@@ -8259,7 +8292,10 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   if (errors.asana) L.push(`  ⚠ ${errors.asana}`);
   else if (!asana.configured) L.push('  Asana not configured.');
   else if (!asana.tasks.length) L.push('  No critical Asana tasks pending.');
-  else asana.tasks.forEach(t => L.push(`  ${t.name}  |  Due: ${t.due_on || '—'}  |  ${mrClean(t.notes_preview) || '—'}  [Open]`));
+  else {
+    asana.tasks.forEach(t => L.push(`  ${t.name}  |  Due: ${t.due_on || '—'}  |  ${mrClean(t.notes_preview) || '—'}  [Open]`));
+    if (asana.more > 0) L.push(`  + ${asana.more} more task${asana.more === 1 ? '' : 's'} — see dashboard`);
+  }
   L.push('');
 
   L.push('*PENDING APPFOLIO TASKS — LYNDSAY*');
