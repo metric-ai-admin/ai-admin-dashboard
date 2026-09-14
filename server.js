@@ -7930,6 +7930,12 @@ function mrEmailExcluded(m) {
   // Broader internal-noise catch (a Re: prefix may be encoded/spaced oddly): any
   // internal-domain email about our own tooling/reports isn't a morning reminder.
   if (internalDomain && ['sop review', 'asana task', 'end of day'].some(k => subj.includes(k))) return true;
+  // Internal KPI meeting summaries (e.g. "Greystone KPI Meeting - Summary").
+  if (internalDomain && subj.includes('kpi meeting')) return true;
+
+  // Automated AppFolio/report digests — KPI & Box Score reports.
+  if (subj.includes('kpi report') || subj.includes('box score report')) return true;
+  if (addr === 'communications@metricpropertymanagement.mailer.appfolio.us') return true;
 
   // Calendar invite/cancellation notices — not action items.
   if (/^\s*cancel(l)?ed\s*:/i.test(rawSubj)) return true;
@@ -8300,7 +8306,10 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   const team = emails['MPM Team'] || [];
   if (errors.emails) L.push(`  ⚠ ${errors.emails}`);
   else if (!team.length) L.push('  Nothing new from MPM Team.');
-  else team.forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}  |  ${(e.summary || '').slice(0, 150)}`));
+  else {
+    team.slice(0, 5).forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}  |  ${(e.summary || '').slice(0, 150)}`));
+    if (team.length > 5) L.push(`  + ${team.length - 5} more reminder${team.length - 5 === 1 ? '' : 's'} — check MPM Team folder`);
+  }
   L.push('');
 
   L.push('*PENDING CRITICAL ASANA TASKS*');
