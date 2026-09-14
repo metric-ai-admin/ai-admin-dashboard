@@ -1916,6 +1916,7 @@ tr.ca-sel { background: var(--accent-glow); }
 .sopr-select { padding:6px 9px; border:1px solid var(--border); border-radius:8px; background:var(--bg-surface); color:var(--text); font:inherit; font-size:12px; }
 .sopr-search { flex:1; min-width:180px; padding:6px 10px; border:1px solid var(--border); border-radius:8px; background:var(--bg-surface); color:var(--text); font:inherit; font-size:12.5px; }
 .sopr-count { color:var(--muted); font-size:12px; white-space:nowrap; }
+.sopr-slab-count { color:var(--muted); font-size:12px; white-space:nowrap; margin-left:10px; }
 .sopr-grid { display:grid; grid-template-columns:minmax(300px,440px) 1fr; gap:16px; align-items:start; }
 @media (max-width:900px){ .sopr-grid { grid-template-columns:1fr; } }
 .sopr-listpanel { background:var(--bg-surface); border:1px solid var(--border); border-radius:12px; overflow:hidden; }

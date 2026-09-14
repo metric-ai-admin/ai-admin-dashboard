@@ -1384,6 +1384,7 @@ function soprRenderTracker() {
       <select class="sopr-select" id="sopr-f-cat">${cats.map(c => `<option value="${esc(c)}"${soprState.filters.category === c ? ' selected' : ''}>${c === 'All' ? 'All categories' : esc(c)}</option>`).join('')}</select>
       <input class="sopr-search" id="sopr-f-search" type="search" placeholder="🔎 title, tags, category" value="${esc(soprState.filters.search)}">
       <span class="sopr-count">Showing ${list.length}${kb.length ? ' + ' + kb.length + ' KB' : ''} of ${soprState.rows.length} SOPs</span>
+      <span class="sopr-slab-count">🔗 Slab linked: ${soprState.rows.filter(r => r.slab_url && String(r.slab_url).trim()).length} / ${soprState.rows.length}</span>
     </div>
     <div class="sopr-grid">
       <div class="sopr-listpanel">

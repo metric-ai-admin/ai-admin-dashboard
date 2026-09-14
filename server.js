@@ -5178,7 +5178,10 @@ app.get('/api/sop-review', requireAuth, async (req, res) => {
     }
     const { data, error } = await q;
     if (error) throw new Error(error.message);
-    let rows = data || [];
+    const allRows = data || [];
+    // Slab-link progress over the WHOLE set (independent of any search filter).
+    const slabLinked = allRows.filter(r => r.slab_url && String(r.slab_url).trim()).length;
+    let rows = allRows;
     // Search spans title, category and tags (a jsonb array), so it runs here.
     if (req.query.search) {
       const s = String(req.query.search).toLowerCase();
@@ -5186,7 +5189,7 @@ app.get('/api/sop-review', requireAuth, async (req, res) => {
         || (r.category || '').toLowerCase().includes(s)
         || (Array.isArray(r.tags) && r.tags.some(t => String(t).toLowerCase().includes(s))));
     }
-    res.json({ sops: rows });
+    res.json({ sops: rows, sopCount: allRows.length, slabLinked });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
