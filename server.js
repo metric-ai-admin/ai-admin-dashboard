@@ -5159,11 +5159,11 @@ cron.schedule('0 2 * * *', () => {
 // recommendation, original_recommendation) load per-record on Review.
 const SOP_REVIEW_LIST_COLS = 'id,file,title,proposed_title,title_status,category,'
   + 'tags,status,resman,merge,merge_pair_id,merge_decision,recommendation_status,'
-  + 'source_note,pending,archived,updated_at,updated_by';
+  + 'source_note,pending,archived,slab_url,updated_at,updated_by';
 // Only these may be PATCHed — never id/full_text/original_* etc.
 const SOP_REVIEW_EDITABLE = ['status', 'title_status', 'recommendation_status',
   'merge_decision', 'tags', 'category', 'resman', 'merge', 'merge_pair_id',
-  'proposed_title', 'title', 'pending', 'archived', 'previous_status', 'updated_by'];
+  'proposed_title', 'title', 'pending', 'archived', 'previous_status', 'slab_url', 'updated_by'];
 
 app.get('/api/sop-review', requireAuth, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ sops: [] });

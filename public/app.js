@@ -1418,7 +1418,7 @@ function soprRowHtml(r, n) {
     <div class="sopr-row-n">${n}</div>
     <div class="sopr-row-body">
       <div class="sopr-row-title">${esc(r.title || '(untitled)')}</div>
-      <div class="sopr-row-badges">${badges}</div>
+      <div class="sopr-row-badges">${badges}${r.slab_url ? ` <a class="sopr-slab-link" href="${esc(r.slab_url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Open in Slab ↗</a>` : ''}</div>
     </div>
     <button class="sopr-review-btn" data-sopr-review="${r.id}">Review</button>
   </div>`;
@@ -1544,6 +1544,13 @@ function soprReviewDetailHtml(r) {
         <div class="sopr-tagwrap">${tags.map((t, i) => `<span class="sopr-tag">${esc(t)}${admin ? `<button data-sopr-tagdel="${i}">×</button>` : ''}</span>`).join('') || '<span class="muted small">none</span>'}</div>
         ${admin ? `<div class="sopr-inline"><input class="sopr-taginput" placeholder="add tag…"><button class="sopr-btn" data-sopr-act="tag-add">Add</button></div>` : ''}
       </div>
+    </div>
+
+    <div class="sopr-sec"><div class="sopr-sec-title">Slab article
+      ${r.slab_url ? `<a class="sopr-slab-link" href="${esc(r.slab_url)}" target="_blank" rel="noopener">Open in Slab ↗</a>` : ''}</div>
+      ${admin
+        ? `<input type="url" class="sopr-input" data-sopr-field="slab_url" value="${esc(r.slab_url || '')}" placeholder="https://…slab.com/posts/…">`
+        : `<div class="sopr-text muted">${r.slab_url ? esc(r.slab_url) : 'No Slab link.'}</div>`}
     </div>
 
     <div class="sopr-sec"><div class="sopr-sec-title">Screenshots</div>
