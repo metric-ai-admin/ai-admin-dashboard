@@ -1035,18 +1035,27 @@ function renderTaskCard(t) {
 function renderTasks() {
   const ft = $('#task-type-filter').value;
   const today = todayStr();
-  const d7 = new Date(); d7.setDate(d7.getDate() - 7);
-  const weekAgo = localDateStr(d7);
+  // Current Mon–Sun week (local/CT), so "This Week" is the calendar week.
+  const now = new Date();
+  const dow = now.getDay();                    // 0=Sun..6=Sat
+  const monday = new Date(now); monday.setDate(now.getDate() + (dow === 0 ? -6 : 1 - dow));
+  const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+  const weekStart = localDateStr(monday), weekEnd = localDateStr(sunday);
 
   let baseList = taskCache.filter(t => !ft || t.type === ft);
-  const inRange = (t, cutoff) => {
+  // A task is in [start,end] when its due date OR its created date falls in range
+  // (Done tasks by completion date). Critical always shows. This means a due date
+  // set later surfaces the task in the matching time view, and a task with no due
+  // date still shows on the day it was created.
+  const inRange = (t, start, end) => {
     if (t.priority === '🔴 Critical') return true;
-    if (t.priority === '✅ Done') return t.completed_at && localDateStr(t.completed_at) >= cutoff;
-    if (t.due_on && t.due_on >= cutoff) return true;
-    return localDateStr(t.created_at) >= cutoff;
+    if (t.priority === '✅ Done') { const c = t.completed_at && localDateStr(t.completed_at); return c && c >= start && c <= end; }
+    if (t.due_on && t.due_on >= start && t.due_on <= end) return true;
+    const cd = localDateStr(t.created_at);
+    return cd >= start && cd <= end;
   };
-  if (taskTimeFilter === 'today') baseList = baseList.filter(t => inRange(t, today));
-  else if (taskTimeFilter === 'week') baseList = baseList.filter(t => inRange(t, weekAgo));
+  if (taskTimeFilter === 'today') baseList = baseList.filter(t => inRange(t, today, today));
+  else if (taskTimeFilter === 'week') baseList = baseList.filter(t => inRange(t, weekStart, weekEnd));
 
   // KPI bar — reflects the active type/time filter, so the pill counts match the
   // cards actually shown in each column (not the whole cache).
