@@ -506,7 +506,10 @@ function ccWoLink(o) {
   return null;
 }
 function ccInspLink(inspId) {
-  return inspId ? (CC_BASE + '/maintenance/inspections/' + encodeURIComponent(inspId))
+  // Per-inspection detail moved to the top-level /inspections/{id} route; the old
+  // /maintenance/inspections/{id} now 404s. The filtered list view (no id) still
+  // lives under /maintenance/inspections and works, so it stays as the fallback.
+  return inspId ? (CC_BASE + '/inspections/' + encodeURIComponent(inspId))
                 : (CC_BASE + '/maintenance/inspections?filters%5Bstatus_list%5D=IN+PROGRESS');
 }
 
