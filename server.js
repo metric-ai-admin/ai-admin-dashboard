@@ -7922,6 +7922,11 @@ function mrEmailExcluded(m) {
   const senderName = (m.sender?.emailAddress?.name || m.from?.emailAddress?.name || '').toLowerCase();
   if (senderName.includes('metric accounting') && subj.includes('bill audit')) return true;
   if (senderName.includes('maintenance coordinator') && subj.includes('reports')) return true;
+  // Internal reply threads: a "Re:" from one of our own domains isn't a reminder.
+  if (/^\s*re\s*:/i.test(m.subject || '')) {
+    const domain = addr.split('@')[1] || '';
+    if (domain === 'metricpropertymanagement.com' || domain === 'livewithmetric.com') return true;
+  }
   return false;
 }
 const mrTimeCT  = iso => { try { return new Date(iso).toLocaleTimeString('en-US', { timeZone: LYNDSAY_TIMEZONE, hour: 'numeric', minute: '2-digit' }); } catch { return ''; } };
