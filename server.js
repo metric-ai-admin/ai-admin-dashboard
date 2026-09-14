@@ -7923,10 +7923,20 @@ function mrEmailExcluded(m) {
   if (senderName.includes('metric accounting') && subj.includes('bill audit')) return true;
   if (senderName.includes('maintenance coordinator') && subj.includes('reports')) return true;
   // Internal reply threads: a "Re:" from one of our own domains isn't a reminder.
-  if (/^\s*re\s*:/i.test(m.subject || '')) {
-    const domain = addr.split('@')[1] || '';
-    if (domain === 'metricpropertymanagement.com' || domain === 'livewithmetric.com') return true;
-  }
+  const rawSubj = m.subject || '';
+  const senderDomain = addr.split('@')[1] || '';
+  const internalDomain = senderDomain === 'metricpropertymanagement.com' || senderDomain === 'livewithmetric.com';
+  if (/^\s*re\s*:/i.test(rawSubj) && internalDomain) return true;
+  // Broader internal-noise catch (a Re: prefix may be encoded/spaced oddly): any
+  // internal-domain email about our own tooling/reports isn't a morning reminder.
+  if (internalDomain && ['sop review', 'asana task', 'end of day'].some(k => subj.includes(k))) return true;
+
+  // Calendar invite/cancellation notices — not action items.
+  if (/^\s*cancel(l)?ed\s*:/i.test(rawSubj)) return true;
+  if (subj.includes('canceled event') || subj.includes('cancelled event')) return true;
+  if (addr === 'noreply@calendar.google.com' || addr === 'calendar-notification@google.com') return true;
+  // Google Calendar invite/cancel notices embed the time as "@ Mon, ...".
+  if (/@\s+(mon|tue|wed|thu|fri|sat|sun),/i.test(rawSubj)) return true;
   return false;
 }
 const mrTimeCT  = iso => { try { return new Date(iso).toLocaleTimeString('en-US', { timeZone: LYNDSAY_TIMEZONE, hour: 'numeric', minute: '2-digit' }); } catch { return ''; } };
@@ -8386,7 +8396,7 @@ async function eodGather() {
     // Normalize each row's session_date to a CT calendar date: a plain
     // 'YYYY-MM-DD' passes through; a timestamptz is converted through the CT
     // timezone. This is robust whether the column is a date or a timestamp.
-    const { data: ts } = await db.from('triage_sessions').select('emails_processed,session_date').order('session_date', { ascending: false }).limit(25);
+    const { data: ts } = await db.from('triage_sessions').select('emails_processed,personal,session_date').order('session_date', { ascending: false }).limit(25);
     const rowDateCT = sd => {
       const raw = String(sd || '');
       if (!raw) return '';
@@ -8396,6 +8406,10 @@ async function eodGather() {
     };
     const todays = (ts || []).filter(r => rowDateCT(r.session_date) === today);
     s.processed = todays.reduce((a, r) => a + (r.emails_processed || 0), 0);
+    // Personal is sourced from the session column (emails moved to Personal today),
+    // not folder unread counts — so the folder-based 'personal' category is skipped
+    // below to avoid a duplicate.
+    s.personal = todays.reduce((a, r) => a + (r.personal || 0), 0);
     console.log('[eod] triage — today(CT)=%s, latest session_dates=%j, matched=%d, processed=%d',
       today, (ts || []).slice(0, 5).map(r => r.session_date), todays.length, s.processed);
     try {
@@ -8403,7 +8417,7 @@ async function eodGather() {
       const folders = await listMailFolders('lyndsay', token);
       const norm = x => String(x || '').toLowerCase();
       for (const cat of LYNDSAY_TRIAGE_CATEGORIES) {
-        if (cat.key === 'archive') continue;
+        if (cat.key === 'archive' || cat.key === 'personal') continue;   // personal comes from the session column
         const fl = folders.filter(f => !norm(f.displayName).includes('archive') && cat.match.some(m => norm(f.displayName).includes(m)));
         if (!fl.length) continue;
         const c = fl.reduce((a, f) => a + (f.unreadItemCount || 0), 0);
@@ -8411,6 +8425,8 @@ async function eodGather() {
         s.unreadTotal += c;
       }
     } catch (e) { s.foldersError = e.message; }
+    // Personal breakdown from the triage session (always shown).
+    s.folders.push({ label: 'Personal', emoji: '📳', count: s.personal });
     S.triage = s;
   } catch (e) { S.triage = { error: e.message }; }
 
