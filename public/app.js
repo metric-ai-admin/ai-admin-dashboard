@@ -2453,10 +2453,47 @@ function amWireRules() {
   });
   $('#am-rule-add')?.addEventListener('click', () => amRuleModal());
   $('#am-rules-refresh')?.addEventListener('click', amLoadRules);
+  $('#am-outlook-rules-btn')?.addEventListener('click', amApplyOutlookRules);
   $('#am-rule-modal-close')?.addEventListener('click', amRuleCloseModal);
   $('#am-rule-cancel')?.addEventListener('click', amRuleCloseModal);
   $('#am-rule-modal-overlay')?.addEventListener('click', amRuleCloseModal);
   amRulesWired = true;
+}
+
+// Create the standing Outlook move rules in Lyndsay's mailbox (server-side, Graph).
+async function amApplyOutlookRules() {
+  const btn = $('#am-outlook-rules-btn'), status = $('#am-outlook-rules-status');
+  if (!btn) return;
+  if (!confirm("This will create 5 Outlook message rules in Lyndsay's mailbox (Fire Claim, Lyndsay Review, Financial). Continue?")) return;
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ Applying…';
+  if (status) status.textContent = '';
+  try {
+    const d = await api('/api/email/lyndsay/message-rules', { method: 'POST', credentials: 'same-origin' });
+    const rules = d.rules || [];
+    const created = rules.filter(r => r.status === 'created');
+    const existed = rules.filter(r => r.status === 'exists');
+    const failed = rules.filter(r => r.status === 'error' || r.status === 'skipped');
+    if (failed.length) {
+      // Partial/failed — keep the button usable so it can be retried.
+      const detail = failed.map(r => `${r.rule}: ${r.error || r.reason || 'failed'}`).join(' · ');
+      if (status) status.textContent = `⚠ ${created.length} created, ${existed.length} already existed, ${failed.length} failed — ${detail}`;
+      toast(`Outlook rules: ${failed.length} failed`, 'error');
+      btn.disabled = false; btn.textContent = label;
+      return;
+    }
+    // All good (created and/or already present) — lock the button.
+    if (status) status.textContent = created.length
+      ? `✅ Created: ${created.map(r => r.rule).join(', ')}`
+      : '✅ All rules already exist.';
+    toast(created.length ? `Created ${created.length} Outlook rule${created.length === 1 ? '' : 's'} ✅` : 'Outlook rules already in place', 'success');
+    btn.textContent = '✅ Outlook Rules Applied';
+    // Stays disabled — rules are created.
+  } catch (err) {
+    if (status) status.textContent = '❌ ' + err.message;
+    toast('Failed to apply Outlook rules: ' + err.message, 'error');
+    btn.disabled = false; btn.textContent = label;
+  }
 }
 
 async function amLoadRules() {
