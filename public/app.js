@@ -318,6 +318,9 @@ async function collectionsGenerate() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transcript: collectionsTranscript || '' }),
     });
+    // The endpoint keep-alives past Render's 60s cap, so it always returns 200 with
+    // either { html } or { error } in the body — surface an error field as a throw.
+    if (data && data.error) throw new Error(data.error);
     clearInterval(timer);
     bar.style.width = '100%'; lbl.textContent = 'Complete';
     $('#col-report').innerHTML = data.html || '<p>No content returned.</p>';

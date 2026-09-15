@@ -3940,6 +3940,14 @@ const COLLECTIONS_SYSTEM = 'You are the collections analyst for Metric Property 
 
 app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_ROLES), async (req, res) => {
   if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'ANTHROPIC_API_KEY is not set on the server.' });
+  // Keep-alive stream: Render's proxy closes an idle HTTP request at ~60s, but the
+  // Claude call can run longer, so write a whitespace byte every 10s to hold the
+  // connection open. Leading whitespace is valid JSON, so the final body still
+  // parses. Status is committed to 200 here — success/failure is in the JSON body
+  // (the client checks for an `error` field), which is why every exit uses finish().
+  res.status(200).setHeader('Content-Type', 'application/json; charset=utf-8');
+  const keepAlive = setInterval(() => { try { if (!res.writableEnded) res.write(' '); } catch { /* client gone */ } }, 10000);
+  const finish = payload => { clearInterval(keepAlive); if (!res.writableEnded) res.end(JSON.stringify(payload)); };
   try {
     const transcript = String(req.body?.transcript || '').slice(0, 30000);
     const todayCT = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
@@ -3970,7 +3978,7 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
     } else { errors.calls = 'SimpleVOIP not configured'; }
 
     if (!current.length && !prior.length && !calls.length && !transcript) {
-      return res.status(502).json({ error: 'No data available to analyze (AppFolio/SimpleVOIP unavailable and no transcript).', errors });
+      return finish({ error: 'No data available to analyze (AppFolio/SimpleVOIP unavailable and no transcript).', errors });
     }
 
     const bal = r => parseFloat(r.delinquent_rent) || 0;
@@ -4002,17 +4010,17 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
 
     let html;
     try {
-      html = await callGrading.anthropicText({ system: COLLECTIONS_SYSTEM, user, maxTokens: 4000, model: 'claude-sonnet-4-6', timeoutMs: 55000 });
+      html = await callGrading.anthropicText({ system: COLLECTIONS_SYSTEM, user, maxTokens: 4000, model: 'claude-sonnet-4-6', timeoutMs: 90000 });
     } catch (aiErr) {
       console.error('[collections] Claude call failed:', aiErr.message);
       // Partial error rather than hanging — hand back what was pulled.
-      return res.status(504).json({ error: aiErr.message,
+      return finish({ error: aiErr.message,
         meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, hasTranscript: !!transcript, payloadChars: user.length, errors } });
     }
     // Prepend the truncation note to the report so it's visible in the output.
     if (truncated) html = `<div class="alert-box info"><div class="al">DATA</div>Showing top ${DELINQ_CAP} residents by balance (of ${current.length} current / ${prior.length} prior accounts).</div>` + html;
-    res.json({ html, meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, hasTranscript: !!transcript, payloadChars: user.length, errors } });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    finish({ html, meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, hasTranscript: !!transcript, payloadChars: user.length, errors } });
+  } catch (err) { finish({ error: err.message }); }
 });
 
 // The ported app itself, served to any valid session (the nav tab is admin-only

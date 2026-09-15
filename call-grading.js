@@ -97,7 +97,7 @@ async function gradeTranscript({ callType, agent, duration, transcript }) {
 
 // Like anthropicJson but returns the model's raw text (no JSON parse) — for
 // prompts that produce prose/HTML (e.g. the Collections Review report).
-async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs }) {
+async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs = 90000 }) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('Anthropic is not configured: set ANTHROPIC_API_KEY on the server.');
   // Optional hard timeout so a slow/hung call fails fast instead of hitting the
