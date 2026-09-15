@@ -3963,7 +3963,7 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       const callErrors = results.map(r => r.error).filter(Boolean);
       if (callErrors.length) errors.calls = callErrors.join('; ');
       const perAgent = results.map(r => simplevoip.shapeCalls(r.calls || [])
-        .sort((a, b) => (b.datetime || 0) - (a.datetime || 0)).slice(0, 200));
+        .sort((a, b) => (b.datetime || 0) - (a.datetime || 0)).slice(0, 50));
       calls = perAgent.flat().sort((a, b) => (b.datetime || 0) - (a.datetime || 0));
     } else { errors.calls = 'SimpleVOIP not configured'; }
 
@@ -3971,26 +3971,29 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       return res.status(502).json({ error: 'No data available to analyze (AppFolio/SimpleVOIP unavailable and no transcript).', errors });
     }
 
-    const m = v => (v == null || v === '') ? '' : v;
     const bal = r => parseFloat(r.delinquent_rent) || 0;
     const sumDelinq = rows => rows.reduce((s, r) => s + bal(r), 0);
-    // Top 50 residents by balance (highest first) — the full list can be hundreds
+    // Top 25 residents by balance (highest first) — the full list can be hundreds
     // of rows and blow past the model/request limits.
-    const DELINQ_CAP = 50;
+    const DELINQ_CAP = 25;
     const topByBalance = rows => [...rows].sort((a, b) => bal(b) - bal(a)).slice(0, DELINQ_CAP);
     const truncated = current.length > DELINQ_CAP || prior.length > DELINQ_CAP;
+    // Pre-summarized rows only — tenant | unit | property | balance | days delinquent.
     const delinqText = rows => topByBalance(rows)
-      .map(r => `${r.name} | ${r.property} ${r.unit} | delinq ${m(r.delinquent_rent)} | AR ${m(r.amount_receivable)}${r.notes ? ' | ' + String(r.notes).replace(/\s+/g, ' ').slice(0, 120) : ''}`).join('\n');
-    const callText = calls.slice(0, 300)
-      .map(c => `${new Date((c.datetime || 0) * 1000).toISOString().slice(0, 10)} | ${c.caller || ''} -> ${c.to_name || c.to_number || ''} | ${c.direction} | ${c.duration}s | ${c.status}${c.has_transcript ? ' | transcript' : ''}`).join('\n');
+      .map(r => `${r.name} | ${r.unit} | ${r.property} | $${Math.round(bal(r))}${r.days_delinquent != null ? ` | ${r.days_delinquent}d` : ''}`).join('\n');
+    // Calls: datetime | caller | duration | direction | result.
+    const callText = calls.slice(0, 150)
+      .map(c => `${new Date((c.datetime || 0) * 1000).toISOString().slice(0, 16).replace('T', ' ')} | ${c.caller || ''} | ${c.duration}s | ${c.direction} | ${c.status}`).join('\n');
 
     const user = `Analysis date: ${todayCT} (current) vs ${priorCT} (prior month). AR agent: Karla Gonzalez (Ext. 1110).\n`
       + `Current total delinquent rent: $${Math.round(sumDelinq(current)).toLocaleString()} across ${current.length} accounts.\n`
       + `Prior total delinquent rent: $${Math.round(sumDelinq(prior)).toLocaleString()} across ${prior.length} accounts.\n`
       + (truncated ? `NOTE: only the top ${DELINQ_CAP} residents by balance are listed below (of ${current.length} current / ${prior.length} prior).\n` : '')
-      + `\n=== CURRENT MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${todayCT}) ===\n${delinqText(current) || '[none]'}\n\n`
+      + `\nDelinquency columns: tenant | unit | property | balance | days_delinquent\n`
+      + `=== CURRENT MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${todayCT}) ===\n${delinqText(current) || '[none]'}\n\n`
       + `=== PRIOR MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${priorCT}) ===\n${delinqText(prior) || '[none]'}\n\n`
-      + `=== SIMPLEVOIP CALL LOG — last 90 days, up to 200/agent ===\n${callText || '[none]'}\n\n`
+      + `Call columns: datetime | caller | duration | direction | result\n`
+      + `=== SIMPLEVOIP CALL LOG — last 90 days, up to 50/agent ===\n${callText || '[none]'}\n\n`
       + `=== WEEKLY REVIEW CALL TRANSCRIPT ===\n${transcript || '[not provided]'}\n`;
 
     console.log(`[collections] payload ${user.length} chars — current=${current.length} prior=${prior.length} calls=${calls.length} agents=${agentCount} transcript=${transcript.length}`);
