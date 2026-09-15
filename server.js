@@ -7575,9 +7575,30 @@ const MEETING_CAPTURE_KEYWORDS = (process.env.MEETING_CAPTURE_KEYWORDS
 const MEETING_EXCLUDE_KEYWORDS = (process.env.MEETING_EXCLUDE_KEYWORDS || 'client')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 
-// Lyndsay's Azure AD Object ID, resolved once from her UPN and cached (see the
-// capture job). Not hardcoded — looked up at first run.
-let meetingOrganizerId = null;
+// Fallback organizer identities the capture job tries when a meeting's own
+// organizer can't be resolved (or its onlineMeeting can't be found under it).
+// Resolved from UPNs to Azure AD Object IDs once and cached — never hardcoded.
+// The Executive Assistant account (support@livewithmetric.com) organizes the daily
+// standup, so it's included alongside Lyndsay; MEETING_ORGANIZER_IDS (comma-sep)
+// and the legacy MEETING_ORGANIZER_ID env vars extend the set.
+const MEETING_SUPPORT_MAILBOX = process.env.MEETING_SUPPORT_MAILBOX || 'support@livewithmetric.com';
+let meetingOrganizerIds = null;
+async function resolveOrganizerIds(appToken) {
+  if (meetingOrganizerIds) return meetingOrganizerIds;
+  const inputs = [
+    ...String(process.env.MEETING_ORGANIZER_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
+    process.env.MEETING_ORGANIZER_ID,
+    MAILBOX_LYNDSAY,
+    MEETING_SUPPORT_MAILBOX,
+  ].filter(Boolean);
+  const ids = [];
+  for (const v of [...new Set(inputs)]) {
+    try { const id = await teams.resolveUserId(fetchFn, appToken, v); if (id) ids.push(id); }
+    catch (err) { console.warn(`[meetings] organizer id resolve failed for ${v}: ${err.message}`); }
+  }
+  meetingOrganizerIds = [...new Set(ids)];
+  return meetingOrganizerIds;
+}
 
 // Every non-cancelled Teams meeting is now captured (the 7-day EOD transcript
 // digest wants them all), EXCEPT ones matching an exclude keyword — 'client' by
@@ -7659,15 +7680,11 @@ async function captureMeetingTranscripts() {
 
   // onlineMeetings/transcripts live UNDER THE MEETING ORGANIZER's user, and the
   // endpoint needs their Azure AD Object ID (GUID), not a UPN. The organizer is
-  // NOT always Lyndsay — many invites are sent from officecalendar@… — so we
-  // resolve each event's own organizer and try that first, falling back to the
-  // configured default (MEETING_ORGANIZER_ID / Lyndsay). Object IDs are cached
-  // per email. A wrong/default user id is exactly why a meeting resolved to
-  // nothing and its transcript never landed.
-  if (!meetingOrganizerId) {
-    try { meetingOrganizerId = process.env.MEETING_ORGANIZER_ID || await teams.resolveUserId(fetchFn, appToken, MAILBOX_LYNDSAY); }
-    catch (err) { console.warn('[meetings] default organizer id resolve failed:', err.message); }
-  }
+  // NOT always Lyndsay — the daily standup is organized by support@livewithmetric
+  // (the EA account), and other invites by officecalendar@… — so we resolve each
+  // event's own organizer and try that first, then fall back to EVERY configured
+  // organizer (Lyndsay + support@ + MEETING_ORGANIZER_IDS). Object IDs are cached.
+  const fallbackOrgIds = await resolveOrganizerIds(appToken);
   const orgIdCache = new Map();
   async function resolveOrgId(email) {
     if (!email) return null;
@@ -7689,9 +7706,9 @@ async function captureMeetingTranscripts() {
     const mdate = ctDateOf(m.start?.dateTime) || '?';
     const orgEmail = m.organizer?.emailAddress?.address || '';
     try {
-      // Try the meeting's actual organizer first, then the configured default.
+      // Try the meeting's actual organizer first, then every configured fallback.
       const orgId = await resolveOrgId(orgEmail);
-      const candidates = [...new Set([orgId, meetingOrganizerId].filter(Boolean))];
+      const candidates = [...new Set([orgId, ...fallbackOrgIds].filter(Boolean))];
       if (!candidates.length) { console.warn(`[meetings] "${subj}" ${mdate} — no organizer id to query (organizer=${orgEmail || '?'})`); out.skipped++; continue; }
       let om = null, ownerId = null, lastErr = null;
       for (const uid of candidates) {
