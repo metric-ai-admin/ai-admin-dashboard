@@ -797,6 +797,30 @@ if (ASANA_TOKEN && process.env.ASANA_BACKFILL_ON_BOOT !== '0') {
   }, 30000);
 }
 
+// One-time on-boot cleanup: the "SOP Review — Match Slab articles" task is done,
+// but tasks.json lives on the Render disk (not in git), so it's marked complete
+// here on the next deploy. Idempotent — once completed_at is set it's a no-op.
+// Disable with SOP_TASK_DONE_ON_BOOT=0.
+if (process.env.SOP_TASK_DONE_ON_BOOT !== '0') {
+  setTimeout(async () => {
+    try {
+      const tasks = await readJSON(TASKS_FILE, []);
+      let changed = false;
+      for (const t of tasks) {
+        const tl = String(t.title || '').toLowerCase();
+        if (!t.completed_at && tl.includes('sop review') && tl.includes('match slab')) {
+          t.completed_at = new Date().toISOString();
+          t.priority = '✅ Done';
+          changed = true;
+          if (t.asana_gid) { try { await asanaSyncComplete(t.asana_gid); } catch { /* non-fatal */ } }
+          console.log(`[tasks] boot cleanup — marked "${t.title}" complete`);
+        }
+      }
+      if (changed) await writeJSON(TASKS_FILE, tasks);
+    } catch (err) { console.error('[tasks] boot cleanup failed:', err.message); }
+  }, 15000);
+}
+
 // Bulk import preserving exact ids/timestamps — for migrating data between
 // instances (e.g. local -> cloud). Unlike POST /api/tasks (which always
 // mints a fresh id/created_at), this upserts by id so it's safe to re-run.
@@ -7940,6 +7964,10 @@ function mrEmailExcluded(m) {
   if (subj.includes('kpi report') || subj.includes('box score report')) return true;
   if (addr === 'communications@metricpropertymanagement.mailer.appfolio.us') return true;
 
+  // Renewal payout notices — not morning-actionable.
+  if (subj.includes('renewal pay-out') || subj.includes('renewal payout')) return true;
+  if (internalDomain && subj.includes('payout')) return true;
+
   // Calendar invite/cancellation notices — not action items.
   if (/^\s*cancel(l)?ed\s*:/i.test(rawSubj)) return true;
   if (subj.includes('canceled event') || subj.includes('cancelled event')) return true;
@@ -8034,20 +8062,22 @@ async function mrEmails() {
     }
     const recvCT = iso => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date(iso)); } catch { return ''; } };
     const seen = new Set();
-    // For the reminders folder, also collapse the same thread that arrives as
-    // separate messages (different ids, same subject). Sorted newest-first below,
-    // so the first occurrence kept is the most recent. "Re:"/"Fwd:" are stripped
-    // so a reply and its original collapse together.
+    // Collapse the same thread/event that arrives as separate messages (different
+    // ids, variant subjects). Sorted newest-first below, so the first kept is the
+    // most recent. Strip repeated lead prefixes — Re:/Fwd:/Invitation:/Updated
+    // invitation:/Canceled: — so "Invitation: X" and "Updated invitation: X"
+    // (Ramp calendar invites) collapse to one. Applied to every section.
     const subjSeen = new Set();
-    const normSubj = s => String(s || '').toLowerCase().replace(/^\s*(re|fwd|fw)\s*:\s*/i, '').trim();
+    const stripPfx = /^\s*(re|fwd|fw|invitation|updated invitation|canceled|cancelled)\s*:\s*/i;
+    const normSubj = s => { let x = String(s || '').toLowerCase().trim(), prev; do { prev = x; x = x.replace(stripPfx, '').trim(); } while (x !== prev); return x; };
     out[def.label] = collected
       .filter(m => m.id && !seen.has(m.id) && seen.add(m.id))   // de-dupe by message id
       .filter(m => !mrEmailExcluded(m))                          // drop personal/automated/resolved noise
       .filter(m => !cutoffCT || (recvCT(m.receivedDateTime) && recvCT(m.receivedDateTime) >= cutoffCT))
       .sort((a, b) => String(b.receivedDateTime || '').localeCompare(String(a.receivedDateTime || '')))
-      .filter(m => {                                             // subject de-dupe (reminders only)
-        if (!def.recentOnly) return true;
+      .filter(m => {                                             // subject de-dupe — keep newest per event
         const k = normSubj(m.subject);
+        if (!k) return true;                                     // empty normalized subject: don't collapse
         if (subjSeen.has(k)) return false;
         subjSeen.add(k);
         return true;
