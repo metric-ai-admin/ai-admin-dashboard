@@ -8238,6 +8238,56 @@ function mtgCatBadge(category) {
   const cls = c.includes('kpi') ? 'badge-blue' : c.includes('client') ? 'badge-purple' : c.includes('oper') ? 'badge-green' : 'badge-gray';
   return `<span class="badge ${cls}">${esc(category || 'Other')}</span>`;
 }
+// ── Recent Meeting Summaries: client-side date + category filters ────────────
+// Session-persistent (module-level state) — no re-fetch, filters the cached list.
+let sixpmSummaries = [];
+let sixpmSummaryEmptyMsg = 'No transcripts in the last 7 days.';
+const sixpmSummaryFilters = { range: 'last7', category: 'All' };
+function sixpmSummaryDate(m) {
+  if (m.meeting_date) return String(m.meeting_date).slice(0, 10);
+  if (m.start_at) return localDateStr(m.start_at);
+  return '';
+}
+function sixpmSummaryCat(m) {
+  const c = String(m.category || '').toLowerCase();
+  if (c.includes('kpi')) return 'KPI Calls';
+  if (c.includes('client')) return 'Client calls';
+  if (c.includes('oper')) return 'Operations';
+  return 'Other';
+}
+function sixpmSummaryInRange(dateStr) {
+  const r = sixpmSummaryFilters.range;
+  if (r === 'all') return true;
+  if (!dateStr) return false;
+  const today = todayStr();
+  if (r === 'today') return dateStr === today;
+  if (r === 'last7') { const d = new Date(); d.setDate(d.getDate() - 6); return dateStr >= localDateStr(d) && dateStr <= today; }
+  if (r === 'week') { // current Mon–Sun
+    const now = new Date(), dow = now.getDay();
+    const mon = new Date(now); mon.setDate(now.getDate() + (dow === 0 ? -6 : 1 - dow));
+    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+    return dateStr >= localDateStr(mon) && dateStr <= localDateStr(sun);
+  }
+  return true;
+}
+function renderSixpmSummaries() {
+  const sm = $('#sixpm-summaries'); if (!sm) return;
+  const all = sixpmSummaries || [];
+  if (!all.length) { sm.innerHTML = `<div class="empty-state">${esc(sixpmSummaryEmptyMsg)}</div>`; return; }
+  const filtered = all.filter(m =>
+    sixpmSummaryInRange(sixpmSummaryDate(m))
+    && (sixpmSummaryFilters.category === 'All' || sixpmSummaryCat(m) === sixpmSummaryFilters.category));
+  const ranges = [['today', 'Today'], ['week', 'This Week'], ['last7', 'Last 7 Days'], ['all', 'All']];
+  const cats = ['All', 'KPI Calls', 'Client calls', 'Operations', 'Other'];
+  const bar = `<div class="sixpm-sum-filters">
+    <div class="sixpm-sum-pills">${ranges.map(([v, l]) => `<button class="sixpm-pill${sixpmSummaryFilters.range === v ? ' active' : ''}" data-sum-range="${v}">${l}</button>`).join('')}</div>
+    <select class="crm-select sixpm-sum-cat" data-sum-cat>${cats.map(c => `<option${sixpmSummaryFilters.category === c ? ' selected' : ''}>${c}</option>`).join('')}</select>
+    <span class="muted small sixpm-sum-count">Showing ${filtered.length} of ${all.length} transcripts</span>
+  </div>`;
+  sm.innerHTML = bar + (filtered.length ? filtered.map(mtgSummaryCardHtml).join('') : '<div class="empty-state">No transcripts match these filters.</div>');
+  sm.querySelectorAll('[data-sum-range]').forEach(b => b.addEventListener('click', () => { sixpmSummaryFilters.range = b.dataset.sumRange; renderSixpmSummaries(); }));
+  sm.querySelector('[data-sum-cat]')?.addEventListener('change', e => { sixpmSummaryFilters.category = e.target.value; renderSixpmSummaries(); });
+}
 function mtgSummaryCardHtml(m) {
   const when = mtgWhen(m);
   const decisions = Array.isArray(m.key_decisions) ? m.key_decisions : [];
@@ -8312,12 +8362,11 @@ function sixpmRender() {
         ? 'The calendar could not be read: ' + esc(s.meetings_error || '')
         : 'No meetings today carried one of the three report categories.'}</div>`;
 
-  // Recent Meeting Summaries — last 7 days (auto-captured from Teams transcripts)
-  const summaries = r.meeting_summaries || [];
-  const sm = $('#sixpm-summaries');
-  if (sm) sm.innerHTML = summaries.length
-    ? summaries.map(mtgSummaryCardHtml).join('')
-    : `<div class="empty-state">${s.transcripts === 'ok' ? 'No summaries.' : esc(s.transcripts_reason || 'No transcripts in the last 7 days.')}</div>`;
+  // Recent Meeting Summaries — auto-captured from Teams transcripts, with
+  // client-side date + category filters (default Last 7 Days).
+  sixpmSummaries = r.meeting_summaries || [];
+  sixpmSummaryEmptyMsg = s.transcripts === 'ok' ? 'No summaries.' : (s.transcripts_reason || 'No transcripts in the last 7 days.');
+  renderSixpmSummaries();
 
   // Action items
   const actions = r.action_items || [];
