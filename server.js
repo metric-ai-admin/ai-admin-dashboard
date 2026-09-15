@@ -3865,6 +3865,22 @@ app.post('/api/evictions/sync', requireMetricAccess, async (req, res) => {
 // =====================================================================
 const COLLECTIONS_ROLES = ['admin', 'collections_agent', 'collections_leasing', 'evictions_agent'];
 
+// SimpleVoIP lines to pull the collections call log from — one per AR agent.
+// Render env vars:
+//   # Collections agents (comma-separated SimpleVoIP device names)
+//   SIMPLEVOIP_COLLECTIONS_USER_IDS=crm_connect_102,crm_connect_105,crm_connect_100999
+//   # crm_connect_102    = Karla (Ext 102)
+//   # crm_connect_105    = Rocío (Ext 105)
+//   # crm_connect_100999 = Daria (Ext 109)
+// Falls back to the single SIMPLEVOIP_COLLECTIONS_USER_ID, then SIMPLEVOIP_USER_ID.
+function collectionsVoipUserIds() {
+  const list = String(process.env.SIMPLEVOIP_COLLECTIONS_USER_IDS
+    || process.env.SIMPLEVOIP_COLLECTIONS_USER_ID
+    || simplevoip.defaultUserId() || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  return [...new Set(list)];
+}
+
 // Delinquency (As Of) for a given date — same AppFolio Database-API pull the
 // Eviction Tracker uses, parameterized by date. Returns shaped rows; throws on failure.
 async function fetchDelinquencyAsOf(dateStr) {
@@ -3901,6 +3917,7 @@ app.get('/api/collections/status', requireAuth, requireRole(...COLLECTIONS_ROLES
     appfolio: !!(process.env.APPFOLIO_CLIENT_ID && process.env.APPFOLIO_CLIENT_SECRET),
     simplevoip: simplevoip.isConfigured(),
     anthropic: !!process.env.ANTHROPIC_API_KEY,
+    agents: simplevoip.isConfigured() ? collectionsVoipUserIds().length : 0,
   });
 });
 
@@ -3935,12 +3952,17 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
     const prior   = priorR.status === 'fulfilled' ? priorR.value : (errors.prior = priorR.reason?.message || 'failed', []);
 
     let calls = [];
+    let agentCount = 0;
     if (simplevoip.isConfigured()) {
       const end = Math.floor(Date.now() / 1000), start = end - 90 * 86400;
-      const uid = process.env.SIMPLEVOIP_COLLECTIONS_USER_ID || simplevoip.defaultUserId();
-      const { calls: rawCalls, error } = await simplevoip.fetchCDRList(uid, start, end);
-      if (error) errors.calls = error;
-      calls = simplevoip.shapeCalls(rawCalls || []);
+      const uids = collectionsVoipUserIds();
+      agentCount = uids.length;
+      // Pull each AR agent's line in parallel, then merge + sort newest-first.
+      const results = await Promise.all(uids.map(uid => simplevoip.fetchCDRList(uid, start, end)));
+      const callErrors = results.map(r => r.error).filter(Boolean);
+      if (callErrors.length) errors.calls = callErrors.join('; ');
+      const merged = results.flatMap(r => r.calls || []);
+      calls = simplevoip.shapeCalls(merged).sort((a, b) => (b.datetime || 0) - (a.datetime || 0));
     } else { errors.calls = 'SimpleVOIP not configured'; }
 
     if (!current.length && !prior.length && !calls.length && !transcript) {
@@ -3963,7 +3985,7 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       + `=== WEEKLY REVIEW CALL TRANSCRIPT ===\n${transcript || '[not provided]'}\n`;
 
     const html = await callGrading.anthropicText({ system: COLLECTIONS_SYSTEM, user, maxTokens: 4000, model: 'claude-sonnet-4-6' });
-    res.json({ html, meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, hasTranscript: !!transcript, errors } });
+    res.json({ html, meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, hasTranscript: !!transcript, errors } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

@@ -280,7 +280,7 @@ async function loadCollections() {
     const s = await api('/api/collections/status', { credentials: 'same-origin' });
     setSt('current', s.appfolio, s.appfolio ? '✅ Loaded from AppFolio' : '⚠ AppFolio not configured');
     setSt('prior',   s.appfolio, s.appfolio ? '✅ Loaded from AppFolio' : '⚠ AppFolio not configured');
-    setSt('calls',   s.simplevoip, s.simplevoip ? '✅ Loaded from SimpleVoIP' : '⚠ SimpleVoIP not configured');
+    setSt('calls',   s.simplevoip, s.simplevoip ? `✅ Loaded from SimpleVoIP (${s.agents || 0} agent${s.agents === 1 ? '' : 's'})` : '⚠ SimpleVoIP not configured');
     const hint = $('#col-gen-hint');
     if (hint && !s.anthropic) hint.textContent = '⚠ Claude API not configured on the server — generation is disabled.';
   } catch (err) {
