@@ -97,14 +97,25 @@ async function gradeTranscript({ callType, agent, duration, transcript }) {
 
 // Like anthropicJson but returns the model's raw text (no JSON parse) — for
 // prompts that produce prose/HTML (e.g. the Collections Review report).
-async function anthropicText({ system, user, maxTokens = 2000, model }) {
+async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs }) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('Anthropic is not configured: set ANTHROPIC_API_KEY on the server.');
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: model || GRADE_MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
-  });
+  // Optional hard timeout so a slow/hung call fails fast instead of hitting the
+  // platform's request timeout with no useful error.
+  const ctrl = timeoutMs ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  let r;
+  try {
+    r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: model || GRADE_MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
+      signal: ctrl ? ctrl.signal : undefined,
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error(`Anthropic request timed out after ${Math.round(timeoutMs / 1000)}s.`);
+    throw err;
+  } finally { if (timer) clearTimeout(timer); }
   if (!r.ok) {
     const errText = await r.text();
     let msg = 'Anthropic API error (' + r.status + ').';

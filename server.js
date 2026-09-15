@@ -3957,12 +3957,14 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       const end = Math.floor(Date.now() / 1000), start = end - 90 * 86400;
       const uids = collectionsVoipUserIds();
       agentCount = uids.length;
-      // Pull each AR agent's line in parallel, then merge + sort newest-first.
+      // Pull each AR agent's line in parallel; cap each agent to the 200 most
+      // recent calls, then merge + sort newest-first — keeps the payload bounded.
       const results = await Promise.all(uids.map(uid => simplevoip.fetchCDRList(uid, start, end)));
       const callErrors = results.map(r => r.error).filter(Boolean);
       if (callErrors.length) errors.calls = callErrors.join('; ');
-      const merged = results.flatMap(r => r.calls || []);
-      calls = simplevoip.shapeCalls(merged).sort((a, b) => (b.datetime || 0) - (a.datetime || 0));
+      const perAgent = results.map(r => simplevoip.shapeCalls(r.calls || [])
+        .sort((a, b) => (b.datetime || 0) - (a.datetime || 0)).slice(0, 200));
+      calls = perAgent.flat().sort((a, b) => (b.datetime || 0) - (a.datetime || 0));
     } else { errors.calls = 'SimpleVOIP not configured'; }
 
     if (!current.length && !prior.length && !calls.length && !transcript) {
@@ -3970,22 +3972,41 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
     }
 
     const m = v => (v == null || v === '') ? '' : v;
-    const sumDelinq = rows => rows.reduce((s, r) => s + (parseFloat(r.delinquent_rent) || 0), 0);
-    const delinqText = rows => rows.slice(0, 250)
+    const bal = r => parseFloat(r.delinquent_rent) || 0;
+    const sumDelinq = rows => rows.reduce((s, r) => s + bal(r), 0);
+    // Top 50 residents by balance (highest first) — the full list can be hundreds
+    // of rows and blow past the model/request limits.
+    const DELINQ_CAP = 50;
+    const topByBalance = rows => [...rows].sort((a, b) => bal(b) - bal(a)).slice(0, DELINQ_CAP);
+    const truncated = current.length > DELINQ_CAP || prior.length > DELINQ_CAP;
+    const delinqText = rows => topByBalance(rows)
       .map(r => `${r.name} | ${r.property} ${r.unit} | delinq ${m(r.delinquent_rent)} | AR ${m(r.amount_receivable)}${r.notes ? ' | ' + String(r.notes).replace(/\s+/g, ' ').slice(0, 120) : ''}`).join('\n');
     const callText = calls.slice(0, 300)
       .map(c => `${new Date((c.datetime || 0) * 1000).toISOString().slice(0, 10)} | ${c.caller || ''} -> ${c.to_name || c.to_number || ''} | ${c.direction} | ${c.duration}s | ${c.status}${c.has_transcript ? ' | transcript' : ''}`).join('\n');
 
     const user = `Analysis date: ${todayCT} (current) vs ${priorCT} (prior month). AR agent: Karla Gonzalez (Ext. 1110).\n`
       + `Current total delinquent rent: $${Math.round(sumDelinq(current)).toLocaleString()} across ${current.length} accounts.\n`
-      + `Prior total delinquent rent: $${Math.round(sumDelinq(prior)).toLocaleString()} across ${prior.length} accounts.\n\n`
-      + `=== CURRENT MONTH DELINQUENCY (${todayCT}) ===\n${delinqText(current) || '[none]'}\n\n`
-      + `=== PRIOR MONTH DELINQUENCY (${priorCT}) ===\n${delinqText(prior) || '[none]'}\n\n`
-      + `=== SIMPLEVOIP CALL LOG — last 90 days (Karla's line) ===\n${callText || '[none]'}\n\n`
+      + `Prior total delinquent rent: $${Math.round(sumDelinq(prior)).toLocaleString()} across ${prior.length} accounts.\n`
+      + (truncated ? `NOTE: only the top ${DELINQ_CAP} residents by balance are listed below (of ${current.length} current / ${prior.length} prior).\n` : '')
+      + `\n=== CURRENT MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${todayCT}) ===\n${delinqText(current) || '[none]'}\n\n`
+      + `=== PRIOR MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${priorCT}) ===\n${delinqText(prior) || '[none]'}\n\n`
+      + `=== SIMPLEVOIP CALL LOG — last 90 days, up to 200/agent ===\n${callText || '[none]'}\n\n`
       + `=== WEEKLY REVIEW CALL TRANSCRIPT ===\n${transcript || '[not provided]'}\n`;
 
-    const html = await callGrading.anthropicText({ system: COLLECTIONS_SYSTEM, user, maxTokens: 4000, model: 'claude-sonnet-4-6' });
-    res.json({ html, meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, hasTranscript: !!transcript, errors } });
+    console.log(`[collections] payload ${user.length} chars — current=${current.length} prior=${prior.length} calls=${calls.length} agents=${agentCount} transcript=${transcript.length}`);
+
+    let html;
+    try {
+      html = await callGrading.anthropicText({ system: COLLECTIONS_SYSTEM, user, maxTokens: 4000, model: 'claude-sonnet-4-6', timeoutMs: 25000 });
+    } catch (aiErr) {
+      console.error('[collections] Claude call failed:', aiErr.message);
+      // Partial error rather than hanging — hand back what was pulled.
+      return res.status(504).json({ error: aiErr.message,
+        meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, hasTranscript: !!transcript, payloadChars: user.length, errors } });
+    }
+    // Prepend the truncation note to the report so it's visible in the output.
+    if (truncated) html = `<div class="alert-box info"><div class="al">DATA</div>Showing top ${DELINQ_CAP} residents by balance (of ${current.length} current / ${prior.length} prior accounts).</div>` + html;
+    res.json({ html, meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, hasTranscript: !!transcript, payloadChars: user.length, errors } });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
