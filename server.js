@@ -3891,24 +3891,24 @@ async function collectionsVoipUsers(db) {
   }
   const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const digits = s => String(s || '').replace(/\D/g, '');
-  const byId = new Map(roster.map(r => [norm(r.user_id), r.user_id]));
+  const byId = new Map(roster.map(r => [norm(r.user_id), r]));
   const resolveOne = c => {
     if (byId.has(norm(c))) return byId.get(norm(c));
     const nc = norm(c);
     const byName = roster.find(r => norm(r.name) && (norm(r.name).includes(nc) || nc.includes(norm(r.name))));
-    if (byName) return byName.user_id;
+    if (byName) return byName;
     const dc = digits(c);
-    if (dc) { const byDigit = roster.find(r => digits(r.user_id).endsWith(dc) || digits(r.name).endsWith(dc)); if (byDigit) return byDigit.user_id; }
+    if (dc) { const byDigit = roster.find(r => digits(r.user_id).endsWith(dc) || digits(r.name).endsWith(dc)); if (byDigit) return byDigit; }
     return null;
   };
   let out;
   if (configured.length) {
-    out = configured.map(c => { const r = resolveOne(c); return { configured: c, resolved: r || c, matched: !!r }; });
+    out = configured.map(c => { const r = resolveOne(c); return { configured: c, resolved: r ? r.user_id : c, name: (r && r.name) || c, matched: !!r }; });
   } else if (roster.length) {
-    out = roster.map(r => ({ configured: r.user_id, resolved: r.user_id, matched: true }));
+    out = roster.map(r => ({ configured: r.user_id, resolved: r.user_id, name: r.name || r.user_id, matched: true }));
   } else {
     const d = simplevoip.defaultUserId();
-    out = d ? [{ configured: d, resolved: d, matched: false }] : [];
+    out = d ? [{ configured: d, resolved: d, name: d, matched: false }] : [];
   }
   return out;
 }
@@ -3945,15 +3945,17 @@ async function fetchDelinquencyAsOf(dateStr) {
 
 // Source-connectivity flags, so the tab can show "✅ Loaded from AppFolio/SimpleVoIP".
 app.get('/api/collections/status', requireAuth, requireRole(...COLLECTIONS_ROLES), async (req, res) => {
-  let agents = 0;
+  let agents = 0, agentNames = [];
   if (simplevoip.isConfigured()) {
-    try { agents = (await collectionsVoipUsers(supabaseAdmin || supabasePublic)).length; } catch { /* leave 0 */ }
+    try { const u = await collectionsVoipUsers(supabaseAdmin || supabasePublic); agents = u.length; agentNames = u.map(x => x.name); }
+    catch { /* leave 0 */ }
   }
   res.json({
     appfolio: !!(process.env.APPFOLIO_CLIENT_ID && process.env.APPFOLIO_CLIENT_SECRET),
     simplevoip: simplevoip.isConfigured(),
     anthropic: !!process.env.ANTHROPIC_API_KEY,
     agents,
+    agentNames,
   });
 });
 
@@ -3965,7 +3967,10 @@ const COLLECTIONS_SYSTEM = 'You are the collections analyst for Metric Property 
   + '1. Summary Metrics — total delinquency, % change vs prior month (state direction), and residents contacted this period.\n'
   + '2. Residents with INCREASED delinquency — priority list (highest increase first).\n'
   + '3. Residents with DECREASED delinquency — wins.\n'
-  + '4. Call Log Analysis — who was contacted, outcomes, and who still needs follow-up.\n'
+  + '4. Call Log Analysis — a per-agent breakdown table (one row per collections agent listed in the '
+  + 'PER-AGENT CALL SUMMARY): total calls, outbound vs inbound, substantive contacts (>=30s), and '
+  + 'missed/unanswered. Below the table, cross-reference the call log against the delinquent residents '
+  + '(match by caller/number where possible) to note who was contacted, outcomes, and who still needs follow-up.\n'
   + '5. Transcript Highlights — only if a transcript was provided; otherwise state none was provided this cycle.\n'
   + '6. Recommended Next Actions — per resident, concrete.\n\n'
   + 'Cross-reference the call log against the delinquent accounts to find who was/was not contacted. Match residents '
@@ -3997,6 +4002,7 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
 
     let calls = [];
     let agentCount = 0;
+    let agentSummary = [];   // per-agent name + call counts for the prompt/report
     if (simplevoip.isConfigured()) {
       const end = Math.floor(Date.now() / 1000), start = end - 90 * 86400;
       const resolvedUsers = await collectionsVoipUsers(supabaseAdmin || supabasePublic);
@@ -4016,6 +4022,17 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       if (callErrors.length) errors.calls = callErrors.join('; ');
       const perAgent = results.map(r => simplevoip.shapeCalls(r.calls || [])
         .sort((a, b) => (b.datetime || 0) - (a.datetime || 0)).slice(0, 50));
+      agentSummary = perAgent.map((cs, i) => {
+        const dir = c => String(c.direction || '').toLowerCase();
+        return {
+          name: resolvedUsers[i].name,
+          total: cs.length,
+          outbound: cs.filter(c => dir(c).includes('out')).length,
+          inbound: cs.filter(c => dir(c).includes('in')).length,
+          substantive: cs.filter(c => (c.duration || 0) >= 30).length,   // ≥30s = real contact
+          missed: cs.filter(c => (c.duration || 0) === 0 || /miss|no.?answer|fail|unanswer/i.test(String(c.status || ''))).length,
+        };
+      });
       calls = perAgent.flat().sort((a, b) => (b.datetime || 0) - (a.datetime || 0));
     } else { errors.calls = 'SimpleVOIP not configured'; }
 
@@ -4037,13 +4054,22 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
     const callText = calls.slice(0, 150)
       .map(c => `${new Date((c.datetime || 0) * 1000).toISOString().slice(0, 16).replace('T', ' ')} | ${c.caller || ''} | ${c.duration}s | ${c.direction} | ${c.status}`).join('\n');
 
-    const user = `Analysis date: ${todayCT} (current) vs ${priorCT} (prior month). AR agent: Karla Gonzalez (Ext. 1110).\n`
+    const agentsLine = agentSummary.length
+      ? agentSummary.map(a => `${a.name} (${a.total} calls)`).join(', ')
+      : 'Karla Gonzalez';
+    const agentBreakdown = agentSummary.length
+      ? agentSummary.map(a => `${a.name}: ${a.total} total · ${a.outbound} outbound · ${a.inbound} inbound · ${a.substantive} substantive (>=30s) · ${a.missed} missed/unanswered`).join('\n')
+      : '[no call data]';
+
+    const user = `Analysis date: ${todayCT} (current) vs ${priorCT} (prior month).\n`
+      + `Collections agents analyzed: ${agentsLine}.\n`
       + `Current total delinquent rent: $${Math.round(sumDelinq(current)).toLocaleString()} across ${current.length} accounts.\n`
       + `Prior total delinquent rent: $${Math.round(sumDelinq(prior)).toLocaleString()} across ${prior.length} accounts.\n`
       + (truncated ? `NOTE: only the top ${DELINQ_CAP} residents by balance are listed below (of ${current.length} current / ${prior.length} prior).\n` : '')
       + `\nDelinquency columns: tenant | unit | property | balance | days_delinquent\n`
       + `=== CURRENT MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${todayCT}) ===\n${delinqText(current) || '[none]'}\n\n`
       + `=== PRIOR MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${priorCT}) ===\n${delinqText(prior) || '[none]'}\n\n`
+      + `=== PER-AGENT CALL SUMMARY (last 90 days) ===\n${agentBreakdown}\n\n`
       + `Call columns: datetime | caller | duration | direction | result\n`
       + `=== SIMPLEVOIP CALL LOG — last 90 days, up to 50/agent ===\n${callText || '[none]'}\n\n`
       + `=== WEEKLY REVIEW CALL TRANSCRIPT ===\n${transcript || '[not provided]'}\n`;

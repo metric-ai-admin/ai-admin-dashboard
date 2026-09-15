@@ -281,6 +281,10 @@ async function loadCollections() {
     setSt('current', s.appfolio, s.appfolio ? '✅ Loaded from AppFolio' : '⚠ AppFolio not configured');
     setSt('prior',   s.appfolio, s.appfolio ? '✅ Loaded from AppFolio' : '⚠ AppFolio not configured');
     setSt('calls',   s.simplevoip, s.simplevoip ? `✅ Loaded from SimpleVoIP (${s.agents || 0} agent${s.agents === 1 ? '' : 's'})` : '⚠ SimpleVoIP not configured');
+    // Show the resolved agent names on the SimpleVoIP card (falls back to "90 days").
+    const subCalls = $('#col-sub-calls');
+    if (subCalls) subCalls.textContent = (Array.isArray(s.agentNames) && s.agentNames.length)
+      ? `${s.agentNames.join(' · ')} · 90 days` : '90 days';
     const hint = $('#col-gen-hint');
     if (hint && !s.anthropic) hint.textContent = '⚠ Claude API not configured on the server — generation is disabled.';
   } catch (err) {
