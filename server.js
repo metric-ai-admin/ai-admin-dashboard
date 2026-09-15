@@ -8105,6 +8105,9 @@ async function ensureLyndsayMessageRules({ execute }) {
   const exJ = await exR.json().catch(() => ({}));
   if (!exR.ok) throw new Error(exJ?.error?.message || `list rules returned ${exR.status}`);
   const existing = new Set((exJ.value || []).map(r => norm(r.displayName)));
+  // Graph requires sequence >= 1 (0 → InvalidValue). Start after the highest
+  // existing rule so we don't collide with Lyndsay's current rules.
+  let seq = Math.max(0, ...(exJ.value || []).map(r => Number(r.sequence) || 0)) + 1;
 
   const out = [];
   for (const def of LYNDSAY_MESSAGE_RULES) {
@@ -8112,7 +8115,7 @@ async function ensureLyndsayMessageRules({ execute }) {
     if (!fid) { out.push({ rule: def.displayName, status: 'skipped', reason: `folder "${def.folder}" not found` }); continue; }
     if (existing.has(norm(def.displayName))) { out.push({ rule: def.displayName, status: 'exists' }); continue; }
     if (!execute) { out.push({ rule: def.displayName, status: 'would-create', folder: def.folder }); continue; }
-    const body = { displayName: def.displayName, isEnabled: true, conditions: def.conditions, actions: { moveToFolder: fid, stopProcessingRules: true } };
+    const body = { displayName: def.displayName, sequence: seq++, isEnabled: true, conditions: def.conditions, actions: { moveToFolder: fid, stopProcessingRules: true } };
     const r = await fetchFn(`${base}/mailFolders/inbox/messageRules`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
     out.push(r.ok ? { rule: def.displayName, status: 'created', id: j.id } : { rule: def.displayName, status: 'error', error: j?.error?.message || String(r.status) });
