@@ -348,14 +348,39 @@ const afUpload = multer({
 
 // ── EOD + Daily report builders ───────────────────────────────────────────────
 
+// The WO analysis the AppFolio Analyzer tab, the EOD/Daily builders, and the
+// maintenance_get_appfolio_analysis MCP tool all read. Two possible sources:
+//   (a) a manual CSV upload  → disk *_analysis.json (analyzedAt = upload time)
+//   (b) the Reports Sync tab → afReports 'work_order' report in Supabase/JSON
+// The MCP was reading only (a), so it stayed 0/null after a Reports Sync (which
+// writes (b)). Build an analysis from (b) too, and return whichever is fresher.
+function buildSyncedAnalysis(stored) {
+  const rows = stored && Array.isArray(stored.rows) ? stored.rows : null;
+  if (!rows || !rows.length) return null;
+  const headers = afReports.collectHeaders(rows);
+  const aoa = [headers, ...rows.map(r => headers.map(h => { const v = r[h]; return v == null ? '' : String(v); }))];
+  const analysis = analyzeWorkOrders(aoa);
+  const groups = { urgent: [], followup: [], ready: [], none: [] };
+  for (const a of analysis.actions) groups[a.topTier].push(a);
+  return { analyzedAt: stored.fetchedAt || new Date().toISOString(), sourceType: 'reports-sync',
+    totalWorkOrders: analysis.count, headers: analysis.headers, groups };
+}
+
 async function latestAppfolioAnalysis() {
+  let disk = null;
   try {
     const files = (await fsp.readdir(REPORTS_DIR)).filter(f => f.endsWith('_analysis.json'));
-    if (!files.length) return null;
-    files.sort();
-    const raw = await fsp.readFile(path.join(REPORTS_DIR, files[files.length - 1]), 'utf8');
-    return JSON.parse(raw);
-  } catch { return null; }
+    if (files.length) { files.sort(); disk = JSON.parse(await fsp.readFile(path.join(REPORTS_DIR, files[files.length - 1]), 'utf8')); }
+  } catch { /* no disk analysis */ }
+
+  let synced = null;
+  if (afReports) {
+    try { synced = buildSyncedAnalysis(await afReports.readReportData('work_order')); }
+    catch { /* no synced report */ }
+  }
+
+  if (disk && synced) return String(disk.analyzedAt || '') >= String(synced.analyzedAt || '') ? disk : synced;
+  return synced || disk || null;
 }
 
 async function buildMaintenanceSummary(db) {
