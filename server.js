@@ -8091,11 +8091,13 @@ const LYNDSAY_MESSAGE_RULES = [
   { displayName: 'MPM Auto: Fire Claim (Progressive)', folder: 'Fire Claim',    conditions: { senderContains: ['progressive.com'] } },
   { displayName: 'MPM Auto: Fire Claim (Claim #)',     folder: 'Fire Claim',    conditions: { subjectContains: ['1615255'] } },
   { displayName: 'MPM Auto: Online Payables -> Review', folder: 'Lyndsay Review', conditions: { subjectContains: ['New Online Payables Batch'] } },
-  { displayName: 'MPM Auto: Anthropic -> Financial',   folder: 'Financial',     conditions: { senderContains: ['anthropic'] } },
-  { displayName: 'MPM Auto: Whereby -> Financial',     folder: 'Financial',     conditions: { senderContains: ['whereby.com'] } },
+  { displayName: 'MPM Auto: Anthropic -> Financial',   folder: 'Financial',     conditions: { senderContains: ['anthropic'] },   forwardTo: 'accounting@metricpropertymanagement.com' },
+  { displayName: 'MPM Auto: Whereby -> Financial',     folder: 'Financial',     conditions: { senderContains: ['whereby.com'] },  forwardTo: 'accounting@metricpropertymanagement.com' },
   { displayName: 'MPM Auto: Rigby Slack -> Claudia',   folder: 'Financial',     conditions: { senderContains: ['rigbyslack', 'rigby slack', 'lawrence pepper', 'comerford'] },
     forwardTo: [{ emailAddress: { address: 'claudia@metricpropertymanagement.com', name: 'Claudia' } }] },
 ];
+// Graph forwardTo is a list of recipients; accept a plain address string or a ready list.
+const mrForwardTo = fw => !fw ? null : (Array.isArray(fw) ? fw : [{ emailAddress: { address: String(fw) } }]);
 async function ensureLyndsayMessageRules({ execute }) {
   const token = await graphMailboxToken('lyndsay');
   const base = graphMailboxBase('lyndsay');
@@ -8106,7 +8108,8 @@ async function ensureLyndsayMessageRules({ execute }) {
   const exR = await fetchFn(`${base}/mailFolders/inbox/messageRules`, { headers });
   const exJ = await exR.json().catch(() => ({}));
   if (!exR.ok) throw new Error(exJ?.error?.message || `list rules returned ${exR.status}`);
-  const existing = new Set((exJ.value || []).map(r => norm(r.displayName)));
+  const existingByName = new Map();
+  (exJ.value || []).forEach(r => existingByName.set(norm(r.displayName), r));
   // Graph requires sequence >= 1 (0 → InvalidValue). Start after the highest
   // existing rule so we don't collide with Lyndsay's current rules.
   let seq = Math.max(0, ...(exJ.value || []).map(r => Number(r.sequence) || 0)) + 1;
@@ -8115,10 +8118,23 @@ async function ensureLyndsayMessageRules({ execute }) {
   for (const def of LYNDSAY_MESSAGE_RULES) {
     const fid = folderId(def.folder);
     if (!fid) { out.push({ rule: def.displayName, status: 'skipped', reason: `folder "${def.folder}" not found` }); continue; }
-    if (existing.has(norm(def.displayName))) { out.push({ rule: def.displayName, status: 'exists' }); continue; }
-    if (!execute) { out.push({ rule: def.displayName, status: 'would-create', folder: def.folder }); continue; }
     const actions = { moveToFolder: fid, stopProcessingRules: true };
-    if (def.forwardTo) actions.forwardTo = def.forwardTo;   // forward before the move
+    const fwd = mrForwardTo(def.forwardTo);
+    if (fwd) actions.forwardTo = fwd;   // forward before the move
+    const ex = existingByName.get(norm(def.displayName));
+    if (ex) {
+      // Reconcile (upsert): PATCH the existing rule so newly-added actions (e.g.
+      // forwardTo) are applied without deleting + losing its id/position.
+      if (!execute) { out.push({ rule: def.displayName, status: 'would-update', folder: def.folder }); continue; }
+      const r = await fetchFn(`${base}/mailFolders/inbox/messageRules/${encodeURIComponent(ex.id)}`, {
+        method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isEnabled: true, conditions: def.conditions, actions }),
+      });
+      const j = await r.json().catch(() => ({}));
+      out.push(r.ok ? { rule: def.displayName, status: 'updated', id: ex.id } : { rule: def.displayName, status: 'error', error: j?.error?.message || String(r.status) });
+      continue;
+    }
+    if (!execute) { out.push({ rule: def.displayName, status: 'would-create', folder: def.folder }); continue; }
     const body = { displayName: def.displayName, sequence: seq++, isEnabled: true, conditions: def.conditions, actions };
     const r = await fetchFn(`${base}/mailFolders/inbox/messageRules`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));

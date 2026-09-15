@@ -2472,21 +2472,20 @@ async function amApplyOutlookRules() {
     const d = await api('/api/email/lyndsay/message-rules', { method: 'POST', credentials: 'same-origin' });
     const rules = d.rules || [];
     const created = rules.filter(r => r.status === 'created');
-    const existed = rules.filter(r => r.status === 'exists');
+    const updated = rules.filter(r => r.status === 'updated');
     const failed = rules.filter(r => r.status === 'error' || r.status === 'skipped');
     if (failed.length) {
       // Partial/failed — keep the button usable so it can be retried.
       const detail = failed.map(r => `${r.rule}: ${r.error || r.reason || 'failed'}`).join(' · ');
-      if (status) status.textContent = `⚠ ${created.length} created, ${existed.length} already existed, ${failed.length} failed — ${detail}`;
+      if (status) status.textContent = `⚠ ${created.length} created, ${updated.length} updated, ${failed.length} failed — ${detail}`;
       toast(`Outlook rules: ${failed.length} failed`, 'error');
       btn.disabled = false; btn.textContent = label;
       return;
     }
-    // All good (created and/or already present) — lock the button.
-    if (status) status.textContent = created.length
-      ? `✅ Created: ${created.map(r => r.rule).join(', ')}`
-      : '✅ All rules already exist.';
-    toast(created.length ? `Created ${created.length} Outlook rule${created.length === 1 ? '' : 's'} ✅` : 'Outlook rules already in place', 'success');
+    // All good (created and/or reconciled) — lock the button.
+    const applied = created.length + updated.length;
+    if (status) status.textContent = `✅ ${created.length} created, ${updated.length} updated (${applied} rules in place).`;
+    toast(`Outlook rules applied — ${created.length} created, ${updated.length} updated ✅`, 'success');
     btn.textContent = '✅ Outlook Rules Applied';
     // Stays disabled — rules are created.
   } catch (err) {
