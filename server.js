@@ -3873,12 +3873,44 @@ const COLLECTIONS_ROLES = ['admin', 'collections_agent', 'collections_leasing', 
 //   # crm_connect_105    = Rocío (Ext 105)
 //   # crm_connect_100999 = Daria (Ext 109)
 // Falls back to the single SIMPLEVOIP_COLLECTIONS_USER_ID, then SIMPLEVOIP_USER_ID.
-function collectionsVoipUserIds() {
-  const list = String(process.env.SIMPLEVOIP_COLLECTIONS_USER_IDS
-    || process.env.SIMPLEVOIP_COLLECTIONS_USER_ID
-    || simplevoip.defaultUserId() || '')
-    .split(',').map(s => s.trim()).filter(Boolean);
-  return [...new Set(list)];
+//
+// Each configured value is resolved against the simplevoip_users roster — the SAME
+// table Call Analyzer uses, whose user_id strings the CDR API is known to accept —
+// so we always send a working user_id even if the env holds a display name or an
+// extension. A value is matched by exact user_id, then by name substring, then by
+// its digits appearing in a roster user_id/name; unmatched values pass through
+// as-is. With nothing configured, every active roster line is queried.
+async function collectionsVoipUsers(db) {
+  const configured = [...new Set(String(process.env.SIMPLEVOIP_COLLECTIONS_USER_IDS
+    || process.env.SIMPLEVOIP_COLLECTIONS_USER_ID || '')
+    .split(',').map(s => s.trim()).filter(Boolean))];
+  let roster = [];
+  if (db) {
+    try { const { data } = await db.from('simplevoip_users').select('user_id,name').eq('active', true); roster = (data || []).filter(r => r.user_id); }
+    catch (e) { console.warn('[collections] simplevoip_users lookup failed:', e.message); }
+  }
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const digits = s => String(s || '').replace(/\D/g, '');
+  const byId = new Map(roster.map(r => [norm(r.user_id), r.user_id]));
+  const resolveOne = c => {
+    if (byId.has(norm(c))) return byId.get(norm(c));
+    const nc = norm(c);
+    const byName = roster.find(r => norm(r.name) && (norm(r.name).includes(nc) || nc.includes(norm(r.name))));
+    if (byName) return byName.user_id;
+    const dc = digits(c);
+    if (dc) { const byDigit = roster.find(r => digits(r.user_id).endsWith(dc) || digits(r.name).endsWith(dc)); if (byDigit) return byDigit.user_id; }
+    return null;
+  };
+  let out;
+  if (configured.length) {
+    out = configured.map(c => { const r = resolveOne(c); return { configured: c, resolved: r || c, matched: !!r }; });
+  } else if (roster.length) {
+    out = roster.map(r => ({ configured: r.user_id, resolved: r.user_id, matched: true }));
+  } else {
+    const d = simplevoip.defaultUserId();
+    out = d ? [{ configured: d, resolved: d, matched: false }] : [];
+  }
+  return out;
 }
 
 // Delinquency (As Of) for a given date — same AppFolio Database-API pull the
@@ -3912,12 +3944,16 @@ async function fetchDelinquencyAsOf(dateStr) {
 }
 
 // Source-connectivity flags, so the tab can show "✅ Loaded from AppFolio/SimpleVoIP".
-app.get('/api/collections/status', requireAuth, requireRole(...COLLECTIONS_ROLES), (req, res) => {
+app.get('/api/collections/status', requireAuth, requireRole(...COLLECTIONS_ROLES), async (req, res) => {
+  let agents = 0;
+  if (simplevoip.isConfigured()) {
+    try { agents = (await collectionsVoipUsers(supabaseAdmin || supabasePublic)).length; } catch { /* leave 0 */ }
+  }
   res.json({
     appfolio: !!(process.env.APPFOLIO_CLIENT_ID && process.env.APPFOLIO_CLIENT_SECRET),
     simplevoip: simplevoip.isConfigured(),
     anthropic: !!process.env.ANTHROPIC_API_KEY,
-    agents: simplevoip.isConfigured() ? collectionsVoipUserIds().length : 0,
+    agents,
   });
 });
 
@@ -3963,13 +3999,19 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
     let agentCount = 0;
     if (simplevoip.isConfigured()) {
       const end = Math.floor(Date.now() / 1000), start = end - 90 * 86400;
-      const uids = collectionsVoipUserIds();
+      const resolvedUsers = await collectionsVoipUsers(supabaseAdmin || supabasePublic);
+      const uids = resolvedUsers.map(u => u.resolved);
       agentCount = uids.length;
-      console.log(`[collections] SimpleVoIP querying ${uids.length} line(s): ${JSON.stringify(uids)} (default=${JSON.stringify(simplevoip.defaultUserId())})`);
+      console.log(`[collections] SimpleVoIP resolving ${resolvedUsers.length} line(s): ${JSON.stringify(resolvedUsers)} (default=${JSON.stringify(simplevoip.defaultUserId())})`);
       // Pull each AR agent's line in parallel; cap each agent to the 50 most
       // recent calls, then merge + sort newest-first — keeps the payload bounded.
       const results = await Promise.all(uids.map(uid => simplevoip.fetchCDRList(uid, start, end)));
       results.forEach((r, i) => console.log(`[collections] SimpleVoIP ${uids[i]} → ${(r.calls || []).length} call(s)${r.error ? ' · error: ' + r.error : ''}`));
+      // Diagnostic: dump the first raw CDR row's keys + a compact sample so the
+      // API's user/owner id format can be compared against what we send.
+      const firstWith = results.find(r => (r.calls || []).length);
+      if (firstWith) console.log('[collections] raw CDR sample:', JSON.stringify((firstWith.calls || []).slice(0, 2)).slice(0, 800));
+      else console.log('[collections] raw CDR sample: none — every queried line returned 0 rows');
       const callErrors = results.map(r => r.error).filter(Boolean);
       if (callErrors.length) errors.calls = callErrors.join('; ');
       const perAgent = results.map(r => simplevoip.shapeCalls(r.calls || [])
