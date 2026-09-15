@@ -4084,7 +4084,7 @@ const leasingStatusIs = (status, ...needles) => {
 // Properties Lyndsay wants hidden from the Goal Board / roll-up / all leasing
 // views. Case-insensitive substring match on the community name — add or remove
 // fragments here to change what's shown.
-const LEASING_EXCLUDED_FRAGMENTS = ['lily pad', 'wolf ridge', 'sidney', 'brazos'];
+const LEASING_EXCLUDED_FRAGMENTS = ['lily pad', 'wolf ridge', 'sidney', 'brazos', 'live with metric'];
 const leasingIsExcluded = name => {
   const n = String(name || '').trim().toLowerCase();
   return LEASING_EXCLUDED_FRAGMENTS.some(frag => n.includes(frag));
