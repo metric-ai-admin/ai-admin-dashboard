@@ -87,6 +87,7 @@
         <button data-tab="accounting"><span class="nav-ico">💰</span>Accounting</button>
         <button data-tab="leasing"><span class="nav-ico">🏘️</span>Leasing</button>
         <button data-tab="evictions"><span class="nav-ico">⚖️</span>Evictions</button>
+        <button data-tab="collections"><span class="nav-ico">💵</span>Collections</button>
       </div>
       <div class="nav-group">
         <div class="nav-group-label">BD &amp; Performance</div>
@@ -1820,6 +1821,72 @@
     <div id="evictions-frame-wrap">
       <iframe id="evictions-frame" title="Eviction Tracker"
               style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border);border-radius:10px;background:#fff"></iframe>
+    </div>
+  </section>
+
+  <!-- ============ COLLECTIONS REVIEW (Rocío) ============ -->
+  <section id="tab-collections" class="tab">
+    <div class="col-wrap">
+      <div class="col-hdr">
+        <div class="col-logo">Metric <span>PM</span></div>
+        <div class="col-badge">Collections Review Generator</div>
+      </div>
+
+      <div class="col-seclabel">Auto-Loaded Data Sources</div>
+      <div class="col-sources">
+        <div class="col-src" id="col-src-current">
+          <div class="col-src-ico">📊</div>
+          <div class="col-src-title">Current Month Delinquency</div>
+          <div class="col-src-sub">AppFolio · today</div>
+          <span class="col-src-status" id="col-st-current">Checking…</span>
+        </div>
+        <div class="col-src" id="col-src-prior">
+          <div class="col-src-ico">📊</div>
+          <div class="col-src-title">Prior Month Delinquency</div>
+          <div class="col-src-sub">AppFolio · 1 month ago</div>
+          <span class="col-src-status" id="col-st-prior">Checking…</span>
+        </div>
+        <div class="col-src" id="col-src-calls">
+          <div class="col-src-ico">📞</div>
+          <div class="col-src-title">SimpleVoIP Call Log</div>
+          <div class="col-src-sub">Karla Gonzalez · Ext. 1110 · 90 days</div>
+          <span class="col-src-status" id="col-st-calls">Checking…</span>
+        </div>
+        <label class="col-upload" id="col-zone-transcript">
+          <input type="file" accept=".txt,.docx,.pdf" id="col-transcript-input">
+          <div class="col-src-ico">📄</div>
+          <div class="col-src-title">Call Transcript <span style="color:var(--col-g400);font-weight:400">(optional)</span></div>
+          <div class="col-src-sub">Weekly review call · TXT / DOCX / PDF</div>
+          <span class="col-src-status" id="col-st-transcript">Optional</span>
+          <div class="col-fname" id="col-fn-transcript"></div>
+        </label>
+      </div>
+
+      <div class="col-gen">
+        <button class="col-gen-btn" id="col-gen-btn" onclick="collectionsGenerate()">Generate Collections Review</button>
+        <div class="col-gen-hint" id="col-gen-hint">Auto-loads delinquency + call log from AppFolio &amp; SimpleVoIP on generate.</div>
+        <div class="col-progress-wrap" id="col-prog-wrap" style="display:none"><div class="col-progress-bar" id="col-prog-bar"></div></div>
+        <div class="col-progress-lbl" id="col-prog-lbl" style="display:none"></div>
+        <div class="col-error" id="col-err" style="display:none"></div>
+      </div>
+
+      <div id="col-output" style="display:none">
+        <div class="col-out-hdr">
+          <div>
+            <div class="col-out-title">Collections Team — Weekly Review</div>
+            <div class="col-out-sub">Metric Property Management · Austin, TX · Operational &amp; Confidential</div>
+          </div>
+          <div class="col-out-meta"><strong id="col-out-date"></strong><br>AI-Generated Analysis</div>
+        </div>
+        <div class="col-out-body">
+          <div class="rc" id="col-report"></div>
+          <div class="col-toolbar">
+            <button class="col-tbtn primary" onclick="window.print()">🖨 Print / Save PDF</button>
+            <button class="col-tbtn" id="col-copy-btn" onclick="collectionsCopy(this)">📋 Copy Text</button>
+            <button class="col-tbtn" onclick="collectionsReset()">↺ New Report</button>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 

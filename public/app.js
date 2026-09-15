@@ -54,7 +54,7 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'accounting', 'leasing'],
+  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'collections', 'accounting', 'leasing'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
   operations:  ['tasks', 'sops', 'platform', 'email', 'eod', 'reports', 'sixpm', 'calls'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
@@ -65,7 +65,9 @@ const TAB_ACCESS = {
   // sit here inert until then rather than needing a deploy on the day.
   regional_director:   ['maintenance', 'reports'],   // Rebekah Tuckner
   resident_success:    ['maintenance', 'reports', 'evictions'],   // Kara Garst
-  collections_leasing: ['reports'],                  // Rocío Hunsberger
+  collections_leasing: ['reports', 'collections'],   // Rocío Hunsberger
+  // Rocío's collections role — Collections Review tab.
+  collections_agent:   ['collections'],
   // Claudia Villalobos (Accounting/QC). No account in dashboard_users yet, so
   // this sits inert until Arturo creates it — mirrors the three roles above.
   accounting:  ['accounting'],
@@ -78,8 +80,8 @@ const TAB_ACCESS = {
   // role uses 'crm'. She gets normal BD CRM access minus the internal staff
   // roster (admin/operations only — see CRM_ROSTER_ROLES).
   leasing_bd:  ['leasing', 'crm'],
-  // Collections agent — Evictions tab only.
-  evictions_agent: ['evictions'],
+  // Collections agent — Evictions + Collections Review tabs.
+  evictions_agent: ['evictions', 'collections'],
 };
 
 // Maintenance is read-only for these two: they consult the board, they do not
@@ -154,7 +156,7 @@ function roleLabelFor(role) {
     maintenance: 'Maintenance Coordinator', bd_agent: 'BD Agent',
     regional_director: 'Regional Director', resident_success: 'Resident Success',
     collections_leasing: 'Collections & Leasing', leasing_bd: 'Leasing & BD',
-    evictions_agent: 'Collections Agent',
+    evictions_agent: 'Collections Agent', collections_agent: 'Collections Agent',
   }[role] || role;
 }
 
@@ -213,6 +215,7 @@ function loadTab(tab) {
   if (tab === 'sixpm') sixpmLoad();
   if (tab === 'calls') loadCallAnalyzer();
   if (tab === 'evictions') loadEvictions();
+  if (tab === 'collections') loadCollections();
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
@@ -260,6 +263,95 @@ function loadEvictions() {
   const frame = $('#evictions-frame');
   if (frame && !frame.getAttribute('src')) frame.setAttribute('src', '/evictions/app');
   wireEvictionsFullscreen();
+}
+
+// ---- Collections Review (Rocío) ---------------------------------------------
+// Auto-pulls delinquency (AppFolio) + call log (SimpleVoIP) server-side; transcript
+// is an optional client-side upload. Generate posts to /api/collections/generate.
+let collectionsTranscript = '';
+let collectionsWired = false;
+async function loadCollections() {
+  // Reflect source connectivity as "✅ Loaded from …" indicators.
+  const setSt = (k, ok, label) => {
+    const el = $('#col-st-' + k); if (!el) return;
+    el.textContent = label; el.className = 'col-src-status ' + (ok ? 'ok' : 'bad');
+  };
+  try {
+    const s = await api('/api/collections/status', { credentials: 'same-origin' });
+    setSt('current', s.appfolio, s.appfolio ? '✅ Loaded from AppFolio' : '⚠ AppFolio not configured');
+    setSt('prior',   s.appfolio, s.appfolio ? '✅ Loaded from AppFolio' : '⚠ AppFolio not configured');
+    setSt('calls',   s.simplevoip, s.simplevoip ? '✅ Loaded from SimpleVoIP' : '⚠ SimpleVoIP not configured');
+    const hint = $('#col-gen-hint');
+    if (hint && !s.anthropic) hint.textContent = '⚠ Claude API not configured on the server — generation is disabled.';
+  } catch (err) {
+    ['current', 'prior', 'calls'].forEach(k => setSt(k, false, '⚠ ' + err.message));
+  }
+  if (collectionsWired) return;
+  collectionsWired = true;
+  const input = $('#col-transcript-input');
+  input?.addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = ev => {
+      collectionsTranscript = String(ev.target.result || '');
+      $('#col-zone-transcript')?.classList.add('ready');
+      const st = $('#col-st-transcript'); if (st) { st.textContent = '✅ Loaded'; st.className = 'col-src-status ok'; }
+      const fn = $('#col-fn-transcript'); if (fn) fn.textContent = f.name;
+    };
+    r.readAsText(f);   // reliable for .txt; .docx/.pdf are best-effort (optional field)
+  });
+}
+
+async function collectionsGenerate() {
+  const btn = $('#col-gen-btn');
+  const wrap = $('#col-prog-wrap'), bar = $('#col-prog-bar'), lbl = $('#col-prog-lbl'), err = $('#col-err');
+  btn.disabled = true; btn.textContent = 'Analyzing…';
+  wrap.style.display = 'block'; lbl.style.display = 'block'; err.style.display = 'none';
+  const stages = [[12, 'Pulling current delinquency from AppFolio…'], [30, 'Pulling prior-month delinquency…'],
+    [50, 'Loading SimpleVoIP call log (90 days)…'], [70, 'Cross-referencing calls vs delinquency…'], [88, 'Generating report…']];
+  let si = 0;
+  const timer = setInterval(() => { if (si < stages.length) { bar.style.width = stages[si][0] + '%'; lbl.textContent = stages[si][1]; si++; } }, 1200);
+  try {
+    const data = await api('/api/collections/generate', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcript: collectionsTranscript || '' }),
+    });
+    clearInterval(timer);
+    bar.style.width = '100%'; lbl.textContent = 'Complete';
+    $('#col-report').innerHTML = data.html || '<p>No content returned.</p>';
+    $('#col-out-date').textContent = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    $('#col-output').style.display = 'block';
+    $('#col-output').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTimeout(() => { wrap.style.display = 'none'; lbl.style.display = 'none'; }, 400);
+    btn.textContent = 'Report Generated'; btn.style.background = '#1a7a4a';
+  } catch (e) {
+    clearInterval(timer);
+    wrap.style.display = 'none'; lbl.style.display = 'none';
+    err.textContent = 'Error: ' + e.message; err.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Try Again'; btn.style.background = '';
+  }
+}
+
+function collectionsCopy(btn) {
+  const text = $('#col-report')?.innerText || '';
+  copyToClipboard(text);
+  const orig = btn.textContent; btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = orig; }, 1800);
+}
+
+function collectionsReset() {
+  collectionsTranscript = '';
+  $('#col-output').style.display = 'none';
+  $('#col-report').innerHTML = '';
+  $('#col-err').style.display = 'none';
+  const btn = $('#col-gen-btn'); btn.disabled = false; btn.textContent = 'Generate Collections Review'; btn.style.background = '';
+  $('#col-zone-transcript')?.classList.remove('ready');
+  const st = $('#col-st-transcript'); if (st) { st.textContent = 'Optional'; st.className = 'col-src-status'; }
+  const fn = $('#col-fn-transcript'); if (fn) fn.textContent = '';
+  const input = $('#col-transcript-input'); if (input) input.value = '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // Full-screen toggle for the Eviction Tracker iframe. Expands the frame to fill

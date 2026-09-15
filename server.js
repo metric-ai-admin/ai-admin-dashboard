@@ -3857,6 +3857,116 @@ app.post('/api/evictions/sync', requireMetricAccess, async (req, res) => {
   }
 });
 
+// =====================================================================
+// COLLECTIONS REVIEW — Rocío's weekly delinquency review generator.
+// Auto-pulls AppFolio delinquency (current + prior month) and the SimpleVOIP call
+// log, takes an optional transcript, and asks Claude for a structured report.
+// Admin + collections roles only. The API key stays server-side.
+// =====================================================================
+const COLLECTIONS_ROLES = ['admin', 'collections_agent', 'collections_leasing', 'evictions_agent'];
+
+// Delinquency (As Of) for a given date — same AppFolio Database-API pull the
+// Eviction Tracker uses, parameterized by date. Returns shaped rows; throws on failure.
+async function fetchDelinquencyAsOf(dateStr) {
+  const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
+  if (!id || !secret) throw new Error('AppFolio API not configured (APPFOLIO_CLIENT_ID / APPFOLIO_CLIENT_SECRET).');
+  const auth = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
+  const endpoint = 'https://metricpropertymanagement.appfolio.com/api/v2/reports/delinquency_as_of.json';
+  const filter = { occurred_on_to: dateStr, tenant_statuses: ['0', '4'], property_visibility: 'active', paginate_results: false };
+  const pull = obj => Array.isArray(obj) ? obj : (obj?.results || obj?.data || []);
+  const raw = [];
+  let resp = await fetchFn(endpoint, { method: 'POST', headers: { Authorization: auth, 'Content-Type': 'application/json' }, body: JSON.stringify(filter) });
+  let j = await resp.json().catch(() => null);
+  if (!resp.ok) throw new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status}`);
+  raw.push(...pull(j));
+  let next = j && j.next_page_url, guard = 0;
+  while (next && guard++ < 200) {
+    const nextUrl = /^https?:\/\//i.test(next) ? next : 'https://metricpropertymanagement.appfolio.com' + next;
+    resp = await fetchFn(nextUrl, { headers: { Authorization: auth } });
+    j = await resp.json().catch(() => null);
+    if (!resp.ok) throw new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status} on a later page`);
+    raw.push(...pull(j));
+    next = j && j.next_page_url;
+  }
+  return raw.map(r => ({
+    name: r.name || '', property: r.property_name || '', unit: r.unit || '',
+    status: r.tenant_status || '', delinquent_rent: r.delinquent_rent, amount_receivable: r.amount_receivable,
+    notes: r.delinquency_notes || '',
+  }));
+}
+
+// Source-connectivity flags, so the tab can show "✅ Loaded from AppFolio/SimpleVoIP".
+app.get('/api/collections/status', requireAuth, requireRole(...COLLECTIONS_ROLES), (req, res) => {
+  res.json({
+    appfolio: !!(process.env.APPFOLIO_CLIENT_ID && process.env.APPFOLIO_CLIENT_SECRET),
+    simplevoip: simplevoip.isConfigured(),
+    anthropic: !!process.env.ANTHROPIC_API_KEY,
+  });
+});
+
+const COLLECTIONS_SYSTEM = 'You are the collections analyst for Metric Property Management (Austin, TX). Produce a direct, '
+  + 'management-grade weekly collections review from the data provided — delinquency (current vs prior month), the '
+  + "SimpleVOIP call log for the AR agent Karla Gonzalez (Ext. 1110), and an optional review-call transcript. No hedging; "
+  + 'cite specific resident names, units, and dollar amounts.\n\n'
+  + 'OUTPUT THESE SECTIONS, in order:\n'
+  + '1. Summary Metrics — total delinquency, % change vs prior month (state direction), and residents contacted this period.\n'
+  + '2. Residents with INCREASED delinquency — priority list (highest increase first).\n'
+  + '3. Residents with DECREASED delinquency — wins.\n'
+  + '4. Call Log Analysis — who was contacted, outcomes, and who still needs follow-up.\n'
+  + '5. Transcript Highlights — only if a transcript was provided; otherwise state none was provided this cycle.\n'
+  + '6. Recommended Next Actions — per resident, concrete.\n\n'
+  + 'Cross-reference the call log against the delinquent accounts to find who was/was not contacted. Match residents '
+  + 'between current and prior by name+unit.\n\n'
+  + 'HTML RULES: return ONLY inner HTML (no html/head/body tags). Use only these pre-styled classes: <h2>N. Title</h2> '
+  + 'for sections, <h3> for sub-sections, <div class="alert-box [warn|info|ok]"><div class="al">LABEL</div>text</div>, '
+  + '<span class="badge [red|amber|green|navy]">TEXT</span>, and standard table/th/td/p/ul/li/strong.';
+
+app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_ROLES), async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'ANTHROPIC_API_KEY is not set on the server.' });
+  try {
+    const transcript = String(req.body?.transcript || '').slice(0, 30000);
+    const todayCT = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+    const pd = new Date(todayCT + 'T00:00:00'); pd.setMonth(pd.getMonth() - 1);
+    const priorCT = pd.toLocaleDateString('en-CA');
+    const errors = {};
+
+    const [curR, priorR] = await Promise.allSettled([fetchDelinquencyAsOf(todayCT), fetchDelinquencyAsOf(priorCT)]);
+    const current = curR.status === 'fulfilled' ? curR.value : (errors.current = curR.reason?.message || 'failed', []);
+    const prior   = priorR.status === 'fulfilled' ? priorR.value : (errors.prior = priorR.reason?.message || 'failed', []);
+
+    let calls = [];
+    if (simplevoip.isConfigured()) {
+      const end = Math.floor(Date.now() / 1000), start = end - 90 * 86400;
+      const uid = process.env.SIMPLEVOIP_COLLECTIONS_USER_ID || simplevoip.defaultUserId();
+      const { calls: rawCalls, error } = await simplevoip.fetchCDRList(uid, start, end);
+      if (error) errors.calls = error;
+      calls = simplevoip.shapeCalls(rawCalls || []);
+    } else { errors.calls = 'SimpleVOIP not configured'; }
+
+    if (!current.length && !prior.length && !calls.length && !transcript) {
+      return res.status(502).json({ error: 'No data available to analyze (AppFolio/SimpleVOIP unavailable and no transcript).', errors });
+    }
+
+    const m = v => (v == null || v === '') ? '' : v;
+    const sumDelinq = rows => rows.reduce((s, r) => s + (parseFloat(r.delinquent_rent) || 0), 0);
+    const delinqText = rows => rows.slice(0, 250)
+      .map(r => `${r.name} | ${r.property} ${r.unit} | delinq ${m(r.delinquent_rent)} | AR ${m(r.amount_receivable)}${r.notes ? ' | ' + String(r.notes).replace(/\s+/g, ' ').slice(0, 120) : ''}`).join('\n');
+    const callText = calls.slice(0, 300)
+      .map(c => `${new Date((c.datetime || 0) * 1000).toISOString().slice(0, 10)} | ${c.caller || ''} -> ${c.to_name || c.to_number || ''} | ${c.direction} | ${c.duration}s | ${c.status}${c.has_transcript ? ' | transcript' : ''}`).join('\n');
+
+    const user = `Analysis date: ${todayCT} (current) vs ${priorCT} (prior month). AR agent: Karla Gonzalez (Ext. 1110).\n`
+      + `Current total delinquent rent: $${Math.round(sumDelinq(current)).toLocaleString()} across ${current.length} accounts.\n`
+      + `Prior total delinquent rent: $${Math.round(sumDelinq(prior)).toLocaleString()} across ${prior.length} accounts.\n\n`
+      + `=== CURRENT MONTH DELINQUENCY (${todayCT}) ===\n${delinqText(current) || '[none]'}\n\n`
+      + `=== PRIOR MONTH DELINQUENCY (${priorCT}) ===\n${delinqText(prior) || '[none]'}\n\n`
+      + `=== SIMPLEVOIP CALL LOG — last 90 days (Karla's line) ===\n${callText || '[none]'}\n\n`
+      + `=== WEEKLY REVIEW CALL TRANSCRIPT ===\n${transcript || '[not provided]'}\n`;
+
+    const html = await callGrading.anthropicText({ system: COLLECTIONS_SYSTEM, user, maxTokens: 4000, model: 'claude-sonnet-4-6' });
+    res.json({ html, meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, hasTranscript: !!transcript, errors } });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // The ported app itself, served to any valid session (the nav tab is admin-only
 // on the client; upload is admin-gated on the server). Same-origin so its
 // fetches to /api/evictions/* carry the cookie.

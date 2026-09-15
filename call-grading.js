@@ -95,4 +95,26 @@ async function gradeTranscript({ callType, agent, duration, transcript }) {
   return anthropicJson({ system, user: userContent, maxTokens: 4000 });
 }
 
-module.exports = { SYSTEM_PROMPT, DANNY_PROMPT, gradeTranscript, anthropicJson, GRADE_MODEL, detectAgentFromTranscript };
+// Like anthropicJson but returns the model's raw text (no JSON parse) — for
+// prompts that produce prose/HTML (e.g. the Collections Review report).
+async function anthropicText({ system, user, maxTokens = 2000, model }) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new Error('Anthropic is not configured: set ANTHROPIC_API_KEY on the server.');
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({ model: model || GRADE_MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
+  });
+  if (!r.ok) {
+    const errText = await r.text();
+    let msg = 'Anthropic API error (' + r.status + ').';
+    try { const j = JSON.parse(errText); if (j.error && j.error.message) msg = j.error.message; } catch (e) {}
+    throw new Error(msg);
+  }
+  const data = await r.json();
+  const textBlock = (data.content || []).find(b => b.type === 'text');
+  if (!textBlock) throw new Error('No text response from the model.');
+  return textBlock.text;
+}
+
+module.exports = { SYSTEM_PROMPT, DANNY_PROMPT, gradeTranscript, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript };
