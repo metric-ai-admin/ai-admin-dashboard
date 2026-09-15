@@ -7968,6 +7968,11 @@ function mrEmailExcluded(m) {
   if (subj.includes('renewal pay-out') || subj.includes('renewal payout')) return true;
   if (internalDomain && subj.includes('payout')) return true;
 
+  // National Apartment Association newsletters — not operational.
+  if (senderName.includes('national apartment association') || addr.includes('naahq.org')) return true;
+  // Automated RUBS / Occupancy Map reports.
+  if (subj.includes('rubs occupancy map') || (subj.includes('rubs') && subj.includes('occupancy'))) return true;
+
   // Calendar invite/cancellation notices — not action items.
   if (/^\s*cancel(l)?ed\s*:/i.test(rawSubj)) return true;
   if (subj.includes('canceled event') || subj.includes('cancelled event')) return true;
