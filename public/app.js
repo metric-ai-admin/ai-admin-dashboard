@@ -2464,7 +2464,7 @@ function amWireRules() {
 async function amApplyOutlookRules() {
   const btn = $('#am-outlook-rules-btn'), status = $('#am-outlook-rules-status');
   if (!btn) return;
-  if (!confirm("This will create 5 Outlook message rules in Lyndsay's mailbox (Fire Claim, Lyndsay Review, Financial). Continue?")) return;
+  if (!confirm("This will create 6 Outlook message rules in Lyndsay's mailbox (Fire Claim, Lyndsay Review, Financial — incl. Rigby Slack auto-forward to Claudia). Continue?")) return;
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = '⏳ Applying…';
   if (status) status.textContent = '';

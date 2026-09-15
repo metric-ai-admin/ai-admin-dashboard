@@ -8093,6 +8093,8 @@ const LYNDSAY_MESSAGE_RULES = [
   { displayName: 'MPM Auto: Online Payables -> Review', folder: 'Lyndsay Review', conditions: { subjectContains: ['New Online Payables Batch'] } },
   { displayName: 'MPM Auto: Anthropic -> Financial',   folder: 'Financial',     conditions: { senderContains: ['anthropic'] } },
   { displayName: 'MPM Auto: Whereby -> Financial',     folder: 'Financial',     conditions: { senderContains: ['whereby.com'] } },
+  { displayName: 'MPM Auto: Rigby Slack -> Claudia',   folder: 'Financial',     conditions: { senderContains: ['rigbyslack', 'rigby slack', 'lawrence pepper', 'comerford'] },
+    forwardTo: [{ emailAddress: { address: 'claudia@metricpropertymanagement.com', name: 'Claudia' } }] },
 ];
 async function ensureLyndsayMessageRules({ execute }) {
   const token = await graphMailboxToken('lyndsay');
@@ -8115,7 +8117,9 @@ async function ensureLyndsayMessageRules({ execute }) {
     if (!fid) { out.push({ rule: def.displayName, status: 'skipped', reason: `folder "${def.folder}" not found` }); continue; }
     if (existing.has(norm(def.displayName))) { out.push({ rule: def.displayName, status: 'exists' }); continue; }
     if (!execute) { out.push({ rule: def.displayName, status: 'would-create', folder: def.folder }); continue; }
-    const body = { displayName: def.displayName, sequence: seq++, isEnabled: true, conditions: def.conditions, actions: { moveToFolder: fid, stopProcessingRules: true } };
+    const actions = { moveToFolder: fid, stopProcessingRules: true };
+    if (def.forwardTo) actions.forwardTo = def.forwardTo;   // forward before the move
+    const body = { displayName: def.displayName, sequence: seq++, isEnabled: true, conditions: def.conditions, actions };
     const r = await fetchFn(`${base}/mailFolders/inbox/messageRules`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
     out.push(r.ok ? { rule: def.displayName, status: 'created', id: j.id } : { rule: def.displayName, status: 'error', error: j?.error?.message || String(r.status) });
