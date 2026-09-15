@@ -3957,9 +3957,11 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       const end = Math.floor(Date.now() / 1000), start = end - 90 * 86400;
       const uids = collectionsVoipUserIds();
       agentCount = uids.length;
-      // Pull each AR agent's line in parallel; cap each agent to the 200 most
+      console.log(`[collections] SimpleVoIP querying ${uids.length} line(s): ${JSON.stringify(uids)} (default=${JSON.stringify(simplevoip.defaultUserId())})`);
+      // Pull each AR agent's line in parallel; cap each agent to the 50 most
       // recent calls, then merge + sort newest-first — keeps the payload bounded.
       const results = await Promise.all(uids.map(uid => simplevoip.fetchCDRList(uid, start, end)));
+      results.forEach((r, i) => console.log(`[collections] SimpleVoIP ${uids[i]} → ${(r.calls || []).length} call(s)${r.error ? ' · error: ' + r.error : ''}`));
       const callErrors = results.map(r => r.error).filter(Boolean);
       if (callErrors.length) errors.calls = callErrors.join('; ');
       const perAgent = results.map(r => simplevoip.shapeCalls(r.calls || [])
@@ -4000,7 +4002,7 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
 
     let html;
     try {
-      html = await callGrading.anthropicText({ system: COLLECTIONS_SYSTEM, user, maxTokens: 4000, model: 'claude-sonnet-4-6', timeoutMs: 25000 });
+      html = await callGrading.anthropicText({ system: COLLECTIONS_SYSTEM, user, maxTokens: 4000, model: 'claude-sonnet-4-6', timeoutMs: 55000 });
     } catch (aiErr) {
       console.error('[collections] Claude call failed:', aiErr.message);
       // Partial error rather than hanging — hand back what was pulled.
