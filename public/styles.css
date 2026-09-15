@@ -303,6 +303,13 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .badge-green { background: var(--success-bg); color: var(--success); }
 .badge-gray { background: var(--bg-elevated); color: var(--text-secondary); }
 .badge-blue { background: var(--info-bg); color: var(--info); }
+.badge-purple { background: rgba(124, 106, 247, 0.15); color: #7c6af7; }
+
+/* Call Analyzer — Grades progress counter. */
+.svg-progress { margin-bottom: 12px; }
+.svg-progress-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; margin-bottom: 5px; }
+.svg-progress-track { height: 6px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
+.svg-progress-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s; }
 
 /* ---------- Filter pills ---------- */
 .filter-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }

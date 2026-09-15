@@ -6311,8 +6311,12 @@ async function svgLoad() {
   if (!el) return;
   if (!svgState.loaded) el.innerHTML = '<p class="small muted">Loading grades…</p>';
   try {
-    const d = await api('/api/calls/grades');
+    const [d, prog] = await Promise.all([
+      api('/api/calls/grades'),
+      api('/api/calls/grade-progress').catch(() => null),   // header counter — non-fatal
+    ]);
     svgState.grades = d.grades || [];
+    svgState.progress = prog || null;
     svgState.loaded = true;
     svgRender();
   } catch (err) {
@@ -6366,14 +6370,27 @@ function svgKpis(list) {
   };
 }
 
+// "X calls graded / Y total" progress counter for the Grades header.
+function svgProgressHtml() {
+  const p = svgState.progress;
+  if (!p || !p.total) return '';
+  const pct = Math.min(100, Math.round((p.graded / p.total) * 100));
+  return `<div class="svg-progress">
+    <div class="svg-progress-row"><span><b>${p.graded.toLocaleString()}</b> calls graded / <b>${p.total.toLocaleString()}</b> total</span>
+      <span class="muted small">${pct}%${p.pending ? ` · ${p.pending.toLocaleString()} pending` : ' · all graded'}</span></div>
+    <div class="svg-progress-track"><div class="svg-progress-fill" style="width:${pct}%"></div></div>
+  </div>`;
+}
+
 function svgRender() {
   const el = $('#sv-view-grades');
   if (!el) return;
   const list = svgFiltered();
   el.innerHTML = `<div class="svg-tool">
+    ${svgProgressHtml()}
     ${currentUser?.role === 'admin' ? `<div class="svg-toolbar" style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:10px">
       <span class="muted small" id="svg-backfill-status"></span>
-      <button class="btn-sm primary" id="svg-backfill-btn" title="Grade every ungraded call from the last 14 days">⚡ Grade All Calls</button>
+      <button class="btn-sm primary" id="svg-backfill-btn" title="Grade every ungraded transcribed call from the last 90 days">⚡ Grade All Calls</button>
     </div>` : ''}
     ${svgKpiRowHtml(list)}
     ${svgFilterPillsHtml()}
@@ -6403,12 +6420,12 @@ function svgRender() {
 async function svgBackfill() {
   const btn = $('#svg-backfill-btn'), status = $('#svg-backfill-status');
   if (!btn) return;
-  if (!confirm('Grade all ungraded calls from the last 14 days?\n\nThis uses the Claude API (one call each) and can take 1–2 minutes.')) return;
+  if (!confirm('Grade all ungraded transcribed calls from the last 90 days?\n\nThis uses the Claude API (one call each). A large backlog may need a few runs — already-graded calls are skipped, so it is safe to click again to continue.')) return;
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = '⏳ Grading…';
-  if (status) status.textContent = 'Grading calls — this can take 1–2 minutes…';
+  if (status) status.textContent = 'Grading calls — a large backlog can take several minutes…';
   try {
-    const d = await api('/api/sv/grade/backfill?days=14', { method: 'POST' });
+    const d = await api('/api/sv/grade/backfill?days=90', { method: 'POST' });
     toast(`Graded ${d.newly_graded} new call${d.newly_graded === 1 ? '' : 's'} across ${d.users_processed || 0} agents ✅`, 'success');
     svgState.loaded = false;
     await svgLoad(); // re-renders with the new grades (rebuilds this toolbar)
@@ -8204,15 +8221,32 @@ async function sixpmLoad() {
 }
 
 // One meeting-summary card — shared by the 6PM report and the EOD Meetings view.
+// Full "Mon, Sep 15 · 3:00 PM CT" from a start_at (fallback: meeting_date).
+function mtgWhen(m) {
+  const iso = m.start_at || (m.meeting_date ? m.meeting_date + 'T00:00:00' : null);
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const date = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/Chicago' });
+  if (!m.start_at) return date;   // date-only rows: no meaningful time
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago' });
+  return `${date} · ${time} CT`;
+}
+// Category → colored badge (🔵 KPI / 🟣 Client / 🟢 Operations / ⚫ Other).
+function mtgCatBadge(category) {
+  const c = String(category || '').toLowerCase();
+  const cls = c.includes('kpi') ? 'badge-blue' : c.includes('client') ? 'badge-purple' : c.includes('oper') ? 'badge-green' : 'badge-gray';
+  return `<span class="badge ${cls}">${esc(category || 'Other')}</span>`;
+}
 function mtgSummaryCardHtml(m) {
-  const time = m.start_at ? new Date(m.start_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const when = mtgWhen(m);
   const decisions = Array.isArray(m.key_decisions) ? m.key_decisions : [];
   const actions = Array.isArray(m.action_items) ? m.action_items : [];
   const attendees = Array.isArray(m.attendees) ? m.attendees : [];
   return `<div class="card" style="margin-bottom:10px">
     <div class="card-meta" style="justify-content:space-between">
-      ${m.category ? `<span class="badge badge-gray">${esc(m.category)}</span>` : '<span></span>'}
-      <span class="muted small">${esc(time)}</span>
+      ${mtgCatBadge(m.category)}
+      <span class="muted small">${esc(when)}</span>
     </div>
     <div class="card-title">${esc(m.subject || '(untitled meeting)')}</div>
     ${attendees.length ? `<div class="card-meta small muted"><span>👥 ${attendees.map(esc).join(', ')}</span></div>` : ''}

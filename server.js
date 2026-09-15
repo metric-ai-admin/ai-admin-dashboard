@@ -5110,6 +5110,24 @@ app.get('/api/calls/grades', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Grading progress for the Grades tab header: how many calls are graded vs the
+// gradeable universe (archived calls with a transcript + min duration). The
+// transcript-length floor can't run in SQL, so `total` is a slight over-count.
+app.get('/api/calls/grade-progress', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ graded: 0, total: 0, pending: 0 });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const [gradedRes, totalRes] = await Promise.all([
+      db.from('call_grades').select('id', { count: 'exact', head: true }),
+      db.from('simplevoip_daily_calls').select('recording_id', { count: 'exact', head: true })
+        .gte('duration', AUTOGRADE_MIN_DURATION).not('transcript', 'is', null),
+    ]);
+    const graded = gradedRes.count || 0;
+    const total = Math.max(totalRes.count || 0, graded);
+    res.json({ graded, total, pending: Math.max(0, total - graded) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Full grade for one recording (the transcript panel checks this to show an
 // existing grade, and the Grades dashboard fetches it on row-expand).
 app.get('/api/calls/grades/:recording_id', requireAuth, async (req, res) => {
@@ -5262,14 +5280,16 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
 }
 
 // POST /api/sv/grade/backfill?days=N — grade all ungraded transcribed calls over
-// the last N days (default 7, max 30). Admin only. Runs synchronously; a large
-// backfill can take a minute or two, so the client shows a progress state.
+// the last N days (default 7, max 90). Admin only. Runs synchronously and is
+// idempotent (already-graded calls are skipped and each grade commits as it's made),
+// so a large backlog can be cleared with repeated runs even if a single request is
+// cut short. The client shows a progress state + a graded/total counter.
 app.post('/api/sv/grade/backfill', requireMetricAdmin, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   if (!simplevoip.isConfigured()) return res.status(400).json({ ok: false, error: 'SimpleVOIP is not configured.' });
   let days = parseInt(req.query.days, 10);
   if (!Number.isFinite(days) || days < 1) days = 7;
-  if (days > 30) days = 30;
+  if (days > 90) days = 90;
   try {
     let total = 0, already = 0, graded = 0, skipped = 0, notScoreable = 0, errors = 0;
     const perUser = {};
