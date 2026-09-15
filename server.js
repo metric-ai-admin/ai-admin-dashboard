@@ -8079,6 +8079,56 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
 });
 
 // =====================================================================
+// OUTLOOK MESSAGE RULES — Lyndsay's mailbox (server-side, via Graph).
+// Creates the standing move rules from Lyndsay's 09/15 routing so the moves happen
+// automatically at the mailbox level (no manual triage). Idempotent (skips a rule
+// whose displayName already exists) and folder-safe (skips a rule whose target
+// folder is missing). Admin-only. GET = dry run, POST = execute. Uses the existing
+// Graph mailbox token. Graph combines conditions of DIFFERENT types with AND, and
+// values WITHIN a condition array with OR — so the "sender OR subject" Fire-Claim
+// rule is two separate rules to the same folder.
+const LYNDSAY_MESSAGE_RULES = [
+  { displayName: 'MPM Auto: Fire Claim (Progressive)', folder: 'Fire Claim',    conditions: { senderContains: ['progressive.com'] } },
+  { displayName: 'MPM Auto: Fire Claim (Claim #)',     folder: 'Fire Claim',    conditions: { subjectContains: ['1615255'] } },
+  { displayName: 'MPM Auto: Online Payables -> Review', folder: 'Lyndsay Review', conditions: { subjectContains: ['New Online Payables Batch'] } },
+  { displayName: 'MPM Auto: Anthropic -> Financial',   folder: 'Financial',     conditions: { senderContains: ['anthropic'] } },
+  { displayName: 'MPM Auto: Whereby -> Financial',     folder: 'Financial',     conditions: { senderContains: ['whereby.com'] } },
+];
+async function ensureLyndsayMessageRules({ execute }) {
+  const token = await graphMailboxToken('lyndsay');
+  const base = graphMailboxBase('lyndsay');
+  const headers = { Authorization: `Bearer ${token}` };
+  const folders = await listMailFolders('lyndsay', token);
+  const norm = s => String(s || '').trim().toLowerCase();
+  const folderId = name => { const f = (folders || []).find(x => norm(x.displayName) === norm(name)); return f ? f.id : null; };
+  const exR = await fetchFn(`${base}/mailFolders/inbox/messageRules`, { headers });
+  const exJ = await exR.json().catch(() => ({}));
+  if (!exR.ok) throw new Error(exJ?.error?.message || `list rules returned ${exR.status}`);
+  const existing = new Set((exJ.value || []).map(r => norm(r.displayName)));
+
+  const out = [];
+  for (const def of LYNDSAY_MESSAGE_RULES) {
+    const fid = folderId(def.folder);
+    if (!fid) { out.push({ rule: def.displayName, status: 'skipped', reason: `folder "${def.folder}" not found` }); continue; }
+    if (existing.has(norm(def.displayName))) { out.push({ rule: def.displayName, status: 'exists' }); continue; }
+    if (!execute) { out.push({ rule: def.displayName, status: 'would-create', folder: def.folder }); continue; }
+    const body = { displayName: def.displayName, isEnabled: true, conditions: def.conditions, actions: { moveToFolder: fid, stopProcessingRules: true } };
+    const r = await fetchFn(`${base}/mailFolders/inbox/messageRules`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    out.push(r.ok ? { rule: def.displayName, status: 'created', id: j.id } : { rule: def.displayName, status: 'error', error: j?.error?.message || String(r.status) });
+  }
+  return out;
+}
+app.get('/api/email/lyndsay/message-rules', requireAuth, requireRole('admin'), async (req, res) => {
+  try { res.json({ dryRun: true, rules: await ensureLyndsayMessageRules({ execute: false }) }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+app.post('/api/email/lyndsay/message-rules', requireAuth, requireRole('admin'), async (req, res) => {
+  try { res.json({ dryRun: false, rules: await ensureLyndsayMessageRules({ execute: true }) }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// =====================================================================
 // MORNING REPORT — "Lyndsay's Daily Activity Report", assembled by Arturo.
 // Read-only. Fetches four sources in PARALLEL (Lyndsay's calendar + triage
 // folders via Graph, Arturo's Asana My Tasks, and the ops board), degrades
@@ -8141,6 +8191,18 @@ function mrEmailExcluded(m) {
   if (senderName.includes('national apartment association') || addr.includes('naahq.org')) return true;
   // Automated RUBS / Occupancy Map reports.
   if (subj.includes('rubs occupancy map') || (subj.includes('rubs') && subj.includes('occupancy'))) return true;
+
+  // Lyndsay's 09/15 routing rules — these are auto-filed (Fire Claim / Financial),
+  // handled by SmartBill/Claudia, so they aren't morning reminders. (AppFolio
+  // "New Online Payables Batch" is deliberately NOT excluded — it routes to Lyndsay
+  // Review, which she wants to see.)
+  const sd = addr + ' ' + senderName;   // match against address OR display name
+  // Progressive / fire-claim insurance.
+  if (sd.includes('progressive') || sd.includes('american strategic') || sd.includes('beneke') || subj.includes('1615255-264402')) return true;
+  // Rigby Slack / law-firm invoices (forwarded to Claudia + filed to Financial).
+  if (sd.includes('rigby') || subj.includes('rigby slack') || sd.includes('lawrence pepper') || sd.includes('comerford')) return true;
+  // Software vendor receipts → Financial (SmartBill).
+  if (sd.includes('anthropic') || sd.includes('whereby') || sd.includes('openai') || subj.includes('receipt from anthropic')) return true;
 
   // Calendar invite/cancellation notices — not action items.
   if (/^\s*cancel(l)?ed\s*:/i.test(rawSubj)) return true;
