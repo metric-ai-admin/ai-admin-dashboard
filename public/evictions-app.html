@@ -2145,6 +2145,30 @@ function Row({
 /* =========================================================
    MAIN APP
 ========================================================= */
+// "2026-09-16" -> "Sep 16, 2026" (date-only string, local — no TZ shift).
+function fmtReportDate(ds) {
+  if (!ds) return null;
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(ds)) ? ds + 'T00:00:00' : ds);
+  if (isNaN(d)) return null;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+// ISO timestamp -> "Today at 12:34 PM CT" / "Yesterday at …" / "Sep 15 at … CT".
+function fmtSyncedAt(ts) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (isNaN(d)) return null;
+  const CT = 'America/Chicago';
+  const dayStr = x => x.toLocaleDateString('en-CA', { timeZone: CT });
+  const now = new Date();
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: CT });
+  let label;
+  if (dayStr(d) === dayStr(now)) label = 'Today';
+  else {
+    const y = new Date(now.getTime() - 86400000);
+    label = dayStr(d) === dayStr(y) ? 'Yesterday' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: CT });
+  }
+  return `${label} at ${time} CT`;
+}
 function computeSnapshotSummary(units, reportDay, reportDate) {
   if (!units || !reportDate) return null;
   const enrichedForSnapshot = units.map(u => enrichUnit(u, reportDay, {}));
@@ -2197,6 +2221,9 @@ function App() {
   const [activeTab, setActiveTab] = useState('tracker');
   const [dragOver, setDragOver] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  // Reporting-period metadata for the info bar: { report_date, uploaded_at }
+  // from the eviction_sessions row currently displayed.
+  const [sessionMeta, setSessionMeta] = useState(null);
   useEffect(() => {
     if (rawUnits) return;
     const el = document.getElementById('preload-data');
@@ -2260,6 +2287,7 @@ function App() {
         setActivities((d.activities || []).map(a => ({ ...a, date: a.date ? new Date(a.date) : null })));
         setReportDay(d.reportDay != null ? d.reportDay : null);
         setReportDate(d.reportDate ? new Date(d.reportDate) : null);
+        setSessionMeta({ report_date: j.session.report_date || null, uploaded_at: j.session.uploaded_at || null });
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -2385,6 +2413,10 @@ function App() {
     // property||unit id, so they persist across uploads and daily AppFolio syncs.
     const snap = computeSnapshotSummary(result.units, result.day, result.rd);
     setHistoricalSnapshots(prev => upsertSnapshot(prev, snap));
+    setSessionMeta({
+      report_date: result.rd ? new Date(result.rd).toISOString().slice(0, 10) : null,
+      uploaded_at: new Date().toISOString(),
+    });
     return true;
   }
   async function syncFromAppFolio() {
@@ -2411,6 +2443,8 @@ function App() {
       const result = parseDelinquencyFromSheets([{ name: 'AppFolio Sync', rows: aoa }], null);
       if (!applyDelinquencyResult(result)) {
         alert('AppFolio sync returned data but it could not be parsed.');
+      } else {
+        setSessionMeta({ report_date: data.report_date || null, uploaded_at: new Date().toISOString() });
       }
     } catch (err) {
       alert('AppFolio sync failed: ' + err.message);
@@ -2437,6 +2471,7 @@ function App() {
       setNotes({});
       setExpanded(new Set());
       setCompleted(new Set());
+      setSessionMeta(null);
     } catch (err) {
       alert('Could not clear the session: ' + err.message);
     }
@@ -2671,7 +2706,21 @@ function App() {
     style: { opacity: 0.7, fontSize: '0.85em' },
     onClick: clearSession,
     title: "Wipe the saved session and start fresh"
-  }, "🗑 Clear Session"))), !rawUnits ? /*#__PURE__*/React.createElement("div", {
+  }, "🗑 Clear Session"))), sessionMeta && (sessionMeta.report_date || sessionMeta.uploaded_at) && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: '#f1f5f9',
+      border: '1px solid #e2e8f0',
+      borderRadius: 8,
+      padding: '8px 14px',
+      margin: '0 0 14px',
+      fontSize: '0.82em',
+      color: '#475569',
+      display: 'flex',
+      flexWrap: 'wrap',
+      gap: '6px 18px',
+      alignItems: 'center'
+    }
+  }, sessionMeta.report_date && /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("b", null, "Report as of: "), fmtReportDate(sessionMeta.report_date)), sessionMeta.uploaded_at && /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("b", null, "Last synced: "), fmtSyncedAt(sessionMeta.uploaded_at))), !rawUnits ? /*#__PURE__*/React.createElement("div", {
     className: "upload-wrap",
     onDragOver: e => {
       e.preventDefault();
