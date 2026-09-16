@@ -8261,11 +8261,12 @@ app.post('/api/email/lyndsay/message-rules', requireAuth, requireRole('admin'), 
 // Admin-only: exposes Lyndsay's meetings + email senders/subjects, same as the
 // triage snapshot beside it. No writes.
 // =====================================================================
+const MR_CRITICAL_MAX_AGE_DAYS = 14;   // Pending Critical Emails: nothing older than 14 days
 const MR_FOLDERS = [
-  { label: 'Lyndsay Review', match: ['lyndsay review', 'lyndsay'] },
-  { label: 'Clients',        match: ['client'] },
+  { label: 'Lyndsay Review', match: ['lyndsay review', 'lyndsay'], maxAgeDays: MR_CRITICAL_MAX_AGE_DAYS },
+  { label: 'Clients',        match: ['client'], maxAgeDays: MR_CRITICAL_MAX_AGE_DAYS },
   // MPM Team feeds the "Email Reminders" section — recentOnly caps it to the last
-  // 5 days so resolved/older threads don't linger.
+  // few days so resolved/older threads don't linger.
   { label: 'MPM Team',       match: ['mpm team', 'mpm'], recentOnly: true },
 ];
 // Personal / automated noise that should never surface in the morning report.
@@ -8415,10 +8416,11 @@ async function mrEmails() {
         } catch { /* skip a folder/filter that errors */ }
       }
     }
-    // Recent-only cutoff (CT calendar date) for the reminders folder.
+    // Max-age cutoff (CT calendar date): reminders → few days, critical → 14 days.
     let cutoffCT = null;
-    if (def.recentOnly) {
-      const c = new Date(); c.setDate(c.getDate() - MR_REMINDER_MAX_AGE_DAYS);
+    const maxAgeDays = def.recentOnly ? MR_REMINDER_MAX_AGE_DAYS : def.maxAgeDays;
+    if (maxAgeDays) {
+      const c = new Date(); c.setDate(c.getDate() - maxAgeDays);
       cutoffCT = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(c);
     }
     const recvCT = iso => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date(iso)); } catch { return ''; } };
@@ -8504,10 +8506,12 @@ async function mrOps() {
         priority: emoji,
         item: t.title || '(untitled)',
         pending: mrClean(t.notes).slice(0, 80) || '—',
+        due: t.due_on || '',
         rank: emoji === '🔴' ? 0 : emoji === '🟡' ? 1 : 2,   // critical → follow-up → in-progress
       };
     })
-    .sort((a, b) => a.rank - b.rank);
+    // Priority first (🔴 → 🟡 → 🟢), then earliest due date (undated last).
+    .sort((a, b) => (a.rank - b.rank) || (a.due || '9999').localeCompare(b.due || '9999'));
 }
 
 // 4b — SOP Review Slab-link coverage (a health snapshot atop Arturo's items).
@@ -8743,7 +8747,10 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   if (sopReview && !errors.sopReview) L.push(`  📖 SOP Review: ${sopReview.linked}/${sopReview.total} Slab links`);
   if (errors.ops) L.push(`  ⚠ ${errors.ops}`);
   else if (!ops.length) L.push('  No 🔴/🟡/🟢 items pending.');
-  else ops.forEach(o => L.push(`  ${o.priority}  ${o.item}  —  ${o.pending}`));
+  else {
+    ops.slice(0, 10).forEach(o => L.push(`  ${o.priority}  ${o.item}  —  ${o.pending}`));
+    if (ops.length > 10) L.push(`  + ${ops.length - 10} more task${ops.length - 10 === 1 ? '' : 's'} — see dashboard`);
+  }
 
   return L.join('\n');
 }
