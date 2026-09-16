@@ -4128,6 +4128,7 @@ const APPFOLIO_LEASING_FIELDS = {
   email:              'email_address',
   phone:              'phone_number',
   interest_received:  'received',            // ISO timestamp
+  first_contact_date: 'first_contact_date',  // Lyndsay's definition of "traffic"
   last_activity_date: 'last_activity_date',
   last_activity_type: 'last_activity_type',
   move_in_preference: 'move_in_preference',
@@ -4196,6 +4197,11 @@ function leasingRowFromReport(r) {
   const interestRaw = leasingVal(r, F.interest_received);
   const interestDate = interestRaw ? new Date(interestRaw) : null;
   const interestIso = (interestDate && !isNaN(interestDate.getTime())) ? interestDate.toISOString() : null;
+  // Traffic = First Contact Date (Lyndsay 09/15). Prefer it for week_ending;
+  // fall back to the interest-received date when the report doesn't carry it.
+  const firstContactRaw = leasingVal(r, F.first_contact_date) || leasingVal(r, 'first_contact') || leasingVal(r, 'first_contacted_at');
+  const trafficDate = firstContactRaw ? new Date(firstContactRaw) : interestDate;
+  const trafficValid = trafficDate && !isNaN(trafficDate.getTime());
   const gcId = leasingVal(r, F.guest_card_id);
   const propId = leasingVal(r, F.property_id);
   return {
@@ -4219,19 +4225,43 @@ function leasingRowFromReport(r) {
     status: leasingVal(r, F.status),
     lead_type: leasingVal(r, F.lead_type),
     property_id: propId != null ? String(propId) : null,
-    week_ending: interestIso ? leasingWeekEnding(interestDate) : null,
+    week_ending: trafficValid ? leasingWeekEnding(trafficDate) : (interestIso ? leasingWeekEnding(interestDate) : null),
     synced_at: new Date().toISOString(),
   };
 }
 
-// POST /api/leasing/sync — pull Guest Card Interests for a date range from the
-// Reports API and upsert into leasing_leads. requireMetricAccess (Katie).
+// Traffic = First Contact Date. Try guest_card_inquiries by first_contact_date;
+// if that report/param isn't available, fall back to guest_cards by first_contact_date,
+// then to the original received_on filter. Each attempt is logged (path + row count)
+// so the working source is visible in the Render logs. Returns { raw, source }.
+async function leasingFetchGuestCards(date_from, date_to) {
+  const attempts = [
+    { path: '/api/v2/reports/guest_card_inquiries.json', body: { first_contact_date_from: date_from, first_contact_date_to: date_to, property_visibility: 'active' }, source: 'guest_card_inquiries/first_contact_date' },
+    { path: APPFOLIO_GUEST_CARD_REPORT, body: { first_contact_date_from: date_from, first_contact_date_to: date_to, property_visibility: 'active' }, source: 'guest_cards/first_contact_date' },
+    { path: APPFOLIO_GUEST_CARD_REPORT, body: { received_on_from: date_from, received_on_to: date_to, property_visibility: 'active' }, source: 'guest_cards/received_on' },
+  ];
+  let lastErr = null;
+  for (const a of attempts) {
+    try {
+      const raw = await appfolioReportsFetch(a.path, a.body);
+      console.log(`[leasing-sync] ${a.source} → ${raw.length} row(s) for ${date_from}..${date_to}`);
+      return { raw, source: a.source };   // first non-erroring source wins (keeps semantics clean)
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[leasing-sync] ${a.source} failed (${err.code || '?'}): ${err.message}`);
+    }
+  }
+  throw lastErr || new Error('No guest-card report source succeeded.');
+}
+
+// POST /api/leasing/sync — pull Guest Cards (by First Contact Date) for a range
+// from the Reports API and upsert into leasing_leads. requireMetricAccess (Katie).
 app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   const { date_from, date_to } = req.body || {};
   if (!date_from || !date_to) return res.status(400).json({ ok: false, error: 'date_from and date_to are required (YYYY-MM-DD)' });
   try {
-    const raw = await appfolioReportsFetch(APPFOLIO_GUEST_CARD_REPORT, { received_on_from: date_from, received_on_to: date_to, property_visibility: 'active' });
+    const { raw, source } = await leasingFetchGuestCards(date_from, date_to);
     const seen = new Set();
     const rows = [];
     for (const r of raw) {
@@ -4248,7 +4278,7 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
       if (error) throw new Error(error.message);
       synced += chunk.length;
     }
-    res.json({ ok: true, synced, date_from, date_to });
+    res.json({ ok: true, synced, date_from, date_to, source });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Leasing sync failed: ' + err.message });
   }
@@ -8886,20 +8916,43 @@ async function eodGather() {
   try { S.leasing = await leasingWeeklyRollup(db); }
   catch (e) { S.leasing = { error: e.message }; }
 
-  // 4 — EVICTIONS / COLLECTIONS (latest uploaded session blob + completed log)
+  // 4 — COLLECTIONS (from the latest eviction/delinquency session blob), split
+  // into 3 sections: high-balance-no-contact, critical accounts, portfolio summary.
   try {
     const { data: sess } = await db.from('eviction_sessions').select('report_date,data,uploaded_at').order('uploaded_at', { ascending: false }).limit(1);
     const latest = (sess || [])[0];
-    let active = null, list = [];
+    let active = null, sectionA = [], sectionB = [], portfolio = null;
     if (latest && latest.data) {
       const d = latest.data;
       const units = Array.isArray(d) ? d : (Array.isArray(d.units) ? d.units : (Array.isArray(d.rows) ? d.rows : []));
       active = units.length;
-      list = units.slice(0, 8).map(u => ({ resident: u.name || u.resident || '', property: u.property || '', balance: u.totalAR ?? u.balance ?? '', step: u.stage || u.step || '' }));
+      const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[$,]/g, '')); return isNaN(n) ? 0 : n; };
+      const balOf = u => num(u.totalAR ?? u.delinquentRent ?? u.delinquent_rent ?? u.balance ?? u.amountReceivable ?? 0);
+      const billedOf = u => num(u.billed ?? u.totalBilled ?? u.total_billed ?? u.marketRent ?? u.market_rent ?? u.rent ?? 0);
+      const stepOf = u => String(u.stage || u.step || u.evictionStatus || u.eviction_status || '').trim();
+      const propOf = u => u.property || u.property_name || u.propertyName || '—';
+      const nameOf = u => u.name || u.resident || '';
+      const inEviction = u => { const s = stepOf(u).toLowerCase(); return !!s && !/balance[_ ]?only/.test(s); };
+      const contactRaw = u => u.lastContact || u.last_contact || u.contactDate || u.last_contact_date || u.lastContactDate || null;
+      const contactedRecently = u => { const c = contactRaw(u); if (!c) return false; const t = Date.parse(c); return !isNaN(t) && (Date.now() - t) < 24 * 3600e3; };
+      const shape = u => ({ resident: nameOf(u), property: propOf(u), balance: balOf(u), step: stepOf(u) || 'BALANCE_ONLY' });
+
+      const notEvic = units.filter(u => !inEviction(u));
+      sectionA = notEvic.filter(u => balOf(u) > 500 && !contactedRecently(u)).sort((a, b) => balOf(b) - balOf(a)).slice(0, 15).map(shape);
+      sectionB = notEvic.filter(u => balOf(u) > 800).sort((a, b) => balOf(b) - balOf(a)).slice(0, 15).map(shape);
+
+      const totalDelinq = units.reduce((s, u) => s + balOf(u), 0);
+      const totalBilled = units.reduce((s, u) => s + billedOf(u), 0);
+      const byProp = {};
+      for (const u of units) { const p = propOf(u); (byProp[p] = byProp[p] || { delinq: 0, billed: 0 }); byProp[p].delinq += balOf(u); byProp[p].billed += billedOf(u); }
+      const perProperty = Object.entries(byProp)
+        .map(([property, v]) => ({ property, delinq: v.delinq, pct: v.billed > 0 ? Math.round((v.delinq / v.billed) * 1000) / 10 : null }))
+        .sort((a, b) => b.delinq - a.delinq).slice(0, 20);
+      portfolio = { totalDelinq, totalBilled, pct: totalBilled > 0 ? Math.round((totalDelinq / totalBilled) * 1000) / 10 : null, hasBilled: totalBilled > 0, hasContact: units.some(u => contactRaw(u)), perProperty };
     }
     let completed = 0;
     try { const { count } = await db.from('eviction_completed').select('id', { count: 'exact', head: true }); completed = count || 0; } catch {}
-    S.evictions = { active, list, completed, report_date: latest ? latest.report_date : null };
+    S.evictions = { active, sectionA, sectionB, portfolio, completed, report_date: latest ? latest.report_date : null };
   } catch (e) { S.evictions = { error: e.message }; }
 
   // 5 — MAINTENANCE (AppFolio work orders + labor)
@@ -9069,11 +9122,27 @@ function eodRenderHtml(data) {
       return [low ? `<b>${eodEsc(r.property)}</b>` : eodEsc(r.property), r.occ == null ? '—' : (low ? `<b>${r.occ}%</b>` : r.occ + '%'), r.traffic, r.tours, r.apps, r.moveins];
     }))));
   const e4 = S.evictions || {};
-  const e4HasBalanceOnly = (e4.list || []).some(u => /balance[_ ]?only/i.test(String(u.step || '')));
-  P.push(eodSectionHtml('⚖️', 'Evictions / Collections',
-    e4.error ? eodErr(e4.error) : `${e4.active == null ? '—' : e4.active} active${e4.report_date ? ` · report ${eodEsc(e4.report_date)}` : ''} · ${e4.completed || 0} completed logged`,
-    eodTable(['Resident', 'Property', 'Balance', 'Step'], (e4.list || []).map(u => [eodEsc(u.resident), eodEsc(u.property), typeof u.balance === 'number' ? '$' + Math.round(u.balance).toLocaleString() : eodEsc(u.balance), eodEsc(u.step)]))
-    + (e4HasBalanceOnly ? `<div style="margin-top:4px;font-size:11px;font-style:italic;color:${EOD.muted}">ⓘ BALANCE_ONLY = Resident has an outstanding balance but no active eviction filing. No legal action has been initiated yet.</div>` : '')));
+  const money0 = n => '$' + Math.round(Number(n) || 0).toLocaleString();
+  const collBalCell = u => typeof u.balance === 'number' ? money0(u.balance) : eodEsc(u.balance);
+  const pf = (e4.portfolio || {});
+  const subLabel = (emoji, title, note) => `<div style="font-weight:600;font-size:12px;margin:10px 0 2px;color:${EOD.text}">${emoji} ${title}</div>`
+    + `<div style="font-size:11px;font-style:italic;color:${EOD.muted};margin-bottom:3px">${note}</div>`;
+  P.push(eodSectionHtml('⚖️', 'Collections',
+    e4.error ? eodErr(e4.error) : `${e4.active == null ? '—' : e4.active} delinquent account(s)${e4.report_date ? ` · report ${eodEsc(e4.report_date)}` : ''} · ${e4.completed || 0} evictions completed logged`,
+    e4.error ? '' :
+      subLabel('⚠️', 'High Balance, No Recent Contact (&gt;$500)', pf.hasContact
+        ? 'Balance over $500, not in eviction, and no contact logged in the last 24 hours — priority follow-up.'
+        : 'Balance over $500 and not in eviction (contact-timing data not available in the report — showing all).')
+      + eodTable(['Resident', 'Property', 'Balance', 'Step'], (e4.sectionA || []).map(u => [eodEsc(u.resident), eodEsc(u.property), collBalCell(u), eodEsc(u.step)]))
+      + subLabel('🔴', 'Critical Accounts (&gt;$800, Not in Eviction)', 'Balance over $800 and not in eviction, regardless of contact status.')
+      + eodTable(['Resident', 'Property', 'Balance', 'Step'], (e4.sectionB || []).map(u => [eodEsc(u.resident), eodEsc(u.property), collBalCell(u), eodEsc(u.step)]))
+      + subLabel('📊', 'Portfolio Delinquency Summary', pf.hasBilled
+        ? 'Total delinquent balance and % delinquent (delinquency ÷ billed), portfolio and per property.'
+        : 'Total delinquent balance, portfolio and per property. (% delinquent needs billed-this-month, not present in this report.)')
+      + `<div style="font-size:12px;color:${EOD.text};margin:2px 0 4px"><b>Total delinquent:</b> ${money0(pf.totalDelinq)}${pf.hasBilled ? ` · <b>Billed:</b> ${money0(pf.totalBilled)} · <b>% Delinquent:</b> ${pf.pct == null ? '—' : pf.pct + '%'}` : ''}</div>`
+      + eodTable(pf.hasBilled ? ['Property', 'Delinquent', '% Delinquent'] : ['Property', 'Delinquent'],
+          (pf.perProperty || []).map(p => pf.hasBilled ? [eodEsc(p.property), money0(p.delinq), p.pct == null ? '—' : p.pct + '%'] : [eodEsc(p.property), money0(p.delinq)]))
+      + `<div style="margin-top:4px;font-size:11px;font-style:italic;color:${EOD.muted}">ⓘ BALANCE_ONLY = Resident has an outstanding balance but no active eviction filing. No legal action has been initiated yet.</div>`));
   const m5 = S.maintenance || {};
   P.push(eodSectionHtml('🔧', 'Maintenance',
     m5.error ? eodErr(m5.error) : `${m5.open || 0} open WO(s) · ${m5.completedToday || 0} completed today · ${m5.totalHours || 0}h logged today across ${m5.wosWorked || 0} WO(s)`,
