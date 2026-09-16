@@ -8306,6 +8306,11 @@ const LYNDSAY_MESSAGE_RULES = [
   { displayName: 'MPM Auto: Impact Floors -> Financial', folder: 'Financial',   conditions: { senderContains: ['impactfloors.com'] } },
   { displayName: 'MPM Auto: Allen Vaughn -> Archive',  folder: 'Archive',       conditions: { senderContains: ['allen@colonycreekapts.com'] }, markRead: true },
   { displayName: 'MPM Auto: ParentSquare -> Personal', folder: 'Personal',      conditions: { senderContains: ['parentsquare.com'] } },
+  // American National deposits -> Financial + forward to Claudia (Accounting).
+  // Graph ANDs senderContains + subjectContains, so the OR is split into two
+  // rules (same pattern as the Fire Claim sender/subject pair).
+  { displayName: 'MPM Auto: American National -> Financial', folder: 'Financial', conditions: { senderContains: ['americannational'] }, markRead: true, forwardTo: 'accounting@metricpropertymanagement.com' },
+  { displayName: 'MPM Auto: Items Submitted for Deposit -> Financial', folder: 'Financial', conditions: { subjectContains: ['items submitted for deposit'] }, markRead: true, forwardTo: 'accounting@metricpropertymanagement.com' },
 ];
 // Graph forwardTo is a list of recipients; accept a plain address string or a ready list.
 const mrForwardTo = fw => !fw ? null : (Array.isArray(fw) ? fw : [{ emailAddress: { address: String(fw) } }]);
