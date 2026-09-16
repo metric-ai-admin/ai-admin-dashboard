@@ -8261,7 +8261,7 @@ app.post('/api/email/lyndsay/message-rules', requireAuth, requireRole('admin'), 
 // Admin-only: exposes Lyndsay's meetings + email senders/subjects, same as the
 // triage snapshot beside it. No writes.
 // =====================================================================
-const MR_CRITICAL_MAX_AGE_DAYS = 14;   // Pending Critical Emails: nothing older than 14 days
+const MR_CRITICAL_MAX_AGE_DAYS = 7;   // Pending Critical Emails: nothing older than 7 days
 const MR_FOLDERS = [
   { label: 'Lyndsay Review', match: ['lyndsay review', 'lyndsay'], maxAgeDays: MR_CRITICAL_MAX_AGE_DAYS },
   { label: 'Clients',        match: ['client'], maxAgeDays: MR_CRITICAL_MAX_AGE_DAYS },
@@ -8290,6 +8290,7 @@ function mrEmailExcluded(m) {
 
   // Internal/automated senders and our own reports — noise for Lyndsay's morning view.
   if (addr.includes('support@livewithmetric.com')) return true;
+  if (addr.includes('rtuckner@metricpropertymanagement.com')) return true;   // Rebekah — internal ops
   if (['end of day report', 'eod report', 'metric eod', 'asana task tracking'].some(k => subj.includes(k))) return true;
   const senderName = (m.sender?.emailAddress?.name || m.from?.emailAddress?.name || '').toLowerCase();
   if (senderName.includes('metric accounting') && subj.includes('bill audit')) return true;
