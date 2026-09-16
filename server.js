@@ -3851,6 +3851,43 @@ app.post('/api/evictions/sync', requireMetricAccess, async (req, res) => {
       return out;
     });
 
+    // Persist a fresh eviction_sessions snapshot server-side so the EOD report
+    // always reflects the latest sync — the tracker also saves via
+    // POST /api/evictions/session (richer, parsed units), which supersedes this
+    // by uploaded_at; this write is the safety net if the client save never
+    // fires. Best-effort: a save failure must not fail the sync response.
+    // Units use the same field names the EOD/tracker read (property, name,
+    // totalAR, stage), so totals match the tracker exactly.
+    try {
+      const db = supabaseAdmin || supabasePublic;
+      if (db) {
+        const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[$,]/g, '')); return isNaN(n) ? 0 : n; };
+        const units = rows.map(r => ({
+          property: r['Property Name'] || '',
+          unit: r['Unit'] || '',
+          name: r['Name'] || '',
+          agent: r['AR Agent'] || '',
+          tenStatus: r['Tenant Status'] || '',
+          totalAR: num(r['Amount Receivable']),
+          delRent: num(r['Delinquent Rent']),
+          evStatus: r['Eviction Status'] || '',
+          stage: r['Eviction Status'] || 'BALANCE_ONLY',
+          notes: r['Delinquency Notes'] || '',
+          occupancyId: r['Occupancy Id'] || '',
+        }));
+        const sessionRow = {
+          data: { units, reportDate: today, syncedFrom: 'appfolio' },
+          report_date: today,
+          uploaded_by: (sessionUsername(req) || 'appfolio-sync'),
+        };
+        const { error: saveErr } = await db.from('eviction_sessions').insert([sessionRow]);
+        if (saveErr) console.warn('[evictions/sync] session save failed:', saveErr.message);
+        else console.log('[evictions/sync] saved eviction_sessions snapshot: %d units, %s', units.length, today);
+      }
+    } catch (saveEx) {
+      console.warn('[evictions/sync] session save threw:', saveEx.message);
+    }
+
     res.json({ ok: true, rows, report_date: today, count: rows.length });
   } catch (err) {
     res.status(502).json({ ok: false, error: 'AppFolio sync failed: ' + err.message });
@@ -9183,13 +9220,23 @@ function eodRenderHtml(data) {
   // "2026-09-16" -> "Sep 16" (UTC to avoid TZ drift on a date-only string).
   const fmtMD = ds => { const t = Date.parse(ds); if (isNaN(t)) return eodEsc(ds || '—'); const d = new Date(t); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }); };
   const ePrior = e4.prior || null;
-  // Collections header: account count + reporting period + snapshot comparison.
-  const collHeader = e4.error ? '' : (
-    `${e4.active == null ? '—' : e4.active} delinquent account(s)`
-    + (ePrior && ePrior.report_date && e4.report_date
-        ? ` · report ${eodEsc(ePrior.report_date)} → ${eodEsc(e4.report_date)} · comparing ${fmtMD(ePrior.report_date)} vs ${fmtMD(e4.report_date)} snapshot`
-        : (e4.report_date ? ` · report ${eodEsc(e4.report_date)}` : ''))
-    + ` · ${e4.completed || 0} evictions completed logged`);
+  const curAR = pf.totalDelinq;   // current total AR = Σ balances
+  const acctLine = `${e4.active == null ? '—' : e4.active} delinquent accounts`;
+  // Collections header: always account count + total AR; when a prior snapshot
+  // exists, show the period and the AR trend (delta + %).
+  let collHeader = '';
+  if (!e4.error) {
+    const evLine = `${e4.completed || 0} evictions completed logged`;
+    if (ePrior && ePrior.report_date && e4.report_date && ePrior.totalDelinq != null && curAR != null) {
+      const diff = curAR - ePrior.totalDelinq;
+      const pct = ePrior.totalDelinq > 0 ? Math.round((diff / ePrior.totalDelinq) * 1000) / 10 : null;
+      const arrow = diff < 0 ? '↓' : (diff > 0 ? '↑' : '');
+      const trend = `(${arrow}${money0(Math.abs(diff))}${pct == null ? '' : ` / ${pct > 0 ? '+' : ''}${pct}%`})`;
+      collHeader = `report ${fmtMD(ePrior.report_date)} → ${fmtMD(e4.report_date)} · ${acctLine} · ${money0(ePrior.totalDelinq)} → ${money0(curAR)} total AR ${trend} · ${evLine}`;
+    } else {
+      collHeader = `report ${e4.report_date ? eodEsc(e4.report_date) : '—'} · ${acctLine}${curAR == null ? '' : ` · ${money0(curAR)} total AR`} · ${evLine}`;
+    }
+  }
   // Section C comparison line: prior → current total delinquent balance.
   const collCompareLine = (ePrior && ePrior.report_date && e4.report_date && pf.totalDelinq != null)
     ? `<div style="font-size:12px;color:${EOD.text};margin:2px 0 4px"><b>Total Delinquent Balance (${fmtMD(ePrior.report_date)} → ${fmtMD(e4.report_date)}):</b> ${money0(ePrior.totalDelinq)} → ${money0(pf.totalDelinq)}</div>`
