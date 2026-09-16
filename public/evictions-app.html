@@ -2281,8 +2281,12 @@ function App() {
   useEffect(() => {
     if (!rawUnits) return;
     if (hydratingRef.current) { hydratingRef.current = false; return; }
+    // Persist the tracker's own qualifying-total snapshot so the EOD report can
+    // read the SAME headline number the tracker shows (qualifying units only),
+    // instead of re-summing every unit server-side and diverging.
+    const summary = computeSnapshotSummary(rawUnits, reportDay, reportDate);
     const payload = {
-      data: { units: rawUnits, activities, reportDate, reportDay },
+      data: { units: rawUnits, activities, reportDate, reportDay, summary },
       report_date: reportDate ? new Date(reportDate).toISOString().slice(0, 10) : null
     };
     fetch('/api/evictions/session', {

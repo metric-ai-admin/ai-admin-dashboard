@@ -3880,9 +3880,10 @@ app.post('/api/evictions/sync', requireMetricAccess, async (req, res) => {
           report_date: today,
           uploaded_by: (sessionUsername(req) || 'appfolio-sync'),
         };
+        const sumAR = units.reduce((s, u) => s + (u.totalAR || 0), 0);
         const { error: saveErr } = await db.from('eviction_sessions').insert([sessionRow]);
         if (saveErr) console.warn('[evictions/sync] session save failed:', saveErr.message);
-        else console.log('[evictions/sync] saved eviction_sessions snapshot: %d units, %s', units.length, today);
+        else console.log('[evictions/sync] saved eviction_sessions snapshot: %d units, %s, totalAR(all)=%s (Amount Receivable, unqualified — tracker headline sums qualifying units only)', units.length, today, Math.round(sumAR));
       }
     } catch (saveEx) {
       console.warn('[evictions/sync] session save threw:', saveEx.message);
@@ -8991,6 +8992,10 @@ async function eodGather() {
     const { data: sess } = await db.from('eviction_sessions').select('report_date,data,uploaded_at').order('uploaded_at', { ascending: false }).limit(60);
     const sessions = sess || [];
     const latest = sessions[0];
+    // The tracker's own qualifying-total snapshot, when the client persisted it —
+    // this is the exact headline figure the Eviction Tracker shows (qualifying
+    // units only). Prefer it over re-summing every unit so the EOD matches.
+    const summaryOf = s => { const sm = s && s.data && s.data.summary; return (sm && typeof sm.totalAR === 'number') ? sm : null; };
 
     // Shared field extractors (used for both the latest snapshot and the prior one).
     const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[$,]/g, '')); return isNaN(n) ? 0 : n; };
@@ -9013,13 +9018,18 @@ async function eodGather() {
     let active = null, sectionA = [], sectionB = [], portfolio = null;
     if (latest && latest.data) {
       const units = unitsOf(latest);
-      active = units.length;
+      const sm = summaryOf(latest);
+      // Headline count/total prefer the tracker's stored qualifying summary so the
+      // EOD equals the tracker; fall back to summing all units when absent (older
+      // rows, or a server-side sync row that carries no summary).
+      active = sm && typeof sm.qualifying === 'number' ? sm.qualifying : units.length;
 
       const notEvic = units.filter(u => !inEviction(u));
       sectionA = notEvic.filter(u => balOf(u) > 500 && !contactedRecently(u)).sort((a, b) => balOf(b) - balOf(a)).slice(0, 15).map(shape);
       sectionB = notEvic.filter(u => balOf(u) > 800).sort((a, b) => balOf(b) - balOf(a)).slice(0, 15).map(shape);
 
-      const totalDelinq = units.reduce((s, u) => s + balOf(u), 0);
+      const summedDelinq = units.reduce((s, u) => s + balOf(u), 0);
+      const totalDelinq = sm ? sm.totalAR : summedDelinq;
       const totalBilled = units.reduce((s, u) => s + billedOf(u), 0);
       const byProp = {};
       for (const u of units) { const p = propOf(u); (byProp[p] = byProp[p] || { delinq: 0, billed: 0 }); byProp[p].delinq += balOf(u); byProp[p].billed += billedOf(u); }
@@ -9027,6 +9037,8 @@ async function eodGather() {
         .map(([property, v]) => ({ property, delinq: v.delinq, pct: v.billed > 0 ? Math.round((v.delinq / v.billed) * 1000) / 10 : null }))
         .sort((a, b) => b.delinq - a.delinq).slice(0, 20);
       portfolio = { totalDelinq, totalBilled, pct: totalBilled > 0 ? Math.round((totalDelinq / totalBilled) * 1000) / 10 : null, hasBilled: totalBilled > 0, hasContact: units.some(u => contactRaw(u)), perProperty };
+      console.log('[eod-collections] latest snapshot uploaded_at=%s report_date=%s source=%s totalAR=%s (summed-all=%s) qualifying=%s',
+        latest.uploaded_at, latest.report_date, sm ? 'tracker-summary' : 'summed-units', Math.round(totalDelinq), Math.round(summedDelinq), active);
     }
 
     // Prior snapshot for the period comparison: the most recent one whose
@@ -9038,7 +9050,12 @@ async function eodGather() {
       const priorSess = sessions.find(s => s !== latest && s.report_date && Date.parse(s.report_date) <= cutoff && Date.parse(s.report_date) < latestT);
       if (priorSess && priorSess.data) {
         const pu = unitsOf(priorSess);
-        prior = { report_date: priorSess.report_date, totalDelinq: pu.reduce((s, u) => s + balOf(u), 0), active: pu.length };
+        const psm = summaryOf(priorSess);
+        prior = {
+          report_date: priorSess.report_date,
+          totalDelinq: psm ? psm.totalAR : pu.reduce((s, u) => s + balOf(u), 0),
+          active: psm && typeof psm.qualifying === 'number' ? psm.qualifying : pu.length,
+        };
       }
     }
 
