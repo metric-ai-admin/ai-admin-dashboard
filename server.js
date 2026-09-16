@@ -4187,8 +4187,11 @@ async function appfolioReportsFetch(reportPath, body) {
   return raw;
 }
 
-// Map one raw report row to a leasing_leads record (or null to skip).
-function leasingRowFromReport(r) {
+// Map one raw report row to a leasing_leads record (or null to skip). `propMap`
+// (property_id → property_name) resolves rows that arrive without a property name
+// (guest_card_inquiries often omits it); a row that still can't be attributed to a
+// property is excluded rather than stored as "Unknown".
+function leasingRowFromReport(r, propMap = {}) {
   const F = APPFOLIO_LEASING_FIELDS;
   const uuid = leasingVal(r, F.guest_card_uuid);
   const name = leasingVal(r, F.name);
@@ -4204,6 +4207,12 @@ function leasingRowFromReport(r) {
   const trafficValid = trafficDate && !isNaN(trafficDate.getTime());
   const gcId = leasingVal(r, F.guest_card_id);
   const propId = leasingVal(r, F.property_id);
+  const propIdStr = propId != null ? String(propId) : null;
+  // Property name: from the row, else resolved via property_id against known
+  // properties. Unattributable → exclude (no "Unknown" rows).
+  let property = leasingVal(r, F.property);
+  if (!property && propIdStr && propMap[propIdStr]) property = propMap[propIdStr];
+  if (!property) return null;
   return {
     // Stable per-guest-card UUID is the identity; composite is only a fallback
     // for the unlikely row without a uuid.
@@ -4217,14 +4226,14 @@ function leasingRowFromReport(r) {
     move_in_preference: leasingDateOnly(leasingVal(r, F.move_in_preference)),
     lisa_lead: leasingTruthy(leasingVal(r, F.lisa_lead)),
     source: leasingVal(r, F.source),
-    property: leasingVal(r, F.property),
+    property,
     assigned_user: leasingVal(r, F.assigned_user),
     notes: leasingVal(r, F.notes),
     guest_card_id: gcId != null ? parseInt(gcId, 10) || null : null,
     guest_card_uuid: uuid,
     status: leasingVal(r, F.status),
     lead_type: leasingVal(r, F.lead_type),
-    property_id: propId != null ? String(propId) : null,
+    property_id: propIdStr,
     week_ending: trafficValid ? leasingWeekEnding(trafficDate) : (interestIso ? leasingWeekEnding(interestDate) : null),
     synced_at: new Date().toISOString(),
   };
@@ -4262,15 +4271,32 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
   if (!date_from || !date_to) return res.status(400).json({ ok: false, error: 'date_from and date_to are required (YYYY-MM-DD)' });
   try {
     const { raw, source } = await leasingFetchGuestCards(date_from, date_to);
+    const db = supabaseAdmin || supabasePublic;
+    // property_id → property_name, so rows that arrive without a property name can
+    // still be attributed. Seed from this batch's own named rows, then supplement
+    // from previously-synced leads.
+    const propMap = {};
+    const F = APPFOLIO_LEASING_FIELDS;
+    for (const r of raw) {
+      const pid = leasingVal(r, F.property_id), pn = leasingVal(r, F.property);
+      if (pid != null && pn) propMap[String(pid)] = pn;
+    }
+    try {
+      const { data: known } = await db.from('leasing_leads').select('property_id,property').not('property', 'is', null).not('property_id', 'is', null).limit(10000);
+      for (const k of (known || [])) if (k.property_id != null && k.property && !propMap[String(k.property_id)]) propMap[String(k.property_id)] = k.property;
+    } catch { /* propMap seed from batch is enough */ }
+
     const seen = new Set();
     const rows = [];
+    let excluded = 0;
     for (const r of raw) {
-      const rec = leasingRowFromReport(r);
-      if (!rec || rec.appfolio_id === '||' || seen.has(rec.appfolio_id)) continue;
+      const rec = leasingRowFromReport(r, propMap);
+      if (!rec || rec.appfolio_id === '||') { excluded++; continue; }   // no resolvable property → skip
+      if (seen.has(rec.appfolio_id)) continue;
       seen.add(rec.appfolio_id);
       rows.push(rec);
     }
-    const db = supabaseAdmin || supabasePublic;
+    if (excluded) console.log(`[leasing-sync] excluded ${excluded} row(s) with no resolvable property (source=${source})`);
     let synced = 0;
     for (let i = 0; i < rows.length; i += 500) {
       const chunk = rows.slice(i, i + 500);
@@ -4278,7 +4304,7 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
       if (error) throw new Error(error.message);
       synced += chunk.length;
     }
-    res.json({ ok: true, synced, date_from, date_to, source });
+    res.json({ ok: true, synced, excluded, date_from, date_to, source });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Leasing sync failed: ' + err.message });
   }
