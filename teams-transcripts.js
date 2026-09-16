@@ -83,4 +83,44 @@ function parseVtt(vtt) {
     .join('\n');
 }
 
-module.exports = { resolveUserId, resolveOnlineMeeting, listTranscripts, fetchTranscriptVtt, parseVtt };
+// Distinct speaker names from a WebVTT — the people who ACTUALLY spoke (from the
+// <v Name> cue tags), which is more accurate than the calendar invite list.
+function speakersFromVtt(vtt) {
+  const set = new Set();
+  const re = /<v\s+([^>]+)>/gi;
+  let m;
+  while ((m = re.exec(String(vtt || ''))) !== null) {
+    const name = m[1].trim();
+    if (name) set.add(name);
+  }
+  return [...set];
+}
+
+// Confidential redaction: when a speaker asks for a passage to be off the record,
+// drop everything from that line until an "end confidential" / "back on record"
+// marker (or the end of the transcript), replaced with a single notice. Operates on
+// the "Speaker: text" line form returned by parseVtt.
+const CONFIDENTIAL_START = /\b(this\s+(?:part|section)\s+is\s+confidential|this\s+is\s+confidential|exclude\s+this\s+from\s+the\s+transcript|off\s+the\s+record)\b/i;
+const CONFIDENTIAL_END = /\b(end\s+confidential|back\s+on\s+record)\b/i;
+function redactConfidential(text) {
+  if (!text) return text;
+  const out = [];
+  let redacting = false;
+  for (const line of String(text).split('\n')) {
+    if (!redacting) {
+      if (CONFIDENTIAL_START.test(line)) {
+        out.push('[Confidential section excluded per speaker request]');
+        // If the same line also carries the end marker, it's a one-line aside.
+        if (!CONFIDENTIAL_END.test(line)) redacting = true;
+      } else {
+        out.push(line);
+      }
+    } else if (CONFIDENTIAL_END.test(line)) {
+      redacting = false;   // the end marker line itself is dropped
+    }
+    // while redacting (and no end marker), the line is dropped
+  }
+  return out.join('\n');
+}
+
+module.exports = { resolveUserId, resolveOnlineMeeting, listTranscripts, fetchTranscriptVtt, parseVtt, speakersFromVtt, redactConfidential };

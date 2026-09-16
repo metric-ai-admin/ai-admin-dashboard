@@ -7831,7 +7831,14 @@ async function captureMeetingTranscripts() {
         const { data: existing } = await db.from('meeting_summaries').select('id').eq('transcript_id', t.id).maybeSingle();
         if (existing) continue;   // already captured
         const vtt = await teams.fetchTranscriptVtt(fetchFn, appToken, ownerId, om.id, t.id);
-        const text = teams.parseVtt(vtt);
+        // Redact confidential passages before anything is summarized or stored.
+        const text = teams.redactConfidential(teams.parseVtt(vtt));
+        // Attendees = confirmed transcript speakers; fall back to the calendar
+        // invitee list (flagged as such) when the VTT carries no speaker data.
+        const speakers = teams.speakersFromVtt(vtt);
+        const calendarAttendees = (m.attendees || []).map(a => a.emailAddress?.name || a.emailAddress?.address).filter(Boolean);
+        const attendees = speakers.length ? speakers : calendarAttendees;
+        const attendeesSource = speakers.length ? 'transcript' : 'calendar';
         const date = ctDateOf(m.start?.dateTime) || null;
         const base = {
           meeting_id: om.id, transcript_id: t.id, join_url: m.onlineMeeting.joinUrl,
@@ -7847,7 +7854,7 @@ async function captureMeetingTranscripts() {
         }
         const s = await summarizeMeetingTranscript({ subject: m.subject, date }, text);
         const { error: upErr } = await db.from('meeting_summaries').upsert({
-          ...base, attendees: s.attendees, key_decisions: s.key_decisions, action_items: s.action_items,
+          ...base, attendees, attendees_source: attendeesSource, key_decisions: s.key_decisions, action_items: s.action_items,
           summary: s.summary, transcript_text: text.slice(0, 200000), status: 'summarized', error: null,
         }, { onConflict: 'transcript_id' });
         if (upErr) { out.errors++; console.error(`[meetings] "${subj}" upsert FAILED: ${upErr.message}`); continue; }
@@ -9001,16 +9008,32 @@ async function eodGather() {
   try {
     const weekAgo = eodAddDays(today, -6);   // 7-day window, inclusive of today
     const { data: ms } = await db.from('meeting_summaries')
-      .select('subject,meeting_date,attendees,key_decisions,summary,status')
+      .select('subject,meeting_date,attendees,attendees_source,key_decisions,summary,status')
       .gte('meeting_date', weekAgo).lte('meeting_date', today)
       .order('meeting_date', { ascending: false });
-    S.teams = (ms || []).filter(m => m.status === 'summarized').map(m => ({
+    const rows = (ms || []).filter(m => m.status === 'summarized').map(m => ({
       subject: m.subject,
       date: m.meeting_date,
       attendees: Array.isArray(m.attendees) ? m.attendees : [],
+      attendeesSource: m.attendees_source || 'transcript',
       key: Array.isArray(m.key_decisions) ? m.key_decisions : (m.key_decisions ? [m.key_decisions] : []),
       summary: m.summary || '',
     }));
+    // De-dupe attendee legs of the same meeting (same title + date): keep the
+    // richest (longest summary), merge participant lists + key points.
+    const byKey = new Map();
+    for (const r of rows) {
+      const k = `${String(r.subject || '').trim().toLowerCase()}|${r.date}`;
+      const prev = byKey.get(k);
+      if (!prev) { byKey.set(k, r); continue; }
+      const merged = (r.summary || '').length > (prev.summary || '').length ? { ...r } : { ...prev };
+      merged.attendees = [...new Set([...(prev.attendees || []), ...(r.attendees || [])])];
+      merged.key = [...new Set([...(prev.key || []), ...(r.key || [])])];
+      // Confirmed transcript speakers win over calendar invitees for the label.
+      merged.attendeesSource = (prev.attendeesSource === 'transcript' || r.attendeesSource === 'transcript') ? 'transcript' : 'calendar';
+      byKey.set(k, merged);
+    }
+    S.teams = [...byKey.values()];
   } catch (e) { S.teams = { error: e.message }; }
 
   // 9 — OPEN PRIORITIES (operational_tasks Critical / Follow-up, flag stale)
@@ -9046,9 +9069,11 @@ function eodRenderHtml(data) {
       return [low ? `<b>${eodEsc(r.property)}</b>` : eodEsc(r.property), r.occ == null ? '—' : (low ? `<b>${r.occ}%</b>` : r.occ + '%'), r.traffic, r.tours, r.apps, r.moveins];
     }))));
   const e4 = S.evictions || {};
+  const e4HasBalanceOnly = (e4.list || []).some(u => /balance[_ ]?only/i.test(String(u.step || '')));
   P.push(eodSectionHtml('⚖️', 'Evictions / Collections',
     e4.error ? eodErr(e4.error) : `${e4.active == null ? '—' : e4.active} active${e4.report_date ? ` · report ${eodEsc(e4.report_date)}` : ''} · ${e4.completed || 0} completed logged`,
-    eodTable(['Resident', 'Property', 'Balance', 'Step'], (e4.list || []).map(u => [eodEsc(u.resident), eodEsc(u.property), typeof u.balance === 'number' ? '$' + Math.round(u.balance).toLocaleString() : eodEsc(u.balance), eodEsc(u.step)]))));
+    eodTable(['Resident', 'Property', 'Balance', 'Step'], (e4.list || []).map(u => [eodEsc(u.resident), eodEsc(u.property), typeof u.balance === 'number' ? '$' + Math.round(u.balance).toLocaleString() : eodEsc(u.balance), eodEsc(u.step)]))
+    + (e4HasBalanceOnly ? `<div style="margin-top:4px;font-size:11px;font-style:italic;color:${EOD.muted}">ⓘ BALANCE_ONLY = Resident has an outstanding balance but no active eviction filing. No legal action has been initiated yet.</div>` : '')));
   const m5 = S.maintenance || {};
   P.push(eodSectionHtml('🔧', 'Maintenance',
     m5.error ? eodErr(m5.error) : `${m5.open || 0} open WO(s) · ${m5.completedToday || 0} completed today · ${m5.totalHours || 0}h logged today across ${m5.wosWorked || 0} WO(s)`,
@@ -9083,10 +9108,11 @@ function eodRenderHtml(data) {
     (Array.isArray(teams) && teams.length)
       ? teams.map(m => {
           const parts = (m.attendees || []).filter(Boolean).join(', ');
+          const partsLabel = m.attendeesSource === 'calendar' ? 'Participants (from calendar invite)' : 'Participants';
           const keys = (m.key || []).map(k => typeof k === 'string' ? k : JSON.stringify(k)).filter(Boolean);
           return `<div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${EOD.border}">
             <b style="color:${EOD.text}">${eodEsc(m.subject || 'Meeting')}</b>${m.date ? `<span style="font-size:12px;color:${EOD.muted}"> · ${eodEsc(m.date)}</span>` : ''}
-            ${parts ? `<div style="font-size:12px;color:${EOD.muted};margin-top:2px"><b>Participants:</b> ${eodEsc(parts.slice(0, 220))}</div>` : ''}
+            ${parts ? `<div style="font-size:12px;color:${EOD.muted};margin-top:2px"><b>${partsLabel}:</b> ${eodEsc(parts.slice(0, 220))}</div>` : ''}
             ${m.summary ? `<div style="font-size:12px;color:${EOD.text};margin-top:2px">${eodEsc(m.summary.slice(0, 320))}</div>` : ''}
             ${keys.length ? `<div style="font-size:12px;color:${EOD.text};margin-top:2px"><b>Key points:</b>${keys.map(k => `<div>• ${eodEsc(k.slice(0, 160))}</div>`).join('')}</div>` : ''}
           </div>`;
