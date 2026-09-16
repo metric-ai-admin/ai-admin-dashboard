@@ -4374,7 +4374,8 @@ const leasingStatusIs = (status, ...needles) => {
 // Properties Lyndsay wants hidden from the Goal Board / roll-up / all leasing
 // views. Case-insensitive substring match on the community name — add or remove
 // fragments here to change what's shown.
-const LEASING_EXCLUDED_FRAGMENTS = ['lily pad', 'wolf ridge', 'sidney', 'brazos', 'live with metric'];
+// Inactive/fake properties hidden from every EOD section (leasing + collections).
+const LEASING_EXCLUDED_FRAGMENTS = ['lily pad', 'wolf ridge', 'sidney', 'brazos', 'live with metric', 'cedar and sage'];
 const leasingIsExcluded = name => {
   const n = String(name || '').trim().toLowerCase();
   return LEASING_EXCLUDED_FRAGMENTS.some(frag => n.includes(frag));
@@ -8542,6 +8543,9 @@ async function mrAsana() {
   const raw = await asanaGetAll(
     `/user_task_lists/${list.gid}/tasks?opt_fields=${ASANA_OPT_FIELDS}&completed_since=${encodeURIComponent(midnight.toISOString())}`, ASANA_TOKEN);
   const all = (raw || []).map(t => shapeTask(t, null)).filter(t => !t.completed)
+    // The Sidney tax litigation is handled externally (Monte James) — not an
+    // action item for this report, so drop any task naming both.
+    .filter(t => { const n = String(t.name || '').toLowerCase(); return !(n.includes('sidney') && n.includes('litigation')); })
     // Most urgent first: soonest due date, tasks with no due date last.
     .sort((a, b) => {
       const ad = a.due_on || '', bd = b.due_on || '';
@@ -8945,23 +8949,34 @@ async function eodGather() {
   // 4 — COLLECTIONS (from the latest eviction/delinquency session blob), split
   // into 3 sections: high-balance-no-contact, critical accounts, portfolio summary.
   try {
-    const { data: sess } = await db.from('eviction_sessions').select('report_date,data,uploaded_at').order('uploaded_at', { ascending: false }).limit(1);
-    const latest = (sess || [])[0];
+    // Pull a window of recent snapshots so we can compare the latest against one
+    // ~1 month earlier (for the period delinquency trend line).
+    const { data: sess } = await db.from('eviction_sessions').select('report_date,data,uploaded_at').order('uploaded_at', { ascending: false }).limit(60);
+    const sessions = sess || [];
+    const latest = sessions[0];
+
+    // Shared field extractors (used for both the latest snapshot and the prior one).
+    const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[$,]/g, '')); return isNaN(n) ? 0 : n; };
+    const balOf = u => num(u.totalAR ?? u.delinquentRent ?? u.delinquent_rent ?? u.balance ?? u.amountReceivable ?? 0);
+    const billedOf = u => num(u.billed ?? u.totalBilled ?? u.total_billed ?? u.marketRent ?? u.market_rent ?? u.rent ?? 0);
+    const stepOf = u => String(u.stage || u.step || u.evictionStatus || u.eviction_status || '').trim();
+    const propOf = u => u.property || u.property_name || u.propertyName || '—';
+    const nameOf = u => u.name || u.resident || '';
+    const inEviction = u => { const s = stepOf(u).toLowerCase(); return !!s && !/balance[_ ]?only/.test(s); };
+    const contactRaw = u => u.lastContact || u.last_contact || u.contactDate || u.last_contact_date || u.lastContactDate || null;
+    const contactedRecently = u => { const c = contactRaw(u); if (!c) return false; const t = Date.parse(c); return !isNaN(t) && (Date.now() - t) < 24 * 3600e3; };
+    const shape = u => ({ resident: nameOf(u), property: propOf(u), balance: balOf(u), step: stepOf(u) || 'BALANCE_ONLY' });
+    // Excludes inactive/fake properties (The Sidney, Live With Metric, Cedar and Sage, …).
+    const unitsOf = s => {
+      const d = s && s.data;
+      const arr = Array.isArray(d) ? d : (d && Array.isArray(d.units) ? d.units : (d && Array.isArray(d.rows) ? d.rows : []));
+      return arr.filter(u => !leasingIsExcluded(propOf(u)));
+    };
+
     let active = null, sectionA = [], sectionB = [], portfolio = null;
     if (latest && latest.data) {
-      const d = latest.data;
-      const units = Array.isArray(d) ? d : (Array.isArray(d.units) ? d.units : (Array.isArray(d.rows) ? d.rows : []));
+      const units = unitsOf(latest);
       active = units.length;
-      const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[$,]/g, '')); return isNaN(n) ? 0 : n; };
-      const balOf = u => num(u.totalAR ?? u.delinquentRent ?? u.delinquent_rent ?? u.balance ?? u.amountReceivable ?? 0);
-      const billedOf = u => num(u.billed ?? u.totalBilled ?? u.total_billed ?? u.marketRent ?? u.market_rent ?? u.rent ?? 0);
-      const stepOf = u => String(u.stage || u.step || u.evictionStatus || u.eviction_status || '').trim();
-      const propOf = u => u.property || u.property_name || u.propertyName || '—';
-      const nameOf = u => u.name || u.resident || '';
-      const inEviction = u => { const s = stepOf(u).toLowerCase(); return !!s && !/balance[_ ]?only/.test(s); };
-      const contactRaw = u => u.lastContact || u.last_contact || u.contactDate || u.last_contact_date || u.lastContactDate || null;
-      const contactedRecently = u => { const c = contactRaw(u); if (!c) return false; const t = Date.parse(c); return !isNaN(t) && (Date.now() - t) < 24 * 3600e3; };
-      const shape = u => ({ resident: nameOf(u), property: propOf(u), balance: balOf(u), step: stepOf(u) || 'BALANCE_ONLY' });
 
       const notEvic = units.filter(u => !inEviction(u));
       sectionA = notEvic.filter(u => balOf(u) > 500 && !contactedRecently(u)).sort((a, b) => balOf(b) - balOf(a)).slice(0, 15).map(shape);
@@ -8976,9 +8991,23 @@ async function eodGather() {
         .sort((a, b) => b.delinq - a.delinq).slice(0, 20);
       portfolio = { totalDelinq, totalBilled, pct: totalBilled > 0 ? Math.round((totalDelinq / totalBilled) * 1000) / 10 : null, hasBilled: totalBilled > 0, hasContact: units.some(u => contactRaw(u)), perProperty };
     }
+
+    // Prior snapshot for the period comparison: the most recent one whose
+    // report_date is at least ~3 weeks older than the latest (≈ prior month).
+    let prior = null;
+    if (latest && latest.report_date) {
+      const latestT = Date.parse(latest.report_date);
+      const cutoff = latestT - 21 * 24 * 3600e3;   // at least 3 weeks back
+      const priorSess = sessions.find(s => s !== latest && s.report_date && Date.parse(s.report_date) <= cutoff && Date.parse(s.report_date) < latestT);
+      if (priorSess && priorSess.data) {
+        const pu = unitsOf(priorSess);
+        prior = { report_date: priorSess.report_date, totalDelinq: pu.reduce((s, u) => s + balOf(u), 0), active: pu.length };
+      }
+    }
+
     let completed = 0;
     try { const { count } = await db.from('eviction_completed').select('id', { count: 'exact', head: true }); completed = count || 0; } catch {}
-    S.evictions = { active, sectionA, sectionB, portfolio, completed, report_date: latest ? latest.report_date : null };
+    S.evictions = { active, sectionA, sectionB, portfolio, completed, report_date: latest ? latest.report_date : null, prior };
   } catch (e) { S.evictions = { error: e.message }; }
 
   // 5 — MAINTENANCE (AppFolio work orders + labor)
@@ -9151,10 +9180,24 @@ function eodRenderHtml(data) {
   const money0 = n => '$' + Math.round(Number(n) || 0).toLocaleString();
   const collBalCell = u => typeof u.balance === 'number' ? money0(u.balance) : eodEsc(u.balance);
   const pf = (e4.portfolio || {});
+  // "2026-09-16" -> "Sep 16" (UTC to avoid TZ drift on a date-only string).
+  const fmtMD = ds => { const t = Date.parse(ds); if (isNaN(t)) return eodEsc(ds || '—'); const d = new Date(t); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }); };
+  const ePrior = e4.prior || null;
+  // Collections header: account count + reporting period + snapshot comparison.
+  const collHeader = e4.error ? '' : (
+    `${e4.active == null ? '—' : e4.active} delinquent account(s)`
+    + (ePrior && ePrior.report_date && e4.report_date
+        ? ` · report ${eodEsc(ePrior.report_date)} → ${eodEsc(e4.report_date)} · comparing ${fmtMD(ePrior.report_date)} vs ${fmtMD(e4.report_date)} snapshot`
+        : (e4.report_date ? ` · report ${eodEsc(e4.report_date)}` : ''))
+    + ` · ${e4.completed || 0} evictions completed logged`);
+  // Section C comparison line: prior → current total delinquent balance.
+  const collCompareLine = (ePrior && ePrior.report_date && e4.report_date && pf.totalDelinq != null)
+    ? `<div style="font-size:12px;color:${EOD.text};margin:2px 0 4px"><b>Total Delinquent Balance (${fmtMD(ePrior.report_date)} → ${fmtMD(e4.report_date)}):</b> ${money0(ePrior.totalDelinq)} → ${money0(pf.totalDelinq)}</div>`
+    : '';
   const subLabel = (emoji, title, note) => `<div style="font-weight:600;font-size:12px;margin:10px 0 2px;color:${EOD.text}">${emoji} ${title}</div>`
     + `<div style="font-size:11px;font-style:italic;color:${EOD.muted};margin-bottom:3px">${note}</div>`;
   P.push(eodSectionHtml('⚖️', 'Collections',
-    e4.error ? eodErr(e4.error) : `${e4.active == null ? '—' : e4.active} delinquent account(s)${e4.report_date ? ` · report ${eodEsc(e4.report_date)}` : ''} · ${e4.completed || 0} evictions completed logged`,
+    e4.error ? eodErr(e4.error) : collHeader,
     e4.error ? '' :
       subLabel('⚠️', 'High Balance, No Recent Contact (&gt;$500)', pf.hasContact
         ? 'Balance over $500, not in eviction, and no contact logged in the last 24 hours — priority follow-up.'
@@ -9165,6 +9208,7 @@ function eodRenderHtml(data) {
       + subLabel('📊', 'Portfolio Delinquency Summary', pf.hasBilled
         ? 'Total delinquent balance and % delinquent (delinquency ÷ billed), portfolio and per property.'
         : 'Total delinquent balance, portfolio and per property. (% delinquent needs billed-this-month, not present in this report.)')
+      + collCompareLine
       + `<div style="font-size:12px;color:${EOD.text};margin:2px 0 4px"><b>Total delinquent:</b> ${money0(pf.totalDelinq)}${pf.hasBilled ? ` · <b>Billed:</b> ${money0(pf.totalBilled)} · <b>% Delinquent:</b> ${pf.pct == null ? '—' : pf.pct + '%'}` : ''}</div>`
       + eodTable(pf.hasBilled ? ['Property', 'Delinquent', '% Delinquent'] : ['Property', 'Delinquent'],
           (pf.perProperty || []).map(p => pf.hasBilled ? [eodEsc(p.property), money0(p.delinq), p.pct == null ? '—' : p.pct + '%'] : [eodEsc(p.property), money0(p.delinq)]))
@@ -9236,6 +9280,9 @@ function eodRenderHtml(data) {
 // there is no signed-in user for me/sendMail.
 const EOD_SENDER = process.env.EOD_SENDER || 'support@livewithmetric.com';
 const EOD_RECIPIENT = process.env.EOD_RECIPIENT || 'lyndsay@metricpropertymanagement.com';
+// CC recipients get the same report. Env-overridable (comma-separated).
+const EOD_CC = (process.env.EOD_CC || 'kgarst@metricpropertymanagement.com')
+  .split(',').map(s => s.trim()).filter(Boolean);
 async function eodSendEmail(html, subject) {
   const token = await graphMailToken();
   const payload = {
@@ -9243,11 +9290,12 @@ async function eodSendEmail(html, subject) {
       subject,
       body: { contentType: 'HTML', content: html },
       toRecipients: [{ emailAddress: { address: EOD_RECIPIENT } }],
+      ...(EOD_CC.length ? { ccRecipients: EOD_CC.map(a => ({ emailAddress: { address: a } })) } : {}),
     },
     saveToSentItems: true,
   };
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(EOD_SENDER)}/sendMail`;
-  console.log('[eod-send] calling Graph sendMail from %s to %s …', EOD_SENDER, EOD_RECIPIENT);
+  console.log('[eod-send] calling Graph sendMail from %s to %s (cc %s) …', EOD_SENDER, EOD_RECIPIENT, EOD_CC.join(', ') || 'none');
   const r = await fetchFn(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
