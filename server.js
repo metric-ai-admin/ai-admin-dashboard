@@ -8197,6 +8197,13 @@ const LYNDSAY_MESSAGE_RULES = [
   { displayName: 'MPM Auto: Whereby -> Financial',     folder: 'Financial',     conditions: { senderContains: ['whereby.com'] },  forwardTo: 'accounting@metricpropertymanagement.com' },
   { displayName: 'MPM Auto: Rigby Slack -> Claudia',   folder: 'Financial',     conditions: { senderContains: ['rigbyslack', 'rigby slack', 'lawrence pepper', 'comerford'] },
     forwardTo: [{ emailAddress: { address: 'claudia@metricpropertymanagement.com', name: 'Claudia' } }] },
+  { displayName: 'MPM Auto: Indeed -> Archive',        folder: 'Archive',       conditions: { senderContains: ['mc.indeed.com'] },        markRead: true },
+  { displayName: 'MPM Auto: Home Depot -> Archive',    folder: 'Archive',       conditions: { senderContains: ['mg.homedepot.com'] },     markRead: true },
+  { displayName: 'MPM Auto: WebWork -> MPM Team',      folder: 'MPM Team',      conditions: { senderContains: ['webwork-tracker.com'] } },
+  { displayName: 'MPM Auto: SimpleVoIP mktg -> Archive', folder: 'Archive',     conditions: { senderContains: ['marketing@simplevoip.com'] }, markRead: true },
+  { displayName: 'MPM Auto: Impact Floors -> Financial', folder: 'Financial',   conditions: { senderContains: ['impactfloors.com'] } },
+  { displayName: 'MPM Auto: Allen Vaughn -> Archive',  folder: 'Archive',       conditions: { senderContains: ['allen@colonycreekapts.com'] }, markRead: true },
+  { displayName: 'MPM Auto: ParentSquare -> Personal', folder: 'Personal',      conditions: { senderContains: ['parentsquare.com'] } },
 ];
 // Graph forwardTo is a list of recipients; accept a plain address string or a ready list.
 const mrForwardTo = fw => !fw ? null : (Array.isArray(fw) ? fw : [{ emailAddress: { address: String(fw) } }]);
@@ -8223,6 +8230,7 @@ async function ensureLyndsayMessageRules({ execute }) {
     const actions = { moveToFolder: fid, stopProcessingRules: true };
     const fwd = mrForwardTo(def.forwardTo);
     if (fwd) actions.forwardTo = fwd;   // forward before the move
+    if (def.markRead) actions.markAsRead = true;
     const ex = existingByName.get(norm(def.displayName));
     if (ex) {
       // Reconcile (upsert): PATCH the existing rule so newly-added actions (e.g.
