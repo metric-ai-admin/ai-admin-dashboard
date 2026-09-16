@@ -8326,6 +8326,14 @@ async function ensureLyndsayMessageRules({ execute }) {
   if (!exR.ok) throw new Error(exJ?.error?.message || `list rules returned ${exR.status}`);
   const existingByName = new Map();
   (exJ.value || []).forEach(r => existingByName.set(norm(r.displayName), r));
+  // Log what Outlook actually returns so a "missing rule" can be diagnosed from
+  // Render logs (this endpoint diffs the code array against Graph — it is NOT the
+  // source of the dashboard's Auto-Move Rules table, which is Supabase-backed).
+  console.log('[lyndsay-rules] %s: Graph inbox has %d existing message rule(s): %s',
+    execute ? 'APPLY' : 'dry-run', (exJ.value || []).length,
+    (exJ.value || []).map(r => r.displayName).join(' | ') || '(none)');
+  console.log('[lyndsay-rules] folders resolved: %s',
+    LYNDSAY_MESSAGE_RULES.map(d => `${d.folder}=${folderId(d.folder) ? 'ok' : 'MISSING'}`).filter((v, i, a) => a.indexOf(v) === i).join(', '));
   // Graph requires sequence >= 1 (0 → InvalidValue). Start after the highest
   // existing rule so we don't collide with Lyndsay's current rules.
   let seq = Math.max(0, ...(exJ.value || []).map(r => Number(r.sequence) || 0)) + 1;
@@ -8357,6 +8365,10 @@ async function ensureLyndsayMessageRules({ execute }) {
     const j = await r.json().catch(() => ({}));
     out.push(r.ok ? { rule: def.displayName, status: 'created', id: j.id } : { rule: def.displayName, status: 'error', error: j?.error?.message || String(r.status) });
   }
+  // Per-rule outcome summary — makes "2 created" vs "0 created / 2 skipped"
+  // (and the skip reason) visible in Render logs.
+  console.log('[lyndsay-rules] %s outcome: %s', execute ? 'APPLY' : 'dry-run',
+    out.map(o => `${o.rule} -> ${o.status}${o.reason ? ` (${o.reason})` : ''}${o.error ? ` (${o.error})` : ''}`).join(' | '));
   return out;
 }
 app.get('/api/email/lyndsay/message-rules', requireAuth, requireRole('admin'), async (req, res) => {
