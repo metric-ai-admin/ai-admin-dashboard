@@ -5624,12 +5624,6 @@ let svMultiDay = false;                      // loaded set spans >1 day (show da
 // Non-admins get no selector at all, and the server refuses a user_id from them
 // regardless: hiding a control is not access control, and who may read whose
 // calls is still an open question with Lyndsay.
-// SmartPBX has 12 users. Only some are on the roster: the rest are held back
-// until Lyndsay settles who may read whose calls, then read from the portal by
-// hand. This is what the roster is measured against, so the "N pending" note
-// shrinks on its own as rows are added and disappears at 12.
-const SV_EXPECTED_USERS = 12;
-
 async function svLoadUsers() {
   const sel = $('#sv-user');
   const note = $('#sv-roster-note');
@@ -5638,7 +5632,6 @@ async function svLoadUsers() {
   try {
     const d = await api('/api/simplevoip/users');
     const users = d.users || [];
-    const pending = Math.max(0, SV_EXPECTED_USERS - users.length);
 
     // Non-admins never get the selector, and the server refuses a user_id from
     // them regardless: hiding a control is not access control, and who may read
@@ -5671,15 +5664,9 @@ async function svLoadUsers() {
       sel.addEventListener('change', loadCallAnalyzer);
     }
 
-    // Say plainly that the roster is partial and why — otherwise a 5-name
-    // dropdown reads as "these are all the users", not "these are the ones
-    // approved so far".
-    if (pending > 0) {
-      setNote(`Showing ${users.length} of ${SV_EXPECTED_USERS} SimpleVOIP users. `
-        + `${pending} more pending Lyndsay's access approval — they will be added once she confirms who can view whose calls.`);
-    } else {
-      setNote('');
-    }
+    // The full SimpleVOIP roster is present (SV#64544 resolved — the 2 "mystery"
+    // ids were warm-transfer legs, not users), so no partial-roster note is shown.
+    setNote('');
     svUsersLoaded = true;
   } catch {
     sel.classList.add('hidden');
