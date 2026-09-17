@@ -40,10 +40,25 @@ function detectAgentFromTranscript(transcript) {
 const isDanny = agent => /\bdanny\b/i.test(String(agent || ''));
 
 // Strip a ```json … ``` fence if the model wrapped its JSON, then parse.
+//
+// A parse failure is tagged with code MALFORMED_JSON so callers can tell it
+// apart from a transport/API error. The distinction matters for retries: an API
+// error (429, 5xx, credits) is worth retrying, but a malformed response for a
+// given transcript reproduces every time — re-grading it just spends the money
+// again. The auto-grade path stores those as Not Scoreable instead of retrying.
 function parseModelJson(text) {
   let clean = String(text || '').trim();
   clean = clean.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '');
-  return JSON.parse(clean);
+  try {
+    return JSON.parse(clean);
+  } catch (err) {
+    const e = new Error('Model returned malformed JSON: ' + err.message);
+    e.code = 'MALFORMED_JSON';
+    // First 300 chars only — a transcript excerpt is resident PII and this ends
+    // up in logs. Enough to recognise a truncation or a prose preamble.
+    e.rawExcerpt = clean.slice(0, 300);
+    throw e;
+  }
 }
 
 // Generic "ask Claude for JSON" call — the single outbound Anthropic path,

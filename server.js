@@ -5436,12 +5436,32 @@ async function autoGradeCall(call, transcript, opts = {}) {
   // If no agent could be resolved even after the line-owner fallbacks, skip rather
   // than grade an unattributed call (counts as skipped, not an error).
   if (!agent) return { status: 'skipped', reason: 'no agent' };
-  const parsed = await callGrading.gradeTranscript({
-    callType: call.direction || null,
-    agent,
-    duration: call.duration,
-    transcript: text,
-  });
+  // A malformed-JSON response reproduces for the same transcript on every run,
+  // so retrying it spends credits forever and never converges. Store it as Not
+  // Scoreable with reason 'malformed_response' — that writes a call_grades row,
+  // which makes the existence check above skip this recording on every future
+  // pass. Any OTHER error (429, 5xx, credits exhausted, network) still throws so
+  // the caller counts it and the call is retried on the next run, which is the
+  // behaviour we want for transient failures.
+  let parsed;
+  try {
+    parsed = await callGrading.gradeTranscript({
+      callType: call.direction || null,
+      agent,
+      duration: call.duration,
+      transcript: text,
+    });
+  } catch (err) {
+    if (err.code !== 'MALFORMED_JSON') throw err;
+    console.error(`[auto-grade] ${recording_id} — malformed model JSON, storing as Not Scoreable: ${err.message}`
+      + (err.rawExcerpt ? ` | raw starts: ${JSON.stringify(err.rawExcerpt.slice(0, 120))}` : ''));
+    parsed = {
+      not_scoreable: true,
+      not_scoreable_reason: 'malformed_response',
+      summary: 'Not graded: the grading model returned a response that could not be parsed as JSON.',
+      flags: ['Not Scoreable — malformed_response'],
+    };
+  }
   const row = callGradeRow(parsed, {
     recording_id,
     agent_name: agent,
@@ -5451,7 +5471,11 @@ async function autoGradeCall(call, transcript, opts = {}) {
   });
   await db.from('call_grades').delete().eq('recording_id', recording_id);
   const { error } = await db.from('call_grades').insert(row);
-  if (error) throw new Error(error.message);
+  // 23505 = unique violation on recording_id (migration 051). Only reachable if
+  // two passes race on the same call; the row is already there, so treat it as
+  // already-graded rather than an error that would retry and re-spend credits.
+  if (error && error.code !== '23505') throw new Error(error.message);
+  if (error) return { status: 'skipped', reason: 'already graded' };
   return { status: 'graded', agent, not_scoreable: !!row.not_scoreable };
 }
 
