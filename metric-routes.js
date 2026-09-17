@@ -920,6 +920,80 @@ function registerMetricRoutes(app, db) {
     // summary numbers. ?match= overrides the property filter, so the same feed
     // serves another property without a code change.
     feed('/api/appfolio/feed/wo-scheduling',   req   => afReports.woSchedulingFeed(req.query.match || undefined), 'Work order report (wo_all) not synced yet.');
+
+    // ── WO Scheduling (Phase 2) — scheduling state lives in Supabase ─────────
+    // AppFolio's Reports API is read-only, so a scheduled date/tech cannot be
+    // written back. wo_schedule (migration 052) is a side-car keyed on
+    // work_order_number; AppFolio stays the source of truth for the WO itself.
+    const schedCols = 'work_order_number, property_name, unit_name, scheduled_date, scheduled_tech, estimated_hours, notes, updated_at';
+    const schedUnavailable = res =>
+      res.status(503).json({ error: 'Scheduling needs Supabase — SUPABASE_URL / SUPABASE_ANON_KEY are not configured.' });
+
+    // GET ?from=YYYY-MM-DD&to=YYYY-MM-DD — the week the calendar is showing.
+    // Without a range it returns everything scheduled, which the pilot's volume
+    // makes harmless and which keeps "what is on the board at all" one call away.
+    app.get('/api/appfolio/schedule', requireMetricAccess, async (req, res) => {
+      if (!db) return schedUnavailable(res);
+      try {
+        let q = db.from('wo_schedule').select(schedCols);
+        if (req.query.from) q = q.gte('scheduled_date', req.query.from);
+        if (req.query.to)   q = q.lte('scheduled_date', req.query.to);
+        const { data, error } = await q.order('scheduled_date', { ascending: true });
+        if (error) throw new Error(error.message);
+        res.json({ rows: data || [] });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // POST — schedule or reschedule one WO. Upsert on work_order_number, so
+    // dragging the same card to a new day moves it rather than leaving two
+    // conflicting rows (migration 052 adds the unique index this relies on).
+    app.post('/api/appfolio/schedule', requireMetricAccess, async (req, res) => {
+      if (!db) return schedUnavailable(res);
+      const b = req.body || {};
+      const wo = String(b.work_order_number || '').trim();
+      if (!wo) return res.status(400).json({ error: 'work_order_number is required' });
+      // A date is what makes a row a schedule; reject a malformed one rather
+      // than letting Postgres coerce it into something unintended.
+      const date = String(b.scheduled_date || '').trim();
+      if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'scheduled_date must be YYYY-MM-DD' });
+      }
+      const hours = b.estimated_hours === undefined || b.estimated_hours === null || b.estimated_hours === ''
+        ? 2.0 : Number(b.estimated_hours);
+      if (!Number.isFinite(hours) || hours <= 0 || hours > 24) {
+        return res.status(400).json({ error: 'estimated_hours must be a number between 0 and 24' });
+      }
+      try {
+        const row = {
+          work_order_number: wo,
+          property_name: b.property_name || null,
+          unit_name:     b.unit_name || null,
+          scheduled_date: date || null,
+          scheduled_tech: (b.scheduled_tech || '').trim() || null,
+          estimated_hours: hours,
+          notes: b.notes || null,
+          created_by: sessionPayload(req)?.username || null,
+          updated_at: new Date().toISOString(),
+        };
+        const { data, error } = await db.from('wo_schedule')
+          .upsert(row, { onConflict: 'work_order_number' })
+          .select(schedCols).single();
+        if (error) throw new Error(error.message);
+        res.json({ ok: true, row: data });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
+
+    // DELETE — take a WO back off the calendar. Removes the row rather than
+    // nulling the date, so an unscheduled WO leaves no half-filled record.
+    app.delete('/api/appfolio/schedule/:wo', requireMetricAccess, async (req, res) => {
+      if (!db) return schedUnavailable(res);
+      try {
+        const { error } = await db.from('wo_schedule')
+          .delete().eq('work_order_number', req.params.wo);
+        if (error) throw new Error(error.message);
+        res.json({ ok: true });
+      } catch (err) { res.status(500).json({ error: err.message }); }
+    });
   }
 
   // ── MODULE: Erick's EOD Summary (prefixed — avoids /api/summary collision) ─

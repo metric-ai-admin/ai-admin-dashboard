@@ -1650,15 +1650,19 @@
       <!-- Open WO table (Phase 1 item 1) -->
       <div id="woSchedTable"></div>
 
-      <!-- Phase 2 — deliberately not built yet. Named here so the gap is
-           visible in the UI rather than looking like an oversight. -->
-      <div class="banner" style="margin-top:18px;">
-        <strong>Phase 2 — not built yet.</strong>
-        <em>Tech workload panel</em> (hours per tech over 7/30/90 days, open WOs per tech, capacity
-        against the 90-day average) and the <em>weekly schedule view</em> (drag WOs onto slots,
-        group by property to cut trips). The schedule view needs a way to WRITE a scheduled date:
-        the AppFolio Reports API is read-only, so scheduling has to persist in Supabase or move to
-        the AppFolio Stack API. That decision is open.
+      <!-- Phase 2 item 2: tech workload -->
+      <h3 class="wo-section-title">Technician workload <span class="muted small">iConic hours, 90-day window</span></h3>
+      <div id="woTechPanel"></div>
+
+      <!-- Phase 2 item 3: weekly drag-to-schedule calendar.
+           Scheduling state is Supabase (wo_schedule, migration 052) because the
+           AppFolio Reports API is read-only — confirmed 2026-09-17. -->
+      <h3 class="wo-section-title">Weekly schedule
+        <span class="muted small">drag a work order onto a day · saved to Supabase, not AppFolio</span>
+      </h3>
+      <div class="wo-sched-layout">
+        <div id="woCalendar"></div>
+        <aside id="woBacklog" class="wo-backlog"></aside>
       </div>
     </div>
 
@@ -2044,5 +2048,6 @@
 <script src="appfolio-views.js"></script>
 <script src="command-center.js"></script>
 <script src="wo-scheduling.js"></script>
+<script src="wo-schedule-calendar.js"></script>
 </body>
 </html>

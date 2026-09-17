@@ -2154,3 +2154,52 @@ tr.ca-sel { background: var(--accent-glow); }
 .wo-sched-table td:nth-child(9) { white-space: nowrap; }
 .wo-sched-table td:nth-child(2) { white-space: nowrap; }
 .wo-sched-table .badge { white-space: nowrap; max-width: 190px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+
+/* ── WO Scheduling, Phase 2: tech workload + weekly calendar ──────────────── */
+.wo-section-title { margin: 26px 0 10px; font-size: 15px; font-weight: 650; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.wo-tech-table td { white-space: nowrap; }
+.wo-cap-wrap { width: 110px; height: 7px; border-radius: 4px; background: var(--bg-elevated); overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 8px; }
+.wo-cap-bar { height: 100%; background: var(--info); }
+.wo-cap-pct { font-size: 11.5px; font-weight: 600; }
+.wo-cap-over  { color: var(--critical); }
+.wo-cap-ok    { color: var(--success); }
+.wo-cap-under { color: var(--text-secondary); }
+
+/* Calendar beside the unscheduled backlog. Stacks under 1100px — seven day
+   columns plus a sidebar cannot stay legible much below that. */
+.wo-sched-layout { display: grid; grid-template-columns: 1fr 260px; gap: 14px; align-items: start; }
+.wo-cal-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.wo-cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+.wo-cal-col { background: var(--card); border: 1px solid var(--border); border-radius: 10px; min-height: 190px; display: flex; flex-direction: column; }
+.wo-cal-today { border-color: var(--info); }
+.wo-cal-over { border-color: var(--success); background: var(--success-bg); }
+.wo-cal-daylabel { padding: 7px 9px; font-size: 12px; font-weight: 650; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 5px; }
+.wo-cal-hours { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--info); }
+.wo-cal-drop { padding: 6px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+
+.wo-backlog { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; max-height: 620px; overflow-y: auto; }
+.wo-backlog-title { font-size: 13.5px; margin: 0 0 4px; }
+.wo-backlog-group { margin-top: 12px; }
+.wo-backlog-prop { font-size: 12px; font-weight: 650; color: var(--text-secondary); margin-bottom: 5px; }
+
+.wo-card { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 7px 8px; cursor: grab; font-size: 12px; }
+.wo-card:active { cursor: grabbing; }
+.wo-card-dragging { opacity: .45; }
+.wo-card + .wo-card { margin-top: 6px; }
+.wo-card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.wo-card-prop { color: var(--text-secondary); font-size: 11.5px; margin-top: 2px; }
+.wo-card-issue { color: var(--text-secondary); font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wo-card-ctl { display: flex; gap: 4px; margin-top: 6px; align-items: center; }
+.wo-card-tech { flex: 1; min-width: 0; font-size: 11px; padding: 2px 4px; }
+.wo-card-hours { width: 52px; font-size: 11px; padding: 2px 4px; }
+.wo-card-x { background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 3px; }
+.wo-card-x:hover { color: var(--critical); }
+
+@media (max-width: 1100px) {
+  .wo-sched-layout { grid-template-columns: 1fr; }
+  .wo-cal-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .wo-backlog { max-height: none; }
+}
+@media (max-width: 620px) {
+  .wo-cal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

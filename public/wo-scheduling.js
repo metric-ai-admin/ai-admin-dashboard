@@ -204,6 +204,16 @@ async function loadWoScheduling() {
   renderWoSchedBanner();
   renderWoSchedTable();
   renderWoSchedMeta();
+
+  // Phase 2 lives in wo-schedule-calendar.js and depends on woSchedData being
+  // loaded, so it renders after the feed lands. Guarded because the AppFolio
+  // half of this view must still work if that file fails to load — and the
+  // schedule is fetched separately so a Supabase outage cannot blank the table.
+  if (typeof renderTechPanel === 'function') renderTechPanel();
+  if (typeof loadWoSchedule === 'function') {
+    await loadWoSchedule();
+    renderCalendar();
+  }
 }
 
 function wireWoScheduling() {

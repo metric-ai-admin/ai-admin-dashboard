@@ -1033,9 +1033,59 @@ async function woSchedulingFeed(match = WO_SCHED_DEFAULT_MATCH) {
 
   const laborDates = laborRows.map(r => rowDay(r, ['date'])).filter(Boolean).sort();
 
+  // ---- Tech workload ----
+  // Hours over 7/30/90 days, plus the open WOs each tech is carrying.
+  //
+  // The 90-day figure is bounded by the labor report's own window, which is a
+  // rolling 90 days — so "90d" is the full window, not a slice of something
+  // longer. avgWeekly is derived from it rather than from the 7-day count: a
+  // single week swings wildly with one big job, and capacity has to be judged
+  // against a normal week.
+  const cut7  = isoDay(-7);
+  const cut30 = isoDay(-30);
+  const techMap = {};
+  const techOf = r => String(pick(r, ['maintenance_tech', 'technician', 'tech'], '')).trim();
+  for (const r of laborRows) {
+    const name = techOf(r);
+    if (!name) continue;
+    const day = rowDay(r, ['date']);
+    const h = num(pick(r, ['worked_hours', 'hours', 'labor_hours']));
+    const t = techMap[name] || (techMap[name] = { tech: name, hours7: 0, hours30: 0, hours90: 0, openWos: 0, byProperty: {} });
+    t.hours90 += h;
+    if (day && day >= cut30) t.hours30 += h;
+    if (day && day >= cut7)  t.hours7  += h;
+    const prop = String(pick(r, ['property_name', 'property'], 'Unknown')).trim();
+    t.byProperty[prop] = (t.byProperty[prop] || 0) + h;
+  }
+  // Open WOs per tech. assigned_user can carry SEVERAL names on one WO
+  // ("Carlos Portilla, Josue Garcia C") — each is credited, so the per-tech
+  // counts can sum to more than the number of open work orders. That is the
+  // honest reading: both techs are carrying it.
+  for (const w of openWos) {
+    for (const nameRaw of String(w.tech || '').split(',')) {
+      const name = nameRaw.trim();
+      if (!name) continue;
+      const t = techMap[name] || (techMap[name] = { tech: name, hours7: 0, hours30: 0, hours90: 0, openWos: 0, byProperty: {} });
+      t.openWos++;
+    }
+  }
+  const round1 = n => Math.round(n * 10) / 10;
+  const techs = Object.values(techMap)
+    .map(t => ({
+      tech: t.tech,
+      hours7:  round1(t.hours7),
+      hours30: round1(t.hours30),
+      hours90: round1(t.hours90),
+      openWos: t.openWos,
+      avgWeekly: round1(t.hours90 / (90 / 7)),
+      topProperty: Object.entries(t.byProperty).sort((a, b) => b[1] - a[1])[0]?.[0] || null,
+    }))
+    .sort((a, b) => b.hours90 - a.hours90);
+
   return {
     match,
     generatedAt: new Date().toISOString(),
+    techs,
     syncedAt: {
       open: openRaw.fetchedAt || null,
       labor: laborRaw?.fetchedAt || null,
