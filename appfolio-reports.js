@@ -327,7 +327,31 @@ function num(v) {
 
 // ---- Derived feeds ----------------------------------------------------------
 
-/** Billable Labor Report — feeds the AppFolio Analyzer view. */
+/**
+ * Billable Labor Report — feeds the AppFolio Analyzer view.
+ *
+ * ── Why the numbers jumped on 2026-09-17 ──────────────────────────────────
+ * If you remember these totals being much smaller, nothing broke and nothing
+ * was double-counted. The window changed, not the work.
+ *
+ * work_order_labor_summary requires labor_performed_from / labor_performed_to.
+ * We were not sending them, so AppFolio applied its own short default — about
+ * 17 days. The report now asks for a rolling 90 days (see its registry entry
+ * above), which took it from 388 rows to ~2230.
+ *
+ * This function sums EVERY labor row it is given, so laborHours and byTech
+ * grew roughly 5x on that date. For the iConic pilot properties the same
+ * change moved 94.9h over 17 days to 480.8h over 90 days — the daily rate is
+ * effectively unchanged.
+ *
+ * So: compare these figures to other 90-day figures, not to anything captured
+ * before 2026-09-17. Week-over-week history spanning that date has a step in
+ * it. efficiencyMetrics()'s distinct-WO-by-status counts moved for the same
+ * reason and are now closer to the truth, since they were counting against a
+ * 17-day window while being labelled as longer. techActivityToday() filters to
+ * a single day and did not change at all.
+ * ──────────────────────────────────────────────────────────────────────────
+ */
 async function billableSummary() {
   const detail = await readReportData('work_order_billable_detail');
   const labor  = await readReportData('work_order_labor_summary');
@@ -559,6 +583,11 @@ function bdStatusMetric(bd, bdRows, matcher, sinceDay, statusLabel) {
     `. Limited to the window AppFolio returns for this report.`];
 }
 
+// NOTE: the distinct-WO-by-status counts below moved up on 2026-09-17 when
+// work_order_labor_summary gained a rolling 90-day window (it had been running
+// against AppFolio's ~17-day default). They count work orders that have logged
+// labour, so a longer window finds more of them. The rise is recovered
+// undercount, not new work — see the note on billableSummary() above.
 async function efficiencyMetrics() {
   const [woAll, bd, labor] = await Promise.all([
     readReportData('wo_all'),

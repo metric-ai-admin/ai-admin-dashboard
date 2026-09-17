@@ -2,21 +2,22 @@
 /**
  * iConic WO Scheduling Tool — pilot data export + analysis.
  *
- * Pulls the two AppFolio report feeds the pilot needs (work_order_labor_summary
- * and wo_all / work_order), filters them to the iConic properties, writes one
- * CSV per dataset, and prints a summary: hours per tech per property, most
- * common WO types, and completion time when the rows carry the dates for it.
+ * Pulls the three AppFolio report feeds the pilot needs — work_order_labor_summary
+ * (90-day rolling window), wo_all (open work orders) and wo_completed (statuses
+ * 4 + 7, the only pull carrying completed_on) — filters them to the iConic
+ * properties, writes one CSV per dataset, and prints a summary: hours per tech
+ * per property, WO type mix, status mix, cycle time, open-WO age and scheduling
+ * coverage.
  *
- * The /data route caps a response at `limit` (default 100, max 1000) and has no
- * page/offset param — so a single ?limit=1000 returns all 378 labor rows. This
- * script uses that, and fails loudly if a pull comes back at exactly the cap,
- * which would mean the dataset has outgrown a single request.
+ * Reads export.csv, NOT /data. The /data route slices to `limit` (max 1000) with
+ * no paging, and every one of these reports is now larger than that, so /data
+ * would silently hand back a truncated subset.
  *
  * Usage — live, against the deployed dashboard:
  *   node scripts/iconic-wo-export.js --base https://HOST --key METRIC_API_KEY
  *
  * Usage — offline, against JSON already saved from the /data route:
- *   node scripts/iconic-wo-export.js --labor labor.json --wo wo_all.json
+ *   node scripts/iconic-wo-export.js --labor labor.json --wo wo_all.json --done wo_completed.json
  *
  * Options:
  *   --out <dir>     output directory (default: ./exports)
@@ -27,7 +28,12 @@ const fs = require('fs');
 const path = require('path');
 const { toCSV } = require('../appfolio-reports.js');
 
-const MAX_LIMIT = 1000;   // the cap enforced by /api/appfolio/reports/:id/data
+// /api/appfolio/reports/:id/data slices to `limit` (max 1000) with no paging,
+// so it silently truncates any report bigger than that — and since the 90-day
+// windows landed, both of these are (2230 labor rows, 1468 completed WOs).
+// export.csv runs off the same synced rows with no slice at all, so that is the
+// endpoint we read. Nothing here can quietly analyse a subset.
+const ENDPOINT = 'export.csv';
 
 function arg(name, fallback = null) {
   const i = process.argv.indexOf('--' + name);
@@ -72,19 +78,47 @@ const OPEN_KEYS   = ['created_at', 'created', 'date_created', 'work_order_date',
 const SCHED_KEYS  = ['scheduled_start'];
 const DONE_KEYS   = ['completed_on', 'work_completed_on', 'completed_at', 'completed', 'date_completed', 'completed_date', 'closed_date'];
 
+// Minimal RFC4180-ish CSV reader: quoted fields, doubled quotes, embedded
+// commas and newlines. Mirrors parseCSV in metric-routes.js, which is not
+// exported — requiring that module here would drag express/multer/jwt into a
+// CLI script for twenty lines of parsing.
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  text = text.replace(/^﻿/, '');   // strip the BOM toCSV writes for Excel
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i], next = text[i + 1];
+    if (inQuotes) {
+      if (ch === '"' && next === '"') { field += '"'; i++; }
+      else if (ch === '"') inQuotes = false;
+      else field += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ',') { row.push(field); field = ''; }
+    else if (ch.charCodeAt(0) === 13) { /* CR: ignore */ }
+    else if (ch.charCodeAt(0) === 10) { row.push(field); rows.push(row); row = []; field = ""; }  // LF
+    else field += ch;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(c => c.trim() !== ''));
+}
+
+function csvToObjects(text) {
+  const grid = parseCSV(text);
+  if (grid.length < 2) return [];
+  const headers = grid[0];
+  return grid.slice(1).map(cells => {
+    const o = {};
+    headers.forEach((h, i) => { o[h] = cells[i] === undefined ? '' : cells[i]; });
+    return o;
+  });
+}
+
 async function fetchReport(id) {
-  const url = BASE.replace(/\/$/, '') + '/api/appfolio/reports/' + id + '/data?limit=' + MAX_LIMIT;
+  const url = BASE.replace(/\/$/, '') + '/api/appfolio/reports/' + id + '/' + ENDPOINT;
   const r = await fetch(url, { headers: KEY ? { 'x-metric-key': KEY } : {} });
   if (!r.ok) throw new Error(id + ': HTTP ' + r.status + ' ' + (await r.text()).slice(0, 200));
-  const j = await r.json();
-  const rows = j.rows || [];
-  // The route slices to `limit` with no paging, so landing exactly on the cap
-  // means rows were almost certainly truncated. Don't silently analyse a subset.
-  if (rows.length === MAX_LIMIT) {
-    throw new Error(id + ': returned exactly ' + MAX_LIMIT + ' rows — the /data cap. '
-      + 'The dataset has outgrown a single request; export.csv returns every row unsliced.');
-  }
-  console.log('  ' + id + ': ' + rows.length + ' rows (synced ' + (j.fetchedAt || 'unknown') + ')');
+  const rows = csvToObjects(await r.text());
+  console.log('  ' + id + ': ' + rows.length + ' rows');
   return rows;
 }
 
@@ -97,7 +131,7 @@ function loadLocal(file) {
 
 const round = (n, p = 1) => Math.round(n * Math.pow(10, p)) / Math.pow(10, p);
 
-function summarise(labor, wo) {
+function summarise(labor, wo, done) {
   const out = [];
   const say = s => { out.push(s); console.log(s); };
 
@@ -153,28 +187,31 @@ function summarise(labor, wo) {
   }
 
   // --- completion time ---
-  say('\n=== COMPLETION TIME ===');
+  // Cycle time comes from wo_completed (work_order_statuses 4 + 7), the only
+  // pull whose rows carry completed_on. wo_all and the labor summary are still
+  // scanned as a fallback so the section degrades to a warning rather than a
+  // blank if wo_completed has not been synced.
+  say('\n=== COMPLETION TIME (created -> completed) ===');
   const spans = [];
-  for (const r of wo.concat(labor)) {
+  const source = done.length ? done : wo.concat(labor);
+  for (const r of source) {
     const a = pick(r, OPEN_KEYS), b = pick(r, DONE_KEYS);
     if (!a || !b) continue;
     const t0 = Date.parse(a), t1 = Date.parse(b);
     if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 < t0) continue;
     spans.push((t1 - t0) / 86400000);
   }
-  const eligible = wo.length + labor.length;
+  const eligible = source.length;
+  say('    source: ' + (done.length ? 'wo_completed (' + done.length + ' completed WOs)'
+    : 'wo_all + labor fallback — wo_completed not available'));
   if (!spans.length) {
     say('    NOT CALCULABLE — no row carries both an opened and a completed date.');
-    say('    The open-WO pull returns open work orders only (never completed), and');
-    say('    the labor summary is per labor entry, not per work-order lifecycle.');
-    say('    True cycle time needs a completed-WO report that is not registered yet.');
   } else if (spans.length < 10 || spans.length / eligible < 0.2) {
     // A handful of stragglers that happen to carry a completion date are not a
     // sample — quoting a mean off them would read as a real cycle-time metric.
     say('    NOT RELIABLE — only ' + spans.length + ' of ' + eligible + ' rows carry both dates.');
     say('    Values: ' + spans.map(v => round(v) + 'd').join(', '));
-    say('    Too few to average. The pull is open work orders, so a completed WO');
-    say('    appears only by accident; a completed-WO report is needed for cycle time.');
+    say('    Too few to average.');
   } else {
     spans.sort((x, y) => x - y);
     const mean = spans.reduce((s, v) => s + v, 0) / spans.length;
@@ -223,12 +260,23 @@ function summarise(labor, wo) {
     console.warn('  wo_all unavailable (' + err.message + ') — falling back to work_order');
     if (BASE) woAll = await fetchReport('work_order');
   }
+  // wo_completed (work_order_statuses 4 + 7) is the only source that carries a
+  // completion date, so cycle time comes from here. Optional: if it has not been
+  // synced the rest of the analysis still runs, with cycle time reported absent.
+  let done = [];
+  try {
+    done = BASE ? await fetchReport('wo_completed') : (arg('done') ? loadLocal(arg('done')) : []);
+  } catch (err) {
+    console.warn('  wo_completed unavailable (' + err.message + ') — cycle time will be skipped');
+  }
 
   const hit = r => String(pick(r, PROP_KEYS, '')).toLowerCase().includes(MATCH.toLowerCase());
   const labor = laborAll.filter(hit);
   const wo = woAll.filter(hit);
+  const doneIc = done.filter(hit);
   console.log('\nFiltered to "' + MATCH + '": ' + labor.length + '/' + laborAll.length
-    + ' labor rows, ' + wo.length + '/' + woAll.length + ' open WOs');
+    + ' labor rows, ' + wo.length + '/' + woAll.length + ' open WOs, '
+    + doneIc.length + '/' + done.length + ' completed WOs');
   if (!labor.length && !wo.length) {
     const seen = [...new Set(laborAll.concat(woAll).map(r => pick(r, PROP_KEYS, '?')))];
     console.error('No rows matched "' + MATCH + '". Property names present: '
@@ -240,12 +288,17 @@ function summarise(labor, wo) {
   const stamp = new Date().toISOString().slice(0, 10);
   const f1 = path.join(OUT, 'iconic_labor_summary_' + stamp + '.csv');
   const f2 = path.join(OUT, 'iconic_open_work_orders_' + stamp + '.csv');
+  const f4 = path.join(OUT, 'iconic_completed_work_orders_' + stamp + '.csv');
   fs.writeFileSync(f1, toCSV(labor), 'utf8');
   fs.writeFileSync(f2, toCSV(wo), 'utf8');
   console.log('\nWrote ' + f1 + ' (' + labor.length + ' rows)');
   console.log('Wrote ' + f2 + ' (' + wo.length + ' rows)');
+  if (doneIc.length) {
+    fs.writeFileSync(f4, toCSV(doneIc), 'utf8');
+    console.log('Wrote ' + f4 + ' (' + doneIc.length + ' rows)');
+  }
 
-  const report = summarise(labor, wo);
+  const report = summarise(labor, wo, doneIc);
   const f3 = path.join(OUT, 'iconic_summary_' + stamp + '.txt');
   fs.writeFileSync(f3, report, 'utf8');
   console.log('\nWrote ' + f3);
