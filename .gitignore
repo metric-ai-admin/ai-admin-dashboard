@@ -9,3 +9,10 @@ data/
 # work-order detail; the reference HTML beside them is ours and is tracked.
 reference/*.xlsx
 reference/*.csv
+
+# Locally generated report exports (scripts/iconic-wo-export.js and anything
+# else writing here). The work_order pull alone carries primary_tenant,
+# primary_tenant_email and primary_tenant_phone_number, so these files are
+# resident PII and must never reach the repo. The script that produces them
+# is tracked; its output is not.
+exports/
