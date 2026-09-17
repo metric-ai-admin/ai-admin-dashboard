@@ -2127,3 +2127,30 @@ tr.ca-sel { background: var(--accent-glow); }
 #tab-collections .rc .badge.green { background: var(--col-green-pale); color: var(--col-green); }
 #tab-collections .rc .badge.navy { background: #e8edf5; color: var(--col-navy); }
 @media (max-width: 700px) { .col-sources { grid-template-columns: 1fr; } }
+
+/* ── Maintenance ▸ WO Scheduling (iConic pilot) ───────────────────────────── */
+.wo-sched-table td { vertical-align: middle; }
+.wo-sortable { cursor: pointer; user-select: none; }
+.wo-sortable:hover { color: var(--text-primary); }
+/* Age pill. The colour is the signal Erick scans for, so it carries a border
+   as well as a fill — fill alone disappears against the elevated row bg. */
+.wo-age { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 12px; font-weight: 700; border: 1px solid transparent; }
+.wo-age-red   { background: var(--critical-bg); color: var(--critical); border-color: rgba(244, 63, 94, .35); }
+.wo-age-amber { background: var(--warning-bg);  color: var(--warning);  border-color: rgba(245, 158, 11, .35); }
+.wo-age-green { background: var(--success-bg);  color: var(--success);  border-color: rgba(16, 185, 129, .35); }
+/* A WO with neither a tech nor a vendor: nobody owns it. */
+.wo-row-gap { background: var(--critical-bg); }
+.wo-issue { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wo-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-secondary); cursor: pointer; }
+.wo-toggle input { cursor: pointer; }
+@media (max-width: 760px) {
+  .wo-issue { max-width: 160px; }
+}
+/* Columns that must never wrap: a WO number broken across two lines is unusable
+   for lookup, and a wrapped vendor badge turned a one-line row three lines tall. */
+.wo-sched-table td:nth-child(1),
+.wo-sched-table td:nth-child(6),
+.wo-sched-table td:nth-child(7),
+.wo-sched-table td:nth-child(9) { white-space: nowrap; }
+.wo-sched-table td:nth-child(2) { white-space: nowrap; }
+.wo-sched-table .badge { white-space: nowrap; max-width: 190px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }

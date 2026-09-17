@@ -80,6 +80,7 @@
             <button data-maint-view="coverage">Coverage Map</button>
             <button data-maint-view="efficiency">Maintenance Efficiency</button>
             <button data-maint-view="technician">Technician Activity</button>
+            <button data-maint-view="wo-scheduling">WO Scheduling</button>
             <button data-maint-view="reports-sync">Reports Sync</button>
             <button data-maint-view="command-center">Command Center</button>
           </div>
@@ -1625,7 +1626,43 @@
       <div id="taList"></div>
     </div>
 
-    <!-- 11. Reports Sync -->
+    <!-- 11. WO Scheduling (iConic pilot) -->
+    <div id="maint-view-wo-scheduling" class="maint-view hidden">
+      <div class="view-head">
+        <div>
+          <h2>WO Scheduling <span class="badge badge-purple">iConic pilot</span></h2>
+          <p class="muted small" id="woSchedMeta">Loading…</p>
+        </div>
+        <div class="view-actions">
+          <label class="wo-toggle" title="Work orders with no internal tech and no vendor are listed first">
+            <input type="checkbox" id="woSchedUnassignedFirst"> Unassigned first
+          </label>
+          <button class="btn-sm" id="woSchedExport">⬇ CSV</button>
+          <button class="btn-sm" id="woSchedRefresh">🔄 Refresh</button>
+        </div>
+      </div>
+
+      <!-- Insights banner (Phase 1 item 4) -->
+      <div class="kpi-bar" id="woSchedBanner"></div>
+      <div class="banner hidden" id="woSchedSplit"></div>
+      <div class="banner hidden" id="woSchedWarn"></div>
+
+      <!-- Open WO table (Phase 1 item 1) -->
+      <div id="woSchedTable"></div>
+
+      <!-- Phase 2 — deliberately not built yet. Named here so the gap is
+           visible in the UI rather than looking like an oversight. -->
+      <div class="banner" style="margin-top:18px;">
+        <strong>Phase 2 — not built yet.</strong>
+        <em>Tech workload panel</em> (hours per tech over 7/30/90 days, open WOs per tech, capacity
+        against the 90-day average) and the <em>weekly schedule view</em> (drag WOs onto slots,
+        group by property to cut trips). The schedule view needs a way to WRITE a scheduled date:
+        the AppFolio Reports API is read-only, so scheduling has to persist in Supabase or move to
+        the AppFolio Stack API. That decision is open.
+      </div>
+    </div>
+
+    <!-- 12. Reports Sync -->
     <div id="maint-view-reports-sync" class="maint-view hidden">
       <div class="view-head">
         <div>
@@ -2006,5 +2043,6 @@
 <script src="reports-sync.js"></script>
 <script src="appfolio-views.js"></script>
 <script src="command-center.js"></script>
+<script src="wo-scheduling.js"></script>
 </body>
 </html>

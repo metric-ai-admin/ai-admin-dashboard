@@ -928,6 +928,147 @@ function toCSV(rows) {
   return '﻿' + lines.join('\r\n');
 }
 
+
+// ---- WO Scheduling Tool (iConic pilot) --------------------------------------
+
+/**
+ * Everything the WO Scheduling tab needs, in one compact payload.
+ *
+ * Reads the three synced reports straight off disk and aggregates here rather
+ * than letting the browser pull the raw CSVs: those are 246 KB + 988 KB +
+ * 1752 KB, roughly 3 MB per tab open, and the largest of them exists only to
+ * produce two summary numbers. The filtering is the same either way.
+ *
+ * `match` is a property-name substring ("iConic" for the pilot) so the same
+ * feed serves other properties when the pilot graduates.
+ */
+const WO_SCHED_DEFAULT_MATCH = 'iConic';
+
+// Whole days between two dates, or null when either is unparseable.
+function daysBetween(fromRaw, toRaw) {
+  const a = Date.parse(fromRaw), b = Date.parse(toRaw);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null;
+  return Math.round((b - a) / 86400000);
+}
+
+function median(sorted) {
+  if (!sorted.length) return null;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+}
+
+async function woSchedulingFeed(match = WO_SCHED_DEFAULT_MATCH) {
+  const [openRaw, laborRaw, doneRaw] = await Promise.all([
+    readReportData('wo_all'),
+    readReportData('work_order_labor_summary'),
+    readReportData('wo_completed'),
+  ]);
+  // wo_all is the only hard requirement — the table cannot render without it.
+  if (!openRaw) return null;
+
+  const needle = String(match || '').toLowerCase();
+  const hit = r => String(pick(r, ['property_name', 'property', 'building'], ''))
+    .toLowerCase().includes(needle);
+
+  const openRows  = (openRaw.rows  || []).filter(hit);
+  const laborRows = (laborRaw?.rows || []).filter(hit);
+  const doneRows  = (doneRaw?.rows  || []).filter(hit);
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const openWos = openRows.map(r => {
+    const created = pick(r, ['created_at', 'created', 'date_created'], '');
+    return {
+      wo:        pick(r, ['work_order_number', 'wo_number', 'number'], '—'),
+      property:  pick(r, ['property_name', 'property'], 'Unknown'),
+      unit:      pick(r, ['unit_name', 'unit'], ''),
+      issue:     pick(r, ['work_order_issue', 'job_description', 'description'], ''),
+      type:      pick(r, ['work_order_type', 'vendor_trade'], ''),
+      created,
+      ageDays:   daysBetween(created, today),
+      priority:  pick(r, ['priority'], ''),
+      // assigned_user and vendor are NOT interchangeable. assigned_user is the
+      // internal tech; vendor is the company the WO sits with and is populated
+      // on every row (often "Metric Property Management" itself). Falling back
+      // to vendor made the unassigned count read 0 when 5 WOs genuinely have no
+      // tech — the exact number the pilot exists to surface. Keep them apart and
+      // let the UI show the vendor only when there is no tech.
+      tech:      pick(r, ['assigned_user'], ''),
+      vendor:    pick(r, ['vendor'], ''),
+      // Populated on ~4% of rows. Surfaced anyway so the gap is visible in the
+      // UI rather than implied by a blank column.
+      scheduledStart: pick(r, ['scheduled_start'], ''),
+      status:    pick(r, ['status', 'work_order_status'], ''),
+    };
+  }).sort((a, b) => (b.ageDays ?? -1) - (a.ageDays ?? -1));   // oldest first
+
+  // Cycle time, from the only pull that carries completion dates.
+  const totals = [], workSpans = [], adminSpans = [];
+  for (const r of doneRows) {
+    const created   = pick(r, ['created_at'], '');
+    const workDone  = pick(r, ['work_completed_on'], '');
+    const completed = pick(r, ['completed_on', 'work_completed_on'], '');
+    const t = daysBetween(created, completed);
+    if (t !== null) totals.push(t);
+    // created -> work done is the field response; work done -> completed is the
+    // billing/closeout tail. Splitting them says which half a scheduling tool
+    // can actually move.
+    const w = daysBetween(created, workDone);
+    const a = daysBetween(workDone, completed);
+    if (w !== null) workSpans.push(w);
+    if (a !== null) adminSpans.push(a);
+  }
+  const sortNum = arr => arr.slice().sort((x, y) => x - y);
+
+  // Top issue over the labor window (90 days), which describes what the techs
+  // actually spend time on — the open queue is too small to rank meaningfully.
+  const issueCounts = {};
+  for (const r of laborRows) {
+    const k = String(pick(r, ['work_order_issue', 'description'], '')).toLowerCase().trim().slice(0, 60);
+    if (k) issueCounts[k] = (issueCounts[k] || 0) + 1;
+  }
+  const topIssues = Object.entries(issueCounts)
+    .sort((a, b) => b[1] - a[1]).slice(0, 5)
+    .map(([issue, count]) => ({ issue, count }));
+
+  const laborDates = laborRows.map(r => rowDay(r, ['date'])).filter(Boolean).sort();
+
+  return {
+    match,
+    generatedAt: new Date().toISOString(),
+    syncedAt: {
+      open: openRaw.fetchedAt || null,
+      labor: laborRaw?.fetchedAt || null,
+      completed: doneRaw?.fetchedAt || null,
+    },
+    openWos,
+    insights: {
+      openCount:      openWos.length,
+      over30:         openWos.filter(w => (w.ageDays ?? 0) > 30).length,
+      between15and30: openWos.filter(w => (w.ageDays ?? 0) >= 15 && (w.ageDays ?? 0) <= 30).length,
+      under15:        openWos.filter(w => (w.ageDays ?? 0) < 15).length,
+      unassigned:     openWos.filter(w => !String(w.tech || '').trim()).length,
+      scheduled:      openWos.filter(w => String(w.scheduledStart || '').trim()).length,
+      oldestDays:     openWos.length ? (openWos[0].ageDays ?? null) : null,
+      topIssues,
+      cycle: {
+        n:            totals.length,
+        medianDays:   median(sortNum(totals)),
+        medianWork:   median(sortNum(workSpans)),
+        medianAdmin:  median(sortNum(adminSpans)),
+      },
+      laborRows: laborRows.length,
+      laborFrom: laborDates[0] || null,
+      laborTo:   laborDates[laborDates.length - 1] || null,
+      // So the UI can say WHY a panel is empty instead of rendering zeros.
+      missing: [
+        laborRaw ? null : 'work_order_labor_summary',
+        doneRaw  ? null : 'wo_completed',
+      ].filter(Boolean),
+    },
+  };
+}
+
 module.exports = {
   REPORTS,
   syncReport,
@@ -942,6 +1083,7 @@ module.exports = {
   inventorySnapshot,
   efficiencyMetrics,
   techActivityToday,
+  woSchedulingFeed,
   toCSV,
   collectHeaders,
   ACTIVE_TECHNICIANS,

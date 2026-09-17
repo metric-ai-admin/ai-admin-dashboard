@@ -5125,6 +5125,7 @@ function switchMaintenanceView(view) {
     'coverage':       loadMaintenanceCoverage,
     'efficiency':     loadEfficiency,
     'technician':     loadTechActivity,
+    'wo-scheduling':  loadWoScheduling,   // wo-scheduling.js
     'reports-sync':   loadReportsSync,
     'command-center': loadLyndsayCommandCenter,
   };

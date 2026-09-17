@@ -915,6 +915,11 @@ function registerMetricRoutes(app, db) {
     feed('/api/appfolio/feed/open-wos',        ()    => afReports.openWorkOrders(),             'Work order report (wo_all) not synced yet.');
     feed('/api/appfolio/feed/activities',      ()    => afReports.activitiesSummary(),          'Activities Summary not synced yet.');
     feed('/api/appfolio/feed/inventory',       ()    => afReports.inventorySnapshot(),          'Inventory reports not synced yet.');
+    // WO Scheduling Tool (iConic pilot). Aggregated server-side: the browser
+    // would otherwise pull ~3 MB of CSV per tab open, most of it to produce two
+    // summary numbers. ?match= overrides the property filter, so the same feed
+    // serves another property without a code change.
+    feed('/api/appfolio/feed/wo-scheduling',   req   => afReports.woSchedulingFeed(req.query.match || undefined), 'Work order report (wo_all) not synced yet.');
   }
 
   // ── MODULE: Erick's EOD Summary (prefixed — avoids /api/summary collision) ─
