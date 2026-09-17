@@ -46,13 +46,25 @@ const REPORTS = [
     params: {},
   },
   {
+    // labor_performed_from / labor_performed_to are REQUIRED by this report, and
+    // without them AppFolio returns only its own short default window — 17 days
+    // when this was measured. A ROLLING 90 days as a function, not fixed dates:
+    // resolveParams() calls it at sync time, so the window follows the calendar
+    // instead of freezing on the day it was written.
+    //
+    // Widening this changes existing consumers, which is intended but worth
+    // knowing: billableSummary() sums every labor row, so its hours/byTech grow
+    // from ~17 days to 90; efficiencyMetrics()'s distinct-WO-by-status counts
+    // rise for the same reason (they were undercounting before, so this is more
+    // accurate, not less). techActivityToday() filters to a single day and is
+    // unaffected.
     id: 'work_order_labor_summary',
     resource: 'work_order_labor_summary',
-    label: 'Work Order — Labor Summary',
+    label: 'Work Order — Labor Summary (90 days)',
     group: 'Billable Labor',
     priority: 1,
     feeds: 'AppFolio Analyzer → Billable Labor + Technician Activity Today',
-    params: {},
+    params: () => ({ labor_performed_from: isoDay(-90), labor_performed_to: isoDay(0) }),
   },
   {
     id: 'upcoming_activities',
@@ -94,36 +106,28 @@ const REPORTS = [
   },
 
   // ---- WO Scheduling Tool pilot (iConic Round Rock + iConic Downtown) ----
-  // Added for the scheduling build, which needs per-labor-entry detail and a
-  // completed-WO source. Neither is date-windowed: `params: {}` sends no filter,
-  // so each returns whatever default window AppFolio applies. The labels say
-  // "90 days" as the INTENT — confirm the real span from the synced data before
-  // treating it as 90 days, and add an isoDay(-90) window here if the API turns
-  // out to accept one.
+  // work_order_labor_detail was registered here and removed: AppFolio answers
+  // 400 "Id is not a valid report" — the resource does not exist. Don't re-add
+  // it without a name confirmed against a live request; a permanently-400
+  // report sits in syncAll() burning a slot against the 7-req/15s limit and
+  // leaves an error in the Reports Sync view that nobody can clear.
   {
-    id: 'wo_labor_detail',
-    resource: 'work_order_labor_detail',
-    label: 'WO — Labor Detail (90 days)',
-    group: 'Billable Labor',
-    priority: 6,
-    feeds: 'WO Scheduling Tool pilot — per-entry labor detail',
-    params: {},
-  },
-  {
-    // NOTE: work_order.json was probed on 2026-08-04 and SILENTLY IGNORED the
-    // `status` filter, returning only open work orders (see README "Maintenance
-    // Efficiency" and the wo_all comment above). This entry re-tests that with
-    // status: 'Completed'. If the row count and ids match wo_all, the filter is
-    // still ignored, this report is a duplicate pull wasting a slot against the
-    // 7-req/15s limit, and a different resource is needed for completed WOs —
-    // remove it rather than leaving a report that looks real but is not.
+    // `status: 'Completed'` (a string) was silently IGNORED — the pull came back
+    // with 148 open work orders, a strict subset of wo_all, zero Completed. The
+    // filter the API actually reads is `work_order_statuses`, an array of
+    // NUMERIC status codes: 4 = Completed, 5 = Canceled, 7 = Completed No Need
+    // To Bill. We take 4 + 7, the two "finished" states; 5 (Canceled) is
+    // deliberately excluded — a canceled WO has no completion to measure and
+    // would distort cycle time.
+    //
+    // params go out as a JSON POST body, so the array serializes as-is.
     id: 'wo_completed',
     resource: 'work_order',
-    label: 'WO — Completed (90 days)',
+    label: 'WO — Completed',
     group: 'Work Orders',
     priority: 6,
     feeds: 'WO Scheduling Tool pilot — completion/cycle time',
-    params: { status: 'Completed' },
+    params: { work_order_statuses: ['4', '7'] },
   },
 
   {
