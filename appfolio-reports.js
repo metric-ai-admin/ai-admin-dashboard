@@ -93,6 +93,39 @@ const REPORTS = [
     params: {},
   },
 
+  // ---- WO Scheduling Tool pilot (iConic Round Rock + iConic Downtown) ----
+  // Added for the scheduling build, which needs per-labor-entry detail and a
+  // completed-WO source. Neither is date-windowed: `params: {}` sends no filter,
+  // so each returns whatever default window AppFolio applies. The labels say
+  // "90 days" as the INTENT — confirm the real span from the synced data before
+  // treating it as 90 days, and add an isoDay(-90) window here if the API turns
+  // out to accept one.
+  {
+    id: 'wo_labor_detail',
+    resource: 'work_order_labor_detail',
+    label: 'WO — Labor Detail (90 days)',
+    group: 'Billable Labor',
+    priority: 6,
+    feeds: 'WO Scheduling Tool pilot — per-entry labor detail',
+    params: {},
+  },
+  {
+    // NOTE: work_order.json was probed on 2026-08-04 and SILENTLY IGNORED the
+    // `status` filter, returning only open work orders (see README "Maintenance
+    // Efficiency" and the wo_all comment above). This entry re-tests that with
+    // status: 'Completed'. If the row count and ids match wo_all, the filter is
+    // still ignored, this report is a duplicate pull wasting a slot against the
+    // 7-req/15s limit, and a different resource is needed for completed WOs —
+    // remove it rather than leaving a report that looks real but is not.
+    id: 'wo_completed',
+    resource: 'work_order',
+    label: 'WO — Completed (90 days)',
+    group: 'Work Orders',
+    priority: 6,
+    feeds: 'WO Scheduling Tool pilot — completion/cycle time',
+    params: { status: 'Completed' },
+  },
+
   {
     // The UI's "Move Out Directory" (buffered_reports/689) is a configured
     // view of AppFolio's standard Tenant Tickler report. Saved-report UUIDs
