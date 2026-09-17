@@ -28,6 +28,12 @@ services:
       # Everything below must be set manually in the Render dashboard
       # (Environment tab) — never committed to the repo. See .env.example
       # for what each one does.
+      # Signing key for the dashboard's login cookie. Unset means nobody can
+      # log in — server.js logs a warning at boot and every jwt.verify fails.
+      # Generate once (openssl rand -hex 32) and set it in the Render
+      # dashboard; changing it later logs everyone out.
+      - key: JWT_SECRET
+        sync: false
       - key: ASANA_TOKEN
         sync: false
       # Erick's personal Asana token. ASANA_TOKEN above is Arturo's and can only
@@ -86,4 +92,50 @@ services:
       - key: APPFOLIO_CLIENT_SECRET
         sync: false
       - key: APPFOLIO_SUBDOMAIN
+        sync: false
+
+      # Bearer token guarding /mcp (the StreamableHTTP MCP endpoint). That
+      # endpoint is public on this service and its tools read resident,
+      # collections, eviction and billable data. Unset means /mcp answers 503
+      # rather than running open, so set this before pointing Claude Desktop
+      # at it. Generate with: openssl rand -hex 32
+      - key: MCP_AUTH_TOKEN
+        sync: false
+
+      # AppFolio Reports API v2 credentials — the Reports Sync, Efficiency and
+      # Technician Activity views report "not configured" without them.
+      - key: APPFOLIO_REPORTS_CLIENT_ID
+        sync: false
+      - key: APPFOLIO_REPORTS_CLIENT_SECRET
+        sync: false
+
+      # Asana workspace gid, used when a call needs to be scoped to the
+      # workspace rather than to a single project.
+      - key: ASANA_WORKSPACE
+        sync: false
+
+      # ---- BD CRM (Supabase) ----
+      # Without SUPABASE_URL + SUPABASE_ANON_KEY the CRM module disables itself
+      # at boot and its endpoints answer 503. The service role key bypasses RLS
+      # and is required for bulk import and server-side writes.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Shared secret protecting the BD CRM API endpoints.
+      - key: CRM_API_SECRET
+        sync: false
+
+      # ---- SimpleVoIP (call data / call grading) ----
+      - key: SIMPLEVOIP_ACCOUNT_ID
+        sync: false
+      - key: SIMPLEVOIP_USER_ID
+        sync: false
+
+      # PORT is assigned by Render and read by server.js (falling back to 3001
+      # locally). Declared here only so the full set is documented; do not pin
+      # it to a value — Render sets it and overriding it breaks health checks.
+      - key: PORT
         sync: false

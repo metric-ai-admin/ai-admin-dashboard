@@ -45,7 +45,7 @@ const path = require('path');
 const cron = require('node-cron');
 const { ConfidentialClientApplication } = require('@azure/msal-node');
 const { PDFDocument } = require('pdf-lib');
-const { randomUUID } = require('crypto');
+const { randomUUID, timingSafeEqual } = require('crypto');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
@@ -3063,9 +3063,16 @@ cron.schedule('0 8 * * *', async () => {
 // Same tool set as the local stdio server (mcp-server.mjs), from the shared
 // mcp-tools.cjs — just reached over HTTP instead of stdio, and calling this
 // same process's own REST API via a loopback fetch instead of a child
-// process talking to a separately-running dashboard. No auth: mcp-remote
-// (the Claude Desktop bridge) is the thing that needs to reach this, and it
-// doesn't authenticate to the dashboards it proxies.
+// process talking to a separately-running dashboard.
+//
+// Guarded by a bearer token (MCP_AUTH_TOKEN). This endpoint is reachable from
+// the public internet on the Render deployment and its tools read resident,
+// collections, eviction and billable data, so it cannot be left open. Claude
+// Desktop reaches it through mcp-remote, which does not authenticate on its
+// own but forwards whatever --header it is given:
+//   npx -y mcp-remote <url>/mcp --header "Authorization: Bearer <token>"
+// If MCP_AUTH_TOKEN is unset the endpoint is disabled rather than open —
+// failing closed, so a missing env var can never silently expose the data.
 
 const MCP_BASE = `http://localhost:${PORT}`;
 
@@ -3112,7 +3119,37 @@ async function mcpDoFetch(url, options = {}, timeoutMs = 30_000) {
 // sessionId -> transport, per the SDK's stateful StreamableHTTP pattern.
 const mcpTransports = {};
 
+const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN || '';
+if (!MCP_AUTH_TOKEN) logLine('[WARN] MCP_AUTH_TOKEN not set — /mcp is disabled and will answer 503');
+
+// Constant-time compare so a wrong token leaks nothing through response timing.
+// Lengths are compared first because timingSafeEqual throws on a mismatch.
+function mcpTokenValid(presented) {
+  if (!presented) return false;
+  const a = Buffer.from(presented, 'utf8');
+  const b = Buffer.from(MCP_AUTH_TOKEN, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+// JSON-RPC shaped errors: mcp-remote parses the body, so a bare res.status()
+// surfaces to the user as a parse failure rather than "unauthorized".
+function mcpRpcError(res, status, code, message) {
+  return res.status(status).json({ jsonrpc: '2.0', error: { code, message }, id: null });
+}
+
 app.all('/mcp', async (req, res) => {
+  if (!MCP_AUTH_TOKEN) {
+    return mcpRpcError(res, 503, -32000, 'MCP endpoint is not configured: MCP_AUTH_TOKEN is unset on the server.');
+  }
+  const auth = req.headers.authorization || '';
+  const presented = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  if (!mcpTokenValid(presented)) {
+    logLine(`[WARN] /mcp rejected an unauthenticated ${req.method} from ${req.ip}`);
+    res.set('WWW-Authenticate', 'Bearer realm="mcp"');
+    return mcpRpcError(res, 401, -32001, 'Unauthorized: a valid Bearer token is required.');
+  }
+
   const sessionId = req.headers['mcp-session-id'];
   let transport;
 
