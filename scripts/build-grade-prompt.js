@@ -36,7 +36,47 @@ function arg(name, fallback = null) {
 const SRC = arg('src', path.join(process.env.USERPROFILE || process.env.HOME || '.', 'Downloads', 'metric_call_grading_prompt.md'));
 const OUT = arg('out', 'call-grade-prompt.json');
 
-const md = fs.readFileSync(SRC, 'utf8');
+const md0 = fs.readFileSync(SRC, 'utf8');
+
+// ---- Hard gate, injected before STEP 1 -------------------------------------
+//
+// Step 3 already lists "Agent identity cannot be confirmed (voice mismatch,
+// name mismatch)" as a NOT SCOREABLE condition, but it sits third in a list
+// read AFTER the agent and call type have been identified, and the 2026-09-18
+// canary showed it being passed over: a call whose own summary said the agent
+// "identif[ied] himself as 'Gustavo Moreno'" while attributed to Oscar was
+// graded 38/F instead of marked N/S. Restating it as a gate evaluated before
+// any rubric is selected is what makes it bind.
+const HARD_GATE = `## STEP 0 — HARD GATES (evaluate FIRST, before Steps 1-9)
+
+Check these BEFORE identifying the role, the call type, or any rubric. If a gate
+trips, STOP: return not_scoreable = true with the reason, do NOT select a rubric,
+do NOT score any criteria, and do NOT return a letter grade other than "N/S".
+
+**GATE 1 — AGENT IDENTITY MISMATCH.** The agent this call is attributed to is
+given to you as "Agent:" in the message. If the person speaking as the agent
+identifies themselves by a DIFFERENT name, or is evidently a different person,
+the call cannot be scored against that agent. Mark not_scoreable = true with
+reason "Suspected agent mismatch — attributed to [attributed name], speaker
+identified as [spoken name]". This applies no matter how well or badly the call
+went: a grade recorded against the wrong person is worse than no grade. Note
+that Step 1 flags Daria Rodriguez as a known case, but the gate applies to EVERY
+agent, not only to her.
+
+**GATE 2 — NOT GRADEABLE AT ALL.** Any Step 3 condition: voicemail with no live
+conversation, garbled or incomplete audio, under 20 seconds with no substantive
+content, wrong number, or a language barrier that makes the content ungradeable.
+
+**GATE 3 — CALL TYPE INDETERMINATE.** If Step 2 cannot classify the call, mark
+not_scoreable with reason "Call type indeterminate."
+
+---
+
+`;
+
+const step1 = md0.indexOf('## STEP 1 —');
+if (step1 < 0) { console.error('Could not locate STEP 1 in ' + SRC); process.exit(1); }
+const md = md0.slice(0, step1) + HARD_GATE + md0.slice(step1);
 
 // Replace the authored Step 10 block, up to the Appendix, with the JSON contract.
 const startMarker = '## STEP 10 — OUTPUT FORMAT';
@@ -83,15 +123,41 @@ response.
 
 FIELD RULES — these carry the requirements from the steps above:
 
-- "overall_score" is the NORMALISED score out of 100 from Step 9, after the
-  rubric total has been converted to a percentage. Rubric B totals 115 and
-  Rubric D totals 125; normalise both to 100. It is a number, not a string, and
-  is null when not_scoreable is true.
+- "overall_score" is COMPUTED, not judged. It must satisfy exactly:
+
+      overall_score = round( 100 * SUM(categories[].score) / SUM(categories[].weight) )
+
+  Work it out from the numbers you put in "categories" and report that result.
+  Do not adjust it afterwards toward what the call "felt" like — if the figure
+  looks wrong, the per-criterion scores are what to revise, then recompute.
+  It is a number, not a string, and is null when not_scoreable is true.
+
+  On the 2026-09-18 canary this was off by up to 20 points in both directions —
+  one call showed 8 out of 95 in its own breakdown and reported 28. A score a
+  reviewer cannot derive from the criteria beside it is not reviewable.
+
+- CATEGORY WEIGHTS ARE FIXED BY THE RUBRIC TABLE. Every "weight" must be the
+  points that criterion carries in the applied rubric, copied exactly, and
+  SUM(categories[].weight) must equal that rubric's published total:
+
+      Rubric A 100 · Rubric B 115 · Rubric C 100 · Rubric D 125 (Erick)
+      Rubric E 100 · Rubric F 100 · Rubric G 100 · Rubric H 100 · Rubric I 100
+
+  Do not invent weights, do not rescale them, and do not drop a criterion to
+  make them add up. Rubric B is a 115-point rubric and must sum to 115 even
+  though the final score is out of 100 — the division above is what converts it.
+  If a criterion genuinely does not apply to this call, omit it AND subtract its
+  points from the denominator by leaving it out of categories entirely, so the
+  remaining weights still describe what was actually assessed.
+
+- "categories[].score" must equal the sum of that category's "items[].score",
+  and no item may score above its own share of the weight.
 - "overall_grade" is the Step 9 band: A 90-100, B 80-89, C 70-79, D 60-69,
   F below 60. Use exactly one of "A", "B", "C", "D", "F" — or "N/S" when
   not_scoreable is true.
-- "not_scoreable": true for any Step 3 condition, for an indeterminate call type
-  (Step 2), or for a suspected agent mismatch (Step 1). Give a short
+- "not_scoreable": true whenever a STEP 0 gate trips — agent identity mismatch,
+  any Step 3 condition, or an indeterminate call type. Check the gates before
+  choosing a rubric, not after scoring one. Give a short
   "not_scoreable_reason", set "overall_grade" to "N/S", set "overall_score" to
   null, and do NOT grade the call against a rubric.
 - "categories" IS the Step 10 score breakdown. One entry per criterion group of
