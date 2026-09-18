@@ -63,7 +63,7 @@ function toCSV(headers, rows) {
 // Column order is the contract with the reviewer's spreadsheet — keep it stable.
 const DETAIL_HEADERS = [
   'recording_id', 'call_date', 'agent_name', 'call_direction', 'duration_seconds',
-  'property_name', 'overall_grade', 'overall_score', 'not_scoreable', 'not_scoreable_reason',
+  'property_name', 'agent_role', 'call_type', 'rubric_applied', 'overall_grade', 'overall_score', 'not_scoreable', 'not_scoreable_reason',
   'score_greeting', 'score_call_handling', 'score_professionalism', 'score_compliance',
   'other_categories', 'summary', 'outcome', 'flags',
   'coaching_strengths', 'coaching_improvements',
@@ -104,6 +104,11 @@ function detailRows(grades) {
       call_direction: g.call_direction,
       duration_seconds: g.duration_seconds,
       property_name: g.property_name,
+      // Rubric v2.0 Steps 1, 2 and 5 — Lyndsay reviews the export grouped by
+      // call type, and these are what make a mis-routed rubric visible.
+      agent_role: g.agent_role,
+      call_type: g.call_type,
+      rubric_applied: g.rubric_applied,
       // N/S is shown in the grade column because that is how the dashboard reads
       // it; the boolean is kept alongside so the sheet can still be filtered on.
       overall_grade: g.not_scoreable ? 'N/S' : g.overall_grade,

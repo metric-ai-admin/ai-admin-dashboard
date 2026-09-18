@@ -1,20 +1,32 @@
 // call-grading.js
 //
-// Server-side call-quality grading. The rubric prompt lives in
-// call-grade-prompt.json, extracted VERBATIM from Lyndsay's Call Quality
-// Analyzer (public/tools/call-quality-analyzer.html — the SYSTEM_PROMPT literal)
-// so it stays byte-identical; it encodes Metric's compliance rules. It is stored
-// as JSON purely to avoid escaping drift — do not paraphrase it.
+// Server-side call-quality grading.
 //
-// The one deliberate difference from the tool is WHERE the model is called: the
-// tool calls Anthropic from the browser with a pasted key; we call it from the
-// server with a key held in ANTHROPIC_API_KEY, so no key ever reaches the
-// browser (per Metric's key-safety rule).
+// The rubric is Lyndsay's "Metric Property Management — Call Quality Grading
+// Prompt", Version 2.0 (2026-09-18), authored as markdown and reviewed as a
+// document. call-grade-prompt.json is BUILT from that markdown by
+// scripts/build-grade-prompt.js, which changes exactly one thing: it swaps the
+// authored Step 10 output block for the JSON contract this pipeline parses.
+// Edit the markdown and re-run the build — do not hand-edit this JSON, and do
+// not paraphrase the rubric.
+//
+// Version 2.0 is role-aware and call-type-aware: Step 1 maps agent to role,
+// Step 2 maps the call to a type, and Step 5 selects one of nine rubrics.
+// Danny's receptionist protocol is Rubric A within it, which is why there is no
+// longer a separate Danny prompt.
+//
+// NOTE: public/tools/call-quality-analyzer.html carries its own older copy of a
+// SYSTEM_PROMPT for Lyndsay's browser tool. It was already out of step before
+// v2.0 and is further out now. The two are NOT synchronised; treat this file as
+// the server's rubric and that one as the tool's.
+//
+// Anthropic is called from the SERVER with ANTHROPIC_API_KEY, so no key ever
+// reaches the browser (per Metric's key-safety rule).
 
 const SYSTEM_PROMPT = require('./call-grade-prompt.json');
-// Danny is a receptionist, not a leasing agent — his calls are graded against a
-// routing/transfer protocol (call-grade-prompt-danny.json), same output schema.
-const DANNY_PROMPT = require('./call-grade-prompt-danny.json');
+// call-grade-prompt-danny.json is retired: rubric v2.0 carries Danny's
+// receptionist protocol as Rubric A and routes to it from Step 1, so a separate
+// prompt file would be a second place for his rules to live and drift.
 const GRADE_MODEL = process.env.CALL_GRADE_MODEL || 'claude-sonnet-4-6';
 
 // Agents whose name in "this is <name>" reliably identifies who was on the call.
@@ -74,7 +86,6 @@ function detectAgentFromTranscript(transcript) {
   }
   return null;
 }
-const isDanny = agent => /\bdanny\b/i.test(String(agent || ''));
 
 // Strip a ```json … ``` fence if the model wrapped its JSON, then parse.
 //
@@ -161,17 +172,27 @@ async function anthropicJson({ system, user, maxTokens = 2000, model }) {
   return parseModelJson(textBlock.text);
 }
 
-// Grades one transcript. Returns the parsed rubric object (the same shape the
-// tool renders). Throws on missing key, API error, or unparseable output.
+// Grades one transcript against the unified rubric. Throws on missing key, API
+// error, or unparseable output.
+//
+// ONE prompt now, not two. Rubric v2.0 does its own role routing in Step 1 and
+// its own call-type routing in Step 2, so Danny's receptionist protocol is
+// Rubric A inside the same document. The old isDanny() branch picked the rubric
+// by matching the agent name in server code, which meant the routing lived in
+// two places and only knew about one special case. Passing the agent name and
+// letting Step 1 decide is what makes the other eight rubrics reachable.
+//
+// maxTokens is 6000 rather than 4000: the v2.0 output carries a per-criterion
+// breakdown for rubrics with up to twenty criteria, which is a longer response
+// than the previous format. anthropicJson() still retries once at double on a
+// max_tokens stop, so an unusually long call is covered.
 async function gradeTranscript({ callType, agent, duration, transcript }) {
   if (!transcript || !String(transcript).trim()) throw new Error('No transcript to grade.');
-  const userContent = 'Call Type: ' + (callType || 'unknown')
+  const userContent = 'Call Direction: ' + (callType || 'unknown')
     + '\nAgent: ' + (agent || 'unknown')
     + '\nDuration: ' + (duration || 'unknown') + ' seconds'
     + '\n\nTRANSCRIPT:\n' + transcript;
-  // Danny gets the receptionist rubric; everyone else the standard leasing rubric.
-  const system = isDanny(agent) ? DANNY_PROMPT : SYSTEM_PROMPT;
-  return anthropicJson({ system, user: userContent, maxTokens: 4000 });
+  return anthropicJson({ system: SYSTEM_PROMPT, user: userContent, maxTokens: 6000 });
 }
 
 // Like anthropicJson but returns the model's raw text (no JSON parse) — for
@@ -207,4 +228,4 @@ async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs 
   return textBlock.text;
 }
 
-module.exports = { SYSTEM_PROMPT, DANNY_PROMPT, gradeTranscript, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES };
+module.exports = { SYSTEM_PROMPT, gradeTranscript, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES };

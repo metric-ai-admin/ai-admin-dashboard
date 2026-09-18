@@ -5285,9 +5285,44 @@ function callGradeRow(parsed, meta) {
     categories:        Array.isArray(parsed.categories) ? parsed.categories : [],
     coaching:          Array.isArray(parsed.coaching) ? parsed.coaching : [],
     key_moments:       Array.isArray(parsed.key_moments) ? parsed.key_moments : [],
+    // Rubric v2.0 Steps 1, 2 and 5 (migration 055). Stored so a mis-routed
+    // rubric is visible after the fact — grading a routing call against the
+    // leasing rubric is the specific failure v2.0 exists to prevent, and
+    // without these three there is no way to audit that it worked.
+    agent_role:        (parsed.agent_role && String(parsed.agent_role).trim()) || null,
+    call_type:         (parsed.call_type && String(parsed.call_type).trim()) || null,
+    rubric_applied:    (parsed.rubric_applied && String(parsed.rubric_applied).trim()) || null,
     graded_by:         'AI',
     graded_at:         new Date().toISOString(),
   };
+}
+
+// One grade per recording: clear any prior row, then insert.
+//
+// Retries once WITHOUT the migration-055 columns if the database does not have
+// them yet (Postgres 42703, undefined_column). A deploy can land before the
+// migration is run in the SQL editor, and losing three classification fields is
+// a far better outcome than losing every grade in the run.
+const CALL_GRADE_V2_COLS = ['agent_role', 'call_type', 'rubric_applied'];
+let _warnedMissingV2Cols = false;
+
+async function saveCallGrade(db, row) {
+  await db.from('call_grades').delete().eq('recording_id', row.recording_id);
+  let { error } = await db.from('call_grades').insert(row);
+  if (error && error.code === '42703' && CALL_GRADE_V2_COLS.some(c => (error.message || '').includes(c))) {
+    if (!_warnedMissingV2Cols) {
+      _warnedMissingV2Cols = true;
+      logLine('[grading] call_grades is missing agent_role/call_type/rubric_applied — '
+        + 'run migration 055; grading continues without them');
+    }
+    const trimmed = { ...row };
+    for (const c of CALL_GRADE_V2_COLS) delete trimmed[c];
+    ({ error } = await db.from('call_grades').insert(trimmed));
+  }
+  // 23505 = the unique index on recording_id (migration 051) — two passes raced
+  // on the same call and the row is already there.
+  if (error && error.code !== '23505') throw new Error(error.message);
+  return { duplicate: !!error };
 }
 
 // Grade the given transcript and save. One grade per recording_id: a re-grade
@@ -5310,10 +5345,11 @@ app.post('/api/calls/grade', requireAuth, requireRole('admin'), async (req, res)
     });
     const row = callGradeRow(parsed, { ...b, agent_name: gradeAgent });
     const db = supabaseAdmin || supabasePublic;
-    await db.from('call_grades').delete().eq('recording_id', row.recording_id);
-    const { data, error } = await db.from('call_grades').insert(row).select('*').single();
-    if (error) throw new Error(error.message);
-    res.status(201).json({ ok: true, grade: data });
+    // Same save path as the auto-grader, so the manual route also survives
+    // migration 055 not having been run yet.
+    await saveCallGrade(db, row);
+    const { data } = await db.from('call_grades').select('*').eq('recording_id', row.recording_id).maybeSingle();
+    res.status(201).json({ ok: true, grade: data || row });
   } catch (err) {
     // 502 for a model/API failure so the client can tell "not configured" and
     // upstream errors apart from a bad request.
@@ -5605,13 +5641,10 @@ async function autoGradeCall(call, transcript, opts = {}) {
     call_direction: call.direction || null,
     duration_seconds: call.duration,
   });
-  await db.from('call_grades').delete().eq('recording_id', recording_id);
-  const { error } = await db.from('call_grades').insert(row);
-  // 23505 = unique violation on recording_id (migration 051). Only reachable if
-  // two passes race on the same call; the row is already there, so treat it as
-  // already-graded rather than an error that would retry and re-spend credits.
-  if (error && error.code !== '23505') throw new Error(error.message);
-  if (error) return { status: 'skipped', reason: 'already graded' };
+  // saveCallGrade handles the delete, the migration-055 column fallback, and a
+  // 23505 race as already-graded rather than an error that would re-spend.
+  const { duplicate } = await saveCallGrade(db, row);
+  if (duplicate) return { status: 'skipped', reason: 'already graded' };
   return { status: 'graded', agent, not_scoreable: !!row.not_scoreable };
 }
 
