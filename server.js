@@ -8358,8 +8358,14 @@ const LYNDSAY_MESSAGE_RULES = [
   { displayName: 'MPM Auto: Online Payables -> Review', folder: 'Lyndsay Review', conditions: { subjectContains: ['New Online Payables Batch'] } },
   { displayName: 'MPM Auto: Anthropic -> Financial',   folder: 'Financial',     conditions: { senderContains: ['anthropic'] },   forwardTo: 'accounting@metricpropertymanagement.com' },
   { displayName: 'MPM Auto: Whereby -> Financial',     folder: 'Financial',     conditions: { senderContains: ['whereby.com'] },  forwardTo: 'accounting@metricpropertymanagement.com' },
+  // claudia@metricpropertymanagement.com is NOT a real mailbox — it bounced every
+  // forward this rule made. Claudia reads accounting@, which is where the other
+  // ten forwarding rules already point. The displayName still says "Claudia"
+  // deliberately: ensureLyndsayMessageRules() matches existing Outlook rules BY
+  // displayName, so renaming it here would fail to match the live rule and
+  // create a duplicate alongside it.
   { displayName: 'MPM Auto: Rigby Slack -> Claudia',   folder: 'Financial',     conditions: { senderContains: ['rigbyslack', 'rigby slack', 'lawrence pepper', 'comerford'] },
-    forwardTo: [{ emailAddress: { address: 'claudia@metricpropertymanagement.com', name: 'Claudia' } }] },
+    forwardTo: 'accounting@metricpropertymanagement.com' },
   { displayName: 'MPM Auto: Indeed -> Archive',        folder: 'Archive',       conditions: { senderContains: ['mc.indeed.com'] },        markRead: true },
   { displayName: 'MPM Auto: Home Depot -> Archive',    folder: 'Archive',       conditions: { senderContains: ['mg.homedepot.com'] },     markRead: true },
   { displayName: 'MPM Auto: WebWork -> MPM Team',      folder: 'MPM Team',      conditions: { senderContains: ['webwork-tracker.com'] } },
