@@ -6431,16 +6431,140 @@ function svgProgressHtml() {
   </div>`;
 }
 
+// ---- Export panel (Grades tab) ----------------------------------------------
+//
+// Deliberately SEPARATE from the browsing filters above the call list. Those
+// filter what is on screen, which is capped at the 2000 rows /api/calls/grades
+// returns; the export runs its own server-side query over the whole table. If
+// one set of controls drove both, an export would silently inherit a screen
+// filter — or look like it exported everything when it had not.
+const svgExport = {
+  open: false,
+  from: '', to: '',
+  agent: 'All',
+  grades: { A: true, B: true, C: true, D: true, F: true, 'N/S': true },
+  direction: 'All',
+  busy: false,
+};
+
+function svgDefaultExportRange() {
+  // Last 90 days, matching the grading backfill window. Local calendar dates,
+  // not toISOString(), which in US timezones shifts an evening date a day on.
+  const iso = d => {
+    const p = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  };
+  const to = new Date();
+  const from = new Date(); from.setDate(from.getDate() - 90);
+  return { from: iso(from), to: iso(to) };
+}
+
+function svgExportPanelHtml() {
+  if (!svgExport.open) return '';
+  if (!svgExport.from || !svgExport.to) Object.assign(svgExport, svgDefaultExportRange());
+  const agents = ['All'].concat([...new Set(svgState.grades.map(g => g.agent_name).filter(Boolean))].sort());
+  const grade = g => `<label class="svg-exp-chk"><input type="checkbox" data-exp-grade="${esc(g)}"`
+    + `${svgExport.grades[g] ? ' checked' : ''}> ${esc(g)}</label>`;
+  const dir = d => `<option value="${esc(d)}"${svgExport.direction === d ? ' selected' : ''}>`
+    + (d === 'All' ? 'All directions' : esc(d.charAt(0).toUpperCase() + d.slice(1))) + '</option>';
+  return `<div class="svg-export-panel" id="svg-export-panel">
+    <div class="svg-exp-row">
+      <label>From <input type="date" id="svg-exp-from" value="${esc(svgExport.from)}"></label>
+      <label>To <input type="date" id="svg-exp-to" value="${esc(svgExport.to)}"></label>
+      <label>Agent
+        <select id="svg-exp-agent">${agents.map(a =>
+          `<option value="${esc(a)}"${svgExport.agent === a ? ' selected' : ''}>${a === 'All' ? 'All agents' : esc(a)}</option>`).join('')}</select>
+      </label>
+      <label>Direction <select id="svg-exp-dir">${['All', 'inbound', 'outbound'].map(dir).join('')}</select></label>
+    </div>
+    <div class="svg-exp-row">
+      <span class="muted small">Grades:</span>
+      ${['A', 'B', 'C', 'D', 'F', 'N/S'].map(grade).join('')}
+      <span class="svg-exp-spacer"></span>
+      <button class="btn-sm primary" id="svg-exp-detail" ${svgExport.busy ? 'disabled' : ''}>Detail CSV</button>
+      <button class="btn-sm" id="svg-exp-summary" ${svgExport.busy ? 'disabled' : ''}>Summary CSV</button>
+    </div>
+    <div class="muted small">Detail = one row per call. Summary = per-agent totals, scores and top failure reasons.
+      Exports run over the whole table, not just the calls listed below.</div>
+  </div>`;
+}
+
+// Fetched rather than linked so an error arrives as a message instead of a
+// browser tab showing raw JSON, and so the row count from X-Export-Rows can be
+// reported — an export that quietly returns 0 rows should say so.
+async function svgDoExport(format) {
+  if (svgExport.busy) return;
+  const picked = Object.keys(svgExport.grades).filter(g => svgExport.grades[g]);
+  if (!picked.length) return toast('Pick at least one grade', 'warn');
+  if (svgExport.from && svgExport.to && svgExport.from > svgExport.to) {
+    return toast('From date is after To date', 'warn');
+  }
+  svgExport.busy = true;
+  const status = $('#svg-export-status');
+  if (status) status.textContent = 'Preparing…';
+  // Disable both buttons directly rather than re-rendering: svgRender() rebuilds
+  // the tab and would close the panel mid-export. The `disabled` attribute in
+  // the markup only reflects state at render time, so without this the buttons
+  // stay clickable while an export is in flight and a second click is swallowed
+  // by the busy guard with nothing on screen to explain why.
+  const btns = [$('#svg-exp-detail'), $('#svg-exp-summary')].filter(Boolean);
+  btns.forEach(b => { b.disabled = true; });
+  try {
+    const qs = new URLSearchParams({ format });
+    if (svgExport.from) qs.set('from', svgExport.from);
+    if (svgExport.to) qs.set('to', svgExport.to);
+    if (svgExport.agent !== 'All') qs.set('agent', svgExport.agent);
+    if (svgExport.direction !== 'All') qs.set('direction', svgExport.direction);
+    if (picked.length < 6) qs.set('grades', picked.join(','));
+
+    const r = await fetch('/api/calls/export?' + qs.toString(), { credentials: 'same-origin' });
+    if (!r.ok) {
+      let msg = 'Export failed (' + r.status + ')';
+      try { const j = await r.json(); if (j.error) msg = j.error; } catch {}
+      throw new Error(msg);
+    }
+    const rows = r.headers.get('X-Export-Rows');
+    // Prefer the server's filename (it encodes the range) and fall back to one
+    // built here if the header is not exposed.
+    const cd = r.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="([^"]+)"/);
+    const span = (svgExport.from || svgExport.to)
+      ? `${svgExport.from || 'start'}_to_${svgExport.to || 'today'}`
+      : new Date().toISOString().slice(0, 10);
+    const name = (m && m[1]) || `call_grades_${format}_${span}.csv`;
+
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    if (status) status.textContent = (rows ? Number(rows).toLocaleString() + ' rows · ' : '') + name;
+    if (rows === '0') toast('No calls matched those filters', 'warn');
+  } catch (err) {
+    if (status) status.textContent = '';
+    toast(err.message, 'warn');
+  } finally {
+    svgExport.busy = false;
+    btns.forEach(b => { b.disabled = false; });
+  }
+}
+
 function svgRender() {
   const el = $('#sv-view-grades');
   if (!el) return;
   const list = svgFiltered();
   el.innerHTML = `<div class="svg-tool">
     ${svgProgressHtml()}
-    ${currentUser?.role === 'admin' ? `<div class="svg-toolbar" style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:10px">
-      <span class="muted small" id="svg-backfill-status"></span>
-      <button class="btn-sm primary" id="svg-backfill-btn" title="Grade every ungraded transcribed call from the last 90 days">⚡ Grade All Calls</button>
-    </div>` : ''}
+    <div class="svg-toolbar" style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:10px">
+      <span class="muted small" id="svg-export-status"></span>
+      ${currentUser?.role === 'admin' ? '<span class="muted small" id="svg-backfill-status"></span>' : ''}
+      <button class="btn-sm" id="svg-export-btn" title="Export graded calls to CSV">⬇ Export Grades</button>
+      ${currentUser?.role === 'admin' ? `<button class="btn-sm primary" id="svg-backfill-btn" title="Grade every ungraded transcribed call from the last 90 days">⚡ Grade All Calls</button>` : ''}
+    </div>
+    ${svgExportPanelHtml()}
     ${svgKpiRowHtml(list)}
     ${svgFilterPillsHtml()}
     <div class="cqa-grid">
@@ -6461,6 +6585,19 @@ function svgRender() {
   $('#svg-f-agent')?.addEventListener('change', e => { svgState.filters.agent = e.target.value; svgRender(); });
   el.querySelectorAll('.cqa-row').forEach(r => r.addEventListener('click', () => svgSelect(r.dataset.rid)));
   $('#svg-backfill-btn')?.addEventListener('click', svgBackfill);
+
+  // Export panel. The field handlers write to svgExport WITHOUT re-rendering —
+  // svgRender() rebuilds the whole tab, which would drop focus mid-edit and
+  // close the date picker on every keystroke.
+  $('#svg-export-btn')?.addEventListener('click', () => { svgExport.open = !svgExport.open; svgRender(); });
+  $('#svg-exp-from')?.addEventListener('change', e => { svgExport.from = e.target.value; });
+  $('#svg-exp-to')?.addEventListener('change', e => { svgExport.to = e.target.value; });
+  $('#svg-exp-agent')?.addEventListener('change', e => { svgExport.agent = e.target.value; });
+  $('#svg-exp-dir')?.addEventListener('change', e => { svgExport.direction = e.target.value; });
+  el.querySelectorAll('[data-exp-grade]').forEach(cb =>
+    cb.addEventListener('change', () => { svgExport.grades[cb.dataset.expGrade] = cb.checked; }));
+  $('#svg-exp-detail')?.addEventListener('click', () => svgDoExport('detail'));
+  $('#svg-exp-summary')?.addEventListener('click', () => svgDoExport('summary'));
 }
 
 // Admin-only: grade every ungraded, transcribed call from the last 14 days via

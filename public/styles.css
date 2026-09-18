@@ -2203,3 +2203,17 @@ tr.ca-sel { background: var(--accent-glow); }
 @media (max-width: 620px) {
   .wo-cal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* ── Call Analyzer ▸ Grades export panel ──────────────────────────────────── */
+.svg-export-panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 10px; }
+.svg-exp-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.svg-exp-row label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-secondary); }
+.svg-exp-row input[type="date"], .svg-exp-row select { font-size: 12.5px; padding: 3px 6px; }
+.svg-exp-chk { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; cursor: pointer; }
+.svg-exp-chk input { cursor: pointer; }
+/* Pushes the two export buttons to the right of the grade checkboxes. */
+.svg-exp-spacer { flex: 1; }
+@media (max-width: 720px) {
+  .svg-exp-spacer { display: none; }
+  .svg-exp-row { gap: 8px; }
+}

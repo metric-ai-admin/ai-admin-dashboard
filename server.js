@@ -53,6 +53,7 @@ const { registerAllTools } = require('./mcp-tools.cjs');
 const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
+const gradeExport = require('./call-grades-export.js');
 const simplevoip = require('./simplevoip.js');
 const teams = require('./teams-transcripts.js');
 const crmEngine = require('./crm-task-engine.js');
@@ -5368,6 +5369,71 @@ app.get('/api/calls/grades', requireAuth, async (req, res) => {
 // nothing could clear. This is now an anti-join on recording_id using the same
 // two floors as the grading job, and the calls that fail a floor are reported
 // as `skipped` rather than silently dropped: 620 of them is worth seeing.
+// GET /api/calls/export?format=detail|summary&from=&to=&agent=&grades=&direction=
+//
+// Self-serve version of scripts/export-call-grades.js, so a reviewer can pull
+// their own filtered CSV without anyone running a script for them. The shaping
+// is the shared module, so the two produce identical files.
+//
+// On N/S rows: these are call_grades rows like any other (not_scoreable = true),
+// so including them is a filter, not an anti-join. The anti-join in
+// grade-progress answers a different question — which ARCHIVED calls have no
+// grade yet — and has no bearing here, where every exported row is by definition
+// already graded. N/S is exposed as a grade value so it can be selected or
+// excluded alongside A-F.
+app.get('/api/calls/export', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const format = req.query.format === 'summary' ? 'summary' : 'detail';
+
+    const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+    const from = isDay(req.query.from) ? req.query.from : null;
+    const to   = isDay(req.query.to)   ? req.query.to   : null;
+    if ((req.query.from && !from) || (req.query.to && !to)) {
+      return res.status(400).json({ error: 'from/to must be YYYY-MM-DD' });
+    }
+
+    // Page: call_grades is past PostgREST's 1000-row cap, and a truncated
+    // export is worse than a failed one because nothing says it truncated.
+    const rows = [];
+    for (let start = 0; ; start += 1000) {
+      let q = db.from('call_grades').select('*').range(start, start + 999)
+        .order('agent_name', { ascending: true }).order('call_date', { ascending: false });
+      if (from) q = q.gte('call_date', from);
+      if (to)   q = q.lte('call_date', to);
+      if (req.query.agent && req.query.agent !== 'All') q = q.eq('agent_name', req.query.agent);
+      if (req.query.direction && req.query.direction !== 'All') q = q.eq('call_direction', req.query.direction);
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+      rows.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+
+    // Grade filter is applied here rather than in the query: "N/S" is not a
+    // value of overall_grade (those rows carry not_scoreable = true and a null
+    // or 'N/S' grade), so a single .in() could not express "D, F and N/S".
+    let filtered = rows;
+    const want = String(req.query.grades || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (want.length) {
+      const set = new Set(want.map(s => s.toUpperCase()));
+      filtered = rows.filter(g => set.has(g.not_scoreable ? 'N/S' : String(g.overall_grade || '').toUpperCase()));
+    }
+
+    const csv = format === 'summary'
+      ? gradeExport.summaryCSV(filtered)
+      : gradeExport.detailCSV(filtered);
+
+    const span = from || to ? `${from || 'start'}_to_${to || 'today'}` : new Date().toISOString().slice(0, 10);
+    const name = `call_grades_${format}_${span}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+    // So the browser can show what it actually exported rather than guessing.
+    res.setHeader('X-Export-Rows', String(filtered.length));
+    res.send(csv);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/calls/grade-progress', requireAuth, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ graded: 0, pending: 0, skipped: 0, archived: 0 });
   try {
