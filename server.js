@@ -5349,18 +5349,86 @@ app.get('/api/calls/grades', requireAuth, async (req, res) => {
 // Grading progress for the Grades tab header: how many calls are graded vs the
 // gradeable universe (archived calls with a transcript + min duration). The
 // transcript-length floor can't run in SQL, so `total` is a slight over-count.
+// Grading progress for the Call Analyzer header.
+//
+// "pending" has to mean "calls Grade All will actually grade", or the counter
+// asks for work that cannot happen. It previously subtracted two counts —
+// call_grades rows from archive rows with duration >= 30 and a non-null
+// transcript — which was wrong twice over:
+//
+//   • it omitted the 100-character transcript floor that autoGradeDay() applies
+//     in JS, so 28 calls with a long duration but a near-empty transcript (a
+//     5-minute call transcribed as 18 characters) were counted as pending
+//     forever, and Grade All correctly did nothing about them;
+//   • subtraction assumes every grade corresponds to a counted archive row. One
+//     did not — a call graded manually before the archive covered it — which
+//     inflated "graded" and hid one of those 28.
+//
+// The two errors partly cancelled and produced a plausible "27 pending" that
+// nothing could clear. This is now an anti-join on recording_id using the same
+// two floors as the grading job, and the calls that fail a floor are reported
+// as `skipped` rather than silently dropped: 620 of them is worth seeing.
 app.get('/api/calls/grade-progress', requireAuth, async (req, res) => {
-  if (!CRM_CONFIGURED) return res.json({ graded: 0, total: 0, pending: 0 });
+  if (!CRM_CONFIGURED) return res.json({ graded: 0, pending: 0, skipped: 0, archived: 0 });
   try {
     const db = supabaseAdmin || supabasePublic;
-    const [gradedRes, totalRes] = await Promise.all([
-      db.from('call_grades').select('id', { count: 'exact', head: true }),
-      db.from('simplevoip_daily_calls').select('recording_id', { count: 'exact', head: true })
-        .gte('duration', AUTOGRADE_MIN_DURATION).not('transcript', 'is', null),
-    ]);
-    const graded = gradedRes.count || 0;
-    const total = Math.max(totalRes.count || 0, graded);
-    res.json({ graded, total, pending: Math.max(0, total - graded) });
+
+    // Page through, because the defaults cap a PostgREST response at 1000 rows
+    // and this table is already past that — a silent truncation here would
+    // understate every number below.
+    const pageAll = async (table, columns, tweak) => {
+      const out = [];
+      for (let from = 0; ; from += 1000) {
+        let q = db.from(table).select(columns).range(from, from + 999);
+        if (tweak) q = tweak(q);
+        const { data, error } = await q;
+        if (error) throw Object.assign(new Error(error.message), { code: error.code });
+        out.push(...(data || []));
+        if (!data || data.length < 1000) return out;
+      }
+    };
+
+    // transcript_len is a generated column (migration 054). Selecting it keeps
+    // the transcript bodies out of the response — 2,259 KB became ~140 KB. If
+    // the migration has not been run yet, fall back to measuring the transcript
+    // here so a deploy that lands first still reports correctly, just heavily.
+    let calls, usedFallback = false;
+    try {
+      calls = await pageAll('simplevoip_daily_calls', 'recording_id, duration, transcript_len');
+    } catch (err) {
+      if (!/transcript_len/.test(err.message || '')) throw err;
+      usedFallback = true;
+      logLine('[grade-progress] transcript_len missing — run migration 054; measuring transcripts instead');
+      const raw = await pageAll('simplevoip_daily_calls', 'recording_id, duration, transcript');
+      calls = raw.map(c => ({ recording_id: c.recording_id, duration: c.duration,
+        transcript_len: c.transcript == null ? null : String(c.transcript).trim().length }));
+    }
+
+    const gradedRows = await pageAll('call_grades', 'recording_id');
+    const gradedIds = new Set(gradedRows.map(g => g.recording_id).filter(Boolean));
+
+    const meetsFloor = c => c.recording_id
+      && (Number(c.duration) || 0) >= AUTOGRADE_MIN_DURATION
+      && (Number(c.transcript_len) || 0) >= AUTOGRADE_MIN_TRANSCRIPT;
+
+    let pending = 0, skipped = 0, eligible = 0;
+    for (const c of calls) {
+      const ok = meetsFloor(c);
+      if (ok) eligible++;
+      if (gradedIds.has(c.recording_id)) continue;   // already graded, neither pending nor skipped
+      if (ok) pending++; else skipped++;
+    }
+
+    res.json({
+      graded: gradedRows.length,
+      pending,
+      skipped,
+      eligible,
+      archived: calls.length,
+      // What "skipped" means, so the UI never has to restate the thresholds.
+      skippedReason: `shorter than ${AUTOGRADE_MIN_DURATION}s or transcript under ${AUTOGRADE_MIN_TRANSCRIPT} characters`,
+      ...(usedFallback ? { warning: 'transcript_len column missing — run migration 054' } : {}),
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

@@ -6401,15 +6401,33 @@ function svgKpis(list) {
   };
 }
 
-// "X calls graded / Y total" progress counter for the Grades header.
+// "X graded · Y pending · Z skipped" counter for the Grades header.
+//
+// The bar measures graded against the GRADEABLE set, not the whole archive.
+// Skipped calls (too short, or a transcript below the floor) can never be
+// graded, so counting them in the denominator would park the bar short of 100%
+// permanently and imply work that Grade All cannot do. They are reported beside
+// it instead, because 620 unscoreable calls is worth seeing — several are long
+// calls that SimpleVOIP transcribed as a handful of characters.
 function svgProgressHtml() {
   const p = svgState.progress;
-  if (!p || !p.total) return '';
-  const pct = Math.min(100, Math.round((p.graded / p.total) * 100));
+  if (!p) return '';
+  const eligible = p.eligible ?? ((p.graded || 0) + (p.pending || 0));
+  if (!eligible) return '';
+  const pct = Math.min(100, Math.round((p.graded / eligible) * 100));
+  const bits = [`<b>${(p.graded || 0).toLocaleString()}</b> graded`];
+  bits.push(p.pending
+    ? `<b>${p.pending.toLocaleString()}</b> pending`
+    : `<span class="muted">0 pending</span>`);
+  if (p.skipped) {
+    bits.push(`<span class="muted" title="${esc(p.skippedReason || 'below the grading floor')}">`
+      + `${p.skipped.toLocaleString()} skipped (short/no transcript)</span>`);
+  }
   return `<div class="svg-progress">
-    <div class="svg-progress-row"><span><b>${p.graded.toLocaleString()}</b> calls graded / <b>${p.total.toLocaleString()}</b> total</span>
-      <span class="muted small">${pct}%${p.pending ? ` · ${p.pending.toLocaleString()} pending` : ' · all graded'}</span></div>
+    <div class="svg-progress-row"><span>${bits.join(' &middot; ')}</span>
+      <span class="muted small">${pct}% of ${eligible.toLocaleString()} gradeable</span></div>
     <div class="svg-progress-track"><div class="svg-progress-fill" style="width:${pct}%"></div></div>
+    ${p.warning ? `<div class="small muted" style="margin-top:4px">⚠ ${esc(p.warning)}</div>` : ''}
   </div>`;
 }
 
