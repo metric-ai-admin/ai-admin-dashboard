@@ -5248,6 +5248,59 @@ function normalizeAgentName(name) {
   return callGrading.canonicalAgentName(name);
 }
 
+// ---- Scoring ----------------------------------------------------------------
+//
+// The SCORE IS COMPUTED HERE, not taken from the model.
+//
+// Rubric v2.0 asks for a per-criterion breakdown and a total. The breakdown is
+// reliable — across the 2026-09-18 canaries every category score equalled the
+// sum of its items — but the total was not. Two rounds of prompt instruction
+// failed to fix it, the second stating the division as an explicit formula:
+//
+//     breakdown 53/100 -> reported 72      breakdown 52/100 -> reported 72
+//     breakdown  4/75  -> reported 38      breakdown 35/90  -> reported 43
+//
+// The model judged a grade holistically and then wrote a breakdown that did not
+// produce it, always erring high. A score a reviewer cannot derive from the
+// criteria printed beside it is not reviewable, and review is the entire point
+// of the export. So the model supplies the evidence and the server does the
+// arithmetic — deterministic, and auditable by adding up the column.
+//
+// Step 9 bands. Kept as a table so the thresholds read the way the rubric writes
+// them rather than as a chain of comparisons.
+const GRADE_BANDS = [[90, 'A'], [80, 'B'], [70, 'C'], [60, 'D'], [0, 'F']];
+const gradeForScore = score => (GRADE_BANDS.find(([min]) => score >= min) || [0, 'F'])[1];
+
+// Step 9: "A LEGAL flag ... should result in a score no higher than D (60)
+// regardless of other performance."
+const LEGAL_VIOLATION_CAP = 60;
+
+function computeGradeScore(parsed) {
+  const cats = Array.isArray(parsed.categories) ? parsed.categories : [];
+  const weight = cats.reduce((s, c) => s + (Number(c.weight) || 0), 0);
+  const earned = cats.reduce((s, c) => s + (Number(c.score) || 0), 0);
+
+  // No usable breakdown — fall back to whatever the model reported rather than
+  // discarding the grade. Rare, and flagged in the return so callers can log it.
+  // null/undefined must stay null, not become 0: +null is 0 and passes
+  // Number.isFinite, which would turn "the model gave us nothing" into a
+  // legitimate-looking score of 0 and an F on a call nobody scored.
+  const asScore = v => (v === null || v === undefined || v === '' || !Number.isFinite(+v))
+    ? null : Math.round(+v);
+
+  if (!cats.length || !(weight > 0)) {
+    const fallback = asScore(parsed.overall_score);
+    return { score: fallback, computed: false, modelScore: fallback };
+  }
+
+  let score = Math.round(100 * earned / weight);
+  score = Math.max(0, Math.min(100, score));   // a mis-scored item cannot push it out of range
+  if (parsed.legal_violation === true) score = Math.min(score, LEGAL_VIOLATION_CAP);
+
+  const modelScore = asScore(parsed.overall_score);
+  return { score, computed: true, modelScore };
+}
+
 // Shapes a parsed grade + call metadata into a call_grades row. A call the AI
 // declines to score (vendor/utility/internal, or a different agent than the one
 // it's attributed to), or whose flags say the same, is stored as Not Scoreable:
@@ -5263,6 +5316,18 @@ function callGradeRow(parsed, meta) {
         || flags.find(f => /identity mismatch|wrong call|mislabel|scoreable/i.test(String(f)))
         || 'Vendor/internal or wrong-agent call')
     : null;
+  // Compute the score before building the row; also surfaces how far the model's
+  // own figure was off, which is the signal that the prompt is drifting again.
+  const scoring = computeGradeScore(parsed);
+  if (!notScoreable && scoring.computed && scoring.modelScore !== null
+      && Math.abs(scoring.modelScore - scoring.score) > 5) {
+    logLine(`[grading] ${meta.recording_id}: model reported ${scoring.modelScore}, `
+      + `breakdown computes ${scoring.score} — using the breakdown`);
+  }
+  if (!notScoreable && !scoring.computed) {
+    logLine(`[grading] ${meta.recording_id}: no usable category breakdown — `
+      + `falling back to the model's score (${scoring.score})`);
+  }
   // Keep a canonical N/S flag so any flag-based consumer still detects it.
   if (notScoreable && !/not[\s_]*scoreable/i.test(flagStr)) flags.unshift('Not Scoreable — ' + reason);
   return {
@@ -5272,8 +5337,11 @@ function callGradeRow(parsed, meta) {
     call_direction:    meta.call_direction || null,
     duration_seconds:  Number.isFinite(+meta.duration_seconds) ? Math.round(+meta.duration_seconds) : null,
     property_name:     (parsed.property_name && String(parsed.property_name).trim()) || meta.property_name || 'Unidentified',
-    overall_score:     notScoreable ? null : (Number.isFinite(+parsed.overall_score) ? Math.round(+parsed.overall_score) : null),
-    overall_grade:     notScoreable ? 'N/S' : (parsed.overall_grade || null),
+    // Computed from the breakdown, with the grade derived from it, so the score
+    // and the criteria beside it can never disagree. See computeGradeScore.
+    overall_score:     notScoreable ? null : scoring.score,
+    overall_grade:     notScoreable ? 'N/S'
+                        : (scoring.score === null ? (parsed.overall_grade || null) : gradeForScore(scoring.score)),
     not_scoreable:     notScoreable,
     not_scoreable_reason: reason,
     legal_violation:   !!parsed.legal_violation,
