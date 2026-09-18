@@ -26,11 +26,16 @@
 // dropped, and the callers report the count, so the mapping stays auditable.
 // Once the rubric pins the taxonomy down, these columns become exact and this
 // bucketing can go.
+// Rubric v2.0 names its categories after individual criteria ("Prospect Intake
+// — Pets", "Callback Number", "Work Order Status Update") rather than the broad
+// groups v1 used, so the patterns below cover both vocabularies. Greeting is
+// matched on the SPECIFIC v2.0 greeting elements too — company name, agent first
+// name — which otherwise fell through to nothing.
 const CATEGORY_BUCKETS = [
-  ['greeting',        /greet|identif|introduc|opening/i],
+  ['greeting',        /greet|identif|introduc|opening|company name|agent (first )?name|own name/i],
   ['compliance',      /complian|fair housing|legal|liabilit|call hours|disclos|verif|policy|procedure|terminolog/i],
-  ['call_handling',   /handl|transfer|rout|protocol|leasing|collection|maintenance|portal|voicemail|outbound|applicant|role|urgency|engagement|resolution|follow.?through|closure|closing|wrap.?up|tour|schedul|information gather|needs assess|resource|promise.?to.?pay|ptp|balance|handoff|hand.?off|escalat/i],
-  ['professionalism', /professional|communicat|tone|courte|empath|rapport|clarity|listen|resident experience|resident service|customer|brand|control|efficien/i],
+  ['call_handling',   /handl|transfer|rout|protocol|leasing|collection|maintenance|portal|voicemail|outbound|applicant|role|urgency|engagement|resolution|follow.?through|closure|closing|wrap.?up|tour|schedul|information gather|needs assess|resource|promise.?to.?pay|ptp|balance|handoff|hand.?off|escalat|intake|prospect|work order|status update|reason for calling|callback|property name|website|apply|application|retention|moving|move.?in|renewal|notice|vacate|why the resident|household|apartment size|unit size|pets?|budget|timeline|phone number|email|employment|where they work|no notes|arrangement|writing|payment|identity|verif|consequence|document|72.?hour|processing/i],
+  ['professionalism', /professional|communicat|tone|courte|empath|rapport|clarity|listen|resident experience|resident service|customer|brand|control|efficien|energy|enthusiasm|name usage|used .*name|warm|calm|dead air/i],
 ];
 
 function bucketOf(name) {
