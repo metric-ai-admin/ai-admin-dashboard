@@ -5239,10 +5239,12 @@ const CALL_GRADE_LIST_COLS = 'id,recording_id,agent_name,call_date,call_directio
 // it so every grade groups under the name Lyndsay knows ("Danny"), matching how
 // agents self-identify on calls. Applied at the single storage point so both the
 // manual and auto-grade paths stay consistent.
+// Delegates to call-grading.js so there is ONE definition of an agent's
+// canonical name. This used to only strip a trailing " Metric", which left
+// "Rocío"/"Rocio" and "Sammy"/"Sammy Ramos" as separate agents in call_grades —
+// two people scored as four on the leaderboard (fixed by migration 053).
 function normalizeAgentName(name) {
-  const n = String(name || '').trim();
-  if (!n) return null;
-  return n.replace(/\s+metric\s*$/i, '').trim() || n;
+  return callGrading.canonicalAgentName(name);
 }
 
 // Shapes a parsed grade + call metadata into a call_grades row. A call the AI

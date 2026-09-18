@@ -21,13 +21,50 @@ const GRADE_MODEL = process.env.CALL_GRADE_MODEL || 'claude-sonnet-4-6';
 // Rebekah's line is shared, so the graded agent comes from self-identification,
 // not the line owner.
 const KNOWN_AGENTS = ['Danny', 'Rebekah', 'Bekah', 'Katie', 'Rhoxie', 'Katrina', 'Oscar', 'Erick', 'Lyndsay', 'Rocío', 'Rocio', 'Yeni', 'Sammy'];
+// ---- Canonical agent names --------------------------------------------------
+//
+// One agent must be ONE name in call_grades, or the leaderboard and every
+// per-agent average silently splits them in two. As of 2026-09-18 the table held
+// "Rocío" (45) beside "Rocio" (36), and "Sammy" (10) beside "Sammy Ramos" (4) —
+// the same two people, scored as four.
+//
+// Three things produce the same person under different spellings:
+//   1. the SimpleVOIP roster suffix — "Danny Metric" vs "Danny"
+//   2. the accent — the line owner arrives as "Rocio", self-identification as "Rocío"
+//   3. first name vs full name — "Sammy" from the transcript, "Sammy Ramos" from the roster
+//
+// ALIASES resolves 2 and 3; the suffix strip resolves 1. Targets are the form
+// already dominant in the data, so the migration moves as few rows as possible.
+// Everything that writes agent_name goes through here — server.js's
+// normalizeAgentName() delegates to it.
+// Keys are lowercase; the lookup lowercases and collapses whitespace first, so
+// full-name keys are listed alongside short ones — that way "sammy  ramos" from
+// a sloppy roster edit lands on the same canonical form as "Sammy".
+const AGENT_ALIASES = {
+  'rocio': 'Rocío',
+  'rocío': 'Rocío',
+  'bekah': 'Rebekah Tuckner',
+  'rebekah': 'Rebekah Tuckner',
+  'rebekah tuckner': 'Rebekah Tuckner',
+  'sammy': 'Sammy Ramos',
+  'sammy ramos': 'Sammy Ramos',
+};
+
+function canonicalAgentName(name) {
+  const trimmed = String(name == null ? '' : name).trim().replace(/\s+/g, ' ');
+  if (!trimmed) return null;
+  // "Danny Metric" -> "Danny". Keep the original if stripping empties it.
+  const stripped = trimmed.replace(/\s+metric\s*$/i, '').trim() || trimmed;
+  return AGENT_ALIASES[stripped.toLowerCase()] || stripped;
+}
+
 // Detect the agent from how they introduce themselves in the transcript
 // ("this is <Name>", "my name is <Name>", "speaking with <Name>"). Returns the
 // canonical name, or null when no known agent self-identifies.
 function detectAgentFromTranscript(transcript) {
   if (!transcript) return null;
   const text = String(transcript);
-  const canon = name => name === 'Bekah' ? 'Rebekah' : (name === 'Rocio' ? 'Rocío' : name);
+  const canon = canonicalAgentName;
   for (const name of KNOWN_AGENTS) {
     // "this is Danny", "my name is Danny", "thank you for calling … this is Danny",
     // "you've reached Danny", "Danny speaking", "Danny here".
@@ -61,14 +98,14 @@ function parseModelJson(text) {
   }
 }
 
-// Generic "ask Claude for JSON" call — the single outbound Anthropic path,
-// reused by call grading and the 6PM action-item extraction. Throws on a missing
-// key (message says "not configured" so callers can tell it apart), an API
-// error, or unparseable output.
-async function anthropicJson({ system, user, maxTokens = 2000, model }) {
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw new Error('Anthropic is not configured: set ANTHROPIC_API_KEY on the server.');
+// A response cut off at the token limit is truncated mid-string, so the JSON
+// never parses. That is not a malformed model — it is a cap that was too low for
+// a long call, and it reproduces at the same cap every time. Retry ONCE with
+// double the budget before giving up: long calls carry real content worth
+// grading, and marking them Not Scoreable loses it permanently.
+const MAX_TOKENS_CEILING = 16000;
 
+async function anthropicRequest({ system, user, maxTokens, model, key }) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -90,8 +127,35 @@ async function anthropicJson({ system, user, maxTokens = 2000, model }) {
     try { const j = JSON.parse(errText); if (j.error && j.error.message) msg = j.error.message; } catch (e) {}
     throw new Error(msg);
   }
+  return r.json();
+}
 
-  const data = await r.json();
+// Generic "ask Claude for JSON" call — the single outbound Anthropic path,
+// reused by call grading and the 6PM action-item extraction. Throws on a missing
+// key (message says "not configured" so callers can tell it apart), an API
+// error, or unparseable output.
+async function anthropicJson({ system, user, maxTokens = 2000, model }) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new Error('Anthropic is not configured: set ANTHROPIC_API_KEY on the server.');
+
+  let data = await anthropicRequest({ system, user, maxTokens, model, key });
+
+  // stop_reason is the reliable signal — check it BEFORE parsing, because a
+  // truncated body fails to parse for a reason the parse error cannot explain.
+  if (data.stop_reason === 'max_tokens') {
+    const bigger = Math.min(maxTokens * 2, MAX_TOKENS_CEILING);
+    if (bigger > maxTokens) {
+      console.warn('[anthropic] response hit max_tokens at ' + maxTokens + ' — retrying once at ' + bigger);
+      data = await anthropicRequest({ system, user, maxTokens: bigger, model, key });
+    }
+    // Still truncated at the ceiling: fall through and let the parse fail with
+    // MALFORMED_JSON, which the auto-grade path stores as Not Scoreable rather
+    // than retrying forever.
+    if (data.stop_reason === 'max_tokens') {
+      console.warn('[anthropic] still truncated at ' + bigger + ' — giving up on this transcript');
+    }
+  }
+
   const textBlock = (data.content || []).find(b => b.type === 'text');
   if (!textBlock) throw new Error('No text response from the model.');
   return parseModelJson(textBlock.text);
@@ -143,4 +207,4 @@ async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs 
   return textBlock.text;
 }
 
-module.exports = { SYSTEM_PROMPT, DANNY_PROMPT, gradeTranscript, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript };
+module.exports = { SYSTEM_PROMPT, DANNY_PROMPT, gradeTranscript, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES };
