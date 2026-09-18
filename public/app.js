@@ -56,7 +56,12 @@ const TAB_ACCESS = {
   // there is no role to grant — revisit when Jay confirms theirs.
   admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'collections', 'accounting', 'leasing'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
-  operations:  ['tasks', 'sops', 'platform', 'email', 'eod', 'reports', 'sixpm', 'calls'],
+  // 'calls' (Call Analyzer) removed 2026-09-18: call transcripts and grades are
+  // employee performance data about named staff, alongside resident PII, so the
+  // tab is admin-only — Arturo and Lyndsay. Widening it later is a role change
+  // in dashboard_users plus adding 'calls' back to a role here; the endpoints
+  // are gated with requireRole('admin') too, so this list alone is not the lock.
+  operations:  ['tasks', 'sops', 'platform', 'email', 'eod', 'reports', 'sixpm'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
   maintenance: ['maintenance'],
   bd_agent:    ['crm'],

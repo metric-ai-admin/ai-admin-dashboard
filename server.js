@@ -5292,7 +5292,7 @@ function callGradeRow(parsed, meta) {
 
 // Grade the given transcript and save. One grade per recording_id: a re-grade
 // replaces the prior row (schema has no unique key, so delete-then-insert).
-app.post('/api/calls/grade', requireAuth, async (req, res) => {
+app.post('/api/calls/grade', requireAuth, requireRole('admin'), async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   const b = req.body || {};
   if (!b.recording_id) return res.status(400).json({ error: 'recording_id is required' });
@@ -5323,7 +5323,7 @@ app.post('/api/calls/grade', requireAuth, async (req, res) => {
 });
 
 // List grades (light columns), newest first, with optional filters.
-app.get('/api/calls/grades', requireAuth, async (req, res) => {
+app.get('/api/calls/grades', requireAuth, requireRole('admin'), async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ grades: [] });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -5381,7 +5381,7 @@ app.get('/api/calls/grades', requireAuth, async (req, res) => {
 // grade yet — and has no bearing here, where every exported row is by definition
 // already graded. N/S is exposed as a grade value so it can be selected or
 // excluded alongside A-F.
-app.get('/api/calls/export', requireAuth, async (req, res) => {
+app.get('/api/calls/export', requireAuth, requireRole('admin'), async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -5434,7 +5434,7 @@ app.get('/api/calls/export', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/calls/grade-progress', requireAuth, async (req, res) => {
+app.get('/api/calls/grade-progress', requireAuth, requireRole('admin'), async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ graded: 0, pending: 0, skipped: 0, archived: 0 });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -5500,7 +5500,7 @@ app.get('/api/calls/grade-progress', requireAuth, async (req, res) => {
 
 // Full grade for one recording (the transcript panel checks this to show an
 // existing grade, and the Grades dashboard fetches it on row-expand).
-app.get('/api/calls/grades/:recording_id', requireAuth, async (req, res) => {
+app.get('/api/calls/grades/:recording_id', requireAuth, requireRole('admin'), async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ grade: null });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -5678,7 +5678,14 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
 // idempotent (already-graded calls are skipped and each grade commits as it's made),
 // so a large backlog can be cleared with repeated runs even if a single request is
 // cut short. The client shows a progress state + a graded/total counter.
-app.post('/api/sv/grade/backfill', requireMetricAdmin, async (req, res) => {
+//
+// requireAuth + requireRole('admin') rather than requireMetricAdmin, as of
+// 2026-09-18: the latter also accepts the METRIC_API_KEY header, and that key is
+// shared with MCP clients — a wider audience than the two people who should
+// reach call data. Nothing actually used the key path here (the dashboard's own
+// button is the only caller), so closing it cost nothing. Restore
+// requireMetricAdmin if an MCP tool ever needs to trigger a backfill.
+app.post('/api/sv/grade/backfill', requireAuth, requireRole('admin'), async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   if (!simplevoip.isConfigured()) return res.status(400).json({ ok: false, error: 'SimpleVOIP is not configured.' });
   let days = parseInt(req.query.days, 10);
