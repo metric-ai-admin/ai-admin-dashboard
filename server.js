@@ -4225,35 +4225,48 @@ const leasingVal = (row, key) => {
   return (v === undefined || v === null || String(v).trim() === '') ? null : v;
 };
 
-// Saturday (Sun–Sat week) that a date falls in, as YYYY-MM-DD. Katie's week.
+// week_ending = the SUNDAY closing the Mon–Sun week a date falls in.
+//
+// Leasing ran Sun–Sat until 2026-09-21, on the strength of a comment in the Goal
+// Board tool asserting that matched "AppFolio's own reporting convention".
+// Checked with Lyndsay: AppFolio has no fixed week at all — its leasing reports
+// are arbitrary ranges (Last 30 Days, Month-to-date) — and the team works
+// Mon–Sun. The assumption was wrong, and Sun–Sat also made leasing the only
+// module out of step with the dashboard: the 6 PM report, End of Day, tasks and
+// call analytics all compute -((getDay() + 6) % 7), a Monday start.
+//
+// (7 - getDay()) % 7 leaves a Sunday on itself and pushes Mon–Sat forward to the
+// Sunday that closes their week.
 function leasingWeekEnding(d) {
   const dt = (d instanceof Date) ? d : new Date(d);
   if (isNaN(dt.getTime())) return null;
   const day = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
-  day.setDate(day.getDate() + (6 - day.getDay())); // 0=Sun..6=Sat
+  day.setDate(day.getDate() + ((7 - day.getDay()) % 7)); // 0=Sun..6=Sat -> forward to Sunday
   return day.toLocaleDateString('en-CA');
 }
-// week_ending of the most recent COMPLETE Sun–Sat week: the latest Saturday
+// week_ending of the most recent COMPLETE Mon–Sun week: the latest Sunday
 // strictly before today.
 //
 // The Portfolio Roll-Up used leasingWeekEnding(new Date()), which is the
-// Saturday of the week we are CURRENTLY IN — a week that has not happened yet.
+// closing day of the week we are CURRENTLY IN — a week that has not happened yet.
 // Reported by Katie on Monday 2026-09-21, when the roll-up read 09/20 → 09/26:
 // a range that was one day old and five days in the future, so the table was
 // near-empty every Sunday through Saturday until the week filled in.
 //
-// On a Saturday this deliberately returns the PREVIOUS week rather than the one
-// ending today: at 9am Saturday the week is not over, and a roll-up that counts
+// On a Sunday this deliberately returns the PREVIOUS week rather than the one
+// ending today: at 9am Sunday the week is not over, and a roll-up that counts
 // a partial day looks like a collapse in performance. The week selector still
 // reaches any week, including the in-progress one.
 //
 // Computed in Lyndsay's timezone, not the server's. Render runs UTC, so after
 // 7pm Central `new Date()` is already tomorrow there — enough to roll the week
-// over a day early every Saturday evening.
+// over a day early every Sunday evening.
 function leasingLastCompleteWeekEnding(nowIso) {
   const today = nowIso || ctDateStr(0);            // YYYY-MM-DD in America/Chicago
   const d = new Date(today + 'T00:00:00');
-  const back = d.getDay() === 6 ? 7 : d.getDay() + 1;   // 0=Sun..6=Sat
+  // Days back to the last Sunday that has finished. On a Sunday go back a full
+  // week rather than counting today, which is still in progress.
+  const back = d.getDay() === 0 ? 7 : d.getDay();   // 0=Sun..6=Sat
   d.setDate(d.getDate() - back);
   return d.toLocaleDateString('en-CA');
 }
@@ -4519,8 +4532,8 @@ const leasingCentralDay = ts => {
 // occupancy. Powers the native Portfolio Roll-Up.
 //
 //   ?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD   any span of days, shown exactly
-//   ?week_ending=YYYY-MM-DD                    the Sun–Sat week ending that day
-//   (neither)                                  the last COMPLETE Sun–Sat week
+//   ?week_ending=YYYY-MM-DD                    the Mon–Sun week ending that day
+//   (neither)                                  the last COMPLETE Mon–Sun week
 //
 // Leads are filtered on interest_received, the real event time, NOT on the
 // derived week_ending column — so an arbitrary range is exact rather than
@@ -4560,7 +4573,7 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
   }
 
   // In range mode week_ending is null: the response describes a span of days,
-  // and handing back a Saturday would invite callers to treat it as a week.
+  // and handing back a Sunday would invite callers to treat it as a week.
   const week_ending = rangeMode ? null : (isDay(req.query.week_ending) ? req.query.week_ending : leasingLastCompleteWeekEnding());
   let weekStart, weekEnd;
   if (rangeMode) {

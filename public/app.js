@@ -606,22 +606,22 @@ async function leasingLoadGoalBoard(week, range) {
 }
 
 // ── AppFolio Leads Sync (Guest Card Interests) ──────────────────────────────
-// Default range = most recent COMPLETE Sun–Sat week (Katie's week pattern),
-// matching leasingLastCompleteWeekEnding() on the server so the Leads panel and
-// the Portfolio Roll-Up never disagree about which week "last week" is.
+// Default range = most recent COMPLETE Mon–Sun week, matching
+// leasingLastCompleteWeekEnding() on the server so the Leads panel and the
+// Portfolio Roll-Up never disagree about which week "last week" is.
 //
-// The old `(getDay() + 1) % 7` was right six days out of seven and wrong on
-// Saturday: it made sinceSat 0, so "last week" became the week ending TODAY —
-// an in-progress week reported as if it were finished.
+// Mon–Sun as of 2026-09-21 (was Sun–Sat). See the note on leasingWeekEnding in
+// server.js: AppFolio has no fixed week convention, the team works Mon–Sun, and
+// every other module here already starts its week on Monday.
 function leasingDefaultRange() {
   const now = new Date();
   const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  // Days back to the last Saturday that has actually finished. On a Saturday go
-  // back a full week rather than counting today, which is still in progress.
-  const back = d.getDay() === 6 ? 7 : d.getDay() + 1;   // 0=Sun..6=Sat
-  const lastSat = new Date(d); lastSat.setDate(d.getDate() - back);
-  const lastSun = new Date(lastSat); lastSun.setDate(lastSat.getDate() - 6);
-  return { from: lastSun.toLocaleDateString('en-CA'), to: lastSat.toLocaleDateString('en-CA') };
+  // Days back to the last Sunday that has actually finished. On a Sunday go back
+  // a full week rather than counting today, which is still in progress.
+  const back = d.getDay() === 0 ? 7 : d.getDay();   // 0=Sun..6=Sat
+  const lastSun = new Date(d); lastSun.setDate(d.getDate() - back);
+  const lastMon = new Date(lastSun); lastMon.setDate(lastSun.getDate() - 6);
+  return { from: lastMon.toLocaleDateString('en-CA'), to: lastSun.toLocaleDateString('en-CA') };
 }
 function leasingApplyPreset(preset) {
   const base = leasingDefaultRange();
@@ -656,7 +656,7 @@ function leasingWireSync() {
 }
 // Changing From/To now drives the Portfolio Roll-Up as well as the leads
 // summary, and shows the range EXACTLY as picked rather than snapping it to the
-// nearest Sun–Sat week. The week dropdown is cleared so the panel cannot show a
+// nearest week. The week dropdown is cleared so the panel cannot show a
 // week selection alongside a table that is not showing that week.
 function leasingLoadRange() {
   const from = $('#leasing-sync-from')?.value, to = $('#leasing-sync-to')?.value;
@@ -682,24 +682,27 @@ async function leasingLoadWeeks(selectWeek) {
   if (gb) { gb.innerHTML = optsHtml('— last completed week —'); if (selectWeek) gb.value = selectWeek; }
   return weeks;
 }
-// Saturday (week_ending) of the Sun–Sat week that an ISO date falls in.
-function leasingSaturdayOf(iso) {
+// week_ending (the SUNDAY) of the Mon–Sun week that an ISO date falls in.
+// Renamed from leasingSaturdayOf on 2026-09-21 with the Mon–Sun realignment —
+// the old name would have been actively misleading about what it returns.
+function leasingSundayOf(iso) {
   const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() + (6 - d.getDay())); // 0=Sun..6=Sat
+  d.setDate(d.getDate() + ((7 - d.getDay()) % 7)); // 0=Sun..6=Sat -> forward to Sunday
   return d.toLocaleDateString('en-CA');
 }
 
 // Which week the Roll-Up should jump to after syncing a From–To range.
 //
 // The two controls are not the same shape: From/To is any span of days, the
-// Roll-Up is one Sun–Sat week. So this picks the week that actually holds most
+// Roll-Up is one Mon–Sun week. So this picks the week that actually holds most
 // of what was just synced, by bucketing every day of the range exactly the way
-// the SERVER does (leasingWeekEnding, forward to Saturday) and taking the
+// the SERVER does (leasingWeekEnding, forward to Sunday) and taking the
 // heaviest bucket — latest week wins a tie, since the more recent week is the
 // one someone syncing is usually looking for.
 //
 // It used to key off the To date alone, which broke whenever To was not a
-// Saturday: syncing 09/14 → 09/20 sent the Roll-Up to week ending 09/26,
+// a week-closing day: under the old Sun–Sat rule, syncing 09/14 → 09/20 sent
+// the Roll-Up to week ending 09/26,
 // because Sunday the 20th is the first day of THAT week. Six of those seven
 // days actually landed in the week ending 09/19, so the board jumped to a week
 // holding one day of the sync. Returns { week, spans } — spans is how many
@@ -710,7 +713,7 @@ function leasingWeekForRange(from, to) {
   const counts = {};
   const end = new Date(to + 'T00:00:00');
   for (const d = new Date(from + 'T00:00:00'); d <= end; d.setDate(d.getDate() + 1)) {
-    const wk = leasingSaturdayOf(d.toLocaleDateString('en-CA'));
+    const wk = leasingSundayOf(d.toLocaleDateString('en-CA'));
     counts[wk] = (counts[wk] || 0) + 1;
   }
   const weeks = Object.keys(counts);
@@ -735,7 +738,7 @@ async function leasingSyncFromAppFolio() {
     // moment and an empty status bar reads like nothing happened.
     if (status) status.textContent = `Synced ${r.synced} leads for ${from} → ${to}. Loading week…`;
     // The Roll-Up shows the range EXACTLY as picked. This used to map the range
-    // onto its dominant Sun–Sat week, which was the right answer only while the
+    // onto its dominant week, which was the right answer only while the
     // API could not do better — syncing 09/14 → 09/20 then reported the week
     // ending 09/19 (52 leads) instead of the 54 actually in the range.
     //

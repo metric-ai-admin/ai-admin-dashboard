@@ -443,7 +443,9 @@ const LASTWEEK={
 // guest cards report. Each call is logged there as its own dated entry in the format
 // "MM/DD/YYYY, Call" followed by a timestamp/property/note -- these are counted and bucketed
 // by actual call date into lease-up weeks 1-10 (through the week ending 8/8), now recomputed
-// from the real guest_card_inquiries all-time export under the corrected Sun-Sat boundary.
+// from the real guest_card_inquiries all-time export. NOTE: seeded under the old
+// Sun-Sat boundary; the 2026-09-21 realignment relabels these columns Mon-Sun
+// without re-deriving the seeded totals.
 const CALLS_BY_WEEK={
  "Ascent at Northgate":[38,27,24,25,61,101,47,47,12,13],
  "Windy Hill Apartment":[28,25,24,23,29,15,26,11,1,4],
@@ -603,10 +605,15 @@ function fixedWeekGoalPct(prop, weekIdx){
   return frac*100;
 }
 
-// Real historical occupied-unit counts by week (weeks 1-10, Saturdays 6/6 through 8/8 -- weeks
-// now run Sun-Sat to match AppFolio's own convention), derived from the boxscore move-in/move-out
-// ledger. Values are unchanged from the prior Mon-Sun bucketing since no move-in/move-out events
-// fell on the shifted boundary days; only the date labels moved.
+// Real historical occupied-unit counts by week (weeks 1-10), derived from the
+// boxscore move-in/move-out ledger.
+//
+// These weeks have now been relabelled TWICE and the values have never moved.
+// They were seeded Mon-Sun, relabelled to Sun-Sat on the mistaken belief that
+// AppFolio reported Sun-Sat, and returned to Mon-Sun on 2026-09-21 once Lyndsay
+// confirmed AppFolio has no fixed week convention at all. Both times only the
+// date labels shifted: no move-in or move-out event falls on a boundary day, so
+// the counts are the same under either convention.
 const HIST_OCC_UNITS={
  "Ascent at Northgate":[47,47,50,50,51,51,52,51,53,53],
  "Windy Hill Apartment":[21,21,21,21,23,23,23,25,34,35],
@@ -786,7 +793,16 @@ const boardExcluded=n=>{ const s=String(n||"").toLowerCase(); return BOARD_EXCLU
 })();
 
 const PORT_CONV=0.130, CONV_BENCH=0.10, CANC_BENCH=0.05, DEN_BENCH=0.10, SLOWAPP_FLAG=0.10;
-const START=new Date(2026,4,31); // Sunday -- weeks run Sun-Sat to match AppFolio's own reporting convention
+// Monday 2026-06-01. Weeks run Mon-Sun; week_ending is the Sunday.
+//
+// This line previously read "Sunday -- weeks run Sun-Sat to match AppFolio's own
+// reporting convention". That was a wrong assumption and it drove the whole
+// module: checked with Lyndsay on 2026-09-21, AppFolio has NO fixed week
+// convention (its leasing reports are arbitrary ranges — Last 30 Days,
+// Month-to-date), and the team works Mon-Sun. Sun-Sat also left leasing as the
+// only module out of step with the rest of the dashboard, which already starts
+// its weeks on Monday.
+const START=new Date(2026,5,1);
 const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
 const FUNNEL=[
@@ -962,7 +978,7 @@ function viewLabel(){
 }
 
 /* ============ WEEK HELPERS ============ */
-function mondayOf(weekIdx){ const d=new Date(START.getTime()); d.setDate(d.getDate()+weekIdx*7); return d; } // returns the Sunday starting week `weekIdx` (name kept for minimal diff; START is now a Sunday)
+function mondayOf(weekIdx){ const d=new Date(START.getTime()); d.setDate(d.getDate()+weekIdx*7); return d; } // the MONDAY starting that week — the name is accurate again after the 2026-09-21 Mon-Sun realignment
 function weekEndDate(weekIdx){
   // In live mode the injected column carries its real AppFolio week-ending date,
   // which may differ from START + weekIdx (e.g. a current week appended past the
@@ -1983,7 +1999,7 @@ window.getLeasingPayload = function(){
    Everything referenced is in scope inside this IIFE. */
 function weekIdxForEnding(weekEndingISO){
   var end=new Date(weekEndingISO+"T00:00:00");
-  var w0=mondayOf(0); w0.setDate(w0.getDate()+6); // native Saturday of week 0
+  var w0=mondayOf(0); w0.setDate(w0.getDate()+6); // native SUNDAY closing week 0 (Mon + 6)
   return Math.round((end - w0)/(7*24*3600*1000));
 }
 function liveNarrative(){
