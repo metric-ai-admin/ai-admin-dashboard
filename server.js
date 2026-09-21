@@ -3989,8 +3989,73 @@ async function collectionsVoipUsers(db) {
   return out;
 }
 
+// Inactive/sold/fake properties hidden from every module: leasing (Goal Board,
+// roll-up, EOD) AND collections. Case-insensitive substring match on the
+// community name — add or remove fragments here to change what's shown.
+//
+// This lived below the leasing helpers until 2026-09-21 and its comment claimed
+// it covered collections, but nothing in the collections path ever called it, so
+// Brazos Lofts kept surfacing in the Collections Review (Lyndsay, 2026-09-21).
+// Declared here, above fetchDelinquencyAsOf, so both sides share one list.
+// The Eviction Tracker keeps its own copy client-side in evictions-app.html.
+const METRIC_EXCLUDED_PROPERTY_FRAGMENTS = ['lily pad', 'wolf ridge', 'sidney', 'brazos', 'live with metric', 'cedar and sage'];
+const propertyIsExcluded = name => {
+  const n = String(name || '').trim().toLowerCase();
+  return METRIC_EXCLUDED_PROPERTY_FRAGMENTS.some(frag => n.includes(frag));
+};
+// Long-standing name kept for the leasing call sites.
+const leasingIsExcluded = propertyIsExcluded;
+
+// Fallback call source for the Collections Review.
+//
+// The live CDR API does NOT reliably return historical dates — see the note on
+// autoGradeDay: a 2 AM run for "yesterday" came back empty even though the calls
+// existed. The Collections tool asks it for a 90-DAY window, so it reliably came
+// back with nothing and the Call Log section rendered zeros (Lyndsay,
+// 2026-09-21) even though the archive held 403 Karla calls for that same range.
+// So: try the live API first (it's complete when it answers) and fall back to
+// simplevoip_daily_calls, which the nightly job fills and which has no rate limit.
+//
+// CAVEAT the report must state: the archive only stores calls that have a
+// recording/analysis — roughly 60% of a day — so missed and unanswered calls are
+// largely absent from it. Totals from the archive are contact counts, not
+// attempt counts, and `missed` is not knowable from it (there is no status column).
+async function fetchCollectionsCallsFromArchive(db, users, days) {
+  if (!db) return { byAgent: users.map(() => []), error: 'no database handle' };
+  const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const names = users.map(u => u.name).filter(Boolean);
+  if (!names.length) return { byAgent: users.map(() => []), error: 'no agent names to match' };
+  const rows = [];
+  // PostgREST caps a response at 1000 rows, so page explicitly.
+  for (let from = 0, guard = 0; guard < 50; guard++) {
+    const { data, error } = await db.from('simplevoip_daily_calls')
+      .select('call_date,recording_id,caller,duration,user_name,call_direction')
+      .in('user_name', names).gte('call_date', since)
+      .order('call_date', { ascending: false }).range(from, from + 999);
+    if (error) return { byAgent: users.map(() => []), error: error.message };
+    rows.push(...(data || []));
+    if ((data || []).length < 1000) break;
+    from += 1000;
+  }
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const byAgent = users.map(u => rows
+    .filter(r => norm(r.user_name) === norm(u.name))
+    .map(r => ({
+      caller: r.caller || 'Unknown',
+      duration: Number(r.duration) || 0,
+      direction: r.call_direction || '',
+      status: '',                                   // not stored in the archive
+      datetime: Math.floor(new Date(r.call_date + 'T12:00:00Z').getTime() / 1000),
+      dateOnly: r.call_date,                        // archive is day-resolution only
+    }))
+    .sort((a, b) => (b.datetime || 0) - (a.datetime || 0)));
+  return { byAgent, error: null };
+}
+
 // Delinquency (As Of) for a given date — same AppFolio Database-API pull the
 // Eviction Tracker uses, parameterized by date. Returns shaped rows; throws on failure.
+// Excluded properties are dropped here, so every caller (and therefore every
+// section of the Collections Review) is filtered the same way.
 async function fetchDelinquencyAsOf(dateStr) {
   const id = process.env.APPFOLIO_CLIENT_ID, secret = process.env.APPFOLIO_CLIENT_SECRET;
   if (!id || !secret) throw new Error('AppFolio API not configured (APPFOLIO_CLIENT_ID / APPFOLIO_CLIENT_SECRET).');
@@ -4012,12 +4077,34 @@ async function fetchDelinquencyAsOf(dateStr) {
     raw.push(...pull(j));
     next = j && j.next_page_url;
   }
-  return raw.map(r => ({
-    name: r.name || '', property: r.property_name || '', unit: r.unit || '',
-    status: r.tenant_status || '', delinquent_rent: r.delinquent_rent, amount_receivable: r.amount_receivable,
-    notes: r.delinquency_notes || '',
-  }));
+  return raw
+    .filter(r => !propertyIsExcluded(r.property_name))
+    .map(r => ({
+      name: r.name || '', property: r.property_name || '', unit: r.unit || '',
+      status: r.tenant_status || '', delinquent_rent: r.delinquent_rent, amount_receivable: r.amount_receivable,
+      // days_delinquent was read by delinqText but never mapped, so that column
+      // always printed blank. AppFolio spells it either way depending on report.
+      days_delinquent: r.days_delinquent ?? r.days_late ?? null,
+      notes: r.delinquency_notes || '',
+    }));
 }
+
+// AppFolio's Tenant Status is free text ("Current", "Notice", "Past", "Evicted",
+// occasionally "Notice - Eviction"). Lyndsay wants it shown as Eviction /
+// Notice / Past / Current. Anything unrecognized passes through verbatim rather
+// than being forced into a bucket — a wrong status on a collections account is
+// worse than an honest unknown. Eviction is checked first so "Notice - Eviction"
+// reads as Eviction.
+const tenantStatusLabel = raw => {
+  const s = String(raw || '').trim();
+  if (!s) return 'Unknown';
+  const l = s.toLowerCase();
+  if (/evict/.test(l)) return 'Eviction';
+  if (/notice/.test(l)) return 'Notice';
+  if (/past|former|moved\s*out/.test(l)) return 'Past';
+  if (/current|active/.test(l)) return 'Current';
+  return s;
+};
 
 // Source-connectivity flags, so the tab can show "✅ Loaded from AppFolio/SimpleVoIP".
 app.get('/api/collections/status', requireAuth, requireRole(...COLLECTIONS_ROLES), async (req, res) => {
@@ -4041,16 +4128,26 @@ const COLLECTIONS_SYSTEM = 'You are the collections analyst for Metric Property 
   + 'cite specific resident names, units, and dollar amounts.\n\n'
   + 'OUTPUT THESE SECTIONS, in order:\n'
   + '1. Summary Metrics — total delinquency, % change vs prior month (state direction), and residents contacted this period.\n'
-  + '2. Residents with INCREASED delinquency — priority list (highest increase first).\n'
-  + '3. Residents with DECREASED delinquency — wins.\n'
+  + '2. Residents with INCREASED delinquency — priority list (highest increase first). Table columns: '
+  + 'Resident, Unit, Property, Resident Status, Current Balance, Prior Balance, Change. Resident Status '
+  + 'is given to you per account (Eviction / Notice / Current / Past) — print it as given, never guess it.\n'
+  + '3. Residents with DECREASED delinquency — wins. Use the DECREASED list exactly as provided: it '
+  + 'already contains only accounts whose balance is strictly lower than last month. Never add an account '
+  + 'whose balance was unchanged or went up. State the NO CHANGE count in one sentence; do not list them. '
+  + 'Same columns as section 2.\n'
+  + '3b. Paid Off / Resolved — accounts from the PAID OFF / RESOLVED list only. Columns: Resident, Unit, '
+  + 'Property, Prior Balance, Current Balance, Current Status. Do not put these in section 3.\n'
   + '4. Call Log Analysis — a per-agent breakdown table (one row per collections agent listed in the '
   + 'PER-AGENT CALL SUMMARY): total calls, outbound vs inbound, substantive contacts (>=30s), and '
   + 'missed/unanswered. Below the table, cross-reference the call log against the delinquent residents '
   + '(match by caller/number where possible) to note who was contacted, outcomes, and who still needs follow-up.\n'
   + '5. Transcript Highlights — only if a transcript was provided; otherwise state none was provided this cycle.\n'
   + '6. Recommended Next Actions — per resident, concrete.\n\n'
-  + 'Cross-reference the call log against the delinquent accounts to find who was/was not contacted. Match residents '
-  + 'between current and prior by name+unit.\n\n'
+  + 'Cross-reference the call log against the delinquent accounts to find who was/was not contacted.\n\n'
+  + 'DO NOT invent sections. Output exactly the sections listed above and no others — in particular, do not '
+  + 'create a "Likely Resolved" or similar section: resolved accounts belong in 3b and are given to you.\n'
+  + 'The INCREASED, DECREASED and PAID OFF / RESOLVED lists are computed for you from the complete data set. '
+  + 'Do not recompute them from the raw month tables, which are capped by balance and will disagree.\n\n'
   + 'HTML RULES: return ONLY inner HTML (no html/head/body tags). Use only these pre-styled classes: <h2>N. Title</h2> '
   + 'for sections, <h3> for sub-sections, <div class="alert-box [warn|info|ok]"><div class="al">LABEL</div>text</div>, '
   + '<span class="badge [red|amber|green|navy]">TEXT</span>, and standard table/th/td/p/ul/li/strong.';
@@ -4079,6 +4176,8 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
     let calls = [];
     let agentCount = 0;
     let agentSummary = [];   // per-agent name + call counts for the prompt/report
+    let callSource = 'live';     // 'live' = CDR API, 'archive' = simplevoip_daily_calls
+    let archiveTotals = null;    // true per-agent counts before the 50/agent cap
     if (simplevoip.isConfigured()) {
       const end = Math.floor(Date.now() / 1000), start = end - 90 * 86400;
       const resolvedUsers = await collectionsVoipUsers(supabaseAdmin || supabasePublic);
@@ -4096,17 +4195,34 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       else console.log('[collections] raw CDR sample: none — every queried line returned 0 rows');
       const callErrors = results.map(r => r.error).filter(Boolean);
       if (callErrors.length) errors.calls = callErrors.join('; ');
-      const perAgent = results.map(r => simplevoip.shapeCalls(r.calls || [])
+      let perAgent = results.map(r => simplevoip.shapeCalls(r.calls || [])
         .sort((a, b) => (b.datetime || 0) - (a.datetime || 0)).slice(0, 50));
+      // The live API returned nothing for this 90-day window — the documented
+      // historical-date failure. Fall back to the nightly archive.
+      if (!perAgent.some(cs => cs.length)) {
+        const arch = await fetchCollectionsCallsFromArchive(supabaseAdmin || supabasePublic, resolvedUsers, 90);
+        if (arch.error) {
+          errors.calls = [errors.calls, `archive fallback: ${arch.error}`].filter(Boolean).join('; ');
+        } else if (arch.byAgent.some(cs => cs.length)) {
+          callSource = 'archive';
+          perAgent = arch.byAgent.map(cs => cs.slice(0, 50));
+          archiveTotals = arch.byAgent.map(cs => cs.length);   // pre-cap, for the summary
+          console.log(`[collections] live CDR empty over 90d — using archive: ${arch.byAgent.map(c => c.length).join('/')}`);
+        }
+      }
       agentSummary = perAgent.map((cs, i) => {
         const dir = c => String(c.direction || '').toLowerCase();
         return {
           name: resolvedUsers[i].name,
-          total: cs.length,
+          // Archive knows the true count before the 50/agent payload cap.
+          total: archiveTotals ? archiveTotals[i] : cs.length,
           outbound: cs.filter(c => dir(c).includes('out')).length,
           inbound: cs.filter(c => dir(c).includes('in')).length,
           substantive: cs.filter(c => (c.duration || 0) >= 30).length,   // ≥30s = real contact
-          missed: cs.filter(c => (c.duration || 0) === 0 || /miss|no.?answer|fail|unanswer/i.test(String(c.status || ''))).length,
+          // Not knowable from the archive: it has no status column and stores
+          // only calls with a recording, so missed calls are largely absent.
+          missed: callSource === 'archive' ? null
+            : cs.filter(c => (c.duration || 0) === 0 || /miss|no.?answer|fail|unanswer/i.test(String(c.status || ''))).length,
         };
       });
       calls = perAgent.flat().sort((a, b) => (b.datetime || 0) - (a.datetime || 0));
@@ -4118,6 +4234,64 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
 
     const bal = r => parseFloat(r.delinquent_rent) || 0;
     const sumDelinq = rows => rows.reduce((s, r) => s + bal(r), 0);
+
+    // --- Current-vs-prior comparison, computed here rather than by the model ---
+    //
+    // The model used to be handed two independently-capped top-25 lists and asked
+    // to diff them. That produced a "Decreased Delinquency" section containing
+    // accounts that had not changed or had gone UP, and a "Likely Resolved"
+    // section (which the prompt never asked for) built from accounts that had
+    // merely dropped out of the top 25. Same lesson as the call-grading score:
+    // arithmetic belongs in code, the model only writes it up.
+    //
+    // Keyed on name+unit, matched across the FULL pull on both dates — not the
+    // capped lists — so ranking changes can't masquerade as payments.
+    const acctKey = r => `${String(r.name || '').trim().toLowerCase()}|${String(r.unit || '').trim().toLowerCase()}`;
+    const priorByKey = new Map(prior.map(r => [acctKey(r), r]));
+    const currentByKey = new Map(current.map(r => [acctKey(r), r]));
+
+    const compared = current.map(r => {
+      const p = priorByKey.get(acctKey(r));
+      const curBal = bal(r), priorBal = p ? bal(p) : 0;
+      return {
+        name: r.name, unit: r.unit, property: r.property,
+        status: tenantStatusLabel(r.status),
+        days: r.days_delinquent, curBal, priorBal, delta: curBal - priorBal,
+        isNew: !p,
+      };
+    });
+    const increased = compared.filter(a => a.delta > 0).sort((a, b) => b.delta - a.delta);
+    // STRICTLY less than — no-change and increased accounts are excluded entirely.
+    const decreased = compared.filter(a => a.delta < 0 && a.curBal > 0).sort((a, b) => a.delta - b.delta);
+    const unchangedCount = compared.filter(a => a.delta === 0).length;
+    // Resolved: owed something last month, owes nothing now — either zeroed out
+    // or gone from the delinquency report altogether. Current balance and status
+    // are carried through so the section can show them.
+    const resolved = prior
+      .filter(p => bal(p) > 0)
+      .map(p => {
+        const c = currentByKey.get(acctKey(p));
+        return {
+          name: p.name, unit: p.unit, property: p.property,
+          priorBal: bal(p),
+          curBal: c ? bal(c) : 0,
+          // Absent from the current pull means they no longer meet its filter
+          // (tenant_statuses 0/4, active properties) — normally a move-out.
+          status: c ? tenantStatusLabel(c.status) : 'Past (off delinquency report)',
+          stillListed: !!c,
+        };
+      })
+      .filter(a => a.curBal === 0)
+      .sort((a, b) => b.priorBal - a.priorBal);
+
+    const COMPARE_CAP = 25;
+    const cmpText = (list, withPrior) => list.slice(0, COMPARE_CAP)
+      .map(a => `${a.name} | ${a.unit} | ${a.property} | ${a.status} | $${Math.round(a.curBal)}`
+        + (withPrior ? ` | $${Math.round(a.priorBal)} | ${a.delta >= 0 ? '+' : '-'}$${Math.round(Math.abs(a.delta))}${a.isNew ? ' | NEW' : ''}` : ''))
+      .join('\n');
+    const resolvedText = resolved.slice(0, COMPARE_CAP)
+      .map(a => `${a.name} | ${a.unit} | ${a.property} | $${Math.round(a.priorBal)} | $${Math.round(a.curBal)} | ${a.status}`)
+      .join('\n');
     // Top 25 residents by balance (highest first) — the full list can be hundreds
     // of rows and blow past the model/request limits.
     const DELINQ_CAP = 25;
@@ -4125,7 +4299,7 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
     const truncated = current.length > DELINQ_CAP || prior.length > DELINQ_CAP;
     // Pre-summarized rows only — tenant | unit | property | balance | days delinquent.
     const delinqText = rows => topByBalance(rows)
-      .map(r => `${r.name} | ${r.unit} | ${r.property} | $${Math.round(bal(r))}${r.days_delinquent != null ? ` | ${r.days_delinquent}d` : ''}`).join('\n');
+      .map(r => `${r.name} | ${r.unit} | ${r.property} | ${tenantStatusLabel(r.status)} | $${Math.round(bal(r))}${r.days_delinquent != null ? ` | ${r.days_delinquent}d` : ''}`).join('\n');
     // Calls: datetime | caller | duration | direction | result.
     const callText = calls.slice(0, 150)
       .map(c => `${new Date((c.datetime || 0) * 1000).toISOString().slice(0, 16).replace('T', ' ')} | ${c.caller || ''} | ${c.duration}s | ${c.direction} | ${c.status}`).join('\n');
@@ -4134,7 +4308,7 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       ? agentSummary.map(a => `${a.name} (${a.total} calls)`).join(', ')
       : 'Karla Gonzalez';
     const agentBreakdown = agentSummary.length
-      ? agentSummary.map(a => `${a.name}: ${a.total} total · ${a.outbound} outbound · ${a.inbound} inbound · ${a.substantive} substantive (>=30s) · ${a.missed} missed/unanswered`).join('\n')
+      ? agentSummary.map(a => `${a.name}: ${a.total} total · ${a.outbound} outbound · ${a.inbound} inbound · ${a.substantive} substantive (>=30s) · ${a.missed == null ? 'n/a' : a.missed} missed/unanswered`).join('\n')
       : '[no call data]';
 
     const user = `Analysis date: ${todayCT} (current) vs ${priorCT} (prior month).\n`
@@ -4142,10 +4316,25 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       + `Current total delinquent rent: $${Math.round(sumDelinq(current)).toLocaleString()} across ${current.length} accounts.\n`
       + `Prior total delinquent rent: $${Math.round(sumDelinq(prior)).toLocaleString()} across ${prior.length} accounts.\n`
       + (truncated ? `NOTE: only the top ${DELINQ_CAP} residents by balance are listed below (of ${current.length} current / ${prior.length} prior).\n` : '')
-      + `\nDelinquency columns: tenant | unit | property | balance | days_delinquent\n`
+      + `\nThese comparison lists are already computed from the FULL pull on both dates. `
+      + `Use them EXACTLY as given — do not re-derive, re-bucket, or move an account between them, `
+      + `and do not invent sections that are not in your instructions.\n`
+      + `Columns: tenant | unit | property | resident_status | current_balance | prior_balance | change\n`
+      + `=== INCREASED (${increased.length} accounts, top ${COMPARE_CAP} by increase) ===\n${cmpText(increased, true) || '[none]'}\n\n`
+      + `=== DECREASED — balance strictly lower than prior month (${decreased.length} accounts, top ${COMPARE_CAP} by size of decrease) ===\n${cmpText(decreased, true) || '[none]'}\n\n`
+      + `NO CHANGE: ${unchangedCount} accounts — mention the count only; never list them as decreases.\n\n`
+      + `Columns: tenant | unit | property | prior_balance | current_balance | current_status\n`
+      + `=== PAID OFF / RESOLVED — owed last month, $0 now (${resolved.length} accounts, top ${COMPARE_CAP}) ===\n${resolvedText || '[none]'}\n\n`
+      + `\nDelinquency columns: tenant | unit | property | resident_status | balance | days_delinquent\n`
       + `=== CURRENT MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${todayCT}) ===\n${delinqText(current) || '[none]'}\n\n`
       + `=== PRIOR MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${priorCT}) ===\n${delinqText(prior) || '[none]'}\n\n`
       + `=== PER-AGENT CALL SUMMARY (last 90 days) ===\n${agentBreakdown}\n\n`
+      + (callSource === 'archive'
+        ? 'CALL DATA SOURCE: nightly recording archive, not the live phone log. It stores only calls that '
+          + 'produced a recording (roughly 60% of a day), so these are CONTACT counts, not attempt counts, '
+          + 'and missed/unanswered calls are not available. Say this plainly in the Call Log Analysis '
+          + 'section and put "n/a" in the missed column. Times are day-resolution only.\n\n'
+        : '')
       + `Call columns: datetime | caller | duration | direction | result\n`
       + `=== SIMPLEVOIP CALL LOG — last 90 days, up to 50/agent ===\n${callText || '[none]'}\n\n`
       + `=== WEEKLY REVIEW CALL TRANSCRIPT ===\n${transcript || '[not provided]'}\n`;
@@ -4159,11 +4348,11 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       console.error('[collections] Claude call failed:', aiErr.message);
       // Partial error rather than hanging — hand back what was pulled.
       return finish({ error: aiErr.message,
-        meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, hasTranscript: !!transcript, payloadChars: user.length, errors } });
+        meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, callSource, increased: increased.length, decreased: decreased.length, unchanged: unchangedCount, resolved: resolved.length, hasTranscript: !!transcript, payloadChars: user.length, errors } });
     }
     // Prepend the truncation note to the report so it's visible in the output.
     if (truncated) html = `<div class="alert-box info"><div class="al">DATA</div>Showing top ${DELINQ_CAP} residents by balance (of ${current.length} current / ${prior.length} prior accounts).</div>` + html;
-    finish({ html, meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, hasTranscript: !!transcript, payloadChars: user.length, errors } });
+    finish({ html, meta: { date: todayCT, priorDate: priorCT, currentCount: current.length, priorCount: prior.length, callCount: calls.length, agents: agentCount, callSource, increased: increased.length, decreased: decreased.length, unchanged: unchangedCount, resolved: resolved.length, hasTranscript: !!transcript, payloadChars: user.length, errors } });
   } catch (err) { finish({ error: err.message }); }
 });
 
@@ -4485,15 +4674,8 @@ const leasingStatusIs = (status, ...needles) => {
   return needles.some(n => s.includes(n));
 };
 
-// Properties Lyndsay wants hidden from the Goal Board / roll-up / all leasing
-// views. Case-insensitive substring match on the community name — add or remove
-// fragments here to change what's shown.
-// Inactive/fake properties hidden from every EOD section (leasing + collections).
-const LEASING_EXCLUDED_FRAGMENTS = ['lily pad', 'wolf ridge', 'sidney', 'brazos', 'live with metric', 'cedar and sage'];
-const leasingIsExcluded = name => {
-  const n = String(name || '').trim().toLowerCase();
-  return LEASING_EXCLUDED_FRAGMENTS.some(frag => n.includes(frag));
-};
+// Exclusion list moved above fetchDelinquencyAsOf so Collections can share it —
+// see METRIC_EXCLUDED_PROPERTY_FRAGMENTS / propertyIsExcluded there.
 
 // Count logged outbound calls in a guest card's notes that fall within a week.
 // AppFolio logs each activity as its own entry separated by ';', formatted as
