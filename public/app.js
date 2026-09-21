@@ -474,7 +474,9 @@ async function leasingSyncAll() {
       catch (e) { toast(`${name} sync failed: ${e.message}`, 'error'); }
     }
     toast(`Synced: ${done.join(', ') || 'nothing'} ✅`, 'success');
-    const wk = to ? leasingSaturdayOf(to) : ($('#leasing-gb-week')?.value || '');
+    // Same rule as the Leads sync — the week holding most of the range, not the
+    // week the To date happens to start.
+    const wk = (from && to) ? leasingWeekForRange(from, to).week : ($('#leasing-gb-week')?.value || '');
     await leasingLoadWeeks(wk || undefined);
     await leasingLoadGoalBoard(wk || '');
   } finally {
@@ -656,6 +658,36 @@ function leasingSaturdayOf(iso) {
   d.setDate(d.getDate() + (6 - d.getDay())); // 0=Sun..6=Sat
   return d.toLocaleDateString('en-CA');
 }
+
+// Which week the Roll-Up should jump to after syncing a From–To range.
+//
+// The two controls are not the same shape: From/To is any span of days, the
+// Roll-Up is one Sun–Sat week. So this picks the week that actually holds most
+// of what was just synced, by bucketing every day of the range exactly the way
+// the SERVER does (leasingWeekEnding, forward to Saturday) and taking the
+// heaviest bucket — latest week wins a tie, since the more recent week is the
+// one someone syncing is usually looking for.
+//
+// It used to key off the To date alone, which broke whenever To was not a
+// Saturday: syncing 09/14 → 09/20 sent the Roll-Up to week ending 09/26,
+// because Sunday the 20th is the first day of THAT week. Six of those seven
+// days actually landed in the week ending 09/19, so the board jumped to a week
+// holding one day of the sync. Returns { week, spans } — spans is how many
+// distinct weeks the range covers, so the caller can say so rather than
+// silently showing one of several.
+function leasingWeekForRange(from, to) {
+  if (!from || !to || from > to) return { week: '', spans: 0 };
+  const counts = {};
+  const end = new Date(to + 'T00:00:00');
+  for (const d = new Date(from + 'T00:00:00'); d <= end; d.setDate(d.getDate() + 1)) {
+    const wk = leasingSaturdayOf(d.toLocaleDateString('en-CA'));
+    counts[wk] = (counts[wk] || 0) + 1;
+  }
+  const weeks = Object.keys(counts);
+  if (!weeks.length) return { week: '', spans: 0 };
+  weeks.sort((a, b) => (counts[b] - counts[a]) || b.localeCompare(a));
+  return { week: weeks[0], spans: weeks.length };
+}
 async function leasingSyncFromAppFolio() {
   const btn = $('#leasing-sync-btn'), status = $('#leasing-sync-status');
   const from = $('#leasing-sync-from')?.value, to = $('#leasing-sync-to')?.value;
@@ -669,12 +701,24 @@ async function leasingSyncFromAppFolio() {
       body: JSON.stringify({ date_from: from, date_to: to }),
     });
     toast(`Synced ${r.synced} leads ✅`, 'success');
-    if (status) status.textContent = `Synced ${r.synced} leads for ${from} → ${to}.`;
-    // Jump both week selectors to the week just synced and refresh the board + summary.
-    const syncedWeek = leasingSaturdayOf(to);
+    // Interim, replaced below once the board has loaded — the reloads take a
+    // moment and an empty status bar reads like nothing happened.
+    if (status) status.textContent = `Synced ${r.synced} leads for ${from} → ${to}. Loading week…`;
+    // Move the History-week dropdown and the Roll-Up to the week this sync
+    // actually filled, so one action leaves both halves of the panel agreeing.
+    const { week: syncedWeek, spans } = leasingWeekForRange(from, to);
     await leasingLoadWeeks(syncedWeek);
     await leasingLoadGoalBoard(syncedWeek);
     leasingLoadLeads({ week_ending: syncedWeek });
+    // Say which week the board moved to. A range that is not one Sun–Sat week
+    // lands in more than one bucket, and the board can only show one of them —
+    // better to name it than to leave the user wondering why the numbers below
+    // do not match the dates above.
+    if (status) {
+      status.textContent = `Synced ${r.synced} leads for ${from} → ${to}. `
+        + `Roll-Up showing week ending ${syncedWeek}`
+        + (spans > 1 ? ` — that range covers ${spans} weeks, pick another above to see the rest.` : '.');
+    }
   } catch (err) {
     toast(err.message, 'error');
     if (status) status.textContent = '❌ ' + err.message;
