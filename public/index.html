@@ -86,8 +86,16 @@
           </div>
         </div>
         <button data-tab="accounting"><span class="nav-ico">💰</span>Accounting</button>
-        <button data-tab="leasing"><span class="nav-ico">🏘️</span>Leasing</button>
-        <button data-tab="vacancy"><span class="nav-ico">🪧</span>Vacancy Posting</button>
+        <!-- Leasing owns a submenu like Maintenance does. The difference: the
+             Maintenance children are views inside one tab (data-maint-view),
+             these are real tabs (data-tab), so they go through the normal tab
+             handler and are hidden per-user by the same access gate. -->
+        <div class="subnav-group" id="leasing-nav-group">
+          <button data-tab="leasing"><span class="nav-ico">🏘️</span>Leasing <span class="subnav-caret" id="leasing-subnav-caret">›</span></button>
+          <div class="subnav hidden" id="leasing-subnav">
+            <button data-tab="vacancy">Vacancy Posting</button>
+          </div>
+        </div>
         <button data-tab="evictions"><span class="nav-ico">⚖️</span>Evictions</button>
         <button data-tab="collections"><span class="nav-ico">💵</span>Collections</button>
       </div>

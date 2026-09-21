@@ -145,6 +145,21 @@ async function initAuth() {
   allTabBtns.forEach(btn => {
     if (!allowed.includes(btn.dataset.tab)) btn.style.display = 'none';
   });
+  // A submenu whose every item is hidden for this user must not leave an empty
+  // expander behind — Leasing would otherwise show a caret that opens nothing
+  // for anyone without Vacancy Posting access (which is everyone but Arturo and
+  // Lyndsay). Only applies to submenus of real tabs; Maintenance's children are
+  // views with no data-tab, so it is skipped by the length check.
+  $$('#tabs .subnav-group .subnav').forEach(subnav => {
+    const kids = [...subnav.querySelectorAll('button[data-tab]')];
+    if (!kids.length) return;
+    if (kids.every(b => b.style.display === 'none')) {
+      subnav.classList.add('hidden');
+      const caret = subnav.closest('.subnav-group')?.querySelector('.subnav-caret');
+      if (caret) caret.style.display = 'none';
+    }
+  });
+
   // Hide a category section (label + wrapper) when every item in it is hidden for
   // this role, so a lone header never floats over an empty group.
   $$('#tabs .nav-group').forEach(group => {
@@ -187,7 +202,11 @@ $$('#tabs button[data-tab]').forEach(btn => {
     // expanded collapses it (works for any .subnav-group, not just Maintenance).
     const group = btn.closest('.subnav-group');
     const subnav = group?.querySelector('.subnav');
-    if (subnav && btn.classList.contains('active') && !subnav.classList.contains('hidden')) {
+    // Only the PARENT button toggles the submenu. A child that is itself a tab
+    // (Vacancy Posting under Leasing) must not collapse the menu it lives in —
+    // that would hide the item the user just selected.
+    const isParent = subnav && !btn.closest('.subnav');
+    if (isParent && btn.classList.contains('active') && !subnav.classList.contains('hidden')) {
       subnav.classList.add('hidden');
       const c = group.querySelector('.subnav-caret'); if (c) c.textContent = '›';
       return;
@@ -223,6 +242,23 @@ function loadTab(tab) {
     const caret = $('#maint-subnav-caret');
     if (caret) caret.textContent = '›';
   }
+  // Submenus whose children are real tabs (Leasing → Vacancy Posting) stay open
+  // while any tab inside them is active and close otherwise, so the active item
+  // is never hidden inside a collapsed menu. Maintenance is skipped: its
+  // children are views, and loadMaintenance() already manages its own menu.
+  $$('#tabs .subnav-group').forEach(group => {
+    if (group.id === 'maintenance-nav-group') return;
+    const subnav = group.querySelector('.subnav');
+    if (!subnav) return;
+    // Never open a submenu with nothing visible in it: for a user without
+    // Vacancy access the access gate hides the only child, and opening it would
+    // leave an empty indented gap under Leasing.
+    const hasVisibleChild = [...subnav.querySelectorAll('button[data-tab]')].some(b => b.style.display !== 'none');
+    const inside = hasVisibleChild && [...group.querySelectorAll('button[data-tab]')].some(b => b.dataset.tab === tab);
+    subnav.classList.toggle('hidden', !inside);
+    const c = group.querySelector('.subnav-caret');
+    if (c) c.textContent = inside ? '⌄' : '›';
+  });
   if (tab === 'morning') loadMorning();
   if (tab === 'tasks') loadTasks();
   if (tab === 'sops') loadSops();
