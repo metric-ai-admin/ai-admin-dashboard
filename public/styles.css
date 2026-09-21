@@ -2234,12 +2234,35 @@ tr.ca-sel { background: var(--accent-glow); }
 .vac-add .vac-count { background: var(--success-bg); color: var(--success); }
 .vac-review h3 { color: var(--warning); }
 .vac-review .vac-count { background: var(--warning-bg); color: var(--warning); }
-.vac-prop { margin: 12px 0 18px; }
-.vac-prop h4 { font-size: 13.5px; margin: 0 0 8px; color: var(--text-primary); border-bottom: 1px solid var(--border); padding-bottom: 5px; }
-.vac-plan { margin: 0 0 12px 12px; }
-.vac-plan-name { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px; }
-.vac-table { width: 100%; font-size: 12.5px; }
+.vac-prop { margin: 18px 0 26px; }
+/* Property is the primary grouping, floor plan a subtitle under it. */
+.vac-prop-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  border-bottom: 2px solid var(--border-accent); padding-bottom: 7px; margin-bottom: 12px; }
+.vac-prop-name { font-size: 16px; font-weight: 700; color: var(--text-primary); letter-spacing: -.01em; }
+.vac-prop-total { font-size: 11.5px; color: var(--text-secondary); white-space: nowrap; }
+.vac-plan { margin: 0 0 16px 0; }
+.vac-plan-name { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px;
+  text-transform: uppercase; letter-spacing: .05em; display: flex; align-items: center; gap: 7px; }
+.vac-plan-n { font-size: 11px; font-weight: 700; padding: 0 7px; border-radius: 20px;
+  background: var(--bg-elevated); color: var(--text-secondary); text-transform: none; letter-spacing: 0; }
+
+/* Narrow screens scroll the table sideways instead of wrapping cells, which
+   destroyed the column alignment the colgroup exists to guarantee. */
+.vac-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.vac-table { width: 100%; min-width: 660px; font-size: 12.5px; table-layout: fixed; border-collapse: collapse; }
+.vac-table th, .vac-table td { padding: 9px 10px; text-align: left; vertical-align: middle;
+  border-bottom: 1px solid var(--border); }
+.vac-table thead th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--text-secondary); font-weight: 600; border-bottom: 1px solid var(--border-accent); white-space: nowrap; }
+.vac-table tbody tr:last-child td { border-bottom: none; }
+.vac-table tbody tr:hover { background: var(--bg-elevated); }
 .vac-table code { font-size: 12px; }
+/* Status is the one column that must not truncate — "Notice-Unrented" and
+   "Vacant-Unrented" differ only at the start and are read constantly. */
+.vac-table .vac-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vac-c-id { width: 74px; } .vac-c-unit { width: 64px; } .vac-c-status { width: 150px; }
+.vac-c-ready { width: 88px; } .vac-c-showing { width: 118px; }
+.vac-c-posted { width: 104px; } .vac-c-tier { width: 82px; }
 /* The apply block is the one destructive-adjacent control on the page, so it
    is visually set apart from the read-only tables below it. */
 .vac-apply { border: 1px solid var(--border-accent); background: var(--bg-elevated); border-radius: 8px; padding: 14px 16px; margin-bottom: 18px; }
@@ -2247,3 +2270,17 @@ tr.ca-sel { background: var(--accent-glow); }
 .vac-apply code { display: block; padding: 9px 11px; background: var(--bg-surface); border-radius: 6px; border: 1px solid var(--border); margin-bottom: 10px; word-break: break-all; font-size: 12.5px; }
 .vac-excluded summary { cursor: pointer; list-style: revert; }
 .vac-excluded summary::-webkit-details-marker { display: revert; }
+
+/* Badge colours for the Vacancy tab. The .green/.amber/.navy/.gray variants
+   were only ever defined under #tab-collections, so without these the badges
+   here would render with no colour at all. */
+#tab-vacancy .badge.green { background: var(--success-bg); color: var(--success); }
+#tab-vacancy .badge.amber { background: var(--warning-bg); color: var(--warning); }
+#tab-vacancy .badge.navy  { background: var(--info-bg); color: var(--info); }
+#tab-vacancy .badge.gray  { background: var(--bg-elevated); color: var(--text-secondary); }
+#tab-vacancy .badge.red   { background: var(--critical-bg); color: var(--critical); }
+
+/* Excluded table: last column is free text, so it wraps instead of forcing width. */
+.vac-table-exc { min-width: 560px; }
+.vac-table-exc td:last-child { white-space: normal; word-break: break-word; }
+.vac-table-exc td:nth-child(2) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -8800,23 +8800,49 @@ function vacGroup(rows) {
   return out;
 }
 
-function vacTable(rows, kind) {
-  return `<table class="data-table vac-table">
+// Where a unit is currently advertised, spelled out rather than abbreviated —
+// "Web only" and "Net only" are materially different situations and the old
+// "Web"/"Net" chips read as though both were set.
+function vacPostedCell(row) {
+  const web = row.posted_to_website === 'Yes';
+  const net = row.posted_to_internet === 'Yes';
+  if (web && net) return '<span class="badge navy">Web + Net</span>';
+  if (web) return '<span class="badge navy">Web only</span>';
+  if (net) return '<span class="badge navy">Net only</span>';
+  return '<span class="muted">not posted</span>';
+}
+
+// Tier 1 is the strongest candidate, 3 and 4 the weakest — colour carries that
+// ordering so the table can be scanned without reading the numbers.
+function vacTierCell(tier) {
+  const t = Number(tier);
+  if (!t) return '<span class="muted">—</span>';
+  const cls = t === 1 ? 'green' : t === 2 ? 'amber' : 'gray';
+  return `<span class="badge ${cls}">Tier ${t}</span>`;
+}
+
+function vacTable(rows) {
+  // table-layout:fixed + colgroup, so every table on the page shares one set of
+  // column widths. Without it each table sized itself to its own contents and
+  // the columns stopped lining up between floor plans.
+  return `<div class="vac-scroll"><table class="data-table vac-table">
+    <colgroup>
+      <col class="vac-c-id"><col class="vac-c-unit"><col class="vac-c-status">
+      <col class="vac-c-ready"><col class="vac-c-showing"><col class="vac-c-posted"><col class="vac-c-tier">
+    </colgroup>
     <thead><tr>
       <th>Unit ID</th><th>Unit</th><th>Status</th><th>Rent Ready</th>
-      <th>Ready For Showing</th><th>Posted</th><th>Tier</th>
+      <th>Ready For Showing</th><th>Posted</th><th>Priority</th>
     </tr></thead>
     <tbody>${rows.map(r => `<tr>
       <td><code>${vacEsc(r.unit_id)}</code></td>
       <td>${vacEsc(r.unit)}</td>
-      <td>${vacEsc(r.unit_status)}</td>
-      <td>${r.rent_ready === 'Yes' ? '<span class="badge green">Yes</span>' : '<span class="badge">No</span>'}</td>
-      <td>${vacEsc(r.ready_for_showing_on) || '<span class="muted">—</span>'}</td>
-      <td>${(r.posted_to_website === 'Yes' || r.posted_to_internet === 'Yes')
-        ? `<span class="badge ${kind === 'remove' ? 'red' : 'navy'}">${[r.posted_to_website === 'Yes' ? 'Web' : '', r.posted_to_internet === 'Yes' ? 'Net' : ''].filter(Boolean).join(' + ')}</span>`
-        : '<span class="muted">not posted</span>'}</td>
-      <td>${vacEsc(r._tier)}</td>
-    </tr>`).join('')}</tbody></table>`;
+      <td class="vac-status">${vacEsc(r.unit_status)}</td>
+      <td>${r.rent_ready === 'Yes' ? '<span class="badge green">Yes</span>' : '<span class="badge gray">No</span>'}</td>
+      <td>${r.ready_for_showing_on ? vacEsc(r.ready_for_showing_on) : '<span class="muted">Not set</span>'}</td>
+      <td>${vacPostedCell(r)}</td>
+      <td>${vacTierCell(r._tier)}</td>
+    </tr>`).join('')}</tbody></table></div>`;
 }
 
 function vacSection(title, rows, kind, emptyText) {
@@ -8827,9 +8853,11 @@ function vacSection(title, rows, kind, emptyText) {
   const grouped = vacGroup(rows);
   let html = `<div class="vac-sec vac-${kind}"><h3>${title} <span class="vac-count">${rows.length}</span></h3>`;
   for (const [prop, plans] of grouped) {
-    html += `<div class="vac-prop"><h4>${vacEsc(prop)}</h4>`;
+    const propTotal = [...plans.values()].reduce((n, l) => n + l.length, 0);
+    html += `<div class="vac-prop">
+      <div class="vac-prop-head"><span class="vac-prop-name">${vacEsc(prop)}</span><span class="vac-prop-total">${propTotal} unit${propTotal === 1 ? '' : 's'}</span></div>`;
     for (const [plan, list] of plans) {
-      html += `<div class="vac-plan"><div class="vac-plan-name">${vacEsc(plan)} <span class="muted small">(${list.length})</span></div>${vacTable(list, kind)}</div>`;
+      html += `<div class="vac-plan"><div class="vac-plan-name">${vacEsc(plan)} <span class="vac-plan-n">${list.length}</span></div>${vacTable(list)}</div>`;
     }
     html += '</div>';
   }
@@ -8887,9 +8915,11 @@ function renderVacancy() {
     + vacSection('Add to postings', d.add, 'add', 'Nothing to add — every top-3 unit is already posted.')
     + vacSection('Needs review', d.needsReview, 'review', 'No units flagged for review. Every description was recognised.')
     + `<details class="vac-sec vac-excluded"><summary><h3 style="display:inline">Excluded <span class="vac-count">${d.excluded.length}</span></h3> <span class="muted small">— not considered for posting, with reasons</span></summary>`
-    + '<table class="data-table vac-table"><thead><tr><th>Unit ID</th><th>Property</th><th>Unit</th><th>Reason</th></tr></thead><tbody>'
+    + '<div class="vac-scroll"><table class="data-table vac-table vac-table-exc">'
+    + '<colgroup><col class="vac-c-id"><col class="vac-c-status"><col class="vac-c-unit"><col></colgroup>'
+    + '<thead><tr><th>Unit ID</th><th>Property</th><th>Unit</th><th>Reason</th></tr></thead><tbody>'
     + d.excluded.map(r => `<tr><td><code>${vacEsc(r.unit_id)}</code></td><td>${vacEsc(r.property_name)}</td><td>${vacEsc(r.unit)}</td><td class="muted">${vacEsc(r._reason)}</td></tr>`).join('')
-    + '</tbody></table></details>';
+    + '</tbody></table></div></details>';
 
   const copyBtn = $('#vac-copy');
   if (copyBtn) {
