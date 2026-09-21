@@ -8626,11 +8626,18 @@ const LYNDSAY_MESSAGE_RULES = [
     forwardTo: 'accounting@metricpropertymanagement.com' },
   { displayName: 'MPM Auto: Indeed -> Archive',        folder: 'Archive',       conditions: { senderContains: ['mc.indeed.com'] },        markRead: true },
   { displayName: 'MPM Auto: Home Depot -> Archive',    folder: 'Archive',       conditions: { senderContains: ['mg.homedepot.com'] },     markRead: true },
-  { displayName: 'MPM Auto: WebWork -> MPM Team',      folder: 'MPM Team',      conditions: { senderContains: ['webwork-tracker.com'] } },
   { displayName: 'MPM Auto: SimpleVoIP mktg -> Archive', folder: 'Archive',     conditions: { senderContains: ['marketing@simplevoip.com'] }, markRead: true },
   { displayName: 'MPM Auto: Impact Floors -> Financial', folder: 'Financial',   conditions: { senderContains: ['impactfloors.com'] } },
   { displayName: 'MPM Auto: Allen Vaughn -> Archive',  folder: 'Archive',       conditions: { senderContains: ['allen@colonycreekapts.com'] }, markRead: true },
-  { displayName: 'MPM Auto: ParentSquare -> Personal', folder: 'Personal',      conditions: { senderContains: ['parentsquare.com'] } },
+  // ParentSquare and WebWork are deliberately NOT managed here any more.
+  // Both were dead entries: shadowed by earlier hand-made rules that stop
+  // processing. On 2026-09-21 the hand-made rules were retargeted instead and
+  // these two were disabled in the mailbox —
+  //   seq 41  'ParentSquare → Personal + Mark as read'  (senderContains parentsquare.com)
+  //   seq 47  'WebWork no-reply → WebWork'              (senderContains noreply@webwork-tracker.com)
+  // Re-adding them here would resurrect them: ensureLyndsayMessageRules()
+  // PATCHes by displayName with isEnabled true, so a disabled rule named in
+  // this array comes straight back on the next apply.
   // School photography — same destination as ParentSquare, both personal/family.
   // The only genuinely new rule from the 2026-09-21 batch: ParentSquare, WebWork
   // and Austin Apartment Association were all already covered by hand-made rules
