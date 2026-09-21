@@ -321,7 +321,7 @@ footer.foot b{color:var(--gold);}
 
     <div class="section-title">
       <h2 id="rollupTitle">Portfolio Roll-Up</h2>
-      <span class="hint">Raw data · company totals</span>
+      <span class="hint" id="rollupHint">Raw data · company totals</span>
     </div>
     <div class="card" id="rollupTable" style="padding:16px;overflow-x:auto;"></div>
 
@@ -420,7 +420,7 @@ const SEED_TOURS={
 };
 
 // Most recently completed lease-up week (Mon 7/6/2026 - Sun 7/12/2026), pulled directly
-// from the guest cards and applications exports. Used for the Roll-Up's "Last Wk" columns.
+// from the guest cards and applications exports. Used for the Roll-Up's "Week" columns.
 // Claude's drafted weekly narrative. Always shown as the starting point; the person can edit
 // it freely in the UI (contenteditable), and their edit is saved and takes precedence until
 // they hit "Reset to draft" to restore this text.
@@ -1093,11 +1093,20 @@ function renderKpi(){
 
 /* ============ RENDER: PORTFOLIO ROLL-UP ============ */
 function renderRollup(){
-  document.getElementById("rollupTitle").textContent = (VIEW.type==="portfolio" ? "Portfolio Roll-Up" : `${viewLabel()} Roll-Up`) + ` — Last Week Only (${LASTWEEK_LABEL})`;
+  // Title stays static; the week goes in the hint beneath it. It used to read
+  // "— Last Week Only (9/20–9/26)", which was wrong twice over: the phrase said
+  // "last week" no matter which week the selector had loaded, and the dates were
+  // whatever the board last rendered. The hint now names the week actually on
+  // screen, so selecting an older week relabels the table instead of leaving a
+  // title that contradicts it.
+  document.getElementById("rollupTitle").textContent =
+    (VIEW.type==="portfolio" ? "Portfolio Roll-Up" : `${viewLabel()} Roll-Up`);
+  const rollupHint = document.getElementById("rollupHint");
+  if (rollupHint) rollupHint.textContent = `Week of ${LASTWEEK_LABEL} · raw data · company totals`;
   const props=viewProps();
   const el=document.getElementById("rollupTable");
   const cols=["Community",["Units"],["Occupied"],["Occ","%"],["Vacant","Rented"],["Notice","Unrented"],
-    ["Traffic","Last Wk"],["Tours","Last Wk"],["Calls","Last Wk"],["Apps","Last Wk"],["Approved","Last Wk"],["Denied","Last Wk"],["Canceled","Last Wk"]];
+    ["Traffic","Week"],["Tours","Week"],["Calls","Week"],["Apps","Week"],["Approved","Week"],["Denied","Week"],["Canceled","Week"]];
   let bodyRows="";
   const totals={u:0,o:0,vr:0,nu:0,traffic:0,tours:0,calls:0,apps:0,appr:0,den:0,canc:0};
   props.forEach(p=>{
@@ -1137,7 +1146,7 @@ function renderAgentRollup(){
   const propsInView=new Set(viewProps());
   const el=document.getElementById("agentRollupTable");
   const cols=["Agent","Properties",["Units"],["Occupied"],["Occ","%"],
-    ["Traffic","Last Wk"],["Tours","Last Wk"],["Calls","Last Wk"],["Apps","Last Wk"],["Approved","Last Wk"],["Denied","Last Wk"],["Canceled","Last Wk"]];
+    ["Traffic","Week"],["Tours","Week"],["Calls","Week"],["Apps","Week"],["Approved","Week"],["Denied","Week"],["Canceled","Week"]];
   let bodyRows="";
   const totals={u:0,o:0,traffic:0,tours:0,calls:0,apps:0,appr:0,den:0,canc:0};
   const agentsPresent=PEOPLE.filter(person=>Object.keys(LEAD).some(p=>LEAD[p]===person && propsInView.has(p)));
@@ -1174,7 +1183,7 @@ function renderAgentRollup(){
     el.innerHTML=`<div style="color:var(--muted);">No agents scoped to this view.</div>`;
     return;
   }
-  el.innerHTML = `<div class="rollup-subhead">Raw Data — Last Week Only (${LASTWEEK_LABEL})</div><table class="rollup">
+  el.innerHTML = `<div class="rollup-subhead">Raw Data — Week of ${LASTWEEK_LABEL}</div><table class="rollup">
     <thead><tr>${cols.map((c,i)=>rollupTh(c,i<2)).join("")}</tr></thead>
     <tbody>${bodyRows}${totalRow}</tbody>
   </table>
