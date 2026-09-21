@@ -252,7 +252,7 @@ function analyzeVacancy(rows, opts = {}) {
 const removalIdList = result => result.remove.map(r => r.unit_id).join(',');
 
 /** Rule 5 — the exact text pasted into Realm-X. */
-const realmXPrompt = result => `Bulk remove the following unit IDs: ${removalIdList(result)}`;
+const realmXPrompt = result => `Bulk remove the following unit IDs: ${removalIdList(result)}. Click confirm.`;
 
 module.exports = {
   analyzeVacancy,

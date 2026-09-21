@@ -247,7 +247,7 @@ t('realmXPrompt matches the agreed wording', () => {
     unit(1001, { rent_ready: 'Yes', posted_to_website: 'Yes' }), unit(1002, { rent_ready: 'Yes', posted_to_website: 'Yes' }),
     unit(1003, { rent_ready: 'Yes', posted_to_website: 'Yes' }), unit(1004, { rent_ready: 'No', posted_to_website: 'Yes' }),
   ];
-  assert.strictEqual(V.realmXPrompt(run(rows)), 'Bulk remove the following unit IDs: 1004');
+  assert.strictEqual(V.realmXPrompt(run(rows)), 'Bulk remove the following unit IDs: 1004. Click confirm.');
 });
 t('empty input does not throw', () => {
   const r = V.analyzeVacancy([], { today: TODAY, isExcludedProperty });

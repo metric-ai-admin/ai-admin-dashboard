@@ -54,7 +54,7 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'collections', 'accounting', 'leasing'],
+  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
   // 'calls' (Call Analyzer) removed 2026-09-18: call transcripts and grades are
   // employee performance data about named staff, alongside resident PII, so the
@@ -134,8 +134,13 @@ async function initAuth() {
   // PII, limited to the named users the server allowlists (CALL_ANALYZER_USERS,
   // Arturo + Lyndsay). Jay is an admin without it. The server gates every
   // /api/calls/* route the same way, so this only keeps a dead tab out of view.
+  // Vacancy Posting is narrower than admin for the same reason as the Call
+  // Analyzer: it drives removals from live marketing listings, so it is limited
+  // to the named users the server allowlists (VACANCY_USERS — Arturo and
+  // Lyndsay, explicitly not Jay). The /api/vacancy/* routes enforce it too.
   const allowed = (TAB_ACCESS[currentUser.role] || [])
-    .filter(tab => tab !== 'calls' || currentUser.callAnalyzer);
+    .filter(tab => tab !== 'calls' || currentUser.callAnalyzer)
+    .filter(tab => tab !== 'vacancy' || currentUser.vacancy);
   const allTabBtns = $$('#tabs button[data-tab]');
   allTabBtns.forEach(btn => {
     if (!allowed.includes(btn.dataset.tab)) btn.style.display = 'none';
@@ -230,6 +235,7 @@ function loadTab(tab) {
   if (tab === 'sixpm') sixpmLoad();
   if (tab === 'calls') loadCallAnalyzer();
   if (tab === 'evictions') loadEvictions();
+  if (tab === 'vacancy') loadVacancy();
   if (tab === 'collections') loadCollections();
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
@@ -8758,3 +8764,188 @@ $('#sixpm-generate')?.addEventListener('click', async () => {
 
 // Boot — verify session, gate tabs, then load initial tab
 initAuth();
+
+// =====================================================================
+// UNIT VACANCY POSTING
+// =====================================================================
+// Renders the decisions from /api/vacancy/analyze. This tab NEVER changes a
+// posting: the Realm-X prompt goes to the clipboard and a human pastes and
+// confirms it. That is the safeguard on a tool that touches live marketing
+// inventory — see the module comment in server.js.
+
+let vacancyData = null;
+
+const vacEsc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// Central time, so Lyndsay reads Austin time rather than Render's UTC.
+function vacWhen(iso) {
+  if (!iso) return 'never';
+  try {
+    return new Date(iso).toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'medium', timeStyle: 'short' });
+  } catch { return iso; }
+}
+
+// Group a decision list into property -> floor plan -> rows.
+function vacGroup(rows) {
+  const out = new Map();
+  for (const r of rows) {
+    const prop = r._property || r.property_name || '—';
+    const plan = r._floorPlan || r.unit_type || '—';
+    if (!out.has(prop)) out.set(prop, new Map());
+    const plans = out.get(prop);
+    if (!plans.has(plan)) plans.set(plan, []);
+    plans.get(plan).push(r);
+  }
+  return out;
+}
+
+function vacTable(rows, kind) {
+  return `<table class="data-table vac-table">
+    <thead><tr>
+      <th>Unit ID</th><th>Unit</th><th>Status</th><th>Rent Ready</th>
+      <th>Ready For Showing</th><th>Posted</th><th>Tier</th>
+    </tr></thead>
+    <tbody>${rows.map(r => `<tr>
+      <td><code>${vacEsc(r.unit_id)}</code></td>
+      <td>${vacEsc(r.unit)}</td>
+      <td>${vacEsc(r.unit_status)}</td>
+      <td>${r.rent_ready === 'Yes' ? '<span class="badge green">Yes</span>' : '<span class="badge">No</span>'}</td>
+      <td>${vacEsc(r.ready_for_showing_on) || '<span class="muted">—</span>'}</td>
+      <td>${(r.posted_to_website === 'Yes' || r.posted_to_internet === 'Yes')
+        ? `<span class="badge ${kind === 'remove' ? 'red' : 'navy'}">${[r.posted_to_website === 'Yes' ? 'Web' : '', r.posted_to_internet === 'Yes' ? 'Net' : ''].filter(Boolean).join(' + ')}</span>`
+        : '<span class="muted">not posted</span>'}</td>
+      <td>${vacEsc(r._tier)}</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+function vacSection(title, rows, kind, emptyText) {
+  if (!rows.length) {
+    return `<div class="vac-sec vac-${kind}"><h3>${title} <span class="vac-count">0</span></h3>`
+      + `<p class="empty-state">${emptyText}</p></div>`;
+  }
+  const grouped = vacGroup(rows);
+  let html = `<div class="vac-sec vac-${kind}"><h3>${title} <span class="vac-count">${rows.length}</span></h3>`;
+  for (const [prop, plans] of grouped) {
+    html += `<div class="vac-prop"><h4>${vacEsc(prop)}</h4>`;
+    for (const [plan, list] of plans) {
+      html += `<div class="vac-plan"><div class="vac-plan-name">${vacEsc(plan)} <span class="muted small">(${list.length})</span></div>${vacTable(list, kind)}</div>`;
+    }
+    html += '</div>';
+  }
+  return html + '</div>';
+}
+
+async function loadVacancy(refresh) {
+  const body = $('#vac-body');
+  if (!body) return;
+  body.innerHTML = '<p class="muted">Analyzing…</p>';
+  $('#vac-kpi').innerHTML = '';
+  try {
+    vacancyData = await api('/api/vacancy/analyze' + (refresh ? '?refresh=1' : ''));
+  } catch (err) {
+    body.innerHTML = `<div class="alert-box warn"><div class="al">ERROR</div>${vacEsc(err.message || 'Could not load the analysis.')}</div>`;
+    $('#vac-synced').textContent = '';
+    return;
+  }
+  renderVacancy();
+  loadVacancyLog();
+}
+
+function renderVacancy() {
+  const d = vacancyData;
+  if (!d) return;
+  const m = d.meta || {}, s = d.stats || {};
+
+  $('#vac-synced').innerHTML = `AppFolio data pulled <strong>${vacWhen(m.syncedAt)}</strong> · ${s.inputRows} units`
+    + (m.collapseFloorPlans ? ' · floor plans collapsed' : '')
+    + (m.syncError ? ' · <span class="badge red">sync failed, showing last good pull</span>' : '');
+
+  $('#vac-kpi').innerHTML = [
+    { n: s.remove, label: 'To remove', cls: 'kpi-chip-red' },
+    { n: s.add, label: 'To add', cls: 'kpi-chip-green' },
+    { n: s.needsReview, label: 'Needs review', cls: 'kpi-chip-amber' },
+    { n: s.excluded, label: 'Excluded', cls: 'kpi-chip-gray' },
+    { n: s.floorPlanGroups, label: 'Floor plans', cls: 'kpi-chip-blue' },
+  ].map(c => `<span class="kpi-chip ${c.cls}"><span class="kpi-num">${c.n}</span> ${c.label}</span>`).join('');
+
+  const prompt = d.realmXPrompt || '';
+  const applyBlock = d.remove.length ? `
+    <div class="vac-apply">
+      <div class="vac-apply-head">Realm-X prompt — ${d.remove.length} unit${d.remove.length === 1 ? '' : 's'}</div>
+      <code id="vac-prompt">${vacEsc(prompt)}</code>
+      <div class="row-actions">
+        <button class="btn" id="vac-copy">📋 Copy to clipboard</button>
+        <a class="btn btn-ghost" href="https://metricpropertymanagement.appfolio.com/realm_x" target="_blank" rel="noopener">↗ Open Realm-X</a>
+        <button class="btn btn-ghost" id="vac-logged">✓ I applied this batch</button>
+      </div>
+      <p class="muted small">Paste into Realm-X and review before confirming. Nothing is removed from this screen.</p>
+    </div>` : '';
+
+  $('#vac-body').innerHTML = applyBlock
+    + vacSection('Remove from postings', d.remove, 'remove', 'Nothing to remove — every posted unit is within the top 3 for its floor plan.')
+    + vacSection('Add to postings', d.add, 'add', 'Nothing to add — every top-3 unit is already posted.')
+    + vacSection('Needs review', d.needsReview, 'review', 'No units flagged for review. Every description was recognised.')
+    + `<details class="vac-sec vac-excluded"><summary><h3 style="display:inline">Excluded <span class="vac-count">${d.excluded.length}</span></h3> <span class="muted small">— not considered for posting, with reasons</span></summary>`
+    + '<table class="data-table vac-table"><thead><tr><th>Unit ID</th><th>Property</th><th>Unit</th><th>Reason</th></tr></thead><tbody>'
+    + d.excluded.map(r => `<tr><td><code>${vacEsc(r.unit_id)}</code></td><td>${vacEsc(r.property_name)}</td><td>${vacEsc(r.unit)}</td><td class="muted">${vacEsc(r._reason)}</td></tr>`).join('')
+    + '</tbody></table></details>';
+
+  const copyBtn = $('#vac-copy');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(prompt);
+        copyBtn.textContent = '✓ Copied';
+        setTimeout(() => { copyBtn.textContent = '📋 Copy to clipboard'; }, 2000);
+      } catch {
+        // The Clipboard API needs a secure context and can be blocked. Select
+        // the text so the prompt is still reachable by hand rather than lost.
+        const el = $('#vac-prompt');
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        copyBtn.textContent = 'Press Ctrl+C';
+      }
+    });
+  }
+
+  const logBtn = $('#vac-logged');
+  if (logBtn) {
+    logBtn.addEventListener('click', async () => {
+      if (!confirm(`Log that you applied ${d.remove.length} removal(s) in Realm-X?\n\nThis only records the batch for auditing — it does not change any posting.`)) return;
+      logBtn.disabled = true;
+      try {
+        await api('/api/vacancy/applied', { method: 'POST', body: JSON.stringify({ unit_ids: d.removalIds, prompt }) });
+        logBtn.textContent = '✓ Logged';
+        loadVacancyLog();
+      } catch (err) {
+        logBtn.disabled = false;
+        alert('Could not log the batch: ' + (err.message || 'unknown error'));
+      }
+    });
+  }
+}
+
+async function loadVacancyLog() {
+  const wrap = $('#vac-log-wrap');
+  if (!wrap) return;
+  let log = [];
+  try { log = await api('/api/vacancy/applied'); } catch { return; }
+  wrap.innerHTML = `<details class="vac-sec"><summary><h3 style="display:inline">Applied batches <span class="vac-count">${log.length}</span></h3> <span class="muted small">— last 50, most recent first</span></summary>`
+    + (log.length
+      ? '<table class="data-table vac-table"><thead><tr><th>When</th><th>By</th><th>Units</th><th>Unit IDs</th></tr></thead><tbody>'
+        + log.map(e => `<tr><td>${vacWhen(e.at)}</td><td>${vacEsc(e.by)}</td><td>${e.count}</td><td><code class="small">${vacEsc((e.unit_ids || []).join(', '))}</code></td></tr>`).join('')
+        + '</tbody></table>'
+      : '<p class="empty-state">No batches applied yet.</p>')
+    + '</details>';
+}
+
+$('#vac-sync')?.addEventListener('click', e => {
+  const btn = e.target;
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  loadVacancy(true).finally(() => { btn.disabled = false; btn.textContent = '↻ Sync from AppFolio'; });
+});

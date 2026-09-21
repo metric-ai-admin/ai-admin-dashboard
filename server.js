@@ -375,7 +375,7 @@ app.post('/api/auth/login', async (req, res) => {
     // 3. Issue JWT in HttpOnly cookie (7 days)
     // callAnalyzer travels with the session so the client can hide the tab without
     // mirroring the allowlist — the endpoints enforce it regardless.
-    const payload = { userId: dbUser.id, email: dbUser.email, username: dbUser.username, name: dbUser.name, role: dbUser.role, agentName: dbUser.agent_name, callAnalyzer: mayUseCallAnalyzer(dbUser) };
+    const payload = { userId: dbUser.id, email: dbUser.email, username: dbUser.username, name: dbUser.name, role: dbUser.role, agentName: dbUser.agent_name, callAnalyzer: mayUseCallAnalyzer(dbUser), vacancy: mayUseVacancy(dbUser) };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 
     res.cookie('dashboardToken', token, {
@@ -407,7 +407,7 @@ app.get('/api/auth/me', (req, res) => {
     // token issued before the allowlist existed carries no callAnalyzer flag, and
     // a change to CALL_ANALYZER_USERS should take effect without waiting out
     // every live session.
-    res.json({ user: { ...user, callAnalyzer: mayUseCallAnalyzer(user) } });
+    res.json({ user: { ...user, callAnalyzer: mayUseCallAnalyzer(user), vacancy: mayUseVacancy(user) } });
   } catch {
     res.status(401).json({ error: 'Session expired' });
   }

@@ -87,6 +87,7 @@
         </div>
         <button data-tab="accounting"><span class="nav-ico">💰</span>Accounting</button>
         <button data-tab="leasing"><span class="nav-ico">🏘️</span>Leasing</button>
+        <button data-tab="vacancy"><span class="nav-ico">🪧</span>Vacancy Posting</button>
         <button data-tab="evictions"><span class="nav-ico">⚖️</span>Evictions</button>
         <button data-tab="collections"><span class="nav-ico">💵</span>Collections</button>
       </div>
@@ -1869,6 +1870,27 @@
   </section>
 
   <!-- ============ COLLECTIONS REVIEW (Rocío) ============ -->
+  <!-- Unit Vacancy Posting. Body is rendered by renderVacancy() in app.js;
+       this is only the chrome. Read-only toward AppFolio: the Realm-X prompt is
+       copied to the clipboard for a human to paste and confirm. -->
+  <section id="tab-vacancy" class="tab">
+    <div class="page-head">
+      <div>
+        <h2>Vacancy Posting</h2>
+        <p class="muted small">Which vacant units should be on the website and internet listings — max 3 per floor plan, per property.</p>
+      </div>
+      <div class="row-actions">
+        <button class="btn" id="vac-sync">↻ Sync from AppFolio</button>
+        <a class="btn btn-ghost" id="vac-export" href="/api/vacancy/export.csv">⬇ Export CSV</a>
+        <a class="btn btn-ghost" href="https://metricpropertymanagement.appfolio.com/buffered_reports/unit_vacancy?customize=true" target="_blank" rel="noopener">↗ Open report in AppFolio</a>
+      </div>
+    </div>
+    <p class="muted small" id="vac-synced">Loading…</p>
+    <div id="vac-kpi" class="kpi-row"></div>
+    <div id="vac-body"></div>
+    <div id="vac-log-wrap" style="margin-top:22px"></div>
+  </section>
+
   <section id="tab-collections" class="tab">
     <div class="col-wrap">
       <div class="col-hdr">
