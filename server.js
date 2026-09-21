@@ -4233,6 +4233,31 @@ function leasingWeekEnding(d) {
   day.setDate(day.getDate() + (6 - day.getDay())); // 0=Sun..6=Sat
   return day.toLocaleDateString('en-CA');
 }
+// week_ending of the most recent COMPLETE Sun–Sat week: the latest Saturday
+// strictly before today.
+//
+// The Portfolio Roll-Up used leasingWeekEnding(new Date()), which is the
+// Saturday of the week we are CURRENTLY IN — a week that has not happened yet.
+// Reported by Katie on Monday 2026-09-21, when the roll-up read 09/20 → 09/26:
+// a range that was one day old and five days in the future, so the table was
+// near-empty every Sunday through Saturday until the week filled in.
+//
+// On a Saturday this deliberately returns the PREVIOUS week rather than the one
+// ending today: at 9am Saturday the week is not over, and a roll-up that counts
+// a partial day looks like a collapse in performance. The week selector still
+// reaches any week, including the in-progress one.
+//
+// Computed in Lyndsay's timezone, not the server's. Render runs UTC, so after
+// 7pm Central `new Date()` is already tomorrow there — enough to roll the week
+// over a day early every Saturday evening.
+function leasingLastCompleteWeekEnding(nowIso) {
+  const today = nowIso || ctDateStr(0);            // YYYY-MM-DD in America/Chicago
+  const d = new Date(today + 'T00:00:00');
+  const back = d.getDay() === 6 ? 7 : d.getDay() + 1;   // 0=Sun..6=Sat
+  d.setDate(d.getDate() - back);
+  return d.toLocaleDateString('en-CA');
+}
+
 const leasingTruthy = v => v === true || v === 'true' || v === 'Yes' || v === 'yes' || v === 'Y' || v === 1 || v === '1';
 const leasingDateOnly = v => { if (v === '' || v == null) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-CA'); };
 
@@ -4482,7 +4507,7 @@ function leasingCountCalls(notes, weekStart, weekEnd) {
 // for the given week joined with current occupancy. Powers the native Goal Board.
 app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ week_ending: null, properties: [], totals: null, occupancy_synced: null });
-  const week_ending = req.query.week_ending || leasingWeekEnding(new Date());
+  const week_ending = req.query.week_ending || leasingLastCompleteWeekEnding();
   // Week is Sun–Sat; week_ending is the Saturday. Tours/apps/move-ins are counted
   // by their date within this inclusive range.
   const weekEndD = new Date(week_ending + 'T00:00:00');

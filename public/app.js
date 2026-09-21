@@ -582,12 +582,20 @@ async function leasingLoadGoalBoard(week) {
 }
 
 // ── AppFolio Leads Sync (Guest Card Interests) ──────────────────────────────
-// Default range = most recent full Sun–Sat week (Katie's week pattern).
+// Default range = most recent COMPLETE Sun–Sat week (Katie's week pattern),
+// matching leasingLastCompleteWeekEnding() on the server so the Leads panel and
+// the Portfolio Roll-Up never disagree about which week "last week" is.
+//
+// The old `(getDay() + 1) % 7` was right six days out of seven and wrong on
+// Saturday: it made sinceSat 0, so "last week" became the week ending TODAY —
+// an in-progress week reported as if it were finished.
 function leasingDefaultRange() {
   const now = new Date();
   const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const sinceSat = (d.getDay() + 1) % 7;          // 0=Sun..6=Sat → days since last Saturday
-  const lastSat = new Date(d); lastSat.setDate(d.getDate() - sinceSat);
+  // Days back to the last Saturday that has actually finished. On a Saturday go
+  // back a full week rather than counting today, which is still in progress.
+  const back = d.getDay() === 6 ? 7 : d.getDay() + 1;   // 0=Sun..6=Sat
+  const lastSat = new Date(d); lastSat.setDate(d.getDate() - back);
   const lastSun = new Date(lastSat); lastSun.setDate(lastSat.getDate() - 6);
   return { from: lastSun.toLocaleDateString('en-CA'), to: lastSat.toLocaleDateString('en-CA') };
 }
@@ -637,7 +645,9 @@ async function leasingLoadWeeks(selectWeek) {
   const ws = $('#leasing-week-select');
   if (ws) { ws.innerHTML = optsHtml('— recent weeks —'); if (selectWeek) ws.value = selectWeek; }
   const gb = $('#leasing-gb-week');
-  if (gb) { gb.innerHTML = optsHtml('— this week —'); if (selectWeek) gb.value = selectWeek; }
+  // Placeholder must match what the server actually defaults to when no
+  // week_ending is sent — the last COMPLETE week, not the one in progress.
+  if (gb) { gb.innerHTML = optsHtml('— last completed week —'); if (selectWeek) gb.value = selectWeek; }
   return weeks;
 }
 // Saturday (week_ending) of the Sun–Sat week that an ISO date falls in.
