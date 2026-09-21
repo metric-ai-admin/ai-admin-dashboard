@@ -30,7 +30,7 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       type: z.enum(['Lyndsay Review', 'To Review Together', 'Admin Request', 'Email Follow-up', 'Platform Build', 'Asana Import', 'Other'])
         .optional().describe('Type of task'),
       source: z.string().optional().describe('Where it came from (e.g. "Lyndsay", "Roxanne", email, WhatsApp)'),
-      priority: z.enum(['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '✅ Done']).optional(),
+      priority: z.enum(['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '⚪ Backlog', '✅ Done']).optional(),
       notes: z.string().optional().describe('Notes or extra context'),
     },
   }, async (params) => {
@@ -54,7 +54,7 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       title: z.string().optional(),
       type: z.enum(['Lyndsay Review', 'To Review Together', 'Admin Request', 'Email Follow-up', 'Platform Build', 'Asana Import', 'Other']).optional(),
       source: z.string().optional(),
-      priority: z.enum(['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '✅ Done']).optional().describe('Set to "✅ Done" to mark it complete.'),
+      priority: z.enum(['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '⚪ Backlog', '✅ Done']).optional().describe('Set to "✅ Done" to mark it complete, or "⚪ Backlog" to park it without deleting it.'),
       notes: z.string().optional(),
     },
   }, async ({ id, ...fields }) => {

@@ -294,6 +294,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .card.prio-critical { border-left: 3px solid var(--critical); }
 .card.prio-followup { border-left: 3px solid var(--warning); }
 .card.prio-inprogress { border-left: 3px solid var(--success); }
+.card.prio-backlog { border-left: 3px solid var(--border-accent); opacity: .72; }
+.card.prio-backlog:hover { opacity: 1; }
 .card.prio-done { border-left: 3px solid var(--text-muted); }
 
 /* ---------- Badges ---------- */
@@ -364,6 +366,10 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .kanban-column.col-followup .kanban-col-count { background: var(--warning-bg); color: var(--warning); }
 .kanban-column.col-inprogress .kanban-col-count { background: var(--success-bg); color: var(--success); }
 .kanban-column.col-done .kanban-col-count { background: var(--bg-surface); color: var(--text-secondary); }
+/* Backlog: parked work, visually recessive so it never competes with active columns. */
+.kanban-column.col-backlog .kanban-col-head { border-top-color: var(--border-accent); }
+.kanban-column.col-backlog .kanban-col-count { background: var(--bg-elevated); color: var(--text-secondary); }
+.kanban-column.col-backlog { opacity: .85; }
 .kanban-column.col-daily .kanban-col-head { border-top-color: #0ea5e9; }
 .kanban-column.col-daily .kanban-col-count { background: rgba(14,165,233,.15); color: #0ea5e9; }
 

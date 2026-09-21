@@ -1161,9 +1161,15 @@ const TASK_COLUMNS = [
   { key: '🔴 Critical', header: '🔴 Critical', pills: ['all', 'pending', 'critical'], collapsible: false, cls: 'col-critical' },
   { key: '🟡 Follow-up', header: '🟡 Follow-up', pills: ['all', 'pending'], collapsible: true, cls: 'col-followup' },
   { key: '🟢 In Progress', header: '🟢 In Progress', pills: ['all', 'pending'], collapsible: false, cls: 'col-inprogress' },
+  // Backlog is parked work. Deliberately absent from the 'pending' pill: it is
+  // not what anyone is working on, and mixing it in made Pending read as a
+  // to-do list nobody could finish. Collapsed by default, and only in "All".
+  { key: '⚪ Backlog', header: '⚪ Backlog', pills: ['all'], collapsible: true, cls: 'col-backlog' },
   { key: '✅ Done', header: '✅ Completed', pills: ['all', 'done'], collapsible: true, cls: 'col-done' },
 ];
-const PRIO_CLASS = { '🔴 Critical': 'prio-critical', '🟡 Follow-up': 'prio-followup', '🟢 In Progress': 'prio-inprogress', '✅ Done': 'prio-done' };
+const TASK_BACKLOG = '⚪ Backlog';
+const TASK_PRIORITY_OPTIONS = ['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', TASK_BACKLOG, '✅ Done'];
+const PRIO_CLASS = { '🔴 Critical': 'prio-critical', '🟡 Follow-up': 'prio-followup', '🟢 In Progress': 'prio-inprogress', '⚪ Backlog': 'prio-backlog', '✅ Done': 'prio-done' };
 
 let taskCache = [];
 let taskTimeFilter = 'today';
@@ -1222,7 +1228,7 @@ function renderTaskCard(t) {
       </details>
       <div class="card-actions">
         ${!isDone ? `<button class="btn-sm primary" data-act="done">✓ Mark Done</button>` : ''}
-        <select data-prio>${['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '✅ Done'].map(p => `<option ${p === t.priority ? 'selected' : ''}>${p}</option>`).join('')}</select>
+        <select data-prio>${TASK_PRIORITY_OPTIONS.map(p => `<option ${p === t.priority ? 'selected' : ''}>${p}</option>`).join('')}</select>
         <button class="btn-sm btn-danger" data-act="delete">🗑</button>
       </div>
     </div>`;
@@ -1245,6 +1251,10 @@ function renderTasks() {
   // date still shows on the day it was created.
   const inRange = (t, start, end) => {
     if (t.priority === '🔴 Critical') return true;
+    // Backlog is undated and often old, so a date window would filter it out of
+    // existence. It always passes; its column is collapsed and "All"-only, which
+    // is what keeps it out of the way.
+    if (t.priority === TASK_BACKLOG) return true;
     if (t.priority === '✅ Done') { const c = t.completed_at && localDateStr(t.completed_at); return c && c >= start && c <= end; }
     if (t.due_on && t.due_on >= start && t.due_on <= end) return true;
     const cd = localDateStr(t.created_at);
@@ -1259,12 +1269,14 @@ function renderTasks() {
     critical: baseList.filter(t => t.priority === '🔴 Critical').length,
     followup: baseList.filter(t => t.priority === '🟡 Follow-up').length,
     inprogress: baseList.filter(t => t.priority === '🟢 In Progress').length,
+    backlog: baseList.filter(t => t.priority === TASK_BACKLOG).length,
     done: baseList.filter(t => t.priority === '✅ Done').length,
   };
   $('#task-kpi-bar').innerHTML = [
     { label: 'Critical', count: kc.critical, cls: 'kpi-chip-red' },
     { label: 'Follow-up', count: kc.followup, cls: 'kpi-chip-amber' },
     { label: 'In Progress', count: kc.inprogress, cls: 'kpi-chip-blue' },
+    { label: 'Backlog', count: kc.backlog, cls: 'kpi-chip-gray' },
     { label: 'Done', count: kc.done, cls: 'kpi-chip-green' },
   ].filter(c => c.count > 0).map(c => `<span class="kpi-chip ${c.cls}"><span class="kpi-num">${c.count}</span> ${c.label}</span>`).join('');
 
@@ -1274,7 +1286,9 @@ function renderTasks() {
   // Status pill counts (time-filtered)
   const counts = {
     all: baseList.length,
-    pending: baseList.filter(t => t.priority !== '✅ Done').length,
+    // Pending = active work only. Backlog is excluded on purpose: it is parked,
+    // and counting it here made the number read as an unfinishable to-do list.
+    pending: baseList.filter(t => t.priority !== '✅ Done' && t.priority !== TASK_BACKLOG).length,
     critical: baseList.filter(t => t.priority === '🔴 Critical').length,
     done: baseList.filter(t => t.priority === '✅ Done').length,
   };

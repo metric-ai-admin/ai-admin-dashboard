@@ -622,6 +622,30 @@ async function asanaSyncUpdate(gid, fields) {
   if (!ASANA_TOKEN || !gid) return;
   await asanaRequest('PUT', `/tasks/${encodeURIComponent(gid)}`, fields);
 }
+// Post a comment (a "story") on an Asana task. Used to mirror dashboard notes
+// and backlog moves, so the Asana task carries the same history Arturo sees.
+async function asanaAddComment(gid, textBody) {
+  if (!ASANA_TOKEN || !gid || !textBody) return;
+  await asanaRequest('POST', `/tasks/${encodeURIComponent(gid)}/stories`, { text: textBody });
+}
+
+// "Low priority" has no home in this workspace: Team's Priorities Tracker has no
+// custom fields at all (checked 2026-09-21 — none on the project, none on its
+// tasks, none in workspace 1198746649114657), and its sections are PEOPLE, not
+// statuses, so moving a backlogged task out of Arturo's section would lose the
+// only organisation the board has. A tag is the non-destructive equivalent.
+// Unset by default: resolving it would mean creating a tag in a shared
+// workspace, which is Arturo's call, not something a deploy should do silently.
+// Set ASANA_BACKLOG_TAG_GID to switch it on; the comment is posted either way.
+const ASANA_BACKLOG_TAG_GID = process.env.ASANA_BACKLOG_TAG_GID || '';
+async function asanaSyncBacklog(gid) {
+  if (!ASANA_TOKEN || !gid) return;
+  await asanaAddComment(gid, 'Moved to backlog (from the AI Admin Dashboard Task Manager).');
+  if (!ASANA_BACKLOG_TAG_GID) return;
+  try { await asanaRequest('POST', `/tasks/${encodeURIComponent(gid)}/addTag`, { tag: ASANA_BACKLOG_TAG_GID }); }
+  catch (err) { console.error('[asana-sync] backlog tag failed:', err.message); }
+}
+
 async function asanaSyncComplete(gid) {
   if (!ASANA_TOKEN || !gid) return;
   // Follow first so the completion is attributed/visible, then mark complete.
@@ -637,7 +661,26 @@ async function asanaSyncComplete(gid) {
 // items, admin requests from Lyndsay, and Arturo's own to-dos.
 
 const TASK_TYPES = ['Lyndsay Review', 'To Review Together', 'Admin Request', 'Email Follow-up', 'Platform Build', 'Asana Import', 'Other'];
-const TASK_PRIORITIES = ['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '✅ Done'];
+// ⚪ Backlog = parked, not abandoned: real work that is not being worked now.
+// Kept out of the active columns and the Pending count so the board reflects
+// what is actually live. Must stay in step with TASK_COLUMNS in public/app.js,
+// the quick-add <select> in public/index.html, and the enums in mcp-tools.cjs.
+const TASK_PRIORITIES = ['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '⚪ Backlog', '✅ Done'];
+const TASK_BACKLOG = '⚪ Backlog';
+
+// Who is acting, for Asana comment attribution. These task routes are
+// deliberately unauthenticated (the MCP tools and local scripts post to them),
+// so the cookie is read opportunistically and never required.
+function actorName(req) {
+  try {
+    const token = req.cookies?.dashboardToken;
+    if (token) return jwt.verify(token, JWT_SECRET).name || 'Dashboard';
+  } catch { /* expired or absent — fall through */ }
+  return 'Dashboard';
+}
+// Central-time stamp for comment bodies, so Asana readers see Austin time
+// rather than Render's UTC.
+const commentStamp = () => new Date().toLocaleString('en-US', { timeZone: LYNDSAY_TIMEZONE, dateStyle: 'medium', timeStyle: 'short' });
 
 function migrateNotes(task) {
   if (!task.noteHistory) {
@@ -680,6 +723,8 @@ app.post('/api/tasks', async (req, res) => {
   try {
     const gid = await asanaSyncCreate(task);
     if (gid) { task.asana_gid = gid; await writeJSON(TASKS_FILE, tasks); }
+    // Created straight into the backlog — mirror that, don't leave it looking active.
+    if (gid && task.priority === TASK_BACKLOG) await asanaSyncBacklog(gid);
   } catch (err) { console.error('[asana-sync] create failed:', err.message); }
   res.json(task);
 });
@@ -689,15 +734,20 @@ app.put('/api/tasks/:id', async (req, res) => {
   const idx = tasks.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Task not found' });
 
+  // Snapshot what Asana currently believes, so only real changes are pushed.
+  const before = { title: tasks[idx].title, due_on: tasks[idx].due_on || null, priority: tasks[idx].priority };
+
   const allowed = ['title', 'type', 'source', 'priority', 'due_on'];
   for (const k of allowed) {
     if (k in req.body) tasks[idx][k] = req.body[k];
   }
+  let newNote = null;
   if ('notes' in req.body && req.body.notes && req.body.notes.trim()) {
     migrateNotes(tasks[idx]);
     const note = { text: req.body.notes.trim(), createdAt: new Date().toISOString() };
     tasks[idx].noteHistory.push(note);
     tasks[idx].notes = req.body.notes.trim();
+    newNote = note.text;
   }
 
   if (req.body.priority === '✅ Done' && !tasks[idx].completed_at) {
@@ -712,7 +762,16 @@ app.put('/api/tasks/:id', async (req, res) => {
   if (t.asana_gid) {
     try {
       if (t.completed_at) await asanaSyncComplete(t.asana_gid);
-      await asanaSyncUpdate(t.asana_gid, { name: t.title, notes: t.notes || '', ...(t.completed_at ? {} : { completed: false }) });
+      // name always; due_on only when it actually changed, so clearing a date in
+      // the dashboard clears it in Asana but an untouched date is left alone.
+      const fields = { name: t.title, ...(t.completed_at ? {} : { completed: false }) };
+      if ((t.due_on || null) !== before.due_on) fields.due_on = t.due_on || null;
+      await asanaSyncUpdate(t.asana_gid, fields);
+      // Notes go in as COMMENTS now, not by overwriting the Asana description.
+      // The old behaviour replaced `notes` wholesale on every edit, so each note
+      // destroyed the one before it and anything written in Asana directly.
+      if (newNote) await asanaAddComment(t.asana_gid, `[${commentStamp()}] ${actorName(req)}: ${newNote}`);
+      if (t.priority === TASK_BACKLOG && before.priority !== TASK_BACKLOG) await asanaSyncBacklog(t.asana_gid);
     } catch (err) { console.error('[asana-sync] update failed:', err.message); }
   }
   res.json(tasks[idx]);
@@ -744,6 +803,11 @@ app.post('/api/tasks/:id/notes', async (req, res) => {
   tasks[idx].noteHistory.push({ text, createdAt: new Date().toISOString() });
   tasks[idx].notes = text;
   await writeJSON(TASKS_FILE, tasks);
+  // Mirror the note to Asana as a comment — non-blocking, the note is saved.
+  if (tasks[idx].asana_gid) {
+    try { await asanaAddComment(tasks[idx].asana_gid, `[${commentStamp()}] ${actorName(req)}: ${text}`); }
+    catch (err) { console.error('[asana-sync] note comment failed:', err.message); }
+  }
   res.json(tasks[idx]);
 });
 
