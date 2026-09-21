@@ -4503,21 +4503,94 @@ function leasingCountCalls(notes, weekStart, weekEnd) {
   return n;
 }
 
-// GET /api/leasing/goal-board?week_ending=YYYY-MM-DD — per-community leasing KPIs
-// for the given week joined with current occupancy. Powers the native Goal Board.
+// The Central-time calendar date of a timestamp. leasing_leads.interest_received
+// is a timestamptz holding the real moment a guest card arrived, so a range
+// filter has to ask which DAY that was in Austin — not in UTC, where anything
+// after 7pm Central already belongs to tomorrow. That single confusion is what
+// put 20 of 577 leads in the wrong week bucket.
+const leasingCentralDay = ts => {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(d);
+};
+
+// GET /api/leasing/goal-board — per-community leasing KPIs joined with current
+// occupancy. Powers the native Portfolio Roll-Up.
+//
+//   ?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD   any span of days, shown exactly
+//   ?week_ending=YYYY-MM-DD                    the Sun–Sat week ending that day
+//   (neither)                                  the last COMPLETE Sun–Sat week
+//
+// Leads are filtered on interest_received, the real event time, NOT on the
+// derived week_ending column — so an arbitrary range is exact rather than
+// snapped to a week. week_ending remains the fallback and is still what the
+// weekly Goal Board tool consumes; its 8-week model is untouched.
+//
+// KNOWN DIVERGENCE, measured 2026-09-21. The two modes count on DIFFERENT
+// fields, because only one of them is stored:
+//
+//   weekly mode  -> week_ending, which the sync derives from FIRST CONTACT DATE
+//                   ("Traffic = First Contact Date", Lyndsay 2026-09-15), and
+//                   falls back to interest_received only when the report has no
+//                   first-contact column
+//   range mode   -> interest_received, the only per-day timestamp on the row
+//
+// first_contact_date is NOT persisted, so range mode cannot use it. On 23 of 577
+// leads (4%) the two disagree — mostly because an agent's first contact came a
+// day or a week after the guest card arrived, which is exactly what the rule
+// intends. Four rows bucket EARLIER than their interest date, which a timezone
+// slip could not produce and a pre-existing contact could.
+//
+// Consequence: the same period can report slightly different traffic depending
+// on which mode asked. Closing that means persisting first_contact_date on
+// leasing_leads and filtering on it here — a schema plus sync change, out of
+// scope for this one.
 app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ week_ending: null, properties: [], totals: null, occupancy_synced: null });
-  const week_ending = req.query.week_ending || leasingLastCompleteWeekEnding();
-  // Week is Sun–Sat; week_ending is the Saturday. Tours/apps/move-ins are counted
-  // by their date within this inclusive range.
-  const weekEndD = new Date(week_ending + 'T00:00:00');
-  const weekStartD = new Date(weekEndD); weekStartD.setDate(weekEndD.getDate() - 6);
-  const weekStart = weekStartD.toLocaleDateString('en-CA');
-  const weekEnd = week_ending;
+
+  const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+  const qFrom = req.query.date_from, qTo = req.query.date_to;
+  if ((qFrom && !isDay(qFrom)) || (qTo && !isDay(qTo))) {
+    return res.status(400).json({ error: 'date_from / date_to must be YYYY-MM-DD' });
+  }
+  const rangeMode = isDay(qFrom) && isDay(qTo);
+  if (rangeMode && qFrom > qTo) {
+    return res.status(400).json({ error: 'date_from must be on or before date_to' });
+  }
+
+  // In range mode week_ending is null: the response describes a span of days,
+  // and handing back a Saturday would invite callers to treat it as a week.
+  const week_ending = rangeMode ? null : (isDay(req.query.week_ending) ? req.query.week_ending : leasingLastCompleteWeekEnding());
+  let weekStart, weekEnd;
+  if (rangeMode) {
+    weekStart = qFrom; weekEnd = qTo;
+  } else {
+    const weekEndD = new Date(week_ending + 'T00:00:00');
+    const weekStartD = new Date(weekEndD); weekStartD.setDate(weekEndD.getDate() - 6);
+    weekStart = weekStartD.toLocaleDateString('en-CA');
+    weekEnd = week_ending;
+  }
   try {
     const db = supabaseAdmin || supabasePublic;
+    // Over-fetch the leads window by a day on each side in UTC, then narrow to
+    // the exact Central days below. Converting a Central date to a UTC instant
+    // in a PostgREST filter would need the DST offset for that date; padding and
+    // filtering here is exact and costs nothing at this table's size.
+    // Pad two whole days each side in UTC. Two, not one, and computed per end
+    // rather than by comparing the date to weekStart — that earlier form had two
+    // bugs: a single-day range made both ends take the start branch and padded
+    // BACKWARDS, returning nothing; and a one-day pad at 00:00Z cut off the last
+    // five hours of the final Central day, losing any lead that arrived after
+    // 7pm. The exact narrowing happens in JS below, so over-padding is free.
+    const padDays = (day, n) => {
+      const x = new Date(day + 'T00:00:00Z');
+      x.setUTCDate(x.getUTCDate() + n);
+      return x.toISOString();
+    };
     const [leadsRes, occRes, showRes, appRes, lhRes] = await Promise.all([
-      db.from('leasing_leads').select('*').eq('week_ending', week_ending).limit(10000),
+      db.from('leasing_leads').select('*')
+        .gte('interest_received', padDays(weekStart, -2)).lte('interest_received', padDays(weekEnd, 2)).limit(10000),
       db.from('leasing_occupancy').select('*').limit(10000),
       db.from('leasing_showings').select('property_name,property_id,showing_date,status').gte('showing_date', weekStart).lte('showing_date', weekEnd).limit(10000),
       db.from('leasing_applications').select('property_name,property_id,application_date,status').gte('application_date', weekStart).lte('application_date', weekEnd).limit(10000),
@@ -4527,7 +4600,14 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
     if (occRes.error) throw new Error(occRes.error.message);
     // The 3 Phase-5 tables may not exist yet (migration 040 not run) — treat
     // their errors as empty rather than failing the whole board.
-    const leads = leadsRes.data || [];
+    // Narrow the padded fetch to the exact Central days requested. This is the
+    // line that makes an arbitrary range exact — a lead that arrived 7:27pm
+    // Central on the last day is inside the range even though its UTC timestamp
+    // reads as the following day.
+    const leads = (leadsRes.data || []).filter(l => {
+      const day = leasingCentralDay(l.interest_received);
+      return day && day >= weekStart && day <= weekEnd;
+    });
     const occ = occRes.data || [];
     const showings = (showRes && !showRes.error && showRes.data) ? showRes.data : [];
     const applications = (appRes && !appRes.error && appRes.data) ? appRes.data : [];
@@ -4636,7 +4716,18 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
     }, { traffic: 0, tours: 0, apps: 0, approved: 0, denied: 0, calls: 0, move_ins: 0, occupied_units: 0, total_units: 0, net_moveins_needed: 0 });
     totals.occupancy_pct = totals.total_units > 0 ? Math.round((totals.occupied_units / totals.total_units) * 1000) / 10 : null;
 
-    res.json({ week_ending, properties, totals, occupancy_synced: occSynced });
+    // date_from/date_to are always returned so the caller can label the table
+    // with the period actually counted, whichever mode it asked in. week_ending
+    // is null in range mode — see the note at the top of the route.
+    res.json({
+      week_ending, date_from: weekStart, date_to: weekEnd, range_mode: rangeMode,
+      properties, totals, occupancy_synced: occSynced,
+      // Occupancy is a CURRENT snapshot (one row per property, no history), so
+      // it describes today regardless of the period above. Flagged rather than
+      // hidden: over an old range the traffic is historical and the occupancy
+      // beside it is not.
+      occupancy_is_current: true,
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

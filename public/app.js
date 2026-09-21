@@ -499,17 +499,24 @@ async function leasingSyncOccupancy() {
     if (btn) { btn.disabled = false; btn.textContent = label; }
   }
 }
-async function leasingLoadGoalBoard(week) {
+// Loads the Portfolio Roll-Up. Pass a week_ending string for weekly mode, or
+// { from, to } to show an exact span of days.
+async function leasingLoadGoalBoard(week, range) {
   const el = $('#leasing-gb-table');
   if (!el) return;
   el.innerHTML = '<p class="small muted">Loading goal board…</p>';
   try {
-    const qs = week ? ('?week_ending=' + encodeURIComponent(week)) : '';
+    const qs = (range && range.from && range.to)
+      ? ('?date_from=' + encodeURIComponent(range.from) + '&date_to=' + encodeURIComponent(range.to))
+      : (week ? ('?week_ending=' + encodeURIComponent(week)) : '');
     const b = await api('/api/leasing/goal-board' + qs);
     const props = b.properties || [];
-    // Map the API response into the board's injectWeekData() shape and push it
-    // into the full Goal Board iframe so it renders this week's live data.
-    if (props.length) {
+    // Push into the Goal Board iframe ONLY in weekly mode. That tool models the
+    // season as 8–11 Sun–Sat columns; feeding it an arbitrary span would write
+    // range totals into a week column and corrupt the goal tracking. In range
+    // mode the native table below reflects the range and the iframe keeps
+    // showing whichever week it last loaded.
+    if (props.length && b.week_ending) {
       leasingBoardPayload = {
         week_ending: b.week_ending,
         properties: props.map(p => ({
@@ -527,7 +534,13 @@ async function leasingLoadGoalBoard(week) {
     const status = $('#leasing-gb-status');
     if (status) {
       const occSync = b.occupancy_synced ? new Date(b.occupancy_synced).toLocaleString() : 'never';
-      status.textContent = `Week ending ${b.week_ending || '—'} · occupancy last synced ${occSync}`;
+      // Name the period actually counted. In range mode say so explicitly —
+      // the occupancy columns are a CURRENT snapshot either way, which is easy
+      // to misread beside historical traffic.
+      const period = b.range_mode
+        ? `${b.date_from} → ${b.date_to} (exact range)`
+        : `Week ending ${b.week_ending || '—'}`;
+      status.textContent = `${period} · occupancy is current, last synced ${occSync}`;
     }
     if (!props.length) { el.innerHTML = '<p class="small muted">No leasing or occupancy data yet. Sync from AppFolio and Sync Occupancy to populate the board.</p>'; return; }
     const num = v => (v == null ? '—' : v);
@@ -632,9 +645,17 @@ function leasingWireSync() {
   });
   leasingLoadWeeks();
 }
+// Changing From/To now drives the Portfolio Roll-Up as well as the leads
+// summary, and shows the range EXACTLY as picked rather than snapping it to the
+// nearest Sun–Sat week. The week dropdown is cleared so the panel cannot show a
+// week selection alongside a table that is not showing that week.
 function leasingLoadRange() {
   const from = $('#leasing-sync-from')?.value, to = $('#leasing-sync-to')?.value;
-  if (from && to) leasingLoadLeads({ date_from: from, date_to: to });
+  if (!from || !to) return;
+  if (from > to) { toast('From date must be on or before To date.', 'error'); return; }
+  leasingLoadLeads({ date_from: from, date_to: to });
+  const gb = $('#leasing-gb-week'); if (gb) gb.value = '';
+  leasingLoadGoalBoard('', { from, to });
 }
 // Populate BOTH week selectors (#leasing-week-select in the Leads panel and
 // #leasing-gb-week in the Portfolio Roll-Up) from the distinct lead weeks, and
