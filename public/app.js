@@ -474,11 +474,20 @@ async function leasingSyncAll() {
       catch (e) { toast(`${name} sync failed: ${e.message}`, 'error'); }
     }
     toast(`Synced: ${done.join(', ') || 'nothing'} ✅`, 'success');
-    // Same rule as the Leads sync — the week holding most of the range, not the
-    // week the To date happens to start.
-    const wk = (from && to) ? leasingWeekForRange(from, to).week : ($('#leasing-gb-week')?.value || '');
-    await leasingLoadWeeks(wk || undefined);
-    await leasingLoadGoalBoard(wk || '');
+    // Same as the Leads sync: iframe gets the dominant week, the native table
+    // gets the exact range. With no range picked, fall back to whatever week the
+    // dropdown holds.
+    if (from && to) {
+      const wk = leasingWeekForRange(from, to).week;
+      await leasingLoadWeeks();
+      await leasingLoadGoalBoard(wk);                 // iframe
+      await leasingLoadGoalBoard('', { from, to });   // native table, exact
+      const gb = $('#leasing-gb-week'); if (gb) gb.value = '';
+    } else {
+      const wk = $('#leasing-gb-week')?.value || '';
+      await leasingLoadWeeks(wk || undefined);
+      await leasingLoadGoalBoard(wk);
+    }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = label; }
   }
@@ -725,20 +734,29 @@ async function leasingSyncFromAppFolio() {
     // Interim, replaced below once the board has loaded — the reloads take a
     // moment and an empty status bar reads like nothing happened.
     if (status) status.textContent = `Synced ${r.synced} leads for ${from} → ${to}. Loading week…`;
-    // Move the History-week dropdown and the Roll-Up to the week this sync
-    // actually filled, so one action leaves both halves of the panel agreeing.
+    // The Roll-Up shows the range EXACTLY as picked. This used to map the range
+    // onto its dominant Sun–Sat week, which was the right answer only while the
+    // API could not do better — syncing 09/14 → 09/20 then reported the week
+    // ending 09/19 (52 leads) instead of the 54 actually in the range.
+    //
+    // Two loads on purpose, and the order matters:
+    //   1. weekly, to refresh the Goal Board iframe below, whose 8-week model
+    //      only understands Sun–Sat columns and would otherwise sit on whatever
+    //      week it last had;
+    //   2. range, which re-renders the native table exactly and is skipped by
+    //      the iframe injection (it only fires when week_ending is present).
     const { week: syncedWeek, spans } = leasingWeekForRange(from, to);
-    await leasingLoadWeeks(syncedWeek);
-    await leasingLoadGoalBoard(syncedWeek);
-    leasingLoadLeads({ week_ending: syncedWeek });
-    // Say which week the board moved to. A range that is not one Sun–Sat week
-    // lands in more than one bucket, and the board can only show one of them —
-    // better to name it than to leave the user wondering why the numbers below
-    // do not match the dates above.
+    await leasingLoadWeeks();                      // refresh the options list
+    await leasingLoadGoalBoard(syncedWeek);        // iframe -> the synced week
+    await leasingLoadGoalBoard('', { from, to });  // native table -> exact range
+    // Dropdown cleared: the table is showing a range, and leaving a week
+    // selected beside it is the mismatch this whole thread has been about.
+    const gb = $('#leasing-gb-week'); if (gb) gb.value = '';
+    leasingLoadLeads({ date_from: from, date_to: to });
     if (status) {
       status.textContent = `Synced ${r.synced} leads for ${from} → ${to}. `
-        + `Roll-Up showing week ending ${syncedWeek}`
-        + (spans > 1 ? ` — that range covers ${spans} weeks, pick another above to see the rest.` : '.');
+        + `Roll-Up showing that exact range.`
+        + (spans > 1 ? ` The weekly Goal Board below shows week ending ${syncedWeek}.` : '');
     }
   } catch (err) {
     toast(err.message, 'error');
