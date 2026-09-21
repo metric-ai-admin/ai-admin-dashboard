@@ -63,13 +63,30 @@ const isPosted = row => row.posted_to_website === 'Yes' || row.posted_to_interne
  * is populated for most of them, then to a marker that keeps them separate
  * from genuinely-typed units.
  */
-function floorPlanKey(row) {
+function floorPlanKey(row, normalize) {
   const type = String(row.unit_type || '').trim();
-  if (type) return type;
+  if (type) return normalize ? normalize(type) : type;
   const bb = String(row.bed_and_bath || '').trim();
   if (bb) return `${bb} (by bed/bath)`;
   return '(unspecified)';
 }
+
+/**
+ * Optional normalizer that collapses per-floor variants of one layout.
+ *
+ * AppFolio's unit_type encodes the floor at some properties: Windy Hill has
+ * "One Bedroom / One Bath 1st Floor", "… 2nd Floor" and "… 3rd Floor" for what
+ * is one floor plan. Left alone, the 3-per-floor-plan cap allows NINE postings
+ * there instead of three.
+ *
+ * OPEN QUESTION with Lyndsay as of 2026-09-21 — is a floor plan the unit_type
+ * verbatim, or the layout regardless of floor? Not enabled by default, because
+ * turning it on takes Windy Hill's one-bedrooms from 3 over cap to 13 and would
+ * quietly multiply the removals. Pass it as `floorPlanNormalizer` (or set
+ * VACANCY_COLLAPSE_FLOORS=true at the route) once she decides.
+ */
+const collapseFloorVariants = type =>
+  String(type || '').replace(/\s*\b(\d+(st|nd|rd|th)|ground|basement|top)\s+floor\b/i, '').replace(/\s{2,}/g, ' ').trim();
 
 /**
  * Rule 3 — priority tier. Lower is better.
@@ -169,7 +186,7 @@ function analyzeVacancy(rows, opts = {}) {
   // Group by property + floor plan, rank, then split at the cap.
   const groups = new Map();
   for (const row of pool) {
-    const key = `${row.property_name || row.property || '?'}||${floorPlanKey(row)}`;
+    const key = `${row.property_name || row.property || '?'}||${floorPlanKey(row, opts.floorPlanNormalizer)}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
   }
@@ -241,6 +258,7 @@ module.exports = {
   analyzeVacancy,
   classifyDescription,
   floorPlanKey,
+  collapseFloorVariants,
   priorityTier,
   compareRows,
   removalIdList,

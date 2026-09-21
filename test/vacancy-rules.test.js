@@ -208,6 +208,30 @@ t('different bed/bath do not share a group', () => {
   assert.strictEqual(r.stats.floorPlanGroups, 2);
 });
 
+console.log('\nFloor-plan collapse (opt-in, pending Lyndsay)');
+t('collapseFloorVariants strips the floor suffix', () => {
+  assert.strictEqual(V.collapseFloorVariants('One Bedroom / One Bath 1st Floor'), 'One Bedroom / One Bath');
+  assert.strictEqual(V.collapseFloorVariants('One Bedroom / One Bath 3rd Floor'), 'One Bedroom / One Bath');
+  assert.strictEqual(V.collapseFloorVariants('Two Bedroom / Two Baths Medium 2nd Floor'), 'Two Bedroom / Two Baths Medium');
+});
+t('collapseFloorVariants leaves other names alone', () => {
+  assert.strictEqual(V.collapseFloorVariants('A2'), 'A2');
+  assert.strictEqual(V.collapseFloorVariants('1 Bedroom Renovated'), '1 Bedroom Renovated');
+});
+t('opting in merges the per-floor groups', () => {
+  const mk = (id, type) => unit(id, { unit_type: type, rent_ready: 'Yes', posted_to_website: 'Yes' });
+  const rows = [
+    mk(1401, 'One Bed / One Bath 1st Floor'), mk(1402, 'One Bed / One Bath 1st Floor'),
+    mk(1403, 'One Bed / One Bath 2nd Floor'), mk(1404, 'One Bed / One Bath 2nd Floor'),
+  ];
+  const off = V.analyzeVacancy(rows, { today: TODAY, isExcludedProperty });
+  assert.strictEqual(off.stats.floorPlanGroups, 2);
+  assert.strictEqual(off.remove.length, 0, 'two groups of two — nothing over cap');
+  const on = V.analyzeVacancy(rows, { today: TODAY, isExcludedProperty, floorPlanNormalizer: V.collapseFloorVariants });
+  assert.strictEqual(on.stats.floorPlanGroups, 1);
+  assert.strictEqual(on.remove.length, 1, 'one group of four — the 4th is over cap');
+});
+
 console.log('\nOutput format');
 t('removalIdList is bare comma-separated numeric ids', () => {
   const rows = [

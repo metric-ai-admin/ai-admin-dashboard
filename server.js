@@ -4458,6 +4458,144 @@ app.get('/evictions/app', requireMetricAccess, (req, res) => {
 });
 
 // =====================================================================
+// MODULE — UNIT VACANCY POSTING
+// =====================================================================
+// Decides which units to pull from / put on AppFolio website+internet
+// postings, from the unit_vacancy report. The rules live in vacancy-rules.js
+// as pure functions; everything here is plumbing: fetch rows, run them, log
+// what was applied.
+//
+// READ-ONLY toward AppFolio. Nothing here removes a posting. The output is a
+// unit-ID list a human pastes into Realm-X and confirms, which is deliberate:
+// this touches live marketing inventory, and a ranking bug that auto-confirmed
+// could unlist a whole property before anyone noticed.
+const vacancyRules = require('./vacancy-rules.js');
+const afReportsForVacancy = require('./appfolio-reports.js');
+
+// Narrower than admin, same pattern as the Call Analyzer. Confirmed 2026-09-21:
+// Arturo and Lyndsay only — explicitly NOT Jay, who became an admin that day.
+// Live marketing listings are too sensitive for role-wide access until Lyndsay
+// has reviewed a few runs.
+const VACANCY_USERS = (process.env.VACANCY_USERS || 'arturo,lyndsay')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const mayUseVacancy = user => VACANCY_USERS.includes(String(user?.username || '').toLowerCase());
+function requireVacancy(req, res, next) {
+  if (!mayUseVacancy(req.user)) return res.status(403).json({ error: 'Access denied' });
+  next();
+}
+
+// Floor-plan collapsing is OFF until Lyndsay rules on it — see
+// collapseFloorVariants. Flipping VACANCY_COLLAPSE_FLOORS=true on Render
+// changes the answer materially (Windy Hill's one-bedrooms go from 3 over cap
+// to 13), so it is an explicit switch, not a default.
+const VACANCY_COLLAPSE_FLOORS = String(process.env.VACANCY_COLLAPSE_FLOORS || '').toLowerCase() === 'true';
+
+const VACANCY_LOG_FILE = path.join(DATA_DIR, 'vacancy_applied.json');
+
+function runVacancyRules(rows) {
+  return vacancyRules.analyzeVacancy(rows, {
+    today: new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE }),
+    isExcludedProperty: propertyIsExcluded,
+    floorPlanNormalizer: VACANCY_COLLAPSE_FLOORS ? vacancyRules.collapseFloorVariants : null,
+  });
+}
+
+// Shared by the analyze and export routes. `refresh` pulls from AppFolio first;
+// otherwise the last synced copy is used and its age is reported, so the UI can
+// say how stale it is rather than implying it is live.
+async function vacancyAnalysis({ refresh = false } = {}) {
+  let syncError = null;
+  if (refresh) {
+    try { await afReportsForVacancy.syncReport('unit_vacancy'); }
+    catch (err) { syncError = err.message; }   // fall back to the synced copy
+  }
+  const data = await afReportsForVacancy.readReportData('unit_vacancy');
+  if (!data) return { error: 'unit_vacancy has never synced. Run a sync from the Reports page first.', syncError };
+  const result = runVacancyRules(data.rows || []);
+  return {
+    ...result,
+    realmXPrompt: vacancyRules.realmXPrompt(result),
+    removalIds: vacancyRules.removalIdList(result),
+    meta: {
+      syncedAt: data.fetchedAt || null,   // the envelope's field is fetchedAt
+      truncated: !!data.truncated,
+      rowCount: (data.rows || []).length,
+      collapseFloorPlans: VACANCY_COLLAPSE_FLOORS,
+      maxPerFloorPlan: vacancyRules.MAX_PER_FLOOR_PLAN,
+      syncError,
+    },
+  };
+}
+
+// Analyze the last synced report. ?refresh=1 pulls fresh from AppFolio first.
+app.get('/api/vacancy/analyze', requireAuth, requireRole('admin'), requireVacancy, async (req, res) => {
+  try {
+    const out = await vacancyAnalysis({ refresh: req.query.refresh === '1' });
+    if (out.error) return res.status(409).json(out);
+    res.json(out);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// CSV of every decision, including the ones we took no action on — the excluded
+// and needs-review rows are the ones Lyndsay will want to audit first.
+app.get('/api/vacancy/export.csv', requireAuth, requireRole('admin'), requireVacancy, async (req, res) => {
+  try {
+    const out = await vacancyAnalysis({ refresh: false });
+    if (out.error) return res.status(409).json(out);
+    const rows = [
+      ...out.remove.map(r => ({ action: 'REMOVE', ...r })),
+      ...out.add.map(r => ({ action: 'ADD', ...r })),
+      ...out.needsReview.map(r => ({ action: 'NEEDS REVIEW', ...r })),
+      ...out.excluded.map(r => ({ action: 'EXCLUDED', ...r })),
+    ].map(r => ({
+      action: r.action,
+      unit_id: r.unit_id,
+      property: r._property || r.property_name || '',
+      floor_plan: r._floorPlan || r.unit_type || '',
+      unit: r.unit || '',
+      unit_status: r.unit_status || '',
+      rent_ready: r.rent_ready || '',
+      ready_for_showing_on: r.ready_for_showing_on || '',
+      posted_to_website: r.posted_to_website || '',
+      posted_to_internet: r.posted_to_internet || '',
+      tier: r._tier || '',
+      reason: r._reason || '',
+    }));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="vacancy-posting-${out.meta.syncedAt ? String(out.meta.syncedAt).slice(0, 10) : 'latest'}.csv"`);
+    res.send(afReportsForVacancy.toCSV(rows));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Audit trail. The dashboard never applies anything itself — this records that
+// a human pasted a batch into Realm-X, so a bad run can be identified and the
+// affected units put back. Confirmed requirement, 2026-09-21.
+app.post('/api/vacancy/applied', requireAuth, requireRole('admin'), requireVacancy, async (req, res) => {
+  try {
+    const ids = String(req.body?.unit_ids || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (!ids.length) return res.status(400).json({ error: 'unit_ids required' });
+    const log = await readJSON(VACANCY_LOG_FILE, []);
+    const entry = {
+      at: new Date().toISOString(),
+      by: req.user?.name || req.user?.username || 'unknown',
+      unit_ids: ids,
+      count: ids.length,
+      prompt: req.body?.prompt || '',
+      note: req.body?.note || '',
+    };
+    log.push(entry);
+    await writeJSON(VACANCY_LOG_FILE, log.slice(-500));
+    await logActivity({ kind: 'vacancy_applied', count: ids.length, by: entry.by });
+    res.json({ ok: true, entry });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/vacancy/applied', requireAuth, requireRole('admin'), requireVacancy, async (req, res) => {
+  const log = await readJSON(VACANCY_LOG_FILE, []);
+  res.json(log.slice(-50).reverse());
+});
+
+// =====================================================================
 // LEASING — Weekly Leasing Goal Board (Katie -> Lyndsay/Kara/Bekah)
 // =====================================================================
 // Katie fills out the goal board (public/tools/weekly_leasing_goal_board.html,
