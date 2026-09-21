@@ -327,6 +327,27 @@ function requireRole(...roles) {
   };
 }
 
+// Call Analyzer is narrower than admin.
+//
+// Call transcripts and grades are employee performance data about named staff,
+// sitting alongside resident PII, so on 2026-09-18 the tab was cut to Arturo and
+// Lyndsay. Until 2026-09-21 "admin" and "may see the Call Analyzer" were the
+// same thing, so that restriction was really just a headcount of admins. Jay
+// became an admin on 2026-09-21 without the Call Analyzer, so the two are now
+// separated and the named allowlist is the actual lock.
+//
+// Admin is still required on top of this — being listed here is not a way in.
+// To grant someone access, add their username here; overridable per environment
+// via CALL_ANALYZER_USERS (comma-separated usernames) without a deploy.
+const CALL_ANALYZER_USERS = (process.env.CALL_ANALYZER_USERS || 'arturo,lyndsay')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const mayUseCallAnalyzer = user =>
+  CALL_ANALYZER_USERS.includes(String(user?.username || '').toLowerCase());
+function requireCallAnalyzer(req, res, next) {
+  if (!mayUseCallAnalyzer(req.user)) return res.status(403).json({ error: 'Access denied' });
+  next();
+}
+
 // ---- POST /api/auth/login --------------------------------------------------
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -352,7 +373,9 @@ app.post('/api/auth/login', async (req, res) => {
     if (!dbUser.active) return res.status(403).json({ error: 'Account inactive — contact Arturo' });
 
     // 3. Issue JWT in HttpOnly cookie (7 days)
-    const payload = { userId: dbUser.id, email: dbUser.email, username: dbUser.username, name: dbUser.name, role: dbUser.role, agentName: dbUser.agent_name };
+    // callAnalyzer travels with the session so the client can hide the tab without
+    // mirroring the allowlist — the endpoints enforce it regardless.
+    const payload = { userId: dbUser.id, email: dbUser.email, username: dbUser.username, name: dbUser.name, role: dbUser.role, agentName: dbUser.agent_name, callAnalyzer: mayUseCallAnalyzer(dbUser) };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 
     res.cookie('dashboardToken', token, {
@@ -380,7 +403,11 @@ app.get('/api/auth/me', (req, res) => {
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
   try {
     const user = jwt.verify(token, JWT_SECRET);
-    res.json({ user });
+    // Recomputed rather than read from the token: sessions last 7 days, so a
+    // token issued before the allowlist existed carries no callAnalyzer flag, and
+    // a change to CALL_ANALYZER_USERS should take effect without waiting out
+    // every live session.
+    res.json({ user: { ...user, callAnalyzer: mayUseCallAnalyzer(user) } });
   } catch {
     res.status(401).json({ error: 'Session expired' });
   }
@@ -3939,7 +3966,10 @@ app.post('/api/evictions/sync', requireMetricAccess, async (req, res) => {
 // log, takes an optional transcript, and asks Claude for a structured report.
 // Admin + collections roles only. The API key stays server-side.
 // =====================================================================
-const COLLECTIONS_ROLES = ['admin', 'collections_agent', 'collections_leasing', 'evictions_agent'];
+// regional_director (Rebekah) and resident_success (Kara) added 2026-09-21 —
+// Jay confirmed by phone that both oversee collections. Must stay in step with
+// TAB_ACCESS in public/app.js: that list draws the tab, this one admits the API.
+const COLLECTIONS_ROLES = ['admin', 'collections_agent', 'collections_leasing', 'evictions_agent', 'regional_director', 'resident_success'];
 
 // SimpleVoIP lines to pull the collections call log from — one per AR agent.
 // Render env vars:
@@ -5706,7 +5736,7 @@ async function saveCallGrade(db, row) {
 
 // Grade the given transcript and save. One grade per recording_id: a re-grade
 // replaces the prior row (schema has no unique key, so delete-then-insert).
-app.post('/api/calls/grade', requireAuth, requireRole('admin'), async (req, res) => {
+app.post('/api/calls/grade', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   const b = req.body || {};
   if (!b.recording_id) return res.status(400).json({ error: 'recording_id is required' });
@@ -5738,7 +5768,7 @@ app.post('/api/calls/grade', requireAuth, requireRole('admin'), async (req, res)
 });
 
 // List grades (light columns), newest first, with optional filters.
-app.get('/api/calls/grades', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/calls/grades', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ grades: [] });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -5796,7 +5826,7 @@ app.get('/api/calls/grades', requireAuth, requireRole('admin'), async (req, res)
 // grade yet — and has no bearing here, where every exported row is by definition
 // already graded. N/S is exposed as a grade value so it can be selected or
 // excluded alongside A-F.
-app.get('/api/calls/export', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/calls/export', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -5849,7 +5879,7 @@ app.get('/api/calls/export', requireAuth, requireRole('admin'), async (req, res)
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/calls/grade-progress', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/calls/grade-progress', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ graded: 0, pending: 0, skipped: 0, archived: 0 });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -5915,7 +5945,7 @@ app.get('/api/calls/grade-progress', requireAuth, requireRole('admin'), async (r
 
 // Full grade for one recording (the transcript panel checks this to show an
 // existing grade, and the Grades dashboard fetches it on row-expand).
-app.get('/api/calls/grades/:recording_id', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/calls/grades/:recording_id', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ grade: null });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -6097,7 +6127,7 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
 // reach call data. Nothing actually used the key path here (the dashboard's own
 // button is the only caller), so closing it cost nothing. Restore
 // requireMetricAdmin if an MCP tool ever needs to trigger a backfill.
-app.post('/api/sv/grade/backfill', requireAuth, requireRole('admin'), async (req, res) => {
+app.post('/api/sv/grade/backfill', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   if (!simplevoip.isConfigured()) return res.status(400).json({ ok: false, error: 'SimpleVOIP is not configured.' });
   let days = parseInt(req.query.days, 10);

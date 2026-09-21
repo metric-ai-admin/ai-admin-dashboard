@@ -68,8 +68,13 @@ const TAB_ACCESS = {
   // Confirmed by Jay 2026-08-27. None of these three exist in dashboard_users
   // yet — Arturo creates the accounts once passwords are agreed — so the entries
   // sit here inert until then rather than needing a deploy on the day.
-  regional_director:   ['maintenance', 'reports'],   // Rebekah Tuckner
-  resident_success:    ['maintenance', 'reports', 'evictions'],   // Kara Garst
+  // Leasing + Collections added 2026-09-21 (Jay, by phone). Each of these roles
+  // is held by exactly one person, so widening the role widens only her access.
+  // Collections also needs the role added to COLLECTIONS_ROLES in server.js —
+  // the tab renders from this list but its endpoints are gated separately.
+  regional_director:   ['maintenance', 'reports', 'leasing', 'collections'],   // Rebekah Tuckner
+  // Kara oversees maintenance, leasing and collections as of 2026-09-21.
+  resident_success:    ['maintenance', 'reports', 'evictions', 'leasing', 'collections'],   // Kara Garst
   collections_leasing: ['reports', 'collections'],   // Rocío Hunsberger
   // Rocío's collections role — Collections Review tab.
   collections_agent:   ['collections'],
@@ -125,7 +130,12 @@ async function initAuth() {
     MAINT_VIEW_ONLY_ROLES.includes(currentUser.role));
 
   // Gate tabs by role
-  const allowed = TAB_ACCESS[currentUser.role] || [];
+  // Call Analyzer is narrower than admin: staff performance data plus resident
+  // PII, limited to the named users the server allowlists (CALL_ANALYZER_USERS,
+  // Arturo + Lyndsay). Jay is an admin without it. The server gates every
+  // /api/calls/* route the same way, so this only keeps a dead tab out of view.
+  const allowed = (TAB_ACCESS[currentUser.role] || [])
+    .filter(tab => tab !== 'calls' || currentUser.callAnalyzer);
   const allTabBtns = $$('#tabs button[data-tab]');
   allTabBtns.forEach(btn => {
     if (!allowed.includes(btn.dataset.tab)) btn.style.display = 'none';
