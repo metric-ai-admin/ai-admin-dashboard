@@ -1681,29 +1681,8 @@ function exportVisibleRows(rows) {
 /* =========================================================
    SMALL UI PIECES
 ========================================================= */
-function OverlayButton({
-  className,
-  children,
-  onFiles,
-  accept
-}) {
-  return /*#__PURE__*/React.createElement("div", {
-    className: className,
-    style: {
-      position: 'relative',
-      display: 'inline-block'
-    }
-  }, children, /*#__PURE__*/React.createElement("input", {
-    type: "file",
-    className: "overlay-input",
-    accept: accept || '.xlsx,.xls,.csv',
-    multiple: true,
-    onChange: e => {
-      if (e.target.files && e.target.files.length) onFiles(e.target.files);
-      e.target.value = '';
-    }
-  }));
-}
+// OverlayButton (file-picker overlay) removed 2026-09-21 — the tracker no
+// longer accepts uploads.
 function StatCard({
   label,
   value,
@@ -2219,7 +2198,6 @@ function App() {
   const [search, setSearch] = useState('');
   const [showAll, setShowAll] = useState(false);
   const [activeTab, setActiveTab] = useState('tracker');
-  const [dragOver, setDragOver] = useState(false);
   const [syncing, setSyncing] = useState(false);
   // Reporting-period metadata for the info bar: { report_date, uploaded_at }
   // from the eviction_sessions row currently displayed.
@@ -2612,19 +2590,10 @@ function App() {
     };
     reader.readAsArrayBuffer(file);
   }
-  function handleFiles(fileList) {
-    const files = Array.from(fileList || []);
-    files.forEach(file => {
-      const fname = file.name.toLowerCase();
-      if (fname.endsWith('.csv')) {
-        processCsvFile(file);
-      } else if (fname.endsWith('.xlsx') || fname.endsWith('.xls')) {
-        processExcelFile(file);
-      } else {
-        alert(`Unrecognized file type: "${file.name}". Expected an Excel (.xlsx/.xls) or CSV file containing a Delinquency Report or an Activities Summary.`);
-      }
-    });
-  }
+  // handleFiles removed 2026-09-21: the Eviction Tracker is
+  // AppFolio-sync only now. parseDelinquencyFromSheets stays — syncFromAppFolio
+  // feeds it directly. processCsvFile/processExcelFile are left in place —
+  // unused now, but they are the parsing path a future re-import would need.
   function toggleExpand(id) {
     setExpanded(prev => {
       const next = new Set(prev);
@@ -2683,11 +2652,7 @@ function App() {
     className: "accent"
   }, "EVICTION TRACKER")), /*#__PURE__*/React.createElement("div", {
     className: "topbar-actions"
-  }, /*#__PURE__*/React.createElement(OverlayButton, {
-    onFiles: handleFiles
   }, /*#__PURE__*/React.createElement("button", {
-    className: "btn"
-  }, "↑ Upload Reports")), /*#__PURE__*/React.createElement("button", {
     className: `btn ${syncing ? 'disabled' : ''}`,
     disabled: syncing,
     onClick: syncFromAppFolio
@@ -2721,33 +2686,17 @@ function App() {
       alignItems: 'center'
     }
   }, sessionMeta.report_date && /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("b", null, "Report as of: "), fmtReportDate(sessionMeta.report_date)), sessionMeta.uploaded_at && /*#__PURE__*/React.createElement("span", null, /*#__PURE__*/React.createElement("b", null, "Last synced: "), fmtSyncedAt(sessionMeta.uploaded_at))), !rawUnits ? /*#__PURE__*/React.createElement("div", {
-    className: "upload-wrap",
-    onDragOver: e => {
-      e.preventDefault();
-      setDragOver(true);
-    },
-    onDragLeave: () => setDragOver(false),
-    onDrop: e => {
-      e.preventDefault();
-      setDragOver(false);
-      if (e.dataTransfer.files && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
-    }
+    className: "upload-wrap"
   }, /*#__PURE__*/React.createElement("div", {
-    className: `upload-card ${dragOver ? 'dragover' : ''}`
+    className: "upload-card"
   }, /*#__PURE__*/React.createElement("div", {
     className: "upload-icon"
-  }, "📋"), /*#__PURE__*/React.createElement("h2", null, "Upload Reports"), /*#__PURE__*/React.createElement("p", null, "Drop or select your Delinquency Report, Activities Summary, Calls Data, and/or Tenant Directory.", /*#__PURE__*/React.createElement("br", null), "Excel or CSV, any layout — the file type is detected automatically."), /*#__PURE__*/React.createElement("p", null, "Only a Delinquency Report is required; the tracker builds from whichever reports are available."), /*#__PURE__*/React.createElement(OverlayButton, {
-    onFiles: handleFiles
-  }, /*#__PURE__*/React.createElement("button", {
-    className: "browse-btn"
-  }, "Browse Files")), activities.length > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "included-banner",
-    style: {
-      marginTop: 14,
-      borderColor: C.green,
-      color: C.green
-    }
-  }, "✓ Activities Summary loaded (", activities.length.toLocaleString(), " activities). Add a Delinquency Report to build the tracker."), /*#__PURE__*/React.createElement("div", {
+  }, "📋"), /*#__PURE__*/React.createElement("h2", null, "No report loaded"), /*#__PURE__*/React.createElement("p", null, "Pull the current Delinquency, Activities, Calls and Directory reports straight from AppFolio."), /*#__PURE__*/React.createElement("button", {
+    className: `btn ${syncing ? 'disabled' : ''}`,
+    disabled: syncing,
+    onClick: syncFromAppFolio,
+    style: { marginTop: 14 }
+  }, syncing ? "Syncing…" : "↺ Sync from AppFolio"), /*#__PURE__*/React.createElement("div", {
     className: "included-banner"
   }, /*#__PURE__*/React.createElement("b", null, "Included:"), " All eviction-stage accounts + balances >$1,000 on/after the 10th with no active payment plan or EHO."))) : /*#__PURE__*/React.createElement(Fragment, null, yesterdayPayments && /*#__PURE__*/React.createElement("div", {
     className: "yp-panel"

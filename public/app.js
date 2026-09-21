@@ -273,7 +273,6 @@ function loadEvictions() {
 // ---- Collections Review (Rocío) ---------------------------------------------
 // Auto-pulls delinquency (AppFolio) + call log (SimpleVoIP) server-side; transcript
 // is an optional client-side upload. Generate posts to /api/collections/generate.
-let collectionsTranscript = '';
 let collectionsWired = false;
 async function loadCollections() {
   // Reflect source connectivity as "✅ Loaded from …" indicators.
@@ -295,21 +294,11 @@ async function loadCollections() {
   } catch (err) {
     ['current', 'prior', 'calls'].forEach(k => setSt(k, false, '⚠ ' + err.message));
   }
-  if (collectionsWired) return;
-  collectionsWired = true;
-  const input = $('#col-transcript-input');
-  input?.addEventListener('change', e => {
-    const f = e.target.files && e.target.files[0];
-    if (!f) return;
-    const r = new FileReader();
-    r.onload = ev => {
-      collectionsTranscript = String(ev.target.result || '');
-      $('#col-zone-transcript')?.classList.add('ready');
-      const st = $('#col-st-transcript'); if (st) { st.textContent = '✅ Loaded'; st.className = 'col-src-status ok'; }
-      const fn = $('#col-fn-transcript'); if (fn) fn.textContent = f.name;
-    };
-    r.readAsText(f);   // reliable for .txt; .docx/.pdf are best-effort (optional field)
-  });
+  // The optional Call Transcript upload was removed 2026-09-21 (Lyndsay: "the
+  // upload and list of reports is no longer needed, just the sync with AppFolio
+  // and the export buttons"). The generate call still sends a transcript field,
+  // always empty — the server treats it as optional and the prompt already
+  // describes it that way, so nothing downstream had to change.
 }
 
 async function collectionsGenerate() {
@@ -325,7 +314,9 @@ async function collectionsGenerate() {
     const data = await api('/api/collections/generate', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transcript: collectionsTranscript || '' }),
+      // transcript stays in the payload and stays empty: the upload was removed,
+      // the server field is optional, and dropping it would change the contract.
+      body: JSON.stringify({ transcript: '' }),
     });
     // The endpoint keep-alives past Render's 60s cap, so it always returns 200 with
     // either { html } or { error } in the body — surface an error field as a throw.
@@ -354,15 +345,10 @@ function collectionsCopy(btn) {
 }
 
 function collectionsReset() {
-  collectionsTranscript = '';
   $('#col-output').style.display = 'none';
   $('#col-report').innerHTML = '';
   $('#col-err').style.display = 'none';
   const btn = $('#col-gen-btn'); btn.disabled = false; btn.textContent = 'Generate Collections Review'; btn.style.background = '';
-  $('#col-zone-transcript')?.classList.remove('ready');
-  const st = $('#col-st-transcript'); if (st) { st.textContent = 'Optional'; st.className = 'col-src-status'; }
-  const fn = $('#col-fn-transcript'); if (fn) fn.textContent = '';
-  const input = $('#col-transcript-input'); if (input) input.value = '';
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
