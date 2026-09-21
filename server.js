@@ -8596,6 +8596,20 @@ app.get('/api/reports/lyndsay-triage-today', requireAuth, requireRole('admin'), 
 // Graph mailbox token. Graph combines conditions of DIFFERENT types with AND, and
 // values WITHIN a condition array with OR — so the "sender OR subject" Fire-Claim
 // rule is two separate rules to the same folder.
+// Outlook evaluates inbox rules in SEQUENCE order and every rule here is created
+// with stopProcessingRules, as are 241 of the 259 rules currently in Lyndsay's
+// mailbox. ensureLyndsayMessageRules() appends new rules at max(sequence)+1, so
+// ANYTHING ADDED HERE RUNS LAST and is shadowed by any earlier hand-made rule
+// that matches the same mail. Checked 2026-09-21:
+//
+//   'MPM Auto: ParentSquare -> Personal' (seq 257) never fires — a hand-made
+//   'ParentSquare → Archive + Mark as read' at seq 41 matches first and stops.
+//   'MPM Auto: WebWork -> MPM Team' (seq 253) never fires — 'WebWork no-reply →
+//   Archive' at seq 47 matches first and stops.
+//
+// So adding a rule here does not guarantee the mail lands where it says. Before
+// adding one, check whether an earlier rule already claims that sender; if it
+// does, the fix is to change or disable THAT rule, not to append another.
 const LYNDSAY_MESSAGE_RULES = [
   { displayName: 'MPM Auto: Fire Claim (Progressive)', folder: 'Fire Claim',    conditions: { senderContains: ['progressive.com'] } },
   { displayName: 'MPM Auto: Fire Claim (Claim #)',     folder: 'Fire Claim',    conditions: { subjectContains: ['1615255'] } },
@@ -8617,6 +8631,11 @@ const LYNDSAY_MESSAGE_RULES = [
   { displayName: 'MPM Auto: Impact Floors -> Financial', folder: 'Financial',   conditions: { senderContains: ['impactfloors.com'] } },
   { displayName: 'MPM Auto: Allen Vaughn -> Archive',  folder: 'Archive',       conditions: { senderContains: ['allen@colonycreekapts.com'] }, markRead: true },
   { displayName: 'MPM Auto: ParentSquare -> Personal', folder: 'Personal',      conditions: { senderContains: ['parentsquare.com'] } },
+  // School photography — same destination as ParentSquare, both personal/family.
+  // The only genuinely new rule from the 2026-09-21 batch: ParentSquare, WebWork
+  // and Austin Apartment Association were all already covered by hand-made rules
+  // in the mailbox (see the note below about ordering).
+  { displayName: 'MPM Auto: Lifetouch -> Personal',    folder: 'Personal',      conditions: { senderContains: ['lifetouch'] } },
   // American National deposits -> Financial + forward to Claudia (Accounting).
   // Graph ANDs senderContains + subjectContains, so the OR is split into two
   // rules (same pattern as the Fire Claim sender/subject pair).
