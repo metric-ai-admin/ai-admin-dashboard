@@ -161,6 +161,22 @@ const REPORTS = [
     feeds: 'Weekly inventory audit',
     params: {},
   },
+  {
+    // Phase 0 spike for the Unit Vacancy Automation module (Lyndsay, 2026-09-21).
+    // Registered on its own to answer one question before anything is built on
+    // it: does Reports API v2 expose this report at all, and under what column
+    // names? Lyndsay's link is to /buffered_reports/unit_vacancy, which is the
+    // UI surface — a different thing from the API, and we have already had one
+    // plausible-looking resource (work_order_labor_detail) 400 because it simply
+    // does not exist in the API. No consumer reads this yet.
+    id: 'unit_vacancy',
+    resource: 'unit_vacancy',
+    label: 'Unit Vacancy Detail',
+    group: 'Leasing / Vacancy',
+    priority: 8,
+    feeds: 'Phase 0 spike — Vacancy Posting module (not built yet)',
+    params: {},
+  },
 ];
 
 const byId = id => REPORTS.find(r => r.id === id);
