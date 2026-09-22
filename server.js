@@ -6338,6 +6338,24 @@ function ctDateStr(offsetDays = 0) {
 // too thin to score — those come back as low/flagged noise and drag the averages.
 const AUTOGRADE_MIN_DURATION = 30;   // seconds
 const AUTOGRADE_MIN_TRANSCRIPT = 100; // characters
+
+// Lines that carry no resident conversations, so grading them only spends
+// credits producing Not Scoreable rows.
+//
+// Rebekah Tuckner (ext 101) is 99% outbound with a MEDIAN duration of 5 seconds
+// and a median transcript of 82 characters — she dials vendors and support
+// lines. The handful long enough to clear the floors above open with AppFolio's
+// support IVR, hold messages and a busy signal: 38 of her 42 graded calls came
+// back Not Scoreable (2026-09-22 analysis).
+//
+// This costs us the other 4: any genuine resident call on her line now goes
+// ungraded. That is the trade, and it is reversible — an empty
+// AUTOGRADE_EXCLUDED_LINES env value turns the exclusion off without a deploy.
+// Matched on the archive's user_name, case-insensitively.
+const AUTOGRADE_EXCLUDED_LINES = (process.env.AUTOGRADE_EXCLUDED_LINES ?? 'Rebekah Tuckner')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const autogradeLineExcluded = userName =>
+  AUTOGRADE_EXCLUDED_LINES.includes(String(userName || '').trim().toLowerCase());
 // Last-resort line owner when the roster lookup yields nothing (e.g. the roster
 // table is empty). The default SimpleVOIP line is Rebekah's.
 const SV_DEFAULT_OWNER_FALLBACK = 'Rebekah Tuckner';
@@ -6442,7 +6460,10 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
   if (error) throw new Error(error.message);
   // The transcript-length floor can't run in the query, so apply it here.
   const eligible = (rows || []).filter(r =>
-    r.recording_id && String(r.transcript || '').trim().length >= AUTOGRADE_MIN_TRANSCRIPT);
+    r.recording_id && String(r.transcript || '').trim().length >= AUTOGRADE_MIN_TRANSCRIPT
+    && !autogradeLineExcluded(r.user_name));
+  const excludedLines = (rows || []).filter(r => autogradeLineExcluded(r.user_name)).length;
+  if (excludedLines) console.log(`[auto-grade] ${date}: skipped ${excludedLines} call(s) on excluded line(s): ${AUTOGRADE_EXCLUDED_LINES.join(', ')}`);
   // Line-owner fallback chain: this call's archived user_name → the roster's
   // default-line name → a hardcoded last resort, so agent attribution is never null.
   const defaultOwner = (await svDefaultLineOwner()) || SV_DEFAULT_OWNER_FALLBACK;

@@ -30,8 +30,12 @@ const SYSTEM_PROMPT = require('./call-grade-prompt.json');
 const GRADE_MODEL = process.env.CALL_GRADE_MODEL || 'claude-sonnet-4-6';
 
 // Agents whose name in "this is <name>" reliably identifies who was on the call.
-// Rebekah's line is shared, so the graded agent comes from self-identification,
-// not the line owner.
+//
+// The note that used to sit here said Rebekah's line was shared. The SimpleVOIP
+// admin portal was checked on 2026-09-22 and every extension is uniquely
+// assigned — hers is ext 101, and the apparent sharing was outbound admin
+// dialling into vendor phone trees, not another person. Her line is now skipped
+// by autoGradeDay entirely (AUTOGRADE_EXCLUDED_LINES in server.js).
 const KNOWN_AGENTS = ['Danny', 'Rebekah', 'Bekah', 'Katie', 'Rhoxie', 'Katrina', 'Oscar', 'Erick', 'Lyndsay', 'Rocío', 'Rocio', 'Yeni', 'Sammy'];
 // ---- Canonical agent names --------------------------------------------------
 //
@@ -61,6 +65,33 @@ const AGENT_ALIASES = {
   'sammy': 'Sammy Ramos',
   'sammy ramos': 'Sammy Ramos',
 };
+
+// How the transcription service mis-renders an agent's name, per agent.
+//
+// SimpleVOIP's ASR is unreliable on proper nouns. Daria Rodriguez's line (ext
+// 109, 90% inbound) produced "This is Daria", "This is Diane" and "This is
+// Diana" across three calls on the SAME line, plus Dory, Stacy and Ally
+// elsewhere. The grader compared the heard name against the attributed agent,
+// correctly concluded they differed, and marked the call Not Scoreable for
+// identity mismatch — roughly 88 of ~150 such rows as of 2026-09-22.
+//
+// DELIBERATELY NOT part of AGENT_ALIASES. That map feeds canonicalAgentName(),
+// which normalises the stored agent_name for every call in the system; putting
+// "stacy" in it would rename a real agent called Stacy to Daria everywhere.
+// These variants are only ever consulted for the specific agent whose line the
+// call arrived on, which is what makes common first names safe to list.
+//
+// Keyed by canonical name. Extend when a new mis-transcription shows up; the
+// grader is told about them rather than the text being rewritten, so a genuine
+// mismatch is still reportable.
+const AGENT_ASR_VARIANTS = {
+  'Daria Rodriguez': ['Diane', 'Diana', 'Dory', 'Stacy', 'Ally'],
+};
+
+function agentAsrVariants(name) {
+  const canon = canonicalAgentName(name);
+  return (canon && AGENT_ASR_VARIANTS[canon]) || [];
+}
 
 function canonicalAgentName(name) {
   const trimmed = String(name == null ? '' : name).trim().replace(/\s+/g, ' ');
@@ -188,9 +219,18 @@ async function anthropicJson({ system, user, maxTokens = 2000, model }) {
 // max_tokens stop, so an unusually long call is covered.
 async function gradeTranscript({ callType, agent, duration, transcript }) {
   if (!transcript || !String(transcript).trim()) throw new Error('No transcript to grade.');
+  // Tell the grader how this agent's name gets mangled, so a transcription
+  // error is not read as the wrong person being on the call. Phrased as
+  // information about the TRANSCRIPT, not permission to assume — a call where
+  // someone genuinely different is speaking should still be flagged.
+  const variants = agentAsrVariants(agent);
+  const variantNote = variants.length
+    ? `\nNOTE ON THE TRANSCRIPT: the transcription service mis-renders this agent's name. On this line it has produced ${variants.join(', ')} for the same person. Treat those spellings as ${canonicalAgentName(agent)} and do not report an identity mismatch on the strength of the name alone. If the speaker is identifiably a different person for other reasons, still report it.`
+    : '';
   const userContent = 'Call Direction: ' + (callType || 'unknown')
     + '\nAgent: ' + (agent || 'unknown')
     + '\nDuration: ' + (duration || 'unknown') + ' seconds'
+    + variantNote
     + '\n\nTRANSCRIPT:\n' + transcript;
   return anthropicJson({ system: SYSTEM_PROMPT, user: userContent, maxTokens: 6000 });
 }
@@ -228,4 +268,4 @@ async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs 
   return textBlock.text;
 }
 
-module.exports = { SYSTEM_PROMPT, gradeTranscript, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES };
+module.exports = { SYSTEM_PROMPT, gradeTranscript, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };
