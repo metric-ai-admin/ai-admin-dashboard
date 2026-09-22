@@ -272,7 +272,7 @@ function loadTab(tab) {
   if (tab === 'calls') loadCallAnalyzer();
   if (tab === 'evictions') loadEvictions();
   if (tab === 'vacancy') loadVacancy();
-  if (tab === 'collections') loadCollections();
+  if (tab === 'collections') { loadCollections(); loadDecisionQueue(); }
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
@@ -9014,4 +9014,176 @@ $('#vac-sync')?.addEventListener('click', e => {
   btn.disabled = true;
   btn.textContent = 'Syncing…';
   loadVacancy(true).finally(() => { btn.disabled = false; btn.textContent = '↻ Sync from AppFolio'; });
+});
+
+// =====================================================================
+// COLLECTIONS DECISION QUEUE (Bekah)
+// =====================================================================
+// Cards, not a table — Bekah reviews these on a phone between site visits.
+// Rendered inside the Collections tab, above the review generator, and only
+// for roles that may see it. The server gates the data identically, so this
+// is presentation only, not the access control.
+
+const DQ_ROLES = ['admin', 'regional_director'];
+let dqData = null;
+
+const dqEsc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const dqMoney = n => (n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString());
+
+function dqDate(d) {
+  if (!d) return null;
+  try {
+    return new Date(d + (String(d).length === 10 ? 'T12:00:00Z' : '')).toLocaleDateString('en-US',
+      { timeZone: 'America/Chicago', month: 'short', day: 'numeric' });
+  } catch { return String(d); }
+}
+
+// Red for Eviction, orange for Notice, neutral otherwise.
+const dqCardClass = status =>
+  status === 'Eviction' ? 'dq-card dq-eviction'
+    : status === 'Notice' ? 'dq-card dq-notice'
+      : 'dq-card';
+
+function dqChange(a) {
+  if (a.change == null) return '<span class="muted">—</span>';
+  const up = a.change > 0;
+  if (Math.abs(a.change) < 1) return '<span class="muted">no change</span>';
+  return `<span class="dq-delta ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${dqMoney(Math.abs(a.change))}</span>`;
+}
+
+function dqCard(a) {
+  const decided = a.decision;
+  return `<article class="${dqCardClass(a.status)}" data-key="${dqEsc(a.key)}">
+    <header class="dq-card-head">
+      <div>
+        <div class="dq-name">${dqEsc(a.name)}</div>
+        <div class="dq-where">${dqEsc(a.unit)} · ${dqEsc(a.property)}</div>
+      </div>
+      <span class="badge ${a.status === 'Eviction' ? 'red' : a.status === 'Notice' ? 'amber' : 'gray'}">${dqEsc(a.status)}</span>
+    </header>
+
+    <div class="dq-figs">
+      <div><span class="dq-fig-label">Balance</span><span class="dq-fig">${dqMoney(a.balance)}</span></div>
+      <div><span class="dq-fig-label">A month ago</span><span class="dq-fig">${a.lastMonthBalance == null ? '<span class="muted">—</span>' : dqMoney(a.lastMonthBalance)}</span></div>
+      <div><span class="dq-fig-label">Change</span><span class="dq-fig">${dqChange(a)}</span></div>
+      <div><span class="dq-fig-label">90+ days</span><span class="dq-fig">${a.aged90Plus > 0 ? dqMoney(a.aged90Plus) : '<span class="muted">none</span>'}</span></div>
+    </div>
+
+    <ul class="dq-reasons">
+      ${a.triggers.map(t => `<li><span class="dq-chip">${dqEsc(t.label)}</span> ${dqEsc(t.reason)}</li>`).join('')}
+    </ul>
+
+    <div class="dq-meta">Last inbound call: ${a.lastInboundCall
+      ? dqEsc(dqDate(a.lastInboundCall))
+      : '<span class="muted">none on record</span>'}</div>
+
+    ${decided ? `<div class="dq-decided">Last action: <strong>${dqEsc(dqActionLabel(decided.action))}</strong>
+       by ${dqEsc(decided.by)} · ${dqEsc(dqDate(decided.at ? decided.at.slice(0, 10) : null) || '')}
+       ${decided.note ? `<div class="dq-note">“${dqEsc(decided.note)}”</div>` : ''}</div>` : ''}
+
+    <div class="dq-actions">
+      <button class="btn btn-ghost dq-act" data-action="karla_handles">Karla handles</button>
+      <button class="btn btn-ghost dq-act" data-action="escalate_lyndsay">Escalate to Lyndsay</button>
+      <button class="btn btn-ghost dq-act" data-action="note">Add note</button>
+    </div>
+    <div class="dq-notebox" hidden>
+      <input type="text" class="dq-note-input" placeholder="What did you decide?" maxlength="500">
+      <button class="btn dq-note-save">Save note</button>
+    </div>
+  </article>`;
+}
+
+const dqActionLabel = a => ({
+  karla_handles: 'Karla handles',
+  escalate_lyndsay: 'Escalated to Lyndsay',
+  note: 'Note added',
+}[a] || a);
+
+async function loadDecisionQueue(refresh) {
+  const wrap = document.getElementById('dq-wrap');
+  if (!wrap) return;
+  if (!DQ_ROLES.includes(currentUser?.role)) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  const cards = document.getElementById('dq-cards');
+  cards.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    dqData = await api('/api/collections/decision-queue' + (refresh ? '?refresh=1' : ''));
+  } catch (err) {
+    cards.innerHTML = `<div class="alert-box warn"><div class="al">ERROR</div>${dqEsc(err.message || 'Could not load the queue.')}</div>`;
+    return;
+  }
+  renderDecisionQueue();
+}
+
+function renderDecisionQueue() {
+  if (!dqData) return;
+  const { queue, stats, meta } = dqData;
+  const badge = document.getElementById('dq-badge');
+  const sub = document.getElementById('dq-sub');
+  const cards = document.getElementById('dq-cards');
+
+  badge.textContent = queue.length
+    ? `${queue.length} account${queue.length === 1 ? '' : 's'} need${queue.length === 1 ? 's' : ''} your review`
+    : 'All clear';
+  badge.className = 'dq-badge' + (queue.length ? '' : ' dq-badge-clear');
+
+  // Say plainly when the month-over-month triggers could not run, rather than
+  // showing a short queue that looks like good news.
+  const historyNote = stats.hasHistory ? '' :
+    '<div class="alert-box warn"><div class="al">PARTIAL</div>Month-over-month history could not be loaded, so “growing two months running” and “new this cycle” were not checked. The other triggers ran normally.</div>';
+
+  sub.innerHTML = `Accounts that need your decision rather than Karla's or Rocío's · `
+    + `${stats.considered} reviewed`
+    + (meta && meta.syncedAt ? ` · data from ${dqEsc(dqDate(meta.syncedAt.slice(0, 10)) || '')}` : '');
+
+  cards.innerHTML = historyNote + (queue.length
+    ? `<div class="dq-grid">${queue.map(dqCard).join('')}</div>`
+    : '<div class="empty-state">No accounts need your attention today.</div>');
+
+  cards.querySelectorAll('.dq-card').forEach(card => {
+    const key = card.dataset.key;
+    card.querySelectorAll('.dq-act').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const action = btn.dataset.action;
+        if (action === 'note') {
+          const box = card.querySelector('.dq-notebox');
+          box.hidden = !box.hidden;
+          if (!box.hidden) card.querySelector('.dq-note-input').focus();
+          return;
+        }
+        await dqDecide(card, key, action, '');
+      });
+    });
+    const save = card.querySelector('.dq-note-save');
+    if (save) save.addEventListener('click', async () => {
+      const text = card.querySelector('.dq-note-input').value.trim();
+      if (!text) return;
+      await dqDecide(card, key, 'note', text);
+    });
+  });
+}
+
+async function dqDecide(card, key, action, note) {
+  card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  try {
+    await api('/api/collections/decision-queue/decide', {
+      method: 'POST',
+      body: JSON.stringify({ key, action, note }),
+    });
+    // Reload so the card shows the recorded action and everyone sees the same
+    // state — these decisions are shared, not per-browser.
+    await loadDecisionQueue(false);
+  } catch (err) {
+    card.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    alert('Could not save that: ' + (err.message || 'unknown error'));
+  }
+}
+
+document.getElementById('dq-refresh')?.addEventListener('click', e => {
+  const btn = e.target;
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  loadDecisionQueue(true).finally(() => { btn.disabled = false; btn.textContent = '↻ Refresh'; });
 });

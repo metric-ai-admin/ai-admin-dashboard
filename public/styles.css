@@ -2284,3 +2284,45 @@ tr.ca-sel { background: var(--accent-glow); }
 .vac-table-exc { min-width: 560px; }
 .vac-table-exc td:last-child { white-space: normal; word-break: break-word; }
 .vac-table-exc td:nth-child(2) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- Collections Decision Queue (Bekah) ---------- */
+.dq-wrap { margin: 0 0 26px; }
+.dq-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:14px; }
+.dq-title { font-size:18px; margin:0 0 3px; }
+.dq-badge { display:inline-block; padding:5px 13px; border-radius:20px; font-size:12.5px; font-weight:700;
+  background: var(--critical-bg); color: var(--critical); white-space:nowrap; }
+.dq-badge-clear { background: var(--success-bg); color: var(--success); }
+/* Cards, not a table: Bekah reads these on a phone between site visits. */
+.dq-grid { display:grid; gap:14px; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); }
+.dq-card { border:1px solid var(--border); border-left:4px solid var(--border-accent); border-radius:10px;
+  padding:14px 16px; background: var(--bg-surface); }
+.dq-eviction { border-left-color: var(--critical); }
+.dq-notice   { border-left-color: var(--warning); }
+.dq-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:12px; }
+.dq-name { font-size:15px; font-weight:700; line-height:1.25; }
+.dq-where { font-size:12px; color: var(--text-secondary); margin-top:2px; }
+.dq-figs { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:10px 0; border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
+.dq-fig-label { display:block; font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-secondary); margin-bottom:2px; }
+.dq-fig { font-size:13.5px; font-weight:600; }
+.dq-delta.up   { color: var(--critical); }
+.dq-delta.down { color: var(--success); }
+.dq-reasons { list-style:none; margin:11px 0 0; padding:0; display:flex; flex-direction:column; gap:6px; }
+.dq-reasons li { font-size:12.5px; color: var(--text-secondary); line-height:1.45; }
+.dq-chip { display:inline-block; padding:1px 8px; border-radius:20px; font-size:11px; font-weight:600;
+  background: var(--bg-elevated); color: var(--text-primary); margin-right:5px; }
+.dq-meta { font-size:12px; color: var(--text-secondary); margin-top:11px; }
+.dq-decided { margin-top:11px; padding:8px 10px; border-radius:7px; background: var(--bg-elevated); font-size:12px; }
+.dq-note { margin-top:4px; font-style:italic; color: var(--text-secondary); }
+.dq-actions { display:flex; gap:7px; margin-top:13px; flex-wrap:wrap; }
+.dq-actions .btn { font-size:12px; padding:5px 11px; }
+.dq-notebox { display:flex; gap:7px; margin-top:9px; }
+.dq-note-input { flex:1; min-width:0; padding:6px 10px; border-radius:6px; border:1px solid var(--border);
+  background: var(--bg-elevated); color: var(--text-primary); font-family:inherit; font-size:12.5px; }
+/* Single column on a phone so the four figures do not crush together. */
+@media (max-width: 560px) {
+  .dq-grid { grid-template-columns: 1fr; }
+  .dq-figs { grid-template-columns: repeat(2,1fr); row-gap:10px; }
+}
+#tab-collections .dq-wrap .badge.red   { background: var(--critical-bg); color: var(--critical); }
+#tab-collections .dq-wrap .badge.amber { background: var(--warning-bg);  color: var(--warning); }
+#tab-collections .dq-wrap .badge.gray  { background: var(--bg-elevated); color: var(--text-secondary); }

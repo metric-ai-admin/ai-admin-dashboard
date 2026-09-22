@@ -1900,6 +1900,24 @@
   </section>
 
   <section id="tab-collections" class="tab">
+    <!-- Decision Queue — the layer above day-to-day collections. Rendered only
+         for admin and regional_director; the server gates the data the same
+         way, so Karla and Rocío never receive it. Hidden by default and shown
+         by renderDecisionQueue() once the API answers. -->
+    <div id="dq-wrap" class="dq-wrap" hidden>
+      <div class="dq-head">
+        <div>
+          <h2 class="dq-title">Decision Queue</h2>
+          <p class="muted small" id="dq-sub">Accounts that need your decision rather than Karla's or Rocío's.</p>
+        </div>
+        <div class="row-actions">
+          <span class="dq-badge" id="dq-badge">—</span>
+          <button class="btn btn-ghost" id="dq-refresh">↻ Refresh</button>
+        </div>
+      </div>
+      <div id="dq-cards"></div>
+    </div>
+
     <div class="col-wrap">
       <div class="col-hdr">
         <div class="col-logo">Metric <span>PM</span></div>

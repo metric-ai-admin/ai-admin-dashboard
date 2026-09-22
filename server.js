@@ -4175,6 +4175,10 @@ async function fetchDelinquencyAsOf(dateStr) {
     .filter(r => !propertyIsExcluded(r.property_name))
     .map(r => ({
       name: r.name || '', property: r.property_name || '', unit: r.unit || '',
+      // Stable per tenancy — the Decision Queue keys month-over-month snapshots
+      // on it, and without it the fallback composite key would not match the
+      // rows coming from the synced report.
+      occupancy_id: r.occupancy_id ?? null,
       status: r.tenant_status || '', delinquent_rent: r.delinquent_rent, amount_receivable: r.amount_receivable,
       // days_delinquent was read by delinqText but never mapped, so that column
       // always printed blank. AppFolio spells it either way depending on report.
@@ -4455,6 +4459,141 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
 // fetches to /api/evictions/* carry the cookie.
 app.get('/evictions/app', requireMetricAccess, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'evictions-app.html'));
+});
+
+// =====================================================================
+// MODULE — COLLECTIONS DECISION QUEUE (Bekah)
+// =====================================================================
+// Bekah is Regional Director over Collections. She does not need every
+// account — she needs the ones that require HER decision rather than
+// something Karla or Rocío handles alone. The rules live in
+// collections-triggers.js; this is plumbing.
+//
+// Read-only toward AppFolio. The only writes are Bekah's own dispositions
+// ("Karla handles" / "Escalate to Lyndsay" / a note), stored here.
+const collectionsTriggers = require('./collections-triggers.js');
+
+// Narrower than COLLECTIONS_ROLES on purpose: Karla (evictions_agent) and
+// Rocío (collections_leasing) must NOT see this view — it is the layer above
+// them, and seeing which of their accounts have been escalated changes the
+// dynamic. Admin is included so Arturo and Lyndsay can support it.
+const DECISION_QUEUE_ROLES = ['admin', 'regional_director'];
+
+const DECISIONS_FILE = path.join(DATA_DIR, 'collections_decisions.json');
+
+// Last INBOUND call per phone number, from the nightly archive.
+//
+// Deliberately inbound-only, and labelled that way in the UI. The archive's
+// `caller` column holds the resident's number on inbound calls but the AGENT's
+// name ("Danny Metric") on outbound ones — verified 2026-09-22 — so an outbound
+// attempt by Karla leaves no resident number to match on. Calling this "last
+// contact" would imply we know when Karla last called out, which we do not.
+async function lastInboundCallByPhone(db, days = 120) {
+  const map = new Map();
+  if (!db) return map;
+  const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  for (let from = 0, guard = 0; guard < 50; guard++) {
+    const { data, error } = await db.from('simplevoip_daily_calls')
+      .select('call_date,caller,call_direction')
+      .gte('call_date', since)
+      .order('call_date', { ascending: false })
+      .range(from, from + 999);
+    if (error) break;
+    for (const r of data || []) {
+      const digits = String(r.caller || '').replace(/\D/g, '');
+      if (digits.length < 10) continue;                 // a name, not a number
+      const key = digits.slice(-10);
+      const prev = map.get(key);
+      if (!prev || r.call_date > prev) map.set(key, r.call_date);
+    }
+    if ((data || []).length < 1000) break;
+    from += 1000;
+  }
+  return map;
+}
+
+async function decisionQueueData({ refresh = false } = {}) {
+  let syncError = null;
+  if (refresh) {
+    try { await require('./appfolio-reports.js').syncReport('delinquency_as_of'); }
+    catch (err) { syncError = err.message; }
+  }
+  const data = await require('./appfolio-reports.js').readReportData('delinquency_as_of');
+  if (!data) return { error: 'Delinquency data has never synced. Press Sync to pull it from AppFolio.', syncError };
+
+  const phoneMap = await lastInboundCallByPhone(supabaseAdmin || supabasePublic).catch(() => new Map());
+
+  // Month-over-month needs SEPARATE as-of snapshots. The report's
+  // this_month / last_month / month_before_last columns are aging by charge
+  // period, not history — see the note in collections-triggers.js. Same pull
+  // /api/collections/generate already makes, one month and two months back.
+  // If either fails, priorBalances stays null and the two history triggers are
+  // skipped rather than defaulting to zero and firing on every account.
+  let priorBalances = null;
+  let historyError = null;
+  try {
+    const monthsAgo = n => {
+      const d = new Date(new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE }) + 'T00:00:00');
+      d.setMonth(d.getMonth() - n);
+      return d.toLocaleDateString('en-CA');
+    };
+    const [m1, m2] = await Promise.all([
+      fetchDelinquencyAsOf(monthsAgo(1)),
+      fetchDelinquencyAsOf(monthsAgo(2)),
+    ]);
+    const toMap = rows => new Map(rows.map(r => [
+      collectionsTriggers.accountKey({ occupancyId: r.occupancy_id, property: r.property, unit: r.unit, name: r.name }),
+      parseFloat(r.delinquent_rent) || 0,
+    ]));
+    priorBalances = { lastMonth: toMap(m1), monthBeforeLast: toMap(m2) };
+  } catch (err) {
+    historyError = err.message;
+    console.warn('[decision-queue] prior-month pull failed, history triggers disabled:', err.message);
+  }
+
+  const result = collectionsTriggers.buildDecisionQueue(data.rows || [], {
+    isExcludedProperty: propertyIsExcluded,
+    lastInboundByPhone: phoneMap,
+    priorBalances,
+  });
+
+  // Bekah's own dispositions, merged on so a card can show it is already dealt with.
+  const decisions = await readJSON(DECISIONS_FILE, {});
+  const keyOf = a => String(a.occupancyId || `${a.property}|${a.unit}|${a.name}`);
+  result.queue = result.queue.map(a => ({ ...a, key: keyOf(a), decision: decisions[keyOf(a)] || null }));
+
+  return { ...result, meta: { syncedAt: data.fetchedAt || null, rowCount: (data.rows || []).length, syncError } };
+}
+
+app.get('/api/collections/decision-queue', requireAuth, requireRole(...DECISION_QUEUE_ROLES), async (req, res) => {
+  try {
+    const out = await decisionQueueData({ refresh: req.query.refresh === '1' });
+    if (out.error) return res.status(409).json(out);
+    res.json(out);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Record what Bekah decided. Append-only history per account so a disposition
+// can be revisited rather than silently overwritten.
+app.post('/api/collections/decision-queue/decide', requireAuth, requireRole(...DECISION_QUEUE_ROLES), async (req, res) => {
+  const { key, action, note } = req.body || {};
+  const ALLOWED = ['karla_handles', 'escalate_lyndsay', 'note'];
+  if (!key || !ALLOWED.includes(action)) return res.status(400).json({ error: 'key and a valid action are required' });
+  if (action === 'note' && !String(note || '').trim()) return res.status(400).json({ error: 'A note action needs text' });
+  try {
+    const all = await readJSON(DECISIONS_FILE, {});
+    const entry = {
+      action,
+      note: String(note || '').trim(),
+      by: req.user?.name || req.user?.username || 'unknown',
+      at: new Date().toISOString(),
+    };
+    const prev = all[key];
+    all[key] = { ...entry, history: [...((prev && prev.history) || []), ...(prev ? [{ action: prev.action, note: prev.note, by: prev.by, at: prev.at }] : [])].slice(-20) };
+    await writeJSON(DECISIONS_FILE, all);
+    await logActivity({ kind: 'collections_decision', key, action, by: entry.by });
+    res.json({ ok: true, decision: all[key] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // =====================================================================
