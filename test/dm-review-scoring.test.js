@@ -23,14 +23,21 @@ t('a note does not change overall_score', () => {
   assert.strictEqual(overall([withNote]), overall([without]));
   assert.strictEqual(overall([withNote]), 4.5);
 });
-t('N/A is excluded, NOT counted as zero', () => {
-  const naAsString = { seo: 4, instagram: 'na' };
-  const naAsZero = { seo: 4, instagram: 0 };
-  assert.strictEqual(overall([naAsString]), 4, 'should average only the 4');
-  assert.strictEqual(overall([naAsZero]), 2, 'a zero would halve it — this is what we avoid');
+t('the client percentage agrees, ignoring notes', () => {
+  assert.strictEqual(pctOf({ website: { seo: 4, seo__note: 'x' } }), 80);
 });
-t('the client percentage agrees', () => {
-  assert.strictEqual(pctOf({ website: { seo: 4, instagram: 'na', seo__note: 'x' } }), 80);
+t('rating-scale N/A is a numeric 0 and DOES count — long-standing behaviour', () => {
+  // GRADE_LABELS[0] is 'N/A' and stores the number 0, so it lowers the average.
+  // Untouched here; recorded so a future change is a deliberate one.
+  assert.strictEqual(overall([{ seo: 4, nav: 0 }]), 2);
+});
+t('binary Yes/No questions have no N/A option', () => {
+  // Added 2026-09-22 and reverted the same day at Katie's request. Guards
+  // against it being reintroduced by accident.
+  const app = require('fs').readFileSync(require('path').join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const ynBlock = app.slice(app.indexOf("$$('.crm-yn-picker')"), app.indexOf("$$('.crm-yn-picker')") + 1200);
+  assert.ok(!/data-val="na"/.test(ynBlock), 'the yes/no picker must not render an N/A button');
+  assert.ok(/data-val="5"/.test(ynBlock) && /data-val="0"/.test(ynBlock), 'Yes and No must both remain');
 });
 t('a section of only notes scores null, not zero', () => {
   assert.strictEqual(overall([{ seo__note: 'a', nav__note: 'b' }]), null);
@@ -48,11 +55,14 @@ t('a note-only section is NOT complete', () => {
   // DM task dropped off the queue before anything was scored.
   assert.strictEqual(engine.dmComplete(mk([{ a: 4 }, { a: 4 }, { a: 4 }, { a: 4 }, { a__note: 'typed a note' }])), false);
 });
-t('an N/A-only section is NOT complete', () => {
-  assert.strictEqual(engine.dmComplete(mk([{ a: 4 }, { a: 4 }, { a: 4 }, { a: 4 }, { a: 'na' }])), false);
+t('a section holding only non-numeric values is NOT complete', () => {
+  // Notes are the only non-numeric value the UI writes today. The rule is
+  // deliberately about numbers rather than about notes specifically, so any
+  // future marker is handled the same way.
+  assert.strictEqual(engine.dmComplete(mk([{ a: 4 }, { a: 4 }, { a: 4 }, { a: 4 }, { a: 'something' }])), false);
 });
-t('mixed score + note + na -> complete', () => {
-  assert.strictEqual(engine.dmComplete(mk([{ a: 4, b: 'na', a__note: 'x' }, { a: 4 }, { a: 4 }, { a: 4 }, { a: 4 }])), true);
+t('a scored criterion alongside its note -> complete', () => {
+  assert.strictEqual(engine.dmComplete(mk([{ a: 4, a__note: 'x' }, { a: 4 }, { a: 4 }, { a: 4 }, { a: 4 }])), true);
 });
 t('an empty section is NOT complete', () => {
   assert.strictEqual(engine.dmComplete(mk([{ a: 4 }, { a: 4 }, { a: 4 }, { a: 4 }, {}])), false);

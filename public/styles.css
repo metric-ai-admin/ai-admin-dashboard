@@ -2373,6 +2373,3 @@ tr.ca-sel { background: var(--accent-glow); }
 }
 .crm-dm-note::placeholder { color: var(--text-muted); }
 .crm-dm-note:focus { outline: none; border-color: var(--accent); }
-/* Grey rather than red or green: N/A is neither a pass nor a failure, and it
-   is excluded from the score entirely. */
-.crm-yn-btn.active-na { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-accent); }

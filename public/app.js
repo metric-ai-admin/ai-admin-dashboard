@@ -4742,16 +4742,21 @@ function crmRenderDM(dmReview) {
   crmUpdateDMOverall();
 }
 
-// Per-criterion notes and the N/A option both live in the SAME *_scores JSONB
-// object as the score, which is why neither needed a migration:
+// Per-criterion notes live in the SAME *_scores JSONB object as the score,
+// which is why they needed no migration:
 //
-//   { seo: 4, seo__note: "no meta descriptions", instagram: "na" }
+//   { seo: 4, seo__note: "no meta descriptions" }
 //
-// Every consumer of these objects already filters `typeof v === 'number'` before
-// averaging — the overall_score calculation in server.js, crmUpdateDMOverall
-// here, and the cleanup helper — so a string note and an "na" marker are
-// ignored by scoring for free. That is deliberate for N/A: scoring it as 0
-// would punish a property for a question that does not apply to it.
+// Every consumer of these objects already filters `typeof v === 'number'`
+// before averaging — the overall_score calculation in server.js,
+// crmUpdateDMOverall here, and the cleanup helper — so a string note is ignored
+// by scoring for free.
+//
+// Note on N/A: the rating-scale questions have always carried it as
+// GRADE_LABELS[0], stored as the NUMBER 0, so it counts as a zero in the
+// average. That is long-standing behaviour and untouched here. Binary Yes/No
+// questions have no N/A — added 2026-09-22 and reverted the same day at
+// Katie's request.
 const DM_NOTE_SUFFIX = '__note';
 const dmNoteKey = key => key + DM_NOTE_SUFFIX;
 
@@ -4801,19 +4806,19 @@ function crmInitDMPickers() {
   $$('.crm-yn-picker').forEach(el => {
     const { section, key } = el.dataset;
     const current = crmState.dmScores[section]?.[key];
-    // N/A is stored as the string 'na', not a number, so it is excluded from
-    // the average rather than counted as a zero.
+    // Yes/No only. N/A was added here on 2026-09-22 and taken back out the same
+    // day at Katie's request: N/A belongs to the rating-scale questions, which
+    // have always had it as the first option in GRADE_LABELS. A binary question
+    // is answerable either way, so there is no third state.
     el.innerHTML = `
       <button class="crm-yn-btn ${current === 5 ? 'active-yes' : ''}" data-val="5">Yes</button>
-      <button class="crm-yn-btn ${current === 0 ? 'active-no' : ''}" data-val="0">No</button>
-      <button class="crm-yn-btn ${current === 'na' ? 'active-na' : ''}" data-val="na">N/A</button>`;
+      <button class="crm-yn-btn ${current === 0 ? 'active-no' : ''}" data-val="0">No</button>`;
     el.querySelectorAll('.crm-yn-btn').forEach(btn =>
       btn.addEventListener('click', () => {
         crmState.dmScores[section] = crmState.dmScores[section] || {};
-        const raw = btn.dataset.val;
-        crmState.dmScores[section][key] = raw === 'na' ? 'na' : parseInt(raw);
-        el.querySelectorAll('.crm-yn-btn').forEach(b => b.classList.remove('active-yes', 'active-no', 'active-na'));
-        btn.classList.add(raw === 'na' ? 'active-na' : raw === '5' ? 'active-yes' : 'active-no');
+        crmState.dmScores[section][key] = parseInt(btn.dataset.val);
+        el.querySelectorAll('.crm-yn-btn').forEach(b => b.classList.remove('active-yes', 'active-no'));
+        btn.classList.add(parseInt(btn.dataset.val) === 5 ? 'active-yes' : 'active-no');
         crmUpdateDMOverall();
       })
     );
