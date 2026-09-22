@@ -9065,7 +9065,7 @@ function dqCard(a) {
     </header>
 
     <div class="dq-figs">
-      <div><span class="dq-fig-label">Balance</span><span class="dq-fig">${dqMoney(a.balance)}</span></div>
+      <div><span class="dq-fig-label">Balance</span><span class="dq-fig dq-fig-primary">${dqMoney(a.balance)}</span></div>
       <div><span class="dq-fig-label">A month ago</span><span class="dq-fig">${a.lastMonthBalance == null ? '<span class="muted">—</span>' : dqMoney(a.lastMonthBalance)}</span></div>
       <div><span class="dq-fig-label">Change</span><span class="dq-fig">${dqChange(a)}</span></div>
       <div><span class="dq-fig-label">90+ days</span><span class="dq-fig">${a.aged90Plus > 0 ? dqMoney(a.aged90Plus) : '<span class="muted">none</span>'}</span></div>

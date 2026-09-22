@@ -2326,3 +2326,26 @@ tr.ca-sel { background: var(--accent-glow); }
 #tab-collections .dq-wrap .badge.red   { background: var(--critical-bg); color: var(--critical); }
 #tab-collections .dq-wrap .badge.amber { background: var(--warning-bg);  color: var(--warning); }
 #tab-collections .dq-wrap .badge.gray  { background: var(--bg-elevated); color: var(--text-secondary); }
+
+/* ---- Decision Queue contrast ----
+   Scoped to .dq-wrap on purpose. The global --text-secondary is #8b8ba8,
+   below the #999999 floor asked for here, but changing that token would
+   restyle every muted string in the dashboard. These overrides stay on the
+   cards. Contrast is measured against the card background, #111118. */
+.dq-wrap .dq-name { color: #f0f0f0; font-weight: 700; font-size: 15.5px; }
+.dq-wrap .dq-where { color: #aaaaaa; }
+.dq-wrap .dq-fig-label { color: #aaaaaa; }
+/* Every figure readable; the balance is the one people scan for. */
+.dq-wrap .dq-fig { color: #cccccc; font-size: 14px; }
+.dq-wrap .dq-fig-primary { color: #ffffff; font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
+.dq-wrap .dq-reasons li { color: #cccccc; }
+.dq-wrap .dq-chip { color: #f0f0f0; }
+.dq-wrap .dq-meta { color: #aaaaaa; }
+.dq-wrap .dq-decided { color: #cccccc; }
+.dq-wrap .dq-note { color: #bbbbbb; }
+/* Floor for anything still using the shared .muted class inside a card
+   ("none on record", "no change", the em-dash placeholders). */
+.dq-wrap .muted { color: #999999; }
+.dq-wrap .dq-note-input { color: #f0f0f0; }
+.dq-wrap .dq-note-input::placeholder { color: #999999; }
+/* The up/down delta colours are status reds and greens, already bright. */
