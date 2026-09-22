@@ -156,9 +156,15 @@ function dmComplete(p) {
   const dm = p.dm_review;
   if (!dm) return false;
   const sections = ['website_scores', 'floorplan_scores', 'gbp_scores', 'facebook_scores', 'ils_scores'];
+  // Counts SCORED criteria only. Since 2026-09-22 these objects also hold
+  // per-criterion notes ("seo__note": "...") and N/A markers ("instagram":
+  // "na"), both stored as strings in the same object. A bare key count would
+  // treat a section where the agent only typed a note as complete, dropping the
+  // DM task off the queue before anything was actually scored.
   return sections.every(s => {
     const v = dm[s];
-    return v && typeof v === 'object' && Object.keys(v).length > 0;
+    return v && typeof v === 'object'
+      && Object.values(v).some(x => typeof x === 'number' && !isNaN(x));
   });
 }
 

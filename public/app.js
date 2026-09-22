@@ -4742,6 +4742,43 @@ function crmRenderDM(dmReview) {
   crmUpdateDMOverall();
 }
 
+// Per-criterion notes and the N/A option both live in the SAME *_scores JSONB
+// object as the score, which is why neither needed a migration:
+//
+//   { seo: 4, seo__note: "no meta descriptions", instagram: "na" }
+//
+// Every consumer of these objects already filters `typeof v === 'number'` before
+// averaging — the overall_score calculation in server.js, crmUpdateDMOverall
+// here, and the cleanup helper — so a string note and an "na" marker are
+// ignored by scoring for free. That is deliberate for N/A: scoring it as 0
+// would punish a property for a question that does not apply to it.
+const DM_NOTE_SUFFIX = '__note';
+const dmNoteKey = key => key + DM_NOTE_SUFFIX;
+
+// Insert (once) a notes input directly under a criterion row.
+function crmEnsureDMNote(pickerEl) {
+  const { section, key } = pickerEl.dataset;
+  const row = pickerEl.closest('.crm-dm-row');
+  if (!row) return;
+  let note = row.nextElementSibling;
+  if (!note || !note.classList.contains('crm-dm-note')) {
+    note = document.createElement('input');
+    note.type = 'text';
+    note.className = 'crm-dm-note';
+    note.placeholder = 'Notes...';
+    row.insertAdjacentElement('afterend', note);
+    note.addEventListener('input', () => {
+      crmState.dmScores[section] = crmState.dmScores[section] || {};
+      const v = note.value.trim();
+      // Store nothing rather than an empty string, so a cleared note does not
+      // leave a key behind that makes the section look filled in.
+      if (v) crmState.dmScores[section][dmNoteKey(key)] = v;
+      else delete crmState.dmScores[section][dmNoteKey(key)];
+    });
+  }
+  note.value = (crmState.dmScores[section] || {})[dmNoteKey(key)] || '';
+}
+
 function crmInitDMPickers() {
   const GRADE_LABELS = ['N/A', 'Liability', 'Poor', 'Fair', 'Good', 'Great'];
   $$('.crm-grade-picker').forEach(el => {
@@ -4759,22 +4796,28 @@ function crmInitDMPickers() {
         crmUpdateDMOverall();
       })
     );
+    crmEnsureDMNote(el);
   });
   $$('.crm-yn-picker').forEach(el => {
     const { section, key } = el.dataset;
     const current = crmState.dmScores[section]?.[key];
+    // N/A is stored as the string 'na', not a number, so it is excluded from
+    // the average rather than counted as a zero.
     el.innerHTML = `
       <button class="crm-yn-btn ${current === 5 ? 'active-yes' : ''}" data-val="5">Yes</button>
-      <button class="crm-yn-btn ${current === 0 ? 'active-no' : ''}" data-val="0">No</button>`;
+      <button class="crm-yn-btn ${current === 0 ? 'active-no' : ''}" data-val="0">No</button>
+      <button class="crm-yn-btn ${current === 'na' ? 'active-na' : ''}" data-val="na">N/A</button>`;
     el.querySelectorAll('.crm-yn-btn').forEach(btn =>
       btn.addEventListener('click', () => {
         crmState.dmScores[section] = crmState.dmScores[section] || {};
-        crmState.dmScores[section][key] = parseInt(btn.dataset.val);
-        el.querySelectorAll('.crm-yn-btn').forEach(b => b.classList.remove('active-yes', 'active-no'));
-        btn.classList.add(parseInt(btn.dataset.val) === 5 ? 'active-yes' : 'active-no');
+        const raw = btn.dataset.val;
+        crmState.dmScores[section][key] = raw === 'na' ? 'na' : parseInt(raw);
+        el.querySelectorAll('.crm-yn-btn').forEach(b => b.classList.remove('active-yes', 'active-no', 'active-na'));
+        btn.classList.add(raw === 'na' ? 'active-na' : raw === '5' ? 'active-yes' : 'active-no');
         crmUpdateDMOverall();
       })
     );
+    crmEnsureDMNote(el);
   });
 }
 

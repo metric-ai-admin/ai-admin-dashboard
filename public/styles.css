@@ -2364,3 +2364,15 @@ tr.ca-sel { background: var(--accent-glow); }
 /* Phone number on a Decision Queue card — a real link so it dials on mobile. */
 .dq-wrap .dq-tel { color: var(--link); text-decoration: none; font-weight: 600; }
 .dq-wrap .dq-tel:hover { color: var(--link-hover); text-decoration: underline; }
+
+/* DM Review: per-criterion notes + the N/A option on binary questions. */
+.crm-dm-note {
+  display: block; width: 100%; margin: 2px 0 8px; padding: 4px 8px;
+  font-family: inherit; font-size: 12px; color: var(--text-primary);
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 5px;
+}
+.crm-dm-note::placeholder { color: var(--text-muted); }
+.crm-dm-note:focus { outline: none; border-color: var(--accent); }
+/* Grey rather than red or green: N/A is neither a pass nor a failure, and it
+   is excluded from the score entirely. */
+.crm-yn-btn.active-na { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-accent); }

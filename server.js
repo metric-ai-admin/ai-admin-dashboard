@@ -7807,8 +7807,12 @@ app.get('/api/crm/completed', requireCRM, requireAuth, async (req, res) => {
 // bulk-created in the import window without meaningful scorecard data.
 // GET = dry run (lists what would go); POST = execute. Admin-only.
 const DM_CLEANUP_SECTIONS = ['website_scores', 'floorplan_scores', 'gbp_scores', 'facebook_scores', 'ils_scores'];
+// Numeric values only — these objects also carry per-criterion notes and "na"
+// markers as strings (see crmInitDMPickers), and a key count would read a
+// note-only section as meaningful scorecard data.
 const dmHasMeaningfulScorecard = r =>
-  DM_CLEANUP_SECTIONS.every(s => r[s] && typeof r[s] === 'object' && Object.keys(r[s]).length > 0)
+  DM_CLEANUP_SECTIONS.every(s => r[s] && typeof r[s] === 'object'
+    && Object.values(r[s]).some(x => typeof x === 'number' && !isNaN(x)))
   && Number(r.overall_score) > 0;
 async function dmReviewCleanup({ agentLike, importFrom, importTo, execute }) {
   const db = supabaseAdmin || supabasePublic;
