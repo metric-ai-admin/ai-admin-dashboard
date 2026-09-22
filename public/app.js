@@ -4784,6 +4784,62 @@ function crmEnsureDMNote(pickerEl) {
   note.value = (crmState.dmScores[section] || {})[dmNoteKey(key)] || '';
 }
 
+// Conditional sub-questions. A "Listed on X" answer of No makes its follow-ups
+// meaningless, so they are hidden — and hidden by default until the parent is
+// answered at all.
+//
+// Declarative on purpose: adding a platform is one line here, not new logic.
+// GBP Active and Facebook Active follow the same shape but are NOT listed here
+// — they were not part of the request, and switching them on would hide
+// criteria that 81 existing reviews have scored.
+const DM_CONDITIONALS = {
+  ils: {
+    apts_listed: ['apts_photos', 'apts_pricing'],
+    zillow_listed: ['zillow_photos'],
+  },
+};
+
+const dmChildKeys = (section, parentKey) => (DM_CONDITIONALS[section] || {})[parentKey] || [];
+const dmIsChild = (section, key) =>
+  Object.values(DM_CONDITIONALS[section] || {}).some(kids => kids.includes(key));
+
+// Show/hide every conditional child according to its parent's current answer.
+// Visibility only — this never edits stored values, so opening an old review
+// cannot quietly change what it holds.
+function crmApplyDMConditionals() {
+  for (const [section, parents] of Object.entries(DM_CONDITIONALS)) {
+    for (const [parentKey, kids] of Object.entries(parents)) {
+      const answer = (crmState.dmScores[section] || {})[parentKey];
+      const show = answer === 5;   // Yes. No (0) and unanswered both hide.
+      for (const key of kids) {
+        const picker = document.querySelector(`[data-section="${section}"][data-key="${key}"]`);
+        const row = picker && picker.closest('.crm-dm-row');
+        if (!row) continue;
+        row.classList.toggle('hidden', !show);
+        const note = row.nextElementSibling;
+        if (note && note.classList.contains('crm-dm-note')) note.classList.toggle('hidden', !show);
+      }
+    }
+  }
+}
+
+// Drop a parent's children when the agent actively answers No.
+//
+// Deliberately NOT called on load. 22 existing reviews already hold a parent of
+// No alongside scored children — usually 0, which on a grade picker IS the N/A
+// option, so it was the reasonable answer before this feature existed. Clearing
+// those on open would rewrite history the moment someone viewed a property, and
+// would raise its overall score, since those zeros currently pull the average
+// down.
+function crmClearDMChildren(section, parentKey) {
+  const bag = crmState.dmScores[section];
+  if (!bag) return;
+  for (const key of dmChildKeys(section, parentKey)) {
+    delete bag[key];
+    delete bag[dmNoteKey(key)];
+  }
+}
+
 function crmInitDMPickers() {
   const GRADE_LABELS = ['N/A', 'Liability', 'Poor', 'Fair', 'Good', 'Great'];
   $$('.crm-grade-picker').forEach(el => {
@@ -4816,14 +4872,23 @@ function crmInitDMPickers() {
     el.querySelectorAll('.crm-yn-btn').forEach(btn =>
       btn.addEventListener('click', () => {
         crmState.dmScores[section] = crmState.dmScores[section] || {};
-        crmState.dmScores[section][key] = parseInt(btn.dataset.val);
+        const val = parseInt(btn.dataset.val);
+        crmState.dmScores[section][key] = val;
         el.querySelectorAll('.crm-yn-btn').forEach(b => b.classList.remove('active-yes', 'active-no'));
-        btn.classList.add(parseInt(btn.dataset.val) === 5 ? 'active-yes' : 'active-no');
+        btn.classList.add(val === 5 ? 'active-yes' : 'active-no');
+        // Answering No to a "Listed on X" question drops its follow-ups, so a
+        // stale score for a platform the property is not on cannot survive.
+        if (val === 0 && dmChildKeys(section, key).length) {
+          crmClearDMChildren(section, key);
+          crmInitDMPickers();   // repaint the children as empty
+        }
+        crmApplyDMConditionals();
         crmUpdateDMOverall();
       })
     );
     crmEnsureDMNote(el);
   });
+  crmApplyDMConditionals();
 }
 
 function crmUpdateDMOverall() {
