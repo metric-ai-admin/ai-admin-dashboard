@@ -6352,6 +6352,51 @@ const AUTOGRADE_MIN_TRANSCRIPT = 100; // characters
 // ungraded. That is the trade, and it is reversible — an empty
 // AUTOGRADE_EXCLUDED_LINES env value turns the exclusion off without a deploy.
 // Matched on the archive's user_name, case-insensitively.
+// Vendor / third-party pre-filter. Calls that name one of these are with a
+// supplier, not a resident, so no rubric can score them — grading one spends
+// credits to produce a Not Scoreable row.
+//
+// EVERY TERM HERE WAS MEASURED at zero false positives against 1,177 graded
+// calls on 2026-09-22. That bar matters more than list length: a term that
+// wrongly matches skips a real resident call silently and permanently, because
+// the skip writes a call_grades row and the existence check never revisits it.
+//
+// Terms deliberately NOT included, with what they actually caught:
+//   Zillow, Apartments.com, CoStar — listing sites. Apartments.com caught 6 N/S
+//     but also 3 REAL calls: prospects saying where they found the listing,
+//     which is exactly what the leasing rubric exists to grade.
+//   AppFolio — 10 N/S but 6 real; staff and residents discuss the portal.
+//   Google, AT&T — residents' own services. AT&T appeared in a Spanish call
+//     where the agent was listing internet providers for a resident.
+//   anonymous, unknown — 3 N/S against 4 real.
+//   SimpleVoIP, Ramp, DocuSign — zero hits either way.
+//
+// Matched word-boundaried against the transcript and the caller field.
+// Substring matching is NOT safe here: an earlier draft matched "orkin" inside
+// "working" and would have skipped maintenance calls about broken appliances.
+//
+// Extend without a deploy via VENDOR_PREFILTER_TERMS (comma-separated, replaces
+// this list). Measure a candidate before adding it.
+const VENDOR_PREFILTER_TERMS = (process.env.VENDOR_PREFILTER_TERMS ?? [
+  'republic services', 'panthera', 'yardimatrix', 'yardi matrix', 'chariot energy',
+  'blink charging', 'austin window works', 'delvin electrical', 'iowa electrical',
+  'amazing auto repair', 'argus verify', 'roadrunner', 'thunder solutions',
+  'hd supply', 'ferguson',
+].join(',')).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+const VENDOR_PREFILTER_RX = VENDOR_PREFILTER_TERMS.map(t =>
+  new RegExp('\\b' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i'));
+
+// Returns the matched term, or null. The term is logged and stored so a wrong
+// skip can be traced back to the word that caused it.
+function vendorPrefilterMatch(transcript, caller) {
+  const hay = String(transcript || '') + '\n' + String(caller || '');
+  for (let i = 0; i < VENDOR_PREFILTER_RX.length; i++) {
+    if (VENDOR_PREFILTER_RX[i].test(hay)) return VENDOR_PREFILTER_TERMS[i];
+  }
+  return null;
+}
+
 const AUTOGRADE_EXCLUDED_LINES = (process.env.AUTOGRADE_EXCLUDED_LINES ?? 'Rebekah Tuckner')
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const autogradeLineExcluded = userName =>
@@ -6407,6 +6452,29 @@ async function autoGradeCall(call, transcript, opts = {}) {
   // pass. Any OTHER error (429, 5xx, credits exhausted, network) still throws so
   // the caller counts it and the call is retried on the next run, which is the
   // behaviour we want for transient failures.
+  // Vendor / third-party pre-filter — the ONLY path that writes a grade without
+  // calling the API. Runs after the existence check so it never overwrites a
+  // real grade, and after agent resolution so the row is still attributed.
+  const vendorTerm = vendorPrefilterMatch(text, call.caller);
+  if (vendorTerm) {
+    console.log(`[auto-grade] ${recording_id} — vendor/internal pre-filter: matched "${vendorTerm}", skipped before the API call`);
+    const row = callGradeRow({
+      not_scoreable: true,
+      not_scoreable_reason: `vendor/internal — skipped pre-grade (matched "${vendorTerm}")`,
+      summary: `Not graded: the call names ${vendorTerm}, a vendor or third party rather than a resident. Skipped before the grading API call.`,
+      flags: ['Not Scoreable — vendor/internal pre-filter'],
+    }, {
+      recording_id,
+      agent_name: agent,
+      call_date: opts.call_date || (call.datetime ? ctDateStr(0) : null),
+      call_direction: call.direction || null,
+      duration_seconds: call.duration,
+    });
+    const { duplicate } = await saveCallGrade(db, row);
+    if (duplicate) return { status: 'skipped', reason: 'already graded' };
+    return { status: 'graded', agent, not_scoreable: true, prefiltered: vendorTerm };
+  }
+
   let parsed;
   try {
     parsed = await callGrading.gradeTranscript({
@@ -6471,7 +6539,7 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
     console.log(`[auto-grade] ${date}: ${eligible.length} eligible; first row user_name=${JSON.stringify(eligible[0].user_name)} defaultOwner=${JSON.stringify(defaultOwner)}`);
   }
   const agg = { date, users_processed: 0, total: eligible.length, already_graded: 0,
-    newly_graded: 0, skipped: 0, not_scoreable: 0, errors: 0, per_user: {}, error_samples: [] };
+    newly_graded: 0, skipped: 0, not_scoreable: 0, prefiltered: 0, errors: 0, per_user: {}, error_samples: [] };
   for (const row of eligible) {
     try {
       const { data: ex } = await db.from('call_grades')
@@ -6480,15 +6548,20 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
       // Direction + line owner now come from the archive (migration 043); call_date
       // is passed explicitly. autoGradeCall re-applies the duration/length/existence
       // guards defensively.
-      const call = { recording_id: row.recording_id, duration: row.duration, direction: row.call_direction || null };
+      // caller is carried so the vendor pre-filter can match on it as well as
+      // the transcript — without it the filter only ever sees the transcript.
+      const call = { recording_id: row.recording_id, duration: row.duration, direction: row.call_direction || null, caller: row.caller || null };
       const lineOwner = row.user_name || defaultOwner || null;
       const r = await autoGradeCall(call, row.transcript, { call_date: date, lineOwner });
       if (r.status === 'graded') {
         agg.newly_graded++; if (r.not_scoreable) agg.not_scoreable++;
+        if (r.prefiltered) agg.prefiltered++;
         const key = r.agent || 'Unidentified';
         const pu = agg.per_user[key] || (agg.per_user[key] = { newly_graded: 0, not_scoreable: 0 });
         pu.newly_graded++; if (r.not_scoreable) pu.not_scoreable++;
-        await svSleep(delayMs);
+        // No pause after a pre-filtered call: the delay exists to space out
+        // Claude requests, and this path never made one.
+        if (!r.prefiltered) await svSleep(delayMs);
       } else if (r.reason === 'already graded') agg.already_graded++;
       else agg.skipped++; // too short / thin transcript / no agent
     } catch (err) {
