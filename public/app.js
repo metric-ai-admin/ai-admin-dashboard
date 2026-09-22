@@ -4104,6 +4104,14 @@ function crmRenderPhoneList(shops) {
         return v ? `<div class="small" style="display:flex;justify-content:space-between;gap:12px;padding:1px 0"><span class="muted" style="max-width:74%">${esc(label)}</span><b>${v === 'yes' ? 'Yes' : v === 'no' ? 'No' : '—'}</b></div>` : '';
       }).join('');
       scHtml = `<div style="margin-top:6px"><b class="small">Perfect Phone Call${sc.rating ? ` — ${esc(sc.rating)}` : ''}</b>${items}</div>`;
+    } else if (nt.source === 'bd_phone_shops') {
+      // Historical calls migrated from bd_phone_shops on 2026-09-22. That table
+      // only ever held a single call_score — it had no per-criterion scorecard —
+      // so these rows have nothing to show and never will. Said plainly, because
+      // an empty Perfect Phone Call section on a real-looking log reads as a bug:
+      // Katie reported exactly that the morning after the migration made 47 of
+      // her historical calls visible for the first time.
+      scHtml = '<div style="margin-top:6px"><span class="small muted">Imported historical call — no Perfect Phone Call scorecard was recorded.</span></div>';
     }
     const concLabel = s.quote_concession === 'Other' && s.quote_concession_other
       ? `Other — ${s.quote_concession_other}` : s.quote_concession;
@@ -4202,7 +4210,11 @@ function crmRenderPhoneScorecard() {
   if (!host) return;
   const show = $('#pf-connection')?.value === 'answered_agent';
   host.classList.toggle('hidden', !show);
-  if (!show) return;
+  // Empty it on the way out. Returning early left the PREVIOUS call's scorecard
+  // sitting in the DOM behind a hidden class, so switching the connection back
+  // to "answered by agent" could momentarily show another call's answers before
+  // the re-render replaced them.
+  if (!show) { host.innerHTML = ''; return; }
   const sc = crmPhoneSC || (crmPhoneSC = { rating: '', answers: {} });
   const ratingBtns = PHONE_SC_RATINGS.map(r =>
     `<button type="button" class="crm-grade-btn ${sc.rating === r ? 'active' : ''}" data-pf-rating data-val="${esc(r)}">${esc(r)}</button>`).join('');
@@ -4254,6 +4266,10 @@ function crmResetPhoneForm() {
   const pr = $('#pf-price'); if (pr) pr.value = '';
   const cc = $('#pf-concession'); if (cc) cc.value = '';
   const co = $('#pf-concession-other'); if (co) co.value = '';
+  // Clear the imported-call note, or it survives from a previous edit into a
+  // brand-new log.
+  const banner = $('#pf-import-note');
+  if (banner) { banner.textContent = ''; banner.classList.add('hidden'); }
   crmRenderPhoneScorecard();
   crmPhoneToggleQuote();
   crmPhoneToggleConcessionOther();
@@ -4279,6 +4295,17 @@ function crmEditPhoneShop(s) {
   crmRenderPhoneScorecard();
   crmPhoneToggleQuote();
   crmPhoneToggleConcessionOther();
+  // Same reason as the read-only card: an imported call has no scorecard to
+  // restore, so say so inside the form rather than presenting 22 blank
+  // dropdowns that look like the values failed to load.
+  const banner = $('#pf-import-note');
+  if (banner) {
+    const imported = nt.source === 'bd_phone_shops' && !sc;
+    banner.textContent = imported
+      ? 'Imported historical call — no scorecard was recorded for it. Filling one in here will save it.'
+      : '';
+    banner.classList.toggle('hidden', !imported);
+  }
   const sb = $('#crm-phone-save'); if (sb) sb.textContent = 'Update Call';
   const f = $('#crm-phone-form'); if (f) { f.classList.remove('hidden'); f.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
 }
