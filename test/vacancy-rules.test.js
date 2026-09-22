@@ -172,6 +172,68 @@ t('a better unposted unit displaces a posted one', () => {
   assert.strictEqual(ids(r.remove), '703', 'worst posted unit is displaced');
 });
 
+console.log('\nVacant before Notice (within a tier)');
+t('isVacantNow reads the status prefix', () => {
+  assert.strictEqual(V.isVacantNow({ unit_status: 'Vacant-Unrented' }), true);
+  assert.strictEqual(V.isVacantNow({ unit_status: 'Notice-Unrented' }), false);
+  assert.strictEqual(V.isVacantNow({ unit_status: '' }), false);
+});
+t('THE 2936 CASE: an empty unit outranks an occupied one with a future date', () => {
+  // Reproduces The Highlander exactly. 2936 is empty today and advertised;
+  // 2910 is still occupied and cannot be toured until 2026-10-10. Before this
+  // rule, "blanks last" ranked 2910 above 2936 and recommended the swap.
+  const rows = [
+    unit(2934, { rent_ready: 'Yes', ready_for_showing_on: '2026-03-26', unit_status: 'Vacant-Unrented', posted_to_website: 'Yes' }),
+    unit(2942, { rent_ready: 'Yes', ready_for_showing_on: '2026-04-07', unit_status: 'Vacant-Unrented', posted_to_website: 'Yes' }),
+    unit(2910, { rent_ready: 'Yes', ready_for_showing_on: '2026-10-10', unit_status: 'Notice-Unrented' }),
+    unit(2936, { rent_ready: 'Yes', ready_for_showing_on: null, unit_status: 'Vacant-Unrented', posted_to_website: 'Yes', posted_to_internet: 'Yes' }),
+  ];
+  const r = run(rows);
+  assert.strictEqual(r.remove.length, 0, '2936 must NOT be removed — it is empty and advertised');
+  assert.strictEqual(r.add.length, 0, '2910 must NOT be added — it is still occupied until October');
+});
+t('vacant wins even when the occupied unit has an earlier date', () => {
+  // All four are tier 2 — every date is in the future, so the tier cannot be
+  // what separates them. Then 1504, the only empty unit, takes a slot despite
+  // having the latest date of the four, and the worst occupied unit drops out.
+  const rows = [
+    unit(1501, { rent_ready: 'Yes', unit_status: 'Notice-Unrented', ready_for_showing_on: '2026-10-01', posted_to_website: 'Yes' }),
+    unit(1502, { rent_ready: 'Yes', unit_status: 'Notice-Unrented', ready_for_showing_on: '2026-10-02', posted_to_website: 'Yes' }),
+    unit(1503, { rent_ready: 'Yes', unit_status: 'Notice-Unrented', ready_for_showing_on: '2026-10-03', posted_to_website: 'Yes' }),
+    unit(1504, { rent_ready: 'Yes', unit_status: 'Vacant-Unrented', ready_for_showing_on: '2027-12-31', posted_to_website: 'Yes' }),
+  ];
+  assert.strictEqual(ids(run(rows).remove), '1503');
+});
+t('within the same status, the date still decides', () => {
+  const rows = [
+    unit(1601, { rent_ready: 'Yes', unit_status: 'Vacant-Unrented', ready_for_showing_on: '2026-01-01', posted_to_website: 'Yes' }),
+    unit(1602, { rent_ready: 'Yes', unit_status: 'Vacant-Unrented', ready_for_showing_on: '2026-02-01', posted_to_website: 'Yes' }),
+    unit(1603, { rent_ready: 'Yes', unit_status: 'Vacant-Unrented', ready_for_showing_on: '2026-03-01', posted_to_website: 'Yes' }),
+    unit(1604, { rent_ready: 'Yes', unit_status: 'Vacant-Unrented', ready_for_showing_on: '2026-04-01', posted_to_website: 'Yes' }),
+  ];
+  assert.strictEqual(ids(run(rows).remove), '1604', 'latest date still drops out');
+});
+t('within the same status, blanks still sort last', () => {
+  const rows = [
+    unit(1701, { rent_ready: 'Yes', unit_status: 'Vacant-Unrented', posted_to_website: 'Yes' }),   // blank
+    unit(1702, { rent_ready: 'Yes', unit_status: 'Vacant-Unrented', ready_for_showing_on: '2027-01-01', posted_to_website: 'Yes' }),
+    unit(1703, { rent_ready: 'Yes', unit_status: 'Vacant-Unrented', ready_for_showing_on: '2027-02-01', posted_to_website: 'Yes' }),
+    unit(1704, { rent_ready: 'Yes', unit_status: 'Vacant-Unrented', ready_for_showing_on: '2027-03-01', posted_to_website: 'Yes' }),
+  ];
+  assert.strictEqual(ids(run(rows).remove), '1701', 'the blank-date unit still drops out');
+});
+t('status does not override the tier', () => {
+  // A tier-1 occupied unit still beats a tier-2 vacant one: the new step sorts
+  // WITHIN a tier, it does not jump tiers.
+  const rows = [
+    unit(1801, { rent_ready: 'Yes', unit_status: 'Notice-Unrented', ready_for_showing_on: '2026-01-01', posted_to_website: 'Yes' }), // tier 1
+    unit(1802, { rent_ready: 'Yes', unit_status: 'Notice-Unrented', ready_for_showing_on: '2026-01-02', posted_to_website: 'Yes' }), // tier 1
+    unit(1803, { rent_ready: 'Yes', unit_status: 'Notice-Unrented', ready_for_showing_on: '2026-01-03', posted_to_website: 'Yes' }), // tier 1
+    unit(1804, { rent_ready: 'Yes', unit_status: 'Vacant-Unrented', posted_to_website: 'Yes' }),                                     // tier 2
+  ];
+  assert.strictEqual(ids(run(rows).remove), '1804', 'the tier-2 vacant unit is the one over cap');
+});
+
 console.log('\nTie stability');
 t('a full tie prefers the already-posted unit', () => {
   // All four identical on every ranking signal — the posted one must survive.
@@ -253,6 +315,14 @@ t('empty input does not throw', () => {
   const r = V.analyzeVacancy([], { today: TODAY, isExcludedProperty });
   assert.strictEqual(r.remove.length, 0);
   assert.strictEqual(V.removalIdList(r), '');
+});
+t('no removals yields an empty prompt, not a prompt with no ids', () => {
+  // Reachable in production as of the vacant-before-notice fix: the live data
+  // now produces zero removals, and "…unit IDs: . Click confirm." must never
+  // be pasteable.
+  const r = V.analyzeVacancy([unit(1901, { rent_ready: 'Yes', posted_to_website: 'Yes' })], { today: TODAY, isExcludedProperty });
+  assert.strictEqual(r.remove.length, 0);
+  assert.strictEqual(V.realmXPrompt(r), '');
 });
 t('posted_to_internet alone counts as posted', () => {
   const rows = [

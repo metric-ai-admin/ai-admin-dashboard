@@ -105,13 +105,30 @@ function priorityTier(row, today) {
   return 4;
 }
 
-// Tiebreaker — earliest Ready For Showing On first, BLANKS LAST (no confirmed
-// showing date is the weakest signal, confirmed 2026-09-21). unit_id breaks
-// the remaining ties so the output is stable between runs; an unstable order
-// would silently change which units get removed.
+// Is the unit empty right now, or still occupied on notice? Vacant-* means the
+// resident is gone; Notice-* means they are still living there.
+const isVacantNow = row => /^vacant/i.test(String(row.unit_status || '').trim());
+
+// Within a tier, in order:
+//   1. Vacant-* before Notice-*      — actually empty beats still-occupied
+//   2. earliest Ready For Showing On — blanks LAST
+//   3. already-posted wins exact ties — anti-churn
+// unit_id settles anything still level, so the output is stable between runs;
+// an unstable order would silently change which units get removed.
+//
+// Step 1 added 2026-09-22 to fix a real inversion. Unit 2936 at The Highlander
+// is Vacant-Unrented, rent ready, 273 days empty and advertised, with no showing
+// date. Unit 2910 is Notice-Unrented — still occupied, not available until
+// 2026-10-10. Both are tier 2, so the date rule decided it, and "blanks last"
+// ranked an October date above no date at all: the tool wanted to pull the
+// listing for a unit available today in favour of one nobody can tour for three
+// weeks. "Blanks last" was meant to demote units with no confirmed readiness, not
+// to outrank a unit that is already empty.
 function compareRows(a, b, today) {
   const t = priorityTier(a, today) - priorityTier(b, today);
   if (t !== 0) return t;
+  const va = isVacantNow(a), vb = isVacantNow(b);
+  if (va !== vb) return va ? -1 : 1;
   const da = a.ready_for_showing_on || '';
   const db = b.ready_for_showing_on || '';
   if (da !== db) {
@@ -251,8 +268,14 @@ function analyzeVacancy(rows, opts = {}) {
 /** Rule 4 — comma-separated numeric unit IDs, nothing else. */
 const removalIdList = result => result.remove.map(r => r.unit_id).join(',');
 
-/** Rule 5 — the exact text pasted into Realm-X. */
-const realmXPrompt = result => `Bulk remove the following unit IDs: ${removalIdList(result)}. Click confirm.`;
+// Rule 5 — the exact text pasted into Realm-X.
+//
+// Empty when there is nothing to remove, rather than "…unit IDs: . Click
+// confirm." — a prompt with no ids is a command to do nothing with an
+// instruction to confirm it. The UI only renders this block when removals
+// exist, but nothing should be able to paste that sentence into Realm-X.
+const realmXPrompt = result =>
+  (result.remove.length ? `Bulk remove the following unit IDs: ${removalIdList(result)}. Click confirm.` : '');
 
 module.exports = {
   analyzeVacancy,
@@ -261,6 +284,7 @@ module.exports = {
   collapseFloorVariants,
   priorityTier,
   compareRows,
+  isVacantNow,
   removalIdList,
   realmXPrompt,
   isPosted,
