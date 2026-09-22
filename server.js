@@ -8904,6 +8904,11 @@ const MEETING_EXCLUDE_KEYWORDS = (process.env.MEETING_EXCLUDE_KEYWORDS || 'clien
 // standup, so it's included alongside Lyndsay; MEETING_ORGANIZER_IDS (comma-sep)
 // and the legacy MEETING_ORGANIZER_ID env vars extend the set.
 const MEETING_SUPPORT_MAILBOX = process.env.MEETING_SUPPORT_MAILBOX || 'support@livewithmetric.com';
+
+// Below this a transcript has nothing to summarize. Measured against the live
+// table: the 8 useless summaries all came from transcripts of 26-215 characters,
+// while the shortest genuine meeting ran 10,469. 500 sits well clear of both.
+const MEETING_MIN_TRANSCRIPT = Number(process.env.MEETING_MIN_TRANSCRIPT || 500);
 let meetingOrganizerIds = null;
 async function resolveOrganizerIds(appToken) {
   if (meetingOrganizerIds) return meetingOrganizerIds;
@@ -8967,7 +8972,17 @@ async function summarizeMeetingTranscript(meta, transcriptText) {
     + '{"attendees":["name"],"key_decisions":["decision"],"action_items":[{"action":"imperative action",'
     + '"owner":"person responsible or null"}],"summary":"2-3 sentence recap"}. Base everything strictly '
     + 'on the transcript — do not invent attendees, decisions, owners or actions that are not present. '
-    + 'Owners are named people from the transcript.';
+    // Owners were coming back as job titles — "Maintenance Coordinator" (113),
+    // "Leasing Metric" (31), "Metric PM Team" (17), "Executive Assistant" —
+    // and the same person under several forms ("Eric", "Eric (Maintenance
+    // Coordinator)", "Art (Maintenance Coordinator)"). A title is not something
+    // you can chase, so it is now null rather than a guess.
+    + 'An owner must be a PERSON\'S NAME as spoken in the transcript, nothing else. '
+    + 'Never use a job title, team or department ("Maintenance Coordinator", "Leasing", '
+    + '"the team") as an owner — if no individual is named for an action, set owner to null. '
+    + 'Give the name alone, with no title in parentheses after it. '
+    + 'If the transcript is too brief or unintelligible to summarize, return empty arrays and '
+    + 'say so plainly in summary rather than describing the transcript itself.';
   const user = `Meeting: ${meta.subject || '(untitled)'}\nDate: ${meta.date || ''}\n\nTRANSCRIPT:\n`
     + String(transcriptText).slice(0, 60000);
   const parsed = await callGrading.anthropicJson({ system, user, maxTokens: 1500 });
@@ -8985,7 +9000,9 @@ async function summarizeMeetingTranscript(meta, transcriptText) {
 // summarize, and upsert. Idempotent by transcript_id — a meeting whose transcript
 // isn't ready yet simply produces nothing and is retried next pass.
 async function captureMeetingTranscripts() {
-  const out = { scanned: 0, capturable: 0, resolved: 0, transcripts: 0, summarized: 0, skipped: 0, errors: 0, items: [], error: null };
+  const out = { scanned: 0, capturable: 0, resolved: 0, transcripts: 0, summarized: 0, skipped: 0, duplicates: 0, tooShort: 0, errors: 0, items: [], error: null };
+  // One onlineMeeting is handled once per pass — see the recurring-series note below.
+  const seenMeetingIds = new Set();
   if (!CRM_CONFIGURED) { out.error = 'Supabase not configured'; return out; }
   if (!GRAPH_CONFIGURED) { out.error = 'Graph not configured'; return out; }
   if (!process.env.ANTHROPIC_API_KEY) { out.error = 'ANTHROPIC_API_KEY not set'; return out; }
@@ -9044,7 +9061,25 @@ async function captureMeetingTranscripts() {
         out.skipped++; continue;
       }
       out.resolved++;
+
+      // A RECURRING meeting's occurrences all share one joinUrl, so they all
+      // resolve to the SAME onlineMeeting — and /transcripts returns every
+      // transcript the series has ever produced, not the ones for this
+      // occurrence. Processing the series once per occurrence is what produced
+      // 43 rows for "Daily Maintenance coordinator meeting", spread across four
+      // meeting_dates. Handle each onlineMeeting once per pass.
+      if (seenMeetingIds.has(om.id)) { out.skipped++; continue; }
+      seenMeetingIds.add(om.id);
+
       const transcripts = await teams.listTranscripts(fetchFn, appToken, ownerId, om.id);
+
+      // Teams also hands back MULTIPLE transcript ids carrying identical text:
+      // the 43 rows above held only 22 distinct transcripts. transcript_id
+      // dedupe cannot see that, so compare content as well. One query per
+      // meeting, not per transcript.
+      const { data: priorRows } = await db.from('meeting_summaries')
+        .select('transcript_text').eq('meeting_id', om.id);
+      const seenText = new Set((priorRows || []).map(r => String(r.transcript_text || '')).filter(Boolean));
       console.log(`[meetings] "${subj}" ${mdate} organizer=${orgEmail || '?'} resolved under ${ownerId} — ${transcripts.length} transcript(s)`);
       for (const t of transcripts) {
         out.transcripts++;
@@ -9059,11 +9094,17 @@ async function captureMeetingTranscripts() {
         const calendarAttendees = (m.attendees || []).map(a => a.emailAddress?.name || a.emailAddress?.address).filter(Boolean);
         const attendees = speakers.length ? speakers : calendarAttendees;
         const attendeesSource = speakers.length ? 'transcript' : 'calendar';
-        const date = ctDateOf(m.start?.dateTime) || null;
+        // Date the transcript by ITS OWN createdDateTime, not the calendar
+        // event's. For a recurring series every occurrence carries the same
+        // onlineMeeting, so the event date says only "one of the occurrences" —
+        // which is how transcripts from the 11th, 15th and 16th ended up
+        // stamped 2026-09-09. createdDateTime was returned by listTranscripts
+        // all along and simply never read.
+        const date = ctDateOf(t.createdDateTime) || ctDateOf(m.start?.dateTime) || null;
         const base = {
           meeting_id: om.id, transcript_id: t.id, join_url: m.onlineMeeting.joinUrl,
           subject: m.subject || null, category: (m.categories || [])[0] || null,
-          meeting_date: date, start_at: m.start?.dateTime || null, end_at: m.end?.dateTime || null,
+          meeting_date: date, start_at: t.createdDateTime || m.start?.dateTime || null, end_at: m.end?.dateTime || null,
           organizer: m.organizer?.emailAddress?.name || orgEmail || null,
           source: 'teams', updated_at: new Date().toISOString(),
         };
@@ -9072,6 +9113,26 @@ async function captureMeetingTranscripts() {
           console.warn(`[meetings] "${subj}" transcript ${t.id} — empty VTT${upErr ? `, upsert error: ${upErr.message}` : ''}`);
           continue;
         }
+        // Identical content already captured under a different transcript id.
+        if (seenText.has(text)) {
+          out.duplicates++;
+          console.log(`[meetings] "${subj}" transcript ${t.id} — duplicate content, not summarized again`);
+          continue;
+        }
+        // Too short to summarize. The empty check above catches nothing at all,
+        // but a 26-character transcript still went to Claude and came back with
+        // "The transcript contains insufficient intelligible content…" — 8 rows
+        // like that, each a paid request. Recorded, not summarized.
+        if (text.trim().length < MEETING_MIN_TRANSCRIPT) {
+          const { error: upErr } = await db.from('meeting_summaries').upsert({
+            ...base, status: 'too_short', transcript_text: text,
+            error: `transcript under ${MEETING_MIN_TRANSCRIPT} characters (${text.trim().length})`,
+          }, { onConflict: 'transcript_id' });
+          out.tooShort++;
+          console.log(`[meetings] "${subj}" transcript ${t.id} — ${text.trim().length} chars, too short to summarize${upErr ? `, upsert error: ${upErr.message}` : ''}`);
+          continue;
+        }
+        seenText.add(text);
         const s = await summarizeMeetingTranscript({ subject: m.subject, date }, text);
         const { error: upErr } = await db.from('meeting_summaries').upsert({
           ...base, attendees, attendees_source: attendeesSource, key_decisions: s.key_decisions, action_items: s.action_items,
@@ -9084,7 +9145,7 @@ async function captureMeetingTranscripts() {
       }
     } catch (err) { out.errors++; out.items.push({ subject: m.subject, error: err.message }); console.error(`[meetings] "${subj}" ${mdate} capture error: ${err.message}`); }
   }
-  console.log(`[meetings] capture done — scanned ${out.scanned}, capturable ${out.capturable}, resolved ${out.resolved}, transcripts ${out.transcripts}, summarized ${out.summarized}, skipped ${out.skipped}, errors ${out.errors}`);
+  console.log(`[meetings] capture done — scanned ${out.scanned}, capturable ${out.capturable}, resolved ${out.resolved}, transcripts ${out.transcripts}, summarized ${out.summarized}, duplicates ${out.duplicates}, tooShort ${out.tooShort}, skipped ${out.skipped}, errors ${out.errors}`);
   return out;
 }
 
