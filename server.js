@@ -10074,7 +10074,7 @@ app.get('/api/morning-report', requireAuth, requireRole('admin'), async (req, re
 // the whole email), and sends via the app Graph token from support@livewithmetric.
 // Does not touch any existing endpoint. Admin-only.
 // =====================================================================
-const EOD = { bg: '#ffffff', text: '#0E2534', accent: '#009cf7', muted: '#6b7c88', border: '#e2e8ed' };
+const EOD = { bg: '#ffffff', text: '#0E2534', accent: '#009cf7', muted: '#6b7c88', border: '#e2e8ed', bad: '#c0392b' };
 const eodEsc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const eodDateCT = () => new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date());
 const eodAddDays = (iso, n) => { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
@@ -10091,7 +10091,7 @@ function eodSectionHtml(emoji, title, summaryHtml, bodyHtml) {
     ${bodyHtml || ''}
   </td></tr>`;
 }
-const eodErr = e => `<span style="color:#c0392b">${eodEsc(e)}</span>`;
+const eodErr = e => `<span style="color:${EOD.bad}">${eodEsc(e)}</span>`;
 
 // Gather all 9 sections. Each is independent + guarded.
 async function eodGather() {
@@ -10245,14 +10245,97 @@ async function eodGather() {
     const openWos = wos.filter(w => !isClosed(w.status));
     const prank = p => ({ critical: 3, high: 2, normal: 1 }[String(p || '').toLowerCase()] || 0);
     openWos.sort((a, b) => prank(b.priority) - prank(a.priority) || String(b.created_at_appfolio || '').localeCompare(String(a.created_at_appfolio || '')));
-    const completedToday = wos.filter(w => String(w.status || '').toLowerCase() === 'completed' && String(w.updated_at || '').slice(0, 10) === today).length;
+    // NOTE: a "completed today" count from this table is always 0 — see below.
     const laborToday = (laborR.data || []).filter(l => String(l.labor_date || '').slice(0, 10) === today);
-    const wosWorked = new Set(laborToday.map(l => l.work_order_number).filter(Boolean)).size;
-    const totalHours = Math.round(laborToday.reduce((a, l) => a + (Number(l.worked_hours) || 0), 0) * 10) / 10;
+    // ---- Redesigned 2026-09-22. What the data actually supports:
+    //
+    // maintenance_work_orders holds ONLY open work orders — its status values
+    // are Assigned / Assigned by AppFolio / Scheduled / New, with no Completed
+    // among 336 rows. So "completed today" can never come from it, which is why
+    // the old section reported 0 every single day. Completions live in the
+    // wo_completed report, which is synced BY HAND; if it has not run today we
+    // say so rather than printing a zero that looks like a quiet day.
+    //
+    // priority is Normal (314) or Urgent (22). There is no Emergency value.
+    // Code violations are identifiable only by "CODE VIOLATION" in the issue
+    // text — there is no violation field and no deadline field anywhere, so the
+    // "upcoming deadlines" half of that requirement has no source.
+    const ageDays = w => {
+      const c = String(w.created_at_appfolio || '').slice(0, 10);
+      if (!c) return null;
+      return Math.floor((new Date(today + 'T00:00:00') - new Date(c + 'T00:00:00')) / 86400000);
+    };
+    const openedToday = wos.filter(w => String(w.created_at_appfolio || '').slice(0, 10) === today).length;
+    const aged = openWos.filter(w => (ageDays(w) ?? 0) > 14);
+    const urgent = openWos.filter(w => /urgent|emergency|critical/i.test(String(w.priority || '')));
+
+    // Assigned a week or more ago with not one hour booked against it.
+    const laborByWo = new Set((laborR.data || []).map(l => l.work_order_number).filter(Boolean));
+    const stalled = openWos.filter(w => w.assigned_user && (ageDays(w) ?? 0) >= 7 && !laborByWo.has(w.work_order_number));
+
+    const byProperty = {};
+    openWos.forEach(w => { const p = w.property_name || '(unassigned)'; byProperty[p] = (byProperty[p] || 0) + 1; });
+    const capacity = Object.entries(byProperty).filter(([, n]) => n >= 5).sort((a, b) => b[1] - a[1]);
+
+    const violations = openWos.filter(w => /code violation/i.test(String(w.issue || '') + String(w.description || '')));
+
+    // Completions: the report, not the table. Stale-aware.
+    let completed = { count: null, stale: true, syncedAt: null };
+    try {
+      const wc = await require('./appfolio-reports.js').readReportData('wo_completed');
+      if (wc) {
+        const syncedDay = String(wc.fetchedAt || '').slice(0, 10);
+        const n = (wc.rows || []).filter(r =>
+          String(r.completed_on || r.work_completed_on || '').slice(0, 10) === today).length;
+        completed = { count: n, stale: syncedDay !== today, syncedAt: wc.fetchedAt || null };
+      }
+    } catch { /* leave as unknown */ }
+
+    // Technicians: roster names are clean, labor names carry trailing initials
+    // ("Angel Martinez C", "Emerson  Garcia -"), so match on a normalised prefix.
+    // A labor row with worked_hours = 0 is an ASSIGNMENT, not worked time —
+    // today's rows arrive with null start/end and status "Assigned", and the
+    // hours are filled in once the work is posted (2026-09-21 ended with 31
+    // rows and 86.5h). Counting those rows as "logged" reported every tech at
+    // 0h, and the roster difference then named the two techs WITHOUT a row as
+    // the idle ones — accusing people on the strength of a reporting lag.
+    // Only posted hours count as work.
+    const normTech = s => String(s || '').toLowerCase().replace(/[^a-z ]/g, '').replace(/\s+/g, ' ').trim();
+    const roster = require('./appfolio-reports.js').ACTIVE_TECHNICIANS || [];
+    const postedToday = laborToday.filter(l => (Number(l.worked_hours) || 0) > 0);
+    const assignedNotPosted = laborToday.length - postedToday.length;
+    const hoursByTech = {}, hoursByProp = {};
+    for (const l of postedToday) {
+      const h = Number(l.worked_hours) || 0;
+      hoursByTech[l.maintenance_tech || 'Unknown'] = (hoursByTech[l.maintenance_tech || 'Unknown'] || 0) + h;
+      hoursByProp[l.property || 'Unknown'] = (hoursByProp[l.property || 'Unknown'] || 0) + h;
+    }
+    const logged = Object.entries(hoursByTech)
+      .map(([tech, h]) => ({ tech, h: Math.round(h * 10) / 10 })).sort((a, b) => b.h - a.h);
+    // Only meaningful once SOMETHING has posted. Before that, everyone looks
+    // idle because nothing has come through yet, which is not the same thing.
+    const idle = logged.length
+      ? roster.filter(r => !logged.some(l =>
+        normTech(l.tech).startsWith(normTech(r)) || normTech(r).startsWith(normTech(l.tech))))
+      : [];
+    const topProp = Object.entries(hoursByProp).sort((a, b) => b[1] - a[1])[0] || null;
+
     S.maintenance = {
-      open: openWos.length, completedToday, wosWorked, totalHours,
-      critical: openWos.filter(w => String(w.priority || '').toLowerCase() === 'critical').map(w => w.issue || w.work_order_number),
-      table: openWos.slice(0, 20).map(w => ({ wo: w.work_order_number, property: w.property_name, unit: w.unit, issue: w.issue, priority: w.priority, assigned: w.assigned_user })),
+      open: openWos.length, openedToday, completed,
+      totalHours: Math.round(postedToday.reduce((a, l) => a + (Number(l.worked_hours) || 0), 0) * 10) / 10,
+      wosWorked: new Set(postedToday.map(l => l.work_order_number).filter(Boolean)).size,
+      assignedNotPosted,
+      agedCount: aged.length,
+      oldest: [...aged].sort((a, b) => (ageDays(b) ?? 0) - (ageDays(a) ?? 0)).slice(0, 5)
+        .map(w => ({ wo: w.work_order_number, property: w.property_name, unit: w.unit,
+          issue: (w.issue || '').replace(/\s+/g, ' ').slice(0, 44), days: ageDays(w),
+          urgent: /urgent|emergency|critical/i.test(String(w.priority || '')) })),
+      urgentCount: urgent.length,
+      stalledCount: stalled.length,
+      capacityCount: capacity.length,
+      capacityTop: capacity.slice(0, 3).map(([p, n]) => `${p} ${n}`),
+      logged, idle, topProp: topProp ? { property: topProp[0], hours: Math.round(topProp[1] * 10) / 10 } : null,
+      violations: violations.length,
     };
   } catch (e) { S.maintenance = { error: e.message }; }
 
@@ -10447,10 +10530,39 @@ function eodRenderHtml(data) {
       + eodTable(pf.hasBilled ? ['Property', 'Delinquent', '% Delinquent'] : ['Property', 'Delinquent'],
           (pf.perProperty || []).map(p => pf.hasBilled ? [eodEsc(p.property), money0(p.delinq), p.pct == null ? '—' : p.pct + '%'] : [eodEsc(p.property), money0(p.delinq)]))
       + `<div style="margin-top:4px;font-size:11px;font-style:italic;color:${EOD.muted}">ⓘ BALANCE_ONLY = Resident has an outstanding balance but no active eviction filing. No legal action has been initiated yet.</div>`));
+  // Maintenance — deliberately ~13 lines. The previous version printed a
+  // 20-row table of every open WO, which is a report, not a summary, and
+  // buried the two numbers Erick acts on.
   const m5 = S.maintenance || {};
+  const mLine = (label, value, warn) =>
+    `<div style="font-size:12px;margin:2px 0;color:${warn ? EOD.bad : EOD.text}">`
+    + `<span style="color:${EOD.muted}">${label}</span> ${value}</div>`;
+  const completedCell = !m5.completed ? '—'
+    : m5.completed.count == null ? '<i>no completions data</i>'
+      // A zero from a report that has not synced today is not "a quiet day",
+      // it is "nobody pulled the data" — say which.
+      : m5.completed.stale ? `<i>not synced today${m5.completed.syncedAt ? ' (last ' + String(m5.completed.syncedAt).slice(0, 10) + ')' : ''}</i>`
+        : String(m5.completed.count);
   P.push(eodSectionHtml('🔧', 'Maintenance',
-    m5.error ? eodErr(m5.error) : `${m5.open || 0} open WO(s) · ${m5.completedToday || 0} completed today · ${m5.totalHours || 0}h logged today across ${m5.wosWorked || 0} WO(s)`,
-    eodTable(['WO#', 'Property', 'Unit', 'Issue', 'Priority', 'Assigned'], (m5.table || []).map(w => [eodEsc(w.wo), eodEsc(w.property), eodEsc(w.unit), eodEsc((w.issue || '').slice(0, 50)), eodEsc(w.priority), eodEsc(w.assigned)]))));
+    m5.error ? eodErr(m5.error)
+      : `${m5.open || 0} open · ${m5.openedToday || 0} new today · ${m5.agedCount || 0} over 14 days · ${m5.urgentCount || 0} urgent`,
+    m5.error ? '' :
+      mLine('Completed today:', completedCell)
+      + (m5.stalledCount ? mLine('⚠ Stalled:', `${m5.stalledCount} assigned 7+ days with no hours logged`, true) : '')
+      + (m5.capacityCount ? mLine('⚠ Capacity:', `${m5.capacityCount} propert${m5.capacityCount === 1 ? 'y' : 'ies'} with 5+ open — ${(m5.capacityTop || []).join(', ')}`, true) : '')
+      + (m5.violations ? mLine('Code violations:', `${m5.violations} open`) : '')
+      + `<div style="font-weight:600;font-size:12px;margin:8px 0 2px;color:${EOD.text}">Oldest open</div>`
+      + eodTable(['WO#', 'Property / Unit', 'Issue', 'Age'], (m5.oldest || []).map(w =>
+        [eodEsc(w.wo), eodEsc([w.property, w.unit].filter(Boolean).join(' ')),
+          eodEsc(w.issue) + (w.urgent ? ' <b>URGENT</b>' : ''), (w.days == null ? '—' : w.days + 'd')]))
+      + mLine('Hours today:', (m5.logged || []).length
+        ? `${m5.totalHours || 0}h across ${m5.logged.length} tech(s), ${m5.wosWorked || 0} WO(s) — `
+          + m5.logged.map(l => eodEsc(l.tech.replace(/\s+[A-Z-]$/, '').trim()) + ' ' + l.h + 'h').join(', ')
+        // Nothing posted yet is not the same as nobody working, so it says
+        // which it is rather than printing a bare 0h.
+        : `<i>none posted yet${m5.assignedNotPosted ? ` — ${m5.assignedNotPosted} WO(s) assigned today, hours not yet entered` : ''}</i>`)
+      + ((m5.idle || []).length ? mLine('No hours today:', m5.idle.map(eodEsc).join(', '), true) : '')
+      + (m5.topProp ? mLine('Top property:', `${eodEsc(m5.topProp.property)} (${m5.topProp.hours}h)`) : '')));
   const b6 = S.bdcrm || {};
   const b6ag = b6.activity || {};
   const agLine = list => (list && list.length) ? list.map(a => `${eodEsc(a.agent)} (${a.count})`).join(', ') : '—';
