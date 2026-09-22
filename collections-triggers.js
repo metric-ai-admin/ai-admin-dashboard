@@ -153,6 +153,50 @@ function shapeAccount(row) {
   };
 }
 
+// AppFolio returns every number on the account in one string, labelled and
+// comma-separated: "Phone: (512) 673-9783, Mobile: (737) 393-1285". Verified
+// 2026-09-22 against 72 live rows — 100% populated, 71 of 72 already in
+// (512) 555-1234 form, labels Mobile (56), Phone (27), Office (1). Most
+// residents have one number; 10 of 72 have two or three.
+//
+// Mobile first, because this feeds collections calls and a mobile is the one
+// likely to be answered. Office last for the same reason.
+const PHONE_LABEL_PRIORITY = ['mobile', 'cell', 'phone', 'home', 'office'];
+
+/**
+ * The one number to call, from AppFolio's combined phone string.
+ * @returns {{label, display, tel}|null} display is "(512) 555-1234";
+ *          tel is "+15125551234" for a tel: href.
+ */
+function primaryPhone(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const found = [];
+  // Split on commas, but only those separating entries — a number never
+  // contains one. Each entry is "Label: number" or a bare number.
+  for (const part of s.split(',')) {
+    const m = part.match(/^\s*([A-Za-z ]+)\s*:\s*(.+)$/);
+    const label = m ? m[1].trim().toLowerCase() : '';
+    const digits = String(m ? m[2] : part).replace(/\D/g, '');
+    if (digits.length < 10) continue;
+    // Drop a leading country code: "+1 (512) 507-4916" -> 5125074916.
+    const ten = digits.slice(-10);
+    found.push({ label, ten });
+  }
+  if (!found.length) return null;
+  found.sort((a, b) => {
+    const ia = PHONE_LABEL_PRIORITY.indexOf(a.label);
+    const ib = PHONE_LABEL_PRIORITY.indexOf(b.label);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+  const best = found[0];
+  return {
+    label: best.label ? best.label.charAt(0).toUpperCase() + best.label.slice(1) : '',
+    display: `(${best.ten.slice(0, 3)}) ${best.ten.slice(3, 6)}-${best.ten.slice(6)}`,
+    tel: '+1' + best.ten,
+  };
+}
+
 /** Digits of every phone on the account, last 10, for matching call records. */
 function phoneDigits(account) {
   const out = new Set();
@@ -220,6 +264,7 @@ function buildDecisionQueue(rows, opts = {}) {
       triggers: fired.map(t => ({ id: t.id, label: t.label, reason: t.reason(account) })),
       // Balance change vs last month, for the card.
       change: hasHistory ? account.balance - account.lastMonthBalance : null,
+      phone: primaryPhone(account.phones),
       lastInboundCall: lastContact,
       externallyManaged: external,
     });
@@ -246,6 +291,6 @@ function buildDecisionQueue(rows, opts = {}) {
 }
 
 module.exports = {
-  buildDecisionQueue, shapeAccount, statusLabel, phoneDigits, accountKey,
+  buildDecisionQueue, shapeAccount, statusLabel, phoneDigits, accountKey, primaryPhone,
   TRIGGERS, BIG_BALANCE, NEW_DELINQUENCY_FLOOR, num,
 };

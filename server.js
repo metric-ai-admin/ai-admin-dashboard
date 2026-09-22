@@ -4206,6 +4206,11 @@ async function fetchDelinquencyAsOf(dateStr) {
       // days_delinquent was read by delinqText but never mapped, so that column
       // always printed blank. AppFolio spells it either way depending on report.
       days_delinquent: r.days_delinquent ?? r.days_late ?? null,
+      // Every number on the account, labelled: "Phone: (512) 673-9783, Mobile:
+      // (737) 393-1285". 100% populated across 72 live rows on 2026-09-22.
+      // Karla and Rocío were looking each of these up in AppFolio by hand
+      // before every collections call.
+      phone_numbers: r.phone_numbers || '',
       notes: r.delinquency_notes || '',
     }));
 }
@@ -4250,8 +4255,12 @@ const COLLECTIONS_SYSTEM = 'You are the collections analyst for Metric Property 
   + 'OUTPUT THESE SECTIONS, in order:\n'
   + '1. Summary Metrics — total delinquency, % change vs prior month (state direction), and residents contacted this period.\n'
   + '2. Residents with INCREASED delinquency — priority list (highest increase first). Table columns: '
-  + 'Resident, Unit, Property, Resident Status, Current Balance, Prior Balance, Change. Resident Status '
-  + 'is given to you per account (Eviction / Notice / Current / Past) — print it as given, never guess it.\n'
+  + 'Resident, Unit, Property, Resident Status, Phone, Current Balance, Prior Balance, Change. Resident Status '
+  + 'is given to you per account (Eviction / Notice / Current / Past) — print it as given, never guess it. '
+  + 'The phone cell arrives as "display|tel": render it as <a href="tel:TEL">DISPLAY</a> so it dials when '
+  + 'tapped on a phone — for "(512) 555-1234|+15125551234" output '
+  + '<a href="tel:+15125551234">(512) 555-1234</a>. Copy both halves exactly; never invent, reformat or '
+  + 'complete a number. Where the cell says "none on file", print that as plain text.\n'
   + '3. Residents with DECREASED delinquency — wins. Use the DECREASED list exactly as provided: it '
   + 'already contains only accounts whose balance is strictly lower than last month. Never add an account '
   + 'whose balance was unchanged or went up. State the NO CHANGE count in one sentence; do not list them. '
@@ -4271,7 +4280,9 @@ const COLLECTIONS_SYSTEM = 'You are the collections analyst for Metric Property 
   + 'Do not recompute them from the raw month tables, which are capped by balance and will disagree.\n\n'
   + 'HTML RULES: return ONLY inner HTML (no html/head/body tags). Use only these pre-styled classes: <h2>N. Title</h2> '
   + 'for sections, <h3> for sub-sections, <div class="alert-box [warn|info|ok]"><div class="al">LABEL</div>text</div>, '
-  + '<span class="badge [red|amber|green|navy]">TEXT</span>, and standard table/th/td/p/ul/li/strong.';
+  + '<span class="badge [red|amber|green|navy]">TEXT</span>, and standard table/th/td/p/ul/li/strong. '
+  + 'One link type is allowed: <a href="tel:+1XXXXXXXXXX">, for phone numbers only, using exactly the '
+  + 'tel value supplied with that resident. No other anchors, and no href of any other scheme.';
 
 app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_ROLES), async (req, res) => {
   if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'ANTHROPIC_API_KEY is not set on the server.' });
@@ -4377,6 +4388,7 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       return {
         name: r.name, unit: r.unit, property: r.property,
         status: tenantStatusLabel(r.status),
+        phone: collectionsTriggers.primaryPhone(r.phone_numbers),
         days: r.days_delinquent, curBal, priorBal, delta: curBal - priorBal,
         isNew: !p,
       };
@@ -4406,8 +4418,11 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       .sort((a, b) => b.priorBal - a.priorBal);
 
     const COMPARE_CAP = 25;
+    // Phone is emitted as "display|tel" so the model can build the tel: link
+    // without having to reformat digits itself — it only has to copy.
+    const phoneCell = a => (a.phone ? `${a.phone.display}|${a.phone.tel}` : 'none on file');
     const cmpText = (list, withPrior) => list.slice(0, COMPARE_CAP)
-      .map(a => `${a.name} | ${a.unit} | ${a.property} | ${a.status} | $${Math.round(a.curBal)}`
+      .map(a => `${a.name} | ${a.unit} | ${a.property} | ${a.status} | ${phoneCell(a)} | $${Math.round(a.curBal)}`
         + (withPrior ? ` | $${Math.round(a.priorBal)} | ${a.delta >= 0 ? '+' : '-'}$${Math.round(Math.abs(a.delta))}${a.isNew ? ' | NEW' : ''}` : ''))
       .join('\n');
     const resolvedText = resolved.slice(0, COMPARE_CAP)
@@ -4440,7 +4455,8 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       + `\nThese comparison lists are already computed from the FULL pull on both dates. `
       + `Use them EXACTLY as given — do not re-derive, re-bucket, or move an account between them, `
       + `and do not invent sections that are not in your instructions.\n`
-      + `Columns: tenant | unit | property | resident_status | current_balance | prior_balance | change\n`
+      + `Columns: tenant | unit | property | resident_status | phone | current_balance | prior_balance | change\n`
+      + `The phone cell is "display|tel" (for example "(512) 555-1234|+15125551234") or "none on file".\n`
       + `=== INCREASED (${increased.length} accounts, top ${COMPARE_CAP} by increase) ===\n${cmpText(increased, true) || '[none]'}\n\n`
       + `=== DECREASED — balance strictly lower than prior month (${decreased.length} accounts, top ${COMPARE_CAP} by size of decrease) ===\n${cmpText(decreased, true) || '[none]'}\n\n`
       + `NO CHANGE: ${unchangedCount} accounts — mention the count only; never list them as decreases.\n\n`

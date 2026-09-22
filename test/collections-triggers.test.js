@@ -205,6 +205,48 @@ t('no match leaves it null rather than guessing', () => {
   assert.strictEqual(r.queue[0].lastInboundCall, null);
 });
 
+console.log('\nprimaryPhone — real AppFolio strings');
+t('a single mobile', () => {
+  assert.deepStrictEqual(C.primaryPhone('Mobile: (512) 227-5574'),
+    { label: 'Mobile', display: '(512) 227-5574', tel: '+15122275574' });
+});
+t('prefers Mobile over Phone', () => {
+  // Real row: "Phone: (512) 673-9783, Mobile: (737) 393-1285". A mobile is the
+  // one likely to be answered on a collections call.
+  assert.strictEqual(C.primaryPhone('Phone: (512) 673-9783, Mobile: (737) 393-1285').display, '(737) 393-1285');
+});
+t('strips a +1 country code', () => {
+  assert.deepStrictEqual(C.primaryPhone('Phone: +1 (512) 507-4916'),
+    { label: 'Phone', display: '(512) 507-4916', tel: '+15125074916' });
+});
+t('Office ranks last', () => {
+  assert.strictEqual(C.primaryPhone('Office: (512) 111-1111, Mobile: (512) 222-2222').display, '(512) 222-2222');
+});
+t('three numbers pick the mobile', () => {
+  assert.strictEqual(C.primaryPhone('Phone: (512) 111-1111, Office: (512) 222-2222, Mobile: (512) 333-3333').display, '(512) 333-3333');
+});
+t('an unlabelled bare number still works', () => {
+  assert.strictEqual(C.primaryPhone('(254) 498-5990').display, '(254) 498-5990');
+});
+t('too-short junk yields null, not a broken link', () => {
+  assert.strictEqual(C.primaryPhone('ext 1110'), null);
+  assert.strictEqual(C.primaryPhone('n/a'), null);
+});
+t('blank, null and undefined are safe', () => {
+  assert.strictEqual(C.primaryPhone(''), null);
+  assert.strictEqual(C.primaryPhone(null), null);
+  assert.strictEqual(C.primaryPhone(undefined), null);
+});
+t('the queue attaches a parsed phone to each card', () => {
+  const r = build([row({ delinquent_rent: '2000.00', tenant_status: 'Notice', phone_numbers: 'Mobile: (512) 227-5574' })]);
+  assert.strictEqual(r.queue[0].phone.display, '(512) 227-5574');
+  assert.strictEqual(r.queue[0].phone.tel, '+15122275574');
+});
+t('an account with no phone gets null, not a placeholder', () => {
+  const r = build([row({ delinquent_rent: '2000.00', tenant_status: 'Notice', phone_numbers: '' })]);
+  assert.strictEqual(r.queue[0].phone, null);
+});
+
 console.log('\nEdge cases');
 t('empty input does not throw', () => {
   const r = build([]);

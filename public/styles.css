@@ -2360,3 +2360,7 @@ tr.ca-sel { background: var(--accent-glow); }
    the data comes from and why there is no call history. */
 .dq-wrap .dq-tags { display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
 .dq-wrap .badge.dq-ext { background: rgba(124,106,247,.18); color: #b9aeff; white-space:nowrap; }
+
+/* Phone number on a Decision Queue card — a real link so it dials on mobile. */
+.dq-wrap .dq-tel { color: var(--link); text-decoration: none; font-weight: 600; }
+.dq-wrap .dq-tel:hover { color: var(--link-hover); text-decoration: underline; }

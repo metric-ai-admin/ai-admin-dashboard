@@ -9081,6 +9081,9 @@ function dqCard(a) {
     <div class="dq-meta">${a.externallyManaged
       ? 'Calls: <span class="muted">not on the Metric phone system</span>'
       : 'Last inbound call: ' + (a.lastInboundCall ? dqEsc(dqDate(a.lastInboundCall)) : '<span class="muted">none on record</span>')}</div>
+    <div class="dq-meta">${a.phone
+      ? `Phone: <a class="dq-tel" href="tel:${dqEsc(a.phone.tel)}">${dqEsc(a.phone.display)}</a>${a.phone.label ? ` <span class="muted">${dqEsc(a.phone.label)}</span>` : ''}`
+      : 'Phone: <span class="muted">none on file</span>'}</div>
 
     ${decided ? `<div class="dq-decided">Last action: <strong>${dqEsc(dqActionLabel(decided.action))}</strong>
        by ${dqEsc(decided.by)} · ${dqEsc(dqDate(decided.at ? decided.at.slice(0, 10) : null) || '')}
