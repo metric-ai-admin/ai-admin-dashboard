@@ -8951,6 +8951,11 @@ initAuth();
 
 let vacancyData = null;
 
+// Verified in the browser 2026-09-22. The previous /realm_x guess 404'd — it was
+// never checked against the live site. One constant so the next correction is a
+// single edit rather than a hunt through template strings.
+const VACANCY_REALMX_URL = 'https://metricpropertymanagement.appfolio.com/realmx/assistant';
+
 const vacEsc = s => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -9080,7 +9085,7 @@ function renderVacancy() {
       <code id="vac-prompt">${vacEsc(prompt)}</code>
       <div class="row-actions">
         <button class="btn" id="vac-copy">📋 Copy to clipboard</button>
-        <a class="btn btn-ghost" href="https://metricpropertymanagement.appfolio.com/realm_x" target="_blank" rel="noopener">↗ Open Realm-X</a>
+        <a class="btn btn-ghost" href="${VACANCY_REALMX_URL}" target="_blank" rel="noopener">↗ Open Realm-X</a>
         <button class="btn btn-ghost" id="vac-logged">✓ I applied this batch</button>
       </div>
       <p class="muted small">Paste into Realm-X and review before confirming. Nothing is removed from this screen.</p>
