@@ -1,6 +1,6 @@
 // Round-trip the new DM Review shape through the real scoring paths.
 const assert = require('assert');
-const engine = require('./crm-task-engine.js');
+const engine = require('../crm-task-engine.js');
 
 let pass = 0, fail = 0;
 const t = (n, f) => { try { f(); pass++; console.log('  ok   ' + n); } catch (e) { fail++; console.log('  FAIL ' + n + '\n       ' + e.message); } };
