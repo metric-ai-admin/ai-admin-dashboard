@@ -169,6 +169,22 @@ const REPORTS = [
     // UI surface — a different thing from the API, and we have already had one
     // plausible-looking resource (work_order_labor_detail) 400 because it simply
     // does not exist in the API. No consumer reads this yet.
+    // Registered 2026-09-22 to answer one question for Bekah's Decision Queue:
+    // which columns does delinquency_as_of ACTUALLY return? The hand-written
+    // APPFOLIO_DELINQUENCY_MAP in server.js says Eviction Status, Last Payment
+    // and the court dates come back blank, and lists no days-delinquent field —
+    // which would make three of the five escalation triggers uncomputable. That
+    // map is a comment, not evidence. This makes it checkable.
+    // Same filter the Eviction Tracker and Collections both use.
+    id: 'delinquency_as_of',
+    resource: 'delinquency_as_of',
+    label: 'Delinquency (As Of)',
+    group: 'Collections',
+    priority: 9,
+    feeds: 'Column reference for the Collections Decision Queue',
+    params: { tenant_statuses: ['0', '4'], property_visibility: 'active' },
+  },
+  {
     id: 'unit_vacancy',
     resource: 'unit_vacancy',
     label: 'Unit Vacancy Detail',
