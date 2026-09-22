@@ -172,6 +172,8 @@ function phoneDigits(account) {
  *        list in server.js stays the only one (Brazos et al. appear in this
  *        data — verified 2026-09-22).
  * @param {Map<string,string>} [opts.lastInboundByPhone]  last-10-digits -> ISO date
+ * @param {Function} [opts.isExternallyManaged]  properties with no SimpleVOIP —
+ *        their call history is unknowable, which is different from empty.
  */
 function buildDecisionQueue(rows, opts = {}) {
   const isExcludedProperty = opts.isExcludedProperty || (() => false);
@@ -179,6 +181,7 @@ function buildDecisionQueue(rows, opts = {}) {
   // { lastMonth: Map(key->balance), monthBeforeLast: Map(key->balance) }.
   // Absent => the two history triggers are skipped entirely.
   const prior = opts.priorBalances || null;
+  const isExternallyManaged = opts.isExternallyManaged || (() => false);
   const hasHistory = !!(prior && prior.lastMonth && prior.monthBeforeLast);
 
   const queue = [];
@@ -200,11 +203,16 @@ function buildDecisionQueue(rows, opts = {}) {
     });
     if (!fired.length) continue;
 
-    const phones = phoneDigits(account);
+    // Properties outside Metric's phone system have no call history to look up.
+    // Left null with a flag so the card can say 'no phone system' rather than
+    // 'none on record', which would read as nobody having called them.
+    const external = isExternallyManaged(account.property);
     let lastContact = null;
-    for (const p of phones) {
-      const d = lastInbound.get(p);
-      if (d && (!lastContact || d > lastContact)) lastContact = d;
+    if (!external) {
+      for (const p of phoneDigits(account)) {
+        const d = lastInbound.get(p);
+        if (d && (!lastContact || d > lastContact)) lastContact = d;
+      }
     }
 
     queue.push({
@@ -213,6 +221,7 @@ function buildDecisionQueue(rows, opts = {}) {
       // Balance change vs last month, for the card.
       change: hasHistory ? account.balance - account.lastMonthBalance : null,
       lastInboundCall: lastContact,
+      externallyManaged: external,
     });
   }
 

@@ -4092,10 +4092,33 @@ async function collectionsVoipUsers(db) {
 // Brazos Lofts kept surfacing in the Collections Review (Lyndsay, 2026-09-21).
 // Declared here, above fetchDelinquencyAsOf, so both sides share one list.
 // The Eviction Tracker keeps its own copy client-side in evictions-app.html.
-const METRIC_EXCLUDED_PROPERTY_FRAGMENTS = ['lily pad', 'wolf ridge', 'sidney', 'brazos', 'live with metric', 'cedar and sage'];
+// 'cedar and sage' removed 2026-09-22 — it is a live management relationship
+// and should appear across the platform. See EXTERNALLY_MANAGED_FRAGMENTS below
+// for how it differs from a full Metric property.
+const METRIC_EXCLUDED_PROPERTY_FRAGMENTS = ['lily pad', 'wolf ridge', 'sidney', 'brazos', 'live with metric'];
 const propertyIsExcluded = name => {
   const n = String(name || '').trim().toLowerCase();
   return METRIC_EXCLUDED_PROPERTY_FRAGMENTS.some(frag => n.includes(frag));
+};
+
+// Properties Metric touches but does not fully manage. They are NOT excluded —
+// they belong in delinquency, leasing and vacancy views — but they behave
+// differently in two ways that the UI has to respect:
+//
+//   No SimpleVOIP. Calls for these properties do not run through Metric's phone
+//   system, so "no calls on record" means "we have no phone data", not "nobody
+//   called". Showing a blank where other accounts show a date reads as neglect.
+//
+//   Managed from a different AppFolio account (Cedar & Sage sits under
+//   ajwpm.appfolio.com). Every report in this codebase is pulled from
+//   metricpropertymanagement.appfolio.com — 7 hardcoded references — so what we
+//   can see of these properties is only whatever also exists in Metric's own
+//   account. As of 2026-09-22 that was ONE placeholder row in unit_vacancy and
+//   nothing at all in delinquency, work orders, move-outs or leasing.
+const EXTERNALLY_MANAGED_FRAGMENTS = ['cedar and sage'];
+const propertyIsExternallyManaged = name => {
+  const n = String(name || '').trim().toLowerCase();
+  return EXTERNALLY_MANAGED_FRAGMENTS.some(frag => n.includes(frag));
 };
 // Long-standing name kept for the leasing call sites.
 const leasingIsExcluded = propertyIsExcluded;
@@ -4553,6 +4576,7 @@ async function decisionQueueData({ refresh = false } = {}) {
 
   const result = collectionsTriggers.buildDecisionQueue(data.rows || [], {
     isExcludedProperty: propertyIsExcluded,
+    isExternallyManaged: propertyIsExternallyManaged,
     lastInboundByPhone: phoneMap,
     priorBalances,
   });

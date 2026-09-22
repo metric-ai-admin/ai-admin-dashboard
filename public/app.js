@@ -9061,7 +9061,10 @@ function dqCard(a) {
         <div class="dq-name">${dqEsc(a.name)}</div>
         <div class="dq-where">${dqEsc(a.unit)} · ${dqEsc(a.property)}</div>
       </div>
-      <span class="badge ${a.status === 'Eviction' ? 'red' : a.status === 'Notice' ? 'amber' : 'gray'}">${dqEsc(a.status)}</span>
+      <div class="dq-tags">
+        ${a.externallyManaged ? '<span class="badge dq-ext" title="Managed outside Metric — not on the Metric phone system, and its AppFolio records live in a different account">Cedar &amp; Sage</span>' : ''}
+        <span class="badge ${a.status === 'Eviction' ? 'red' : a.status === 'Notice' ? 'amber' : 'gray'}">${dqEsc(a.status)}</span>
+      </div>
     </header>
 
     <div class="dq-figs">
@@ -9075,9 +9078,9 @@ function dqCard(a) {
       ${a.triggers.map(t => `<li><span class="dq-chip">${dqEsc(t.label)}</span> ${dqEsc(t.reason)}</li>`).join('')}
     </ul>
 
-    <div class="dq-meta">Last inbound call: ${a.lastInboundCall
-      ? dqEsc(dqDate(a.lastInboundCall))
-      : '<span class="muted">none on record</span>'}</div>
+    <div class="dq-meta">${a.externallyManaged
+      ? 'Calls: <span class="muted">not on the Metric phone system</span>'
+      : 'Last inbound call: ' + (a.lastInboundCall ? dqEsc(dqDate(a.lastInboundCall)) : '<span class="muted">none on record</span>')}</div>
 
     ${decided ? `<div class="dq-decided">Last action: <strong>${dqEsc(dqActionLabel(decided.action))}</strong>
        by ${dqEsc(decided.by)} · ${dqEsc(dqDate(decided.at ? decided.at.slice(0, 10) : null) || '')}

@@ -2349,3 +2349,8 @@ tr.ca-sel { background: var(--accent-glow); }
 .dq-wrap .dq-note-input { color: #f0f0f0; }
 .dq-wrap .dq-note-input::placeholder { color: #999999; }
 /* The up/down delta colours are status reds and greens, already bright. */
+
+/* Externally-managed marker (Cedar & Sage). Not a warning — a fact about where
+   the data comes from and why there is no call history. */
+.dq-wrap .dq-tags { display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+.dq-wrap .badge.dq-ext { background: rgba(124,106,247,.18); color: #b9aeff; white-space:nowrap; }

@@ -56,6 +56,16 @@ function classifyDescription(description) {
 
 const isPosted = row => row.posted_to_website === 'Yes' || row.posted_to_internet === 'Yes';
 
+// A row that describes a property rather than a unit. Requires ALL of the
+// letting attributes to be absent — a real unit missing just one of them is
+// handled by the normal floor-plan fallback, not thrown out here.
+const isPlaceholderUnit = row =>
+  !String(row.unit_type || '').trim()
+  && !String(row.bed_and_bath || '').trim()
+  && !String(row.sqft || '').trim()
+  && !String(row.advertised_rent || '').trim()
+  && !String(row.schd_rent || '').trim();
+
 /**
  * Floor plan key. `unit_type` is the floor plan, but 16 of 157 units had it
  * blank in the first real pull, and a single catch-all blank bucket would
@@ -187,6 +197,17 @@ function analyzeVacancy(rows, opts = {}) {
       excluded.push({ ...row, _reason: `Unit status is ${row.unit_status}` });
       continue;
     }
+    // Property placeholder rather than a real unit. Cedar & Sage came into
+    // scope on 2026-09-22 and its only row in unit_vacancy is exactly this:
+    // unit = "Cedar and Sage", no floor plan, no bed/bath, no sqft, no rent,
+    // no dates — 22 of 39 fields blank. Ranked normally it becomes an ADD, i.e.
+    // advice to advertise a listing that has nothing to advertise. Surfaced for
+    // review rather than dropped, because a property with no real unit rows is
+    // itself worth someone noticing.
+    if (isPlaceholderUnit(row)) {
+      needsReview.push({ ...row, _reason: 'Looks like a property placeholder, not a lettable unit — no floor plan, size or rent', _posted: isPosted(row) });
+      continue;
+    }
     const desc = classifyDescription(row.description);
     if (desc === 'not_ready') {
       excluded.push({ ...row, _reason: `Description indicates not ready: "${String(row.description).trim()}"` });
@@ -288,6 +309,7 @@ module.exports = {
   removalIdList,
   realmXPrompt,
   isPosted,
+  isPlaceholderUnit,
   RENTED_STATUSES,
   NOT_READY_KEYWORDS,
   MAX_PER_FLOOR_PLAN,
