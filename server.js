@@ -10675,6 +10675,27 @@ app.post('/api/reports/eod-email/send', requireAuth, requireRole('admin'), async
     res.status(err.status && err.status >= 400 && err.status < 600 ? err.status : 500).json({ ok: false, error: err.message });
   }
 });
+// 5:45 PM Central — refresh the completed-work-order report just before the EOD
+// email reads it.
+//
+// The EOD Maintenance section's "Completed today" cannot come from
+// maintenance_work_orders: that table holds only OPEN work orders, so the
+// figure was 0 every day. Completions live in the wo_completed report, and
+// until now NO cron synced any AppFolio report — every one was pulled by hand,
+// which is why the number was stale.
+//
+// Runs daily rather than weekdays-only: the email is Mon–Fri but the dashboard
+// reads this report too, and a fresh copy on Saturday costs one API call.
+// 15 minutes of headroom against a pull that takes about 5 seconds for ~1,459
+// rows. Failure is logged and swallowed — eodGather already reports the report
+// as stale rather than printing a zero, so a failed sync degrades to an honest
+// "not synced today" instead of a wrong number.
+cron.schedule('45 17 * * *', () => {
+  require('./appfolio-reports.js').syncReport('wo_completed')
+    .then(r => logLine(`[wo-completed-sync] ${r?.rowCount ?? '?'} rows`))
+    .catch(err => console.error('[wo-completed-sync] failed:', err.message));
+}, { timezone: LYNDSAY_TIMEZONE });
+
 // 6 PM Central weekdays. Timezone-anchored (DST-safe) rather than a raw UTC hour.
 cron.schedule('0 18 * * 1-5', () => {
   if (!CRM_CONFIGURED) return;
