@@ -1,0 +1,16 @@
+{
+  "name": "metric-forms-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AppFolio Forms Agent — separate Render service. Phase A: session lifecycle only.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node index.js --check-session"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "playwright": "1.62.1",
+    "node-cron": "^3.0.3"
+  }
+}

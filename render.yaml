@@ -139,3 +139,84 @@ services:
       # it to a value — Render sets it and overriding it breaks health checks.
       - key: PORT
         sync: false
+
+  # =====================================================================
+  # AppFolio Forms Agent — PHASE A (session lifecycle only)
+  # =====================================================================
+  # A SECOND service, not a job inside the dashboard. Three reasons, all of
+  # them load-bearing:
+  #
+  #   Memory — headless Chromium wants 300-700MB for a real page and the
+  #   dashboard runs on starter (512MB). An OOM inside the dashboard would
+  #   restart it for the whole team, so the browser gets its own service and
+  #   its own memory.
+  #
+  #   Disks cannot be shared — render.com/docs/disks: "You can't access a
+  #   service's disk from any other service." The dashboard already owns
+  #   dashboard-data at /var/data, so the browser profile needs a disk of its
+  #   own. That profile is the ONLY thing keeping AppFolio from SMS-challenging
+  #   every run, so it has to survive deploys.
+  #
+  #   Single instance — same page: "You can't scale a service to multiple
+  #   instances if it has a disk attached." Attaching a disk therefore pins
+  #   this to one instance, and the in-process cron cannot double-fire. That is
+  #   what makes it safe to countersign from here in Phase B; a web service
+  #   without a disk could quietly run two copies and sign every form twice.
+  #
+  # It is a WEB service rather than a cron job because the one-time sign-in
+  # needs an HTTP surface a human can open, and Render cron jobs have none.
+  - type: web
+    name: metric-forms-agent
+    env: docker
+    region: oregon           # same region as the dashboard
+    # standard, not starter: 512MB is not enough for Chromium plus Node, and an
+    # OOM here means the daily run silently does nothing.
+    plan: standard
+    dockerfilePath: ./agent/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    disk:
+      name: forms-agent-data
+      mountPath: /var/data
+      # Holds the Chromium profile (a few hundred MB once warm) plus the small
+      # agent-state.json. 2GB leaves room for the profile to grow.
+      sizeGB: 2
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AGENT_DATA_DIR
+        value: /var/data
+      # Daily at 08:00 Central, matching the reference script.
+      - key: AGENT_SCHEDULE
+        value: 0 8 * * *
+      - key: AGENT_TIMEZONE
+        value: America/Chicago
+      - key: APPFOLIO_URL
+        value: https://metricpropertymanagement.appfolio.com
+      # This service's own public URL — used to build the setup link inside the
+      # re-authentication email. Set after the first deploy assigns it.
+      - key: AGENT_PUBLIC_URL
+        sync: false
+      # Shared secret the dashboard sends as x-agent-key to read /status and
+      # POST /check. Without it those endpoints are open to anyone with the URL.
+      - key: AGENT_API_KEY
+        sync: false
+      # ---- Microsoft Graph (re-authentication email) ----
+      # Same app registration the dashboard uses. No SMTP, no mailbox password:
+      # this replaces the reference script's EMAIL_PASSWORD entirely.
+      - key: GRAPH_TENANT_ID
+        sync: false
+      - key: GRAPH_CLIENT_ID
+        sync: false
+      - key: GRAPH_CLIENT_SECRET
+        sync: false
+      - key: AGENT_MAIL_SENDER
+        sync: false
+      - key: AGENT_MAIL_TO
+        sync: false
+      # NOTE: there is deliberately no APPFOLIO_USERNAME / APPFOLIO_PASSWORD.
+      # The agent never receives credentials. Sign-in happens once, by hand, in
+      # a browser inside this container; what persists is the session, not a
+      # password.
+      - key: PORT
+        sync: false
