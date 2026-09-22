@@ -8,7 +8,11 @@
 
   /* Text */
   --text-primary: #f0f0f5;
-  --text-secondary: #8b8ba8;
+  /* Raised from #8b8ba8 on 2026-09-22 for legibility. Contrast on the three
+     surfaces it sits on: 7.17:1 on --bg-base, 6.83:1 on --bg-surface, 6.27:1
+     on --bg-elevated. The old value passed AA everywhere (5.98 / 5.69 / 5.22)
+     but read as too dim. Aliased by --muted, so this moves 84 call sites. */
+  --text-secondary: #9999bb;
   --text-muted: #555568;
 
   /* Brand accent */
@@ -1258,7 +1262,8 @@ tr.row-editing select[data-field] { border-color: var(--border-accent); }
   background: var(--bg-surface); border: 1px solid var(--border); }
 /* Only the top three are shown at all, so three cases is the whole set. */
 .tp-rank-1 { background: rgba(201,151,46,.18); border-color: var(--crm-gold); color: var(--crm-gold); }
-.tp-rank-2 { background: rgba(139,139,168,.18); border-color: var(--text-secondary); color: var(--text-secondary); }
+/* Tint tracks --text-secondary by hand — rgba() cannot take a hex var. Keep in step. */
+.tp-rank-2 { background: rgba(153,153,187,.18); border-color: var(--text-secondary); color: var(--text-secondary); }
 .tp-rank-3 { background: rgba(180,120,60,.18); border-color: #b4783c; color: #b4783c; }
 .tp-empty { margin: 0 0 8px; }
 .tp-chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -2328,7 +2333,7 @@ tr.ca-sel { background: var(--accent-glow); }
 #tab-collections .dq-wrap .badge.gray  { background: var(--bg-elevated); color: var(--text-secondary); }
 
 /* ---- Decision Queue contrast ----
-   Scoped to .dq-wrap on purpose. The global --text-secondary is #8b8ba8,
+   Scoped to .dq-wrap on purpose. The global --text-secondary is #9999bb,
    below the #999999 floor asked for here, but changing that token would
    restyle every muted string in the dashboard. These overrides stay on the
    cards. Contrast is measured against the card background, #111118. */
@@ -2343,9 +2348,10 @@ tr.ca-sel { background: var(--accent-glow); }
 .dq-wrap .dq-meta { color: #aaaaaa; }
 .dq-wrap .dq-decided { color: #cccccc; }
 .dq-wrap .dq-note { color: #bbbbbb; }
-/* Floor for anything still using the shared .muted class inside a card
-   ("none on record", "no change", the em-dash placeholders). */
-.dq-wrap .muted { color: #999999; }
+/* The .muted floor that used to live here was removed on 2026-09-22: the
+   global --text-secondary is now #9999bb (6.83:1), brighter than the #999999
+   this override was pinning, so cards inherit it and there is one less place
+   for these two values to drift apart. */
 .dq-wrap .dq-note-input { color: #f0f0f0; }
 .dq-wrap .dq-note-input::placeholder { color: #999999; }
 /* The up/down delta colours are status reds and greens, already bright. */
