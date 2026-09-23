@@ -6875,6 +6875,39 @@ function ctDateStr(offsetDays = 0) {
   const d = new Date(Date.now() + offsetDays * 86400000);
   return new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(d);
 }
+// The UTC instant for a given wall-clock hour on a given Central date.
+//
+// Needed because the EOD counts grades "since 2 AM Central today" and Render
+// runs in UTC, so the cutoff is 07:00Z for half the year and 08:00Z for the
+// other half. Hard-coding either silently shifts the window by an hour across
+// a DST boundary, which would drop or double-count a nightly run.
+//
+// Derived rather than assumed: build the candidate instant at each plausible
+// offset and keep the one that formats back to the hour asked for. No
+// dependency, and correct on the two days a year when it matters.
+function ctInstant(dateStr, hour) {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: LYNDSAY_TIMEZONE, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
+  });
+  for (const offset of [5, 6]) {          // CDT, then CST
+    const guess = new Date(`${dateStr}T${String(hour).padStart(2, '0')}:00:00Z`);
+    guess.setUTCHours(guess.getUTCHours() + offset);
+    const parts = Object.fromEntries(fmt.formatToParts(guess).map(p => [p.type, p.value]));
+    if (`${parts.year}-${parts.month}-${parts.day}` === dateStr && Number(parts.hour) === hour) {
+      return guess.toISOString();
+    }
+  }
+  // Spring-forward: 2 AM does not exist on that date, so neither offset formats
+  // back to it. Falling back to UTC-5 lands on 1 AM CT — an hour EARLIER than
+  // asked for, which widens the window. That is the safe direction: a cutoff
+  // slightly early still catches the run, a cutoff late would miss it entirely
+  // and report zero on the one morning a year it happens.
+  const fallback = new Date(`${dateStr}T${String(hour).padStart(2, '0')}:00:00Z`);
+  fallback.setUTCHours(fallback.getUTCHours() + 5);
+  return fallback.toISOString();
+}
+
 // Don't grade calls too short to be a real conversation, or whose transcript is
 // too thin to score — those come back as low/flagged noise and drag the averages.
 const AUTOGRADE_MIN_DURATION = 30;   // seconds
@@ -10730,14 +10763,46 @@ async function eodGather() {
   } catch (e) { S.triage = { error: e.message }; }
 
   // 2 — CALL ANALYZER
+  //
+  // Counted by graded_at, NOT call_date. The nightly cron runs at 2:00 AM CT
+  // and grades YESTERDAY's calls, so at 6 PM "call_date = today" is 0 every
+  // single day — a structural zero, not a quiet day. Confirmed against the
+  // data on 2026-09-23: call_date = today returned 0 rows while the 02:33 CT
+  // run had graded 69, every one of them dated the 22nd.
+  //
+  // The window opens at 2 AM CT today, which is the start of the run that
+  // produced these grades. A manual Grade All during the day lands inside it
+  // too, which is correct — those grades are also "since the last nightly run".
   try {
-    const { data: g } = await db.from('call_grades').select('agent_name,overall_score,overall_grade,summary,not_scoreable').eq('call_date', today);
-    const rows = (g || []).filter(r => !r.not_scoreable);
+    const since = ctInstant(ctDateStr(0), 2);
+    const { data: g } = await db.from('call_grades')
+      .select('agent_name,overall_score,overall_grade,summary,not_scoreable,not_scoreable_reason,call_date')
+      .gte('graded_at', since).limit(2000);
+    const all = g || [];
+    const rows = all.filter(r => !r.not_scoreable);
+    const ns = all.length - rows.length;
+
     const by = {};
     for (const r of rows) { const a = r.agent_name || 'Unknown'; (by[a] || (by[a] = { n: 0, sum: 0, f: 0 })); by[a].n++; by[a].sum += Number(r.overall_score) || 0; if (r.overall_grade === 'F') by[a].f++; }
     const agents = Object.entries(by).map(([a, v]) => ({ agent: a, calls: v.n, avg: v.n ? Math.round(v.sum / v.n) : 0, f: v.f })).sort((x, y) => y.calls - x.calls);
     const fViol = rows.filter(r => r.overall_grade === 'F').map(r => ({ agent: r.agent_name || 'Unknown', summary: r.summary || '' }));
-    S.calls = { total: rows.length, agents, fViol };
+
+    // Which day's calls these are. Normally one date — yesterday — but a
+    // backfill covers several, and saying "Sep 22" when the batch spans four
+    // days would be wrong in a way nobody could see from the number alone.
+    const days = [...new Set(all.map(r => r.call_date).filter(Boolean))].sort();
+
+    S.calls = {
+      total: rows.length, graded: all.length, notScoreable: ns,
+      // Reported because it is the number the grading rubric is judged on, and
+      // it was invisible here: the old block filtered N/S rows out and never
+      // said how many it had dropped.
+      nsRate: all.length ? Math.round((ns / all.length) * 1000) / 10 : null,
+      days, agents, fViol,
+      // No grades since 2 AM means the nightly run did not happen or found
+      // nothing. Either way it is not "0 calls today", and the renderer says so.
+      noRun: all.length === 0,
+    };
   } catch (e) { S.calls = { error: e.message }; }
 
   // 3 — LEASING (shared weekly roll-up: occupancy + traffic/tours/apps/move-ins)
@@ -11120,10 +11185,33 @@ function eodRenderHtml(data) {
     t1.error ? eodErr(t1.error) : `${t1.processed || 0} emails processed today · ${t1.unreadTotal || 0} unread across folders`,
     (t1.folders && t1.folders.length) ? `<div>${t1.folders.map(f => `<span style="display:inline-block;background:#eef6fc;border-radius:12px;padding:3px 10px;margin:2px 4px 2px 0;font-size:12px;color:${EOD.text}">${f.emoji} ${eodEsc(f.label)}: <b>${f.count}</b></span>`).join('')}</div>` : ''));
   const c2 = S.calls || {};
+  // "graded today" described YESTERDAY's calls, which is what made a structural
+  // zero look like a quiet day. The line now names the day it covers and
+  // reports the not-scoreable share, which the old one dropped silently.
+  const callsSummary = c => {
+    if (c.noRun) return 'no calls graded since 2 AM CT — the nightly run has not produced grades yet today';
+    const day = !c.days || !c.days.length ? ''
+      : c.days.length === 1 ? ` · ${eodEsc(c.days[0])} calls`
+        : ` · ${eodEsc(c.days[0])} to ${eodEsc(c.days[c.days.length - 1])}`;
+    const ns = c.notScoreable
+      ? ` · ${c.notScoreable} not scoreable (${c.nsRate}%)`
+      : '';
+    return `${c.graded} graded overnight${day} · ${c.total} scored${ns}`;
+  };
   P.push(eodSectionHtml('📞', 'Call Analyzer',
-    c2.error ? eodErr(c2.error) : `${c2.total || 0} calls graded today`,
+    c2.error ? eodErr(c2.error) : callsSummary(c2),
     (c2.agents && c2.agents.length ? eodTable(['Agent', 'Calls', 'Avg', 'F'], c2.agents.map(a => [eodEsc(a.agent), a.calls, a.avg, a.f])) : '')
-    + (c2.fViol && c2.fViol.length ? `<div style="margin-top:6px;font-size:12px;color:${EOD.text}"><b>F violations:</b>${c2.fViol.map(f => `<div style="margin-top:3px">⚠️ <b>${eodEsc(f.agent)}</b> — ${eodEsc((f.summary || '').slice(0, 120))}</div>`).join('')}</div>` : '')));
+    // CAPPED AT 10. This list used to be unreachable — the section counted
+    // call_date = today and always found nothing — so nobody saw what it does
+    // with a real batch: 42 of yesterday's 55 scored calls graded F, which
+    // would print as forty-two paragraphs in the middle of the email. The rest
+    // are counted, and the Call Analyzer tab is where you read them all.
+    + (c2.fViol && c2.fViol.length
+      ? `<div style="margin-top:6px;font-size:12px;color:${EOD.text}"><b>F violations (${c2.fViol.length}):</b>`
+        + c2.fViol.slice(0, 10).map(f => `<div style="margin-top:3px">⚠️ <b>${eodEsc(f.agent)}</b> — ${eodEsc((f.summary || '').slice(0, 120))}</div>`).join('')
+        + (c2.fViol.length > 10 ? `<div style="margin-top:4px;font-size:11px;font-style:italic;color:${EOD.muted}">+ ${c2.fViol.length - 10} more — see the Call Analyzer tab</div>` : '')
+        + '</div>'
+      : '')));
   const l3 = S.leasing || {}; const lt = l3.totals || {};
   P.push(eodSectionHtml('🏢', 'Leasing',
     l3.error ? eodErr(l3.error) : `${lt.traffic || 0} traffic · ${lt.tours || 0} tours · ${lt.apps || 0} apps · ${lt.approved || 0} approved · ${lt.moveins || 0} move-ins · ${lt.avg_occ == null ? '—' : lt.avg_occ + '%'} avg occupancy`,
