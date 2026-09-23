@@ -5738,7 +5738,13 @@ async function asanaLoadComments(owner, gid) {
 // board rebuilds its innerHTML on each pill click, so per-card listeners would
 // pile up and leak.
 function wireAsanaEditing(owner) {
+  // Unknown owner returns rather than throwing. This runs at module level, so a
+  // throw here takes down every line of app.js after it — which is exactly what
+  // happened on 2026-09-23: the sidebar never rendered, the Sync All button
+  // never appeared and the Call Analyzer never initialised, all from one
+  // missing board entry.
   const b = ASANA_BOARDS[owner];
+  if (!b) return;
   const root = $(b.sel);
   if (!root) return;
 
@@ -5880,10 +5886,13 @@ function wireAsanaEditing(owner) {
   });
 }
 
-// Bound once each, to the containers rather than the cards inside them. Called
-// here rather than up with the other wiring: ASANA_BOARDS is a const declared
-// above this line, and reaching it from there would hit the temporal dead zone.
-wireAsanaEditing('default');
+// Bound once, to the container rather than the cards inside it. Called here
+// rather than up with the other wiring: ASANA_BOARDS is a const declared above
+// this line, and reaching it from there would hit the temporal dead zone.
+//
+// The 'default' board was wired here too until 2026-09-23. Removing it from
+// ASANA_BOARDS without removing this line left a top-level throw that aborted
+// the rest of app.js — see the guard in wireAsanaEditing.
 wireAsanaEditing('erick');
 
 
