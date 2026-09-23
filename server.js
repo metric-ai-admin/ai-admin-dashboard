@@ -10824,6 +10824,64 @@ async function eodGather() {
     S.evictions = { active, sectionA, sectionB, portfolio, completed, report_date: latest ? latest.report_date : null, prior };
   } catch (e) { S.evictions = { error: e.message }; }
 
+  // 4b — LIVE DELINQUENCY HEADLINE (delinquency_as_of + rent_roll)
+  //
+  // Separate from S.evictions above on purpose. That block reads
+  // eviction_sessions — a snapshot somebody uploads from the Eviction Tracker,
+  // so it carries a report_date that can be days old. These two numbers come
+  // from delinquency_as_of, which syncs daily, so the top of the section is
+  // today's position rather than the last upload's.
+  //
+  // THE RATE NEEDS A DENOMINATOR THE DELINQUENCY REPORT DOES NOT HAVE.
+  // delinquency_as_of contains ONLY delinquent accounts (72 rows, every one of
+  // them owing), so "delinquent accounts ÷ accounts in the report" is 100% by
+  // construction and tells nobody anything. rent_roll is the occupied-unit
+  // count: one row per lease, with a status, so Current + Evict + Notice-* is
+  // the real denominator. If rent_roll has not synced the rate is omitted
+  // rather than invented — a made-up percentage in a compliance-adjacent email
+  // is worse than a missing one.
+  try {
+    const af = require('./appfolio-reports.js');
+    const [delRep, rrRep] = await Promise.all([
+      af.readReportData('delinquency_as_of'),
+      af.readReportData('rent_roll'),
+    ]);
+    const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[$,]/g, '')); return isNaN(n) ? 0 : n; };
+    const delRows = ((delRep && delRep.rows) || []).filter(r => !propertyIsExcluded(r.property_name));
+
+    // delinquent_rent, not amount_receivable. Both are in the report and they
+    // differ ($21,305 vs $27,662 today — receivable includes non-rent charges).
+    // Every other surface Lyndsay sees — the Eviction Tracker, the Decision
+    // Queue, Regional Performance — sums delinquent_rent, and an EOD email
+    // quoting a different total for the same day is a discrepancy somebody
+    // would have to go and chase.
+    const totalBalance = delRows.reduce((s, r) => s + num(r.delinquent_rent), 0);
+    // Counted on the SAME field the total sums. The report holds 65 delinquent
+    // accounts after exclusions, but only 47 of them owe delinquent RENT — the
+    // other 18 owe fees or other charges, which amount_receivable includes and
+    // delinquent_rent does not. Counting 65 against a rent-only total would
+    // pair a balance with a headcount that does not add up to it.
+    const accounts = delRows.filter(r => num(r.delinquent_rent) > 0).length;
+
+    const rrRows = ((rrRep && rrRep.rows) || []).filter(r => !propertyIsExcluded(r.property_name));
+    const occupied = rrRows.filter(r => !/^vacant/i.test(String(r.status || '').trim())).length;
+
+    // A report that is absent is not a portfolio with no delinquency. Without
+    // this, a failed sync renders "$0.00 — 0.0%", which reads as good news and
+    // is the most dangerous thing this block could say.
+    if (!delRep || !Array.isArray(delRep.rows) || !delRep.rows.length) {
+      S.delinquency = { error: 'delinquency_as_of has no synced rows — run Sync All Data' };
+    } else S.delinquency = {
+      totalBalance, accounts, occupied,
+      rate: occupied > 0 ? Math.round((accounts / occupied) * 1000) / 10 : null,
+      syncedAt: (delRep && delRep.fetchedAt) || null,
+      // A report that did not sync today is not "zero delinquency", it is "no
+      // data" — the renderer says which.
+      stale: !delRep || !delRep.fetchedAt
+        || String(delRep.fetchedAt).slice(0, 10) !== new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE }),
+    };
+  } catch (e) { S.delinquency = { error: e.message }; }
+
   // 5 — MAINTENANCE (AppFolio work orders + labor)
   try {
     const [woR, laborR] = await Promise.all([
@@ -11075,6 +11133,9 @@ function eodRenderHtml(data) {
     }))));
   const e4 = S.evictions || {};
   const money0 = n => '$' + Math.round(Number(n) || 0).toLocaleString();
+  // Cents on purpose for the headline balance: it is a figure someone may
+  // reconcile against AppFolio, and a rounded total will not tie out.
+  const money2 = n => '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const collBalCell = u => typeof u.balance === 'number' ? money0(u.balance) : eodEsc(u.balance);
   const pf = (e4.portfolio || {});
   // "2026-09-16" -> "Sep 16" (UTC to avoid TZ drift on a date-only string).
@@ -11103,10 +11164,30 @@ function eodRenderHtml(data) {
     : '';
   const subLabel = (emoji, title, note) => `<div style="font-weight:600;font-size:12px;margin:10px 0 2px;color:${EOD.text}">${emoji} ${title}</div>`
     + `<div style="font-size:11px;font-style:italic;color:${EOD.muted};margin-bottom:3px">${note}</div>`;
+  // Two headline numbers from the daily delinquency sync, above everything
+  // else in the section. The "% Delinquent" further down is a DIFFERENT
+  // measure — dollars owed ÷ dollars billed — so this one says "accounts" in
+  // the value itself rather than relying on the label to disambiguate.
+  const dq = S.delinquency || {};
+  const collHeadline = dq.error
+    ? `<div style="font-size:12px;color:${EOD.muted};margin:0 0 6px"><i>Live delinquency unavailable: ${eodEsc(dq.error)}</i></div>`
+    : `<div style="font-size:13px;color:${EOD.text};margin:0 0 2px">`
+      + `<span style="color:${EOD.muted}">Total delinquent balance</span> <b>${money2(dq.totalBalance)}</b>`
+      + (dq.stale ? ` <span style="color:${EOD.bad};font-size:11px">(not synced today)</span>` : '')
+      + '</div>'
+      + `<div style="font-size:13px;color:${EOD.text};margin:0 0 8px">`
+      + `<span style="color:${EOD.muted}">Delinquency rate</span> `
+      + (dq.rate == null
+        // No rent_roll, no denominator. The count is still worth showing; the
+        // percentage is not worth guessing.
+        ? `<b>${dq.accounts || 0} accounts</b> <span style="color:${EOD.muted};font-size:11px">(rate needs the rent roll, which has not synced)</span>`
+        : `<b>${dq.rate.toFixed(1)}%</b> <span style="color:${EOD.muted}">(${dq.accounts} of ${dq.occupied} occupied units)</span>`)
+      + '</div>';
   P.push(eodSectionHtml('⚖️', 'Collections',
     e4.error ? eodErr(e4.error) : collHeader,
-    e4.error ? '' :
-      subLabel('⚠️', 'High Balance, No Recent Contact (&gt;$500)', pf.hasContact
+    e4.error ? collHeadline :
+      collHeadline
+      + subLabel('⚠️', 'High Balance, No Recent Contact (&gt;$500)', pf.hasContact
         ? 'Balance over $500, not in eviction, and no contact logged in the last 24 hours — priority follow-up.'
         : 'Balance over $500 and not in eviction (contact-timing data not available in the report — showing all).')
       + eodTable(['Resident', 'Property', 'Balance', 'Step'], (e4.sectionA || []).map(u => [eodEsc(u.resident), eodEsc(u.property), collBalCell(u), eodEsc(u.step)]))
