@@ -2099,19 +2099,10 @@
 
 <div id="toast" class="toast hidden"></div>
 <button id="back-to-top" aria-label="Back to top" title="Back to top" hidden>↑ Top</button>
-<script src="app.js"></script>
-<!-- AppFolio module. Order matters: reports-sync.js defines rsAgo(), which
-     appfolio-views.js uses; both rely on $ / esc / api / toast from app.js. -->
-<script src="reports-sync.js"></script>
-<script src="appfolio-views.js"></script>
-<script src="command-center.js"></script>
-<script src="wo-scheduling.js"></script>
-<script src="wo-schedule-calendar.js"></script>
-
 <!-- Display settings. Stored per browser in localStorage, not in Supabase:
      dashboard_users has no display_name / title columns and adding them needs
      a migration nobody can run from here. See the handover note. -->
-<div id="settings-modal" class="crm-modal-backdrop hidden">
+<div id="settings-modal" class="settings-backdrop hidden">
   <div class="settings-panel">
     <div class="settings-head">
       <h3>Display settings</h3>
@@ -2136,5 +2127,14 @@
     </div>
   </div>
 </div>
+
+<script src="app.js"></script>
+<!-- AppFolio module. Order matters: reports-sync.js defines rsAgo(), which
+     appfolio-views.js uses; both rely on $ / esc / api / toast from app.js. -->
+<script src="reports-sync.js"></script>
+<script src="appfolio-views.js"></script>
+<script src="command-center.js"></script>
+<script src="wo-scheduling.js"></script>
+<script src="wo-schedule-calendar.js"></script>
 </body>
 </html>

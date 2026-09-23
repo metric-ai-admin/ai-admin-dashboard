@@ -2421,10 +2421,22 @@ tr.ca-sel { background: var(--accent-glow); }
 .sidebar-logo { display:block; width:120px; height:auto; margin:0 0 14px; }
 
 /* ---------- Display settings panel ---------- */
+/* The panel was given class "crm-modal-backdrop", which does not exist in this
+   stylesheet — so it had no positioning at all and rendered inline at the
+   bottom of the document. A real backdrop now covers the viewport and centres
+   the panel regardless of scroll position. */
+.settings-backdrop {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 10, 15, 0.6);
+  -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+  padding: 16px;
+}
+.settings-backdrop.hidden { display: none; }
 .settings-panel {
-  position:relative; margin:10vh auto 0; width:min(420px, calc(100vw - 32px));
-  background:var(--bg-surface); border:1px solid var(--border); border-radius:12px;
-  padding:20px; box-shadow:var(--shadow); color:var(--text-primary);
+  width: min(420px, 100%); max-height: calc(100vh - 32px); overflow-y: auto;
+  background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35); color: var(--text-primary);
 }
 .settings-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
 .settings-head h3 { margin:0; font-size:16px; }
