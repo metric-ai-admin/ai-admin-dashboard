@@ -54,6 +54,7 @@ const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin } = requir
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
 const gradeExport = require('./call-grades-export.js');
+const gradeWorkbook = require('./call-grades-workbook.js');
 const simplevoip = require('./simplevoip.js');
 const teams = require('./teams-transcripts.js');
 const crmEngine = require('./crm-task-engine.js');
@@ -6578,7 +6579,14 @@ app.get('/api/calls/grades', requireAuth, requireRole('admin'), requireCallAnaly
       grades = grades.filter(g => g.legal_violation || g.fair_housing_flag || g.liability_flag
         || (Array.isArray(g.flags) && g.flags.length));
     }
-    res.json({ grades });
+
+    // Policy-review flags, attached rather than joined: the table is tiny and
+    // PostgREST cannot join it without a declared foreign key, which would tie
+    // the flag's lifetime to the grade row it is a complaint about.
+    const { missing, map } = await callFlagMap(db);
+    if (!missing) grades = grades.map(g => (map[g.recording_id] ? { ...g, policy_flag: map[g.recording_id] } : g));
+    if (req.query.policyReview === 'true') grades = grades.filter(g => g.policy_flag);
+    res.json({ grades, policyReviewAvailable: !missing, policyReviewCount: Object.keys(map).length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -6604,6 +6612,84 @@ app.get('/api/calls/grades', requireAuth, requireRole('admin'), requireCallAnaly
 // nothing could clear. This is now an anti-join on recording_id using the same
 // two floors as the grading job, and the calls that fail a floor are reported
 // as `skipped` rather than silently dropped: 620 of them is worth seeing.
+// ---- Flag for Policy Review ---------------------------------------------
+// Lyndsay marking a GRADING error she wants fixed — not a problem with the
+// call. Kept in its own table so the flag survives a regrade: replacing the
+// call_grades row must not erase the record of the complaint about it.
+//
+// Same gate as the rest of the Call Analyzer (admin + the named allowlist),
+// because a flag quotes the call it is attached to.
+const CALL_FLAGS_NO_TABLE = 'Policy Review is not set up yet — run supabase/migrations/058_call_grade_flags.sql in the Supabase SQL editor.';
+const flagErr = err => (err && /does not exist|schema cache/i.test(err.message || '') ? CALL_FLAGS_NO_TABLE : null);
+
+// Every flag, keyed by recording_id. Small table by nature — these are
+// exceptions someone typed by hand — so it is read whole and joined in memory.
+async function callFlagMap(db) {
+  const { data, error } = await db.from('call_grade_flags').select('*').limit(5000);
+  if (error) { const m = flagErr(error); if (m) return { missing: m, map: {} }; throw new Error(error.message); }
+  return { missing: null, map: Object.fromEntries((data || []).map(r => [r.recording_id, r])) };
+}
+
+app.get('/api/calls/flags', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+  try {
+    const { missing, map } = await callFlagMap(supabaseAdmin || supabasePublic);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    res.json({ flags: Object.values(map) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/calls/flag', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+  const recording_id = String((req.body && req.body.recording_id) || '').trim();
+  if (!recording_id) return res.status(400).json({ error: 'recording_id is required' });
+  // The note is optional by design — the flag itself is the signal, and making
+  // someone write a sentence before they can raise one means fewer get raised.
+  const flag_note = String((req.body && req.body.note) || '').trim() || null;
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('call_grade_flags').upsert({
+      recording_id, flagged_by: actorName(req), flagged_at: new Date().toISOString(),
+      flag_note, resolved: false, resolved_by: null, resolved_at: null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'recording_id' }).select();
+    const missing = flagErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, flag: data[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Unflag. A DELETE rather than resolved=true: clicking the button again means
+// "I did not mean to flag this", which is different from "this was dealt with".
+// Resolving is the PATCH below and keeps the row.
+app.delete('/api/calls/flag/:recording_id', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { error } = await db.from('call_grade_flags').delete().eq('recording_id', req.params.recording_id);
+    const missing = flagErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/calls/flag/:recording_id', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+  const resolved = !!(req.body && req.body.resolved);
+  const patch = { resolved, updated_at: new Date().toISOString() };
+  if (resolved) { patch.resolved_by = actorName(req); patch.resolved_at = new Date().toISOString(); }
+  else { patch.resolved_by = null; patch.resolved_at = null; }
+  if (req.body && req.body.note !== undefined) patch.flag_note = String(req.body.note || '').trim() || null;
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('call_grade_flags').update(patch)
+      .eq('recording_id', req.params.recording_id).select();
+    const missing = flagErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    if (!data || !data.length) return res.status(404).json({ error: 'That call is not flagged.' });
+    res.json({ ok: true, flag: data[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/calls/export?format=detail|summary&from=&to=&agent=&grades=&direction=
 //
 // Self-serve version of scripts/export-call-grades.js, so a reviewer can pull
@@ -6620,7 +6706,7 @@ app.get('/api/calls/export', requireAuth, requireRole('admin'), requireCallAnaly
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const db = supabaseAdmin || supabasePublic;
-    const format = req.query.format === 'summary' ? 'summary' : 'detail';
+    const format = ['summary', 'xlsx'].includes(req.query.format) ? req.query.format : 'detail';
 
     const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
     const from = isDay(req.query.from) ? req.query.from : null;
@@ -6653,6 +6739,36 @@ app.get('/api/calls/export', requireAuth, requireRole('admin'), requireCallAnaly
     if (want.length) {
       const set = new Set(want.map(s => s.toUpperCase()));
       filtered = rows.filter(g => set.has(g.not_scoreable ? 'N/S' : String(g.overall_grade || '').toUpperCase()));
+    }
+
+    // Policy-review flags feed both the xlsx and the flagged-only filter.
+    const { missing: flagsMissing, map: flagMap } = await callFlagMap(db);
+    if (req.query.policyReview === 'true') {
+      if (flagsMissing) return res.status(503).json({ error: flagsMissing, needsMigration: true });
+      filtered = filtered.filter(g => flagMap[g.recording_id]);
+    }
+
+    // Excel: the reviewer's format, one row per criterion. See
+    // call-grades-workbook.js for why that grain and not one sheet per call.
+    if (format === 'xlsx') {
+      // The phone dialled lives in simplevoip_daily_calls, not in call_grades.
+      // Fetched in batches because .in() on a few thousand ids is a URL long
+      // enough for PostgREST to refuse.
+      const phoneByRecording = {};
+      const ids = filtered.map(g => g.recording_id).filter(Boolean);
+      for (let i = 0; i < ids.length; i += 200) {
+        const { data: calls } = await db.from('simplevoip_daily_calls')
+          .select('recording_id,caller').in('recording_id', ids.slice(i, i + 200));
+        (calls || []).forEach(c => { if (c.caller) phoneByRecording[c.recording_id] = c.caller; });
+      }
+      const { wb, counts } = gradeWorkbook.buildWorkbook(filtered, { phoneByRecording, flagsByRecording: flagMap });
+      const spanX = from || to ? `${from || 'start'}_to_${to || 'today'}` : new Date().toISOString().slice(0, 10);
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="call_grades_${spanX}.xlsx"`);
+      res.setHeader('X-Export-Rows', String(counts.criteria));
+      res.setHeader('X-Export-Calls', String(counts.calls));
+      res.setHeader('X-Export-Flagged', String(counts.flagged));
+      return res.send(gradeWorkbook.toBuffer(wb));
     }
 
     const csv = format === 'summary'

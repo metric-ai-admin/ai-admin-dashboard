@@ -6612,7 +6612,7 @@ function svGradeFeedbackHtml(g) {
 // her KPI row, filter pills, and detail design. All markup is namespaced under
 // .svg-tool / .cqa-* so it is fully isolated from the rest of the dashboard —
 // the Calls list and transcript panel are untouched.
-const svgState = { grades: [], filters: { agent: 'All', grade: 'All', direction: 'All', management: null, period: 'all', from: '', to: '' }, selectedId: null, detailCache: {}, loaded: false };
+const svgState = { grades: [], filters: { agent: 'All', grade: 'All', direction: 'All', management: null, period: 'all', from: '', to: '' }, selectedId: null, detailCache: {}, loaded: false, flagEditing: null };
 // Start-of-day for a period option, as a YYYY-MM-DD lower bound (local time).
 function svgPeriodStart(period) {
   const d = new Date(); d.setHours(0, 0, 0, 0);
@@ -6677,6 +6677,7 @@ function svgFiltered() {
     if (f.management === 'flagged' && !svgIsFlagged(g)) return false;
     if (f.management === 'legal' && !g.legal_violation) return false;
     if (f.management === 'fairhousing' && !g.fair_housing_flag) return false;
+    if (f.management === 'policy' && !g.policy_flag) return false;
     return true;
   });
 }
@@ -6737,6 +6738,7 @@ function svgProgressHtml() {
 // filter — or look like it exported everything when it had not.
 const svgExport = {
   open: false,
+  policyReview: false,
   from: '', to: '',
   agent: 'All',
   grades: { A: true, B: true, C: true, D: true, F: true, 'N/S': true },
@@ -6778,10 +6780,15 @@ function svgExportPanelHtml() {
       <span class="muted small">Grades:</span>
       ${['A', 'B', 'C', 'D', 'F', 'N/S'].map(grade).join('')}
       <span class="svg-exp-spacer"></span>
-      <button class="btn-sm primary" id="svg-exp-detail" ${svgExport.busy ? 'disabled' : ''}>Detail CSV</button>
+      <button class="btn-sm primary" id="svg-exp-xlsx" ${svgExport.busy ? 'disabled' : ''}>Excel workbook</button>
+      <button class="btn-sm" id="svg-exp-detail" ${svgExport.busy ? 'disabled' : ''}>Detail CSV</button>
       <button class="btn-sm" id="svg-exp-summary" ${svgExport.busy ? 'disabled' : ''}>Summary CSV</button>
     </div>
-    <div class="muted small">Detail = one row per call. Summary = per-agent totals, scores and top failure reasons.
+    <div class="svg-exp-row">
+      <label class="svg-exp-check"><input type="checkbox" id="svg-exp-policy" ${svgExport.policyReview ? 'checked' : ''}> Only calls flagged for policy review</label>
+    </div>
+    <div class="muted small">Excel = three sheets — one row per graded criterion with its score and coaching note, one row per call with the full summary, and the flagged calls on their own.
+      Detail = one row per call. Summary = per-agent totals, scores and top failure reasons.
       Exports run over the whole table, not just the calls listed below.</div>
   </div>`;
 }
@@ -6804,7 +6811,7 @@ async function svgDoExport(format) {
   // the markup only reflects state at render time, so without this the buttons
   // stay clickable while an export is in flight and a second click is swallowed
   // by the busy guard with nothing on screen to explain why.
-  const btns = [$('#svg-exp-detail'), $('#svg-exp-summary')].filter(Boolean);
+  const btns = [$('#svg-exp-detail'), $('#svg-exp-summary'), $('#svg-exp-xlsx')].filter(Boolean);
   btns.forEach(b => { b.disabled = true; });
   try {
     const qs = new URLSearchParams({ format });
@@ -6813,6 +6820,7 @@ async function svgDoExport(format) {
     if (svgExport.agent !== 'All') qs.set('agent', svgExport.agent);
     if (svgExport.direction !== 'All') qs.set('direction', svgExport.direction);
     if (picked.length < 6) qs.set('grades', picked.join(','));
+    if (svgExport.policyReview) qs.set('policyReview', 'true');
 
     const r = await fetch('/api/calls/export?' + qs.toString(), { credentials: 'same-origin' });
     if (!r.ok) {
@@ -6828,7 +6836,7 @@ async function svgDoExport(format) {
     const span = (svgExport.from || svgExport.to)
       ? `${svgExport.from || 'start'}_to_${svgExport.to || 'today'}`
       : new Date().toISOString().slice(0, 10);
-    const name = (m && m[1]) || `call_grades_${format}_${span}.csv`;
+    const name = (m && m[1]) || `call_grades_${format}_${span}.${format === 'xlsx' ? 'xlsx' : 'csv'}`;
 
     const blob = await r.blob();
     const a = document.createElement('a');
@@ -6883,6 +6891,22 @@ function svgRender() {
   el.querySelectorAll('.cqa-row').forEach(r => r.addEventListener('click', () => svgSelect(r.dataset.rid)));
   $('#svg-backfill-btn')?.addEventListener('click', svgBackfill);
 
+  // Policy-review flag. A call with no note flags straight away; the note box
+  // opens on a second click, so raising a flag is never gated behind typing.
+  el.querySelectorAll('[data-svg-flag]').forEach(b => b.addEventListener('click', () => {
+    const rid = b.dataset.svgFlag;
+    if (svgFlagOf(rid)) { svgState.flagEditing = svgState.flagEditing === rid ? null : rid; svgRender(); }
+    else svgSetFlag(rid);
+  }));
+  el.querySelectorAll('[data-svg-flagedit]').forEach(b => b.addEventListener('click', () => {
+    svgState.flagEditing = svgState.flagEditing === b.dataset.svgFlagedit ? null : b.dataset.svgFlagedit;
+    svgRender();
+  }));
+  el.querySelectorAll('[data-svg-flagsave]').forEach(b => b.addEventListener('click', () =>
+    svgSetFlag(b.dataset.svgFlagsave, { note: $('#svg-flag-note')?.value || '' })));
+  el.querySelectorAll('[data-svg-unflag]').forEach(b => b.addEventListener('click', () =>
+    svgSetFlag(b.dataset.svgUnflag, { remove: true })));
+
   // Export panel. The field handlers write to svgExport WITHOUT re-rendering —
   // svgRender() rebuilds the whole tab, which would drop focus mid-edit and
   // close the date picker on every keystroke.
@@ -6895,6 +6919,8 @@ function svgRender() {
     cb.addEventListener('change', () => { svgExport.grades[cb.dataset.expGrade] = cb.checked; }));
   $('#svg-exp-detail')?.addEventListener('click', () => svgDoExport('detail'));
   $('#svg-exp-summary')?.addEventListener('click', () => svgDoExport('summary'));
+  $('#svg-exp-xlsx')?.addEventListener('click', () => svgDoExport('xlsx'));
+  $('#svg-exp-policy')?.addEventListener('change', e => { svgExport.policyReview = e.target.checked; });
 }
 
 // Admin-only: grade every ungraded, transcribed call from the last 14 days via
@@ -6950,7 +6976,11 @@ function svgFilterPillsHtml() {
   const dirDefs = [['All', 'All'], ['inbound', 'Inbound'], ['outbound', 'Outbound']];
   const dirPills = dirDefs.map(([v, t]) =>
     `<button class="cqa-pill${f.direction === v ? ' active' : ''}" data-svg-dir="${v}">${t}</button>`).join('');
+  // 'flagged' is the MODEL flagging the call; 'policy' is a person flagging the
+  // GRADE. Same icon, opposite subject, so this one carries its words.
+  const policyN = svgState.grades.filter(g => g.policy_flag).length;
   const mgmtDefs = [['flagged', '🚩 Flagged', 'flag'], ['legal', 'Legal', 'legal'], ['fairhousing', 'Fair Housing', 'fair']];
+  if (policyN) mgmtDefs.push(['policy', `🚩 Policy Review (${policyN})`, 'policy']);
   const mgmtPills = mgmtDefs.map(([v, t, cls]) =>
     `<button class="cqa-pill ${cls}${f.management === v ? ' active' : ''}" data-svg-mgmt="${v}">${t}</button>`).join('');
   const agents = ['All', ...Array.from(new Set(svgState.grades.map(g => g.agent_name || 'Unidentified'))).sort()];
@@ -7032,6 +7062,7 @@ function svgDetailHtml() {
         <div class="cqa-detail-meta">${esc(metaLine)}</div>
       </div>
     </div>
+    ${svgFlagHtml(g)}
     ${svgFeedbackHtml(g)}
   </div>`;
 }
@@ -10081,3 +10112,62 @@ document.getElementById('cvx-editor')?.addEventListener('click', e => {
   }
   if (e.target.id === 'cvx-e-save') cvxSave(e.target.dataset.key);
 });
+
+// ---- Flag for Policy Review -------------------------------------------------
+// Lyndsay marking a GRADING error she wants fixed. Distinct from the 🚩 Flagged
+// pill above it, which is the model flagging the CALL — same icon, opposite
+// subject, so this one is labelled rather than left to the icon.
+
+// The flag lives on the list row, not on the cached detail: the detail comes
+// from /api/calls/grades/:id, which knows nothing about flags.
+const svgFlagOf = rid => (svgState.grades.find(g => g.recording_id === rid) || {}).policy_flag || null;
+
+function svgFlagHtml(g) {
+  if (!g.recording_id) return '';
+  const f = svgFlagOf(g.recording_id);
+  const open = svgState.flagEditing === g.recording_id;
+  return `<div class="svg-flagbox${f ? ' on' : ''}">
+    <div class="svg-flagrow">
+      <button class="svg-flagbtn${f ? ' on' : ''}" data-svg-flag="${esc(g.recording_id)}">
+        ${f ? '🚩 Flagged for Policy Review' : '🚩 Flag for Policy Review'}
+      </button>
+      ${f ? `<button class="btn-sm" data-svg-flagedit="${esc(g.recording_id)}">${open ? 'Close' : 'Edit note'}</button>` : ''}
+    </div>
+    ${f ? `<div class="svg-flagmeta">Flagged by ${esc(f.flagged_by || '')}${f.flagged_at ? ' · ' + esc(svgWhen(f.flagged_at)) : ''}</div>` : ''}
+    ${f && f.flag_note && !open ? `<div class="svg-flagnote">${esc(f.flag_note)}</div>` : ''}
+    ${open || (!f && svgState.flagEditing === g.recording_id) ? `
+      <div class="svg-flagedit">
+        <label class="small muted" for="svg-flag-note">What needs review?</label>
+        <textarea id="svg-flag-note" rows="2" placeholder="Optional — what the grader got wrong">${esc((f && f.flag_note) || '')}</textarea>
+        <div class="svg-flagedit-actions">
+          <button class="btn-sm primary" data-svg-flagsave="${esc(g.recording_id)}">Save note</button>
+          ${f ? `<button class="btn-sm" data-svg-unflag="${esc(g.recording_id)}">Remove flag</button>` : ''}
+        </div>
+      </div>` : ''}
+  </div>`;
+}
+
+const svgWhen = iso => {
+  try {
+    return new Date(iso).toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'medium', timeStyle: 'short' });
+  } catch { return String(iso || ''); }
+};
+
+// Flagging and unflagging both refetch the list, because the pill counts and the
+// Policy Review filter are computed from it. Cheap — it is one request against a
+// table of hand-typed exceptions.
+async function svgSetFlag(rid, { note, remove } = {}) {
+  try {
+    if (remove) {
+      await api('/api/calls/flag/' + encodeURIComponent(rid), { method: 'DELETE' });
+      toast('Flag removed', 'success');
+    } else {
+      await api('/api/calls/flag', { method: 'POST', body: { recording_id: rid, note: note || '' } });
+      toast('Flagged for policy review', 'success');
+    }
+    svgState.flagEditing = null;
+    await svgLoad();
+  } catch (err) {
+    toast(err.message || 'Could not update the flag', 'error');
+  }
+}

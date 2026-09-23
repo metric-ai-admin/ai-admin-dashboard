@@ -2628,3 +2628,27 @@ tr.ca-sel { background: var(--accent-glow); }
 .cvx-check small { display: block; color: var(--text-secondary); font-size: 11.5px; margin-top: 2px; }
 .cvx-modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
 .cvx-error { color: var(--critical); font-size: 12.5px; margin: 12px 0 0; line-height: 1.45; }
+
+/* ---- Call Analyzer: flag for policy review ---------------------------- */
+.svg-flagbox { border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; margin: 0 0 12px; }
+.svg-flagbox.on { border-color: var(--critical); background: var(--critical-bg); }
+.svg-flagrow { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.svg-flagbtn {
+  background: var(--bg-elevated); color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px;
+  font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.svg-flagbtn:hover { color: var(--text-primary); border-color: var(--critical); }
+/* Filled, not outlined, once raised — a flag should be visible from across the
+   list rather than needing to be read. */
+.svg-flagbtn.on { background: var(--critical); border-color: var(--critical); color: #fff; }
+.svg-flagmeta { color: var(--text-secondary); font-size: 11.5px; margin-top: 7px; }
+.svg-flagnote { color: var(--text-primary); font-size: 12.5px; margin-top: 6px; line-height: 1.5; }
+.svg-flagedit { margin-top: 10px; }
+.svg-flagedit textarea {
+  width: 100%; margin-top: 5px; background: var(--bg-elevated); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px;
+}
+.svg-flagedit-actions { display: flex; gap: 8px; margin-top: 9px; }
+.cqa-pill.policy.active { background: var(--critical-bg); color: var(--critical); border-color: var(--critical); }
+.svg-exp-check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-secondary); }
