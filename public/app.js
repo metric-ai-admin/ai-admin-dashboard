@@ -274,7 +274,7 @@ function loadTab(tab) {
   if (tab === 'calls') loadCallAnalyzer();
   if (tab === 'evictions') loadEvictions();
   if (tab === 'vacancy') loadVacancy();
-  if (tab === 'collections') { loadCollections(); loadDecisionQueue(); }
+  if (tab === 'collections') { loadCollections(); loadDecisionQueue(); loadRegional(); }
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
@@ -9429,4 +9429,111 @@ $('#settings-reset')?.addEventListener('click', () => {
   if (jt) jt.value = '';
   applyTheme('dark');
   applyIdentityPrefs();
+});
+
+// =====================================================================
+// REGIONAL PERFORMANCE (Bekah, Module 2)
+// =====================================================================
+// One card per property, worst first. Read-only: every figure comes from data
+// already synced, and nothing here writes anywhere.
+
+let rpData = null;
+
+const rpEsc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const rpMoney = n => '$' + Math.round(Number(n) || 0).toLocaleString();
+
+function rpWhen(iso) {
+  if (!iso) return 'never';
+  if (iso === 'live table') return 'live';
+  try {
+    return new Date(iso).toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'medium', timeStyle: 'short' });
+  } catch { return String(iso); }
+}
+
+// this vs last week, with the direction marked. Up is not automatically good —
+// more traffic is, more vacancy is not — so the caller says which way is better.
+function rpDelta(now, prev, higherIsBetter = true) {
+  const d = (Number(now) || 0) - (Number(prev) || 0);
+  if (!d) return '<span class="muted">=</span>';
+  const good = higherIsBetter ? d > 0 : d < 0;
+  return `<span class="rp-delta ${good ? 'good' : 'bad'}">${d > 0 ? '▲' : '▼'} ${Math.abs(d)}</span>`;
+}
+
+function rpCard(c) {
+  // The worse of the two bands drives the card's edge colour.
+  const worst = [c.bands.delinquency, c.bands.agedWos].includes('red') ? 'red'
+    : [c.bands.delinquency, c.bands.agedWos].includes('yellow') ? 'yellow' : 'green';
+  const stat = (label, value, band) =>
+    `<div class="rp-stat${band ? ' rp-' + band : ''}"><span class="rp-stat-label">${label}</span><span class="rp-stat-val">${value}</span></div>`;
+  return `<article class="rp-card rp-edge-${worst}">
+    <header class="rp-card-head">
+      <span class="rp-prop">${rpEsc(c.property)}</span>
+      ${c.codeViolations ? `<span class="badge red">${c.codeViolations} code violation${c.codeViolations === 1 ? '' : 's'}</span>` : ''}
+    </header>
+    <div class="rp-stats">
+      ${stat('Vacant units', c.vacantUnits + (c.onNotice ? ` <span class="muted">+${c.onNotice} on notice</span>` : ''))}
+      ${stat('Vacancy / mo', rpMoney(c.vacancyMonthly))}
+      ${stat('Delinquent', `${rpMoney(c.delinquentBalance)} <span class="muted">(${c.delinquentAccounts})</span>`, c.bands.delinquency)}
+      ${stat('Highest balance', rpMoney(c.highestBalance))}
+      ${stat('Open WOs', c.openWos)}
+      ${stat('Open 14+ days', c.agedWos, c.bands.agedWos)}
+      ${stat('Urgent WOs', c.urgentWos || '<span class="muted">0</span>')}
+    </div>
+  </article>`;
+}
+
+async function loadRegional(force) {
+  const wrap = document.getElementById('rp-wrap');
+  if (!wrap) return;
+  if (!DQ_ROLES.includes(currentUser?.role)) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  if (rpData && !force) { renderRegional(); return; }
+  document.getElementById('rp-cards').innerHTML = '<p class="muted">Loading…</p>';
+  try { rpData = await api('/api/regional/performance'); }
+  catch (err) {
+    document.getElementById('rp-cards').innerHTML =
+      `<div class="alert-box warn"><div class="al">ERROR</div>${rpEsc(err.message || 'Could not load.')}</div>`;
+    return;
+  }
+  renderRegional();
+}
+
+function renderRegional() {
+  if (!rpData) return;
+  const { cards, totals, funnel, syncedAt } = rpData;
+
+  document.getElementById('rp-sub').innerHTML =
+    `${totals.properties} properties · data from AppFolio ${rpEsc(rpWhen(syncedAt && syncedAt.vacancy))}`;
+
+  document.getElementById('rp-totals').innerHTML = `<div class="rp-totals">
+    ${[['Vacant units', totals.vacantUnits], ['Vacancy / mo', rpMoney(totals.vacancyMonthly)],
+      ['Delinquent', `${rpMoney(totals.delinquentBalance)} (${totals.delinquentAccounts})`],
+      ['Open WOs', totals.openWos], ['Open 14+ days', totals.agedWos],
+      ['Urgent', totals.urgentWos], ['Code violations', totals.codeViolations]]
+      .map(([l, v]) => `<div class="rp-total"><span class="rp-total-num">${v}</span><span class="rp-total-label">${l}</span></div>`).join('')}
+  </div>
+  <p class="rp-note">Occupancy % is not shown: the vacancy report lists only vacant and on-notice units and carries no total unit count, so there is no denominator. Vacant units and the monthly rent they represent are exact.</p>`;
+
+  if (funnel) {
+    const row = (label, key, better) => `<tr><td>${label}</td><td>${funnel.thisWeek[key]}</td>
+      <td class="muted">${funnel.lastWeek[key]}</td><td>${rpDelta(funnel.thisWeek[key], funnel.lastWeek[key], better)}</td></tr>`;
+    document.getElementById('rp-funnel').innerHTML = `
+      <div class="rp-section-title">Leasing pipeline — portfolio</div>
+      <div class="vac-scroll"><table class="data-table rp-funnel-table">
+        <thead><tr><th>Stage</th><th>This week</th><th>Last week</th><th>Change</th></tr></thead>
+        <tbody>${row('Traffic', 'traffic', true)}${row('Tours', 'tours', true)}${row('Applications', 'applications', true)}${row('Approved', 'approved', true)}${row('Move-ins', 'moveIns', true)}</tbody>
+      </table></div>
+      <p class="rp-note">This week is ${rpEsc(funnel.range.thisWeek[0])} to ${rpEsc(funnel.range.thisWeek[1])} (Mon–Sun) and is still in progress, so a lower count than last week is expected mid-week.</p>`;
+  }
+
+  document.getElementById('rp-cards').innerHTML = cards.length
+    ? `<div class="rp-grid">${cards.map(rpCard).join('')}</div>`
+    : '<div class="empty-state">No properties to show.</div>';
+}
+
+document.getElementById('rp-refresh')?.addEventListener('click', e => {
+  const b = e.target;
+  b.disabled = true; b.textContent = 'Refreshing…';
+  loadRegional(true).finally(() => { b.disabled = false; b.textContent = '↻ Refresh'; });
 });

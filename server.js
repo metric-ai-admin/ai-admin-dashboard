@@ -4605,6 +4605,68 @@ async function decisionQueueData({ refresh = false } = {}) {
   return { ...result, meta: { syncedAt: data.fetchedAt || null, rowCount: (data.rows || []).length, syncError } };
 }
 
+// ---- Regional Performance (Bekah's Module 2) ---------------------------------
+// Same audience as the Decision Queue: admin + regional_director. Everything it
+// reads is already synced, so this makes no AppFolio calls of its own.
+const regionalPerf = require('./regional-performance.js');
+
+app.get('/api/regional/performance', requireAuth, requireRole(...DECISION_QUEUE_ROLES), async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const af = require('./appfolio-reports.js');
+    const pageAll = async (table, select) => {
+      let all = [];
+      for (let from = 0; from < 20000; from += 1000) {
+        const { data, error } = await db.from(table).select(select).range(from, from + 999);
+        if (error) throw new Error(`${table}: ${error.message}`);
+        all = all.concat(data || []);
+        if ((data || []).length < 1000) break;
+      }
+      return all;
+    };
+
+    // Mon–Sun weeks, matching the leasing convention agreed on 2026-09-21.
+    const todayCT = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+    const d = new Date(todayCT + 'T00:00:00');
+    const back = (d.getDay() + 6) % 7;                 // Monday = 0
+    const monday = new Date(d); monday.setDate(d.getDate() - back);
+    const iso = x => x.toLocaleDateString('en-CA');
+    const addDays = (x, n) => { const y = new Date(x); y.setDate(y.getDate() + n); return y; };
+
+    const [vac, del, wos, leads, showings, applications, moveIns] = await Promise.all([
+      af.readReportData('unit_vacancy'),
+      af.readReportData('delinquency_as_of'),
+      pageAll('maintenance_work_orders', 'property_name,status,priority,created_at_appfolio,issue,description'),
+      pageAll('leasing_leads', 'interest_received,property'),
+      pageAll('leasing_showings', 'showing_date,status,property_name'),
+      pageAll('leasing_applications', 'application_date,status,property_name'),
+      pageAll('leasing_lease_history', 'move_in_date,property_name'),
+    ]);
+
+    const result = regionalPerf.buildRegionalPerformance({
+      vacancy: (vac && vac.rows) || [],
+      delinquency: (del && del.rows) || [],
+      workOrders: wos, leads, showings, applications, moveIns,
+    }, {
+      today: todayCT,
+      isExcludedProperty: propertyIsExcluded,
+      weekStart: iso(monday), weekEnd: iso(addDays(monday, 6)),
+      prevStart: iso(addDays(monday, -7)), prevEnd: iso(addDays(monday, -1)),
+    });
+
+    res.json({
+      ...result,
+      // Per-source freshness, so a stale card is visibly stale rather than wrong.
+      syncedAt: {
+        vacancy: (vac && vac.fetchedAt) || null,
+        delinquency: (del && del.fetchedAt) || null,
+        workOrders: wos.length ? 'live table' : null,
+        leasing: leads.length ? 'live table' : null,
+      },
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/collections/decision-queue', requireAuth, requireRole(...DECISION_QUEUE_ROLES), async (req, res) => {
   try {
     const out = await decisionQueueData({ refresh: req.query.refresh === '1' });
