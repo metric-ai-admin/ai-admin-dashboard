@@ -2491,3 +2491,16 @@ tr.ca-sel { background: var(--accent-glow); }
 .rp-stat.rp-green .rp-stat-val  { color: var(--success); }
 @media (max-width: 560px) { .rp-grid { grid-template-columns: 1fr; } }
 #tab-collections .rp-wrap .badge.red { background: var(--critical-bg); color: var(--critical); }
+
+/* ---------- Sync Master ---------- */
+.sync-all-btn { font-weight: 600; }
+.sync-all-status { margin: 6px 0 8px; font-size: 11px; line-height: 1.6; }
+.sync-line { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sync-line.bad { color: var(--critical); }
+.sync-foot { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border);
+  color: var(--text-secondary); font-size: 10.5px; }
+.sync-spin { display: inline-block; width: 9px; height: 9px; margin-right: 4px;
+  border: 2px solid var(--border-accent); border-top-color: var(--accent);
+  border-radius: 50%; animation: sync-spin 0.7s linear infinite; vertical-align: -1px; }
+@keyframes sync-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .sync-spin { animation: none; } }

@@ -4605,6 +4605,120 @@ async function decisionQueueData({ refresh = false } = {}) {
   return { ...result, meta: { syncedAt: data.fetchedAt || null, rowCount: (data.rows || []).length, syncError } };
 }
 
+// =====================================================================
+// SYNC MASTER — one click, every AppFolio source
+// =====================================================================
+// NOT fired all at once, despite "in parallel". There are TWO AppFolio paths in
+// this codebase and only one of them is rate-limited:
+//
+//   appfolio-reports.js -> appfolio-client.js   queues at 7 requests / 15s
+//   appfolioReportsFetch() in this file          raw fetch, no limiter at all,
+//                                                and it paginates
+//
+// Nine simultaneous syncs would put the unlimited half straight through the
+// tenant's ceiling and start collecting 429s, which is slower than pacing and
+// leaves half the data stale. So tasks run through a small concurrency pool:
+// overlapping, bounded, and each one reported separately.
+const SYNC_CONCURRENCY = Number(process.env.SYNC_ALL_CONCURRENCY || 3);
+const SYNC_STATE_FILE = path.join(DATA_DIR, 'sync_all_state.json');
+
+// Run tasks with at most `limit` in flight. A failure is recorded, never thrown:
+// one dead source must not abort the other eight.
+async function runPool(tasks, limit) {
+  const results = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < tasks.length) {
+      const i = next++;
+      const t = tasks[i];
+      const started = Date.now();
+      try {
+        const detail = await t.run();
+        results[i] = { id: t.id, label: t.label, ok: true, ms: Date.now() - started, ...detail };
+      } catch (err) {
+        results[i] = { id: t.id, label: t.label, ok: false, ms: Date.now() - started, error: err.message };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+  return results;
+}
+
+// The leasing syncs live in route handlers rather than reusable functions, so
+// they are driven over loopback with the shared key instead of being duplicated
+// here — the behaviour stays exactly what the module's own button does.
+async function callOwnRoute(pathname, body) {
+  const port = process.env.PORT || 3001;
+  const r = await fetchFn(`http://127.0.0.1:${port}${pathname}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-metric-key': process.env.METRIC_API_KEY || '' },
+    body: JSON.stringify(body || {}),
+  });
+  const j = await r.json().catch(() => null);
+  if (!r.ok || (j && j.ok === false)) throw new Error((j && (j.error || j.message)) || `HTTP ${r.status}`);
+  return j || {};
+}
+
+function syncAllTasks() {
+  const af = require('./appfolio-reports.js');
+  const report = (id, label) => ({ id, label, run: async () => {
+    const r = await af.syncReport(id);
+    return { rows: r && r.rowCount != null ? r.rowCount : null };
+  } });
+  // Guest cards need an explicit window; 30 days back covers the leasing board's
+  // current and previous weeks with room for late-arriving cards.
+  const todayCT = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+  const from = new Date(todayCT + 'T00:00:00');
+  from.setDate(from.getDate() - 30);
+  const fromCT = from.toLocaleDateString('en-CA');
+
+  return [
+    report('unit_vacancy', 'Vacancy Posting'),
+    report('delinquency_as_of', 'Delinquency'),
+    report('work_order', 'Work Orders'),
+    report('work_order_labor_summary', 'Labor Summary'),
+    report('wo_completed', 'Completed WOs'),
+    { id: 'guest_cards', label: 'Guest Cards', run: async () => {
+      const j = await callOwnRoute('/api/leasing/sync', { date_from: fromCT, date_to: todayCT });
+      return { rows: j.count ?? j.rows ?? null };
+    } },
+    { id: 'showings', label: 'Showings', run: async () => ({ rows: (await callOwnRoute('/api/leasing/sync/showings')).count ?? null }) },
+    { id: 'applications', label: 'Applications', run: async () => ({ rows: (await callOwnRoute('/api/leasing/sync/applications')).count ?? null }) },
+    { id: 'lease_history', label: 'Lease History', run: async () => ({ rows: (await callOwnRoute('/api/leasing/sync/lease-history')).count ?? null }) },
+  ];
+}
+
+app.post('/api/sync/all', requireAuth, requireRole('admin'), async (req, res) => {
+  const started = Date.now();
+  // Render's proxy closes an idle request at ~60s and a full sweep can exceed
+  // that, so hold the connection with whitespace — leading whitespace is still
+  // valid JSON, so the final body parses. Same pattern as collections/generate.
+  res.status(200).setHeader('Content-Type', 'application/json; charset=utf-8');
+  const keepAlive = setInterval(() => { try { if (!res.writableEnded) res.write(' '); } catch { /* client gone */ } }, 10000);
+  const finish = payload => { clearInterval(keepAlive); if (!res.writableEnded) res.end(JSON.stringify(payload)); };
+  try {
+    const results = await runPool(syncAllTasks(), SYNC_CONCURRENCY);
+    const totalMs = Date.now() - started;
+    const state = {
+      at: new Date().toISOString(),
+      by: req.user?.name || req.user?.username || 'admin',
+      totalMs,
+      ok: results.filter(r => r.ok).length,
+      failed: results.filter(r => !r.ok).length,
+      results,
+    };
+    try { await writeJSON(SYNC_STATE_FILE, state); } catch { /* reporting only */ }
+    await logActivity({ kind: 'sync_all', ok: state.ok, failed: state.failed, ms: totalMs });
+    console.log(`[sync-all] ${state.ok} ok, ${state.failed} failed in ${(totalMs / 1000).toFixed(1)}s`);
+    finish(state);
+  } catch (err) { finish({ error: err.message, totalMs: Date.now() - started }); }
+});
+
+// Last full sweep — read by the Sync All button and the Regional Performance header.
+app.get('/api/sync/all/status', requireAuth, async (req, res) => {
+  res.json(await readJSON(SYNC_STATE_FILE, null) || { at: null, results: [] });
+});
+
 // ---- Regional Performance (Bekah's Module 2) ---------------------------------
 // Same audience as the Decision Queue: admin + regional_director. Everything it
 // reads is already synced, so this makes no AppFolio calls of its own.

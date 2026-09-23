@@ -124,6 +124,7 @@ async function initAuth() {
   if (brandEmail) brandEmail.textContent = currentUser.email;
   // A saved display name / job title overrides the account values.
   applyIdentityPrefs();
+  loadSyncStatus();
 
   // Read-only Maintenance. Set alongside the tab gating so it is in place before
   // any maintenance render runs, and on the section itself so the CSS cannot
@@ -9438,6 +9439,9 @@ $('#settings-reset')?.addEventListener('click', () => {
 // already synced, and nothing here writes anywhere.
 
 let rpData = null;
+// Timestamp of the last Sync All sweep, shown in the header. Populated by
+// loadRegional; null until a sweep has run.
+let rpLastFullSync = null;
 
 const rpEsc = s => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -9490,7 +9494,16 @@ async function loadRegional(force) {
   wrap.hidden = false;
   if (rpData && !force) { renderRegional(); return; }
   document.getElementById('rp-cards').innerHTML = '<p class="muted">Loading…</p>';
-  try { rpData = await api('/api/regional/performance'); }
+  // Both in one go — the header shows the per-source sync date AND when every
+  // source was last refreshed together.
+  try {
+    const [perf, sweep] = await Promise.all([
+      api('/api/regional/performance'),
+      api('/api/sync/all/status').catch(() => null),
+    ]);
+    rpData = perf;
+    rpLastFullSync = (sweep && sweep.at) || null;
+  }
   catch (err) {
     document.getElementById('rp-cards').innerHTML =
       `<div class="alert-box warn"><div class="al">ERROR</div>${rpEsc(err.message || 'Could not load.')}</div>`;
@@ -9504,7 +9517,10 @@ function renderRegional() {
   const { cards, totals, funnel, syncedAt } = rpData;
 
   document.getElementById('rp-sub').innerHTML =
-    `${totals.properties} properties · data from AppFolio ${rpEsc(rpWhen(syncedAt && syncedAt.vacancy))}`;
+    `${totals.properties} properties · data from AppFolio ${rpEsc(rpWhen(syncedAt && syncedAt.vacancy))}`
+    // When every source was last refreshed together, which is the number Bekah
+    // actually needs before a KPI call — a single source being fresh says little.
+    + (rpLastFullSync ? ` · last full sync ${rpEsc(syncWhen(rpLastFullSync))}` : '');
 
   document.getElementById('rp-totals').innerHTML = `<div class="rp-totals">
     ${[['Vacant units', totals.vacantUnits], ['Vacancy / mo', rpMoney(totals.vacancyMonthly)],
@@ -9536,4 +9552,81 @@ document.getElementById('rp-refresh')?.addEventListener('click', e => {
   const b = e.target;
   b.disabled = true; b.textContent = 'Refreshing…';
   loadRegional(true).finally(() => { b.disabled = false; b.textContent = '↻ Refresh'; });
+});
+
+// =====================================================================
+// SYNC MASTER — one click, every AppFolio source
+// =====================================================================
+// Admin only, and visible from every tab because it lives in the sidebar
+// footer. The server paces the work; this just reports it.
+
+const SYNC_SOURCE_ORDER = ['unit_vacancy', 'delinquency_as_of', 'work_order',
+  'work_order_labor_summary', 'wo_completed', 'guest_cards', 'showings',
+  'applications', 'lease_history'];
+
+const syncEsc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function syncWhen(iso) {
+  if (!iso) return 'never';
+  try {
+    return new Date(iso).toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'medium', timeStyle: 'short' });
+  } catch { return String(iso); }
+}
+
+function renderSyncStatus(state, running) {
+  const box = document.getElementById('sync-all-status');
+  if (!box) return;
+  if (running) {
+    box.hidden = false;
+    box.innerHTML = '<div class="sync-line"><span class="sync-spin"></span> Syncing all sources…</div>';
+    return;
+  }
+  if (!state || !state.at) { box.hidden = true; return; }
+  box.hidden = false;
+  const rows = (state.results || []).slice().sort(
+    (a, b) => SYNC_SOURCE_ORDER.indexOf(a.id) - SYNC_SOURCE_ORDER.indexOf(b.id));
+  box.innerHTML = rows.map(r =>
+    `<div class="sync-line ${r.ok ? '' : 'bad'}" title="${syncEsc(r.error || '')}">`
+    + `${r.ok ? '✅' : '❌'} ${syncEsc(r.label)}`
+    + (r.ok && r.rows != null ? ` <span class="muted">${r.rows}</span>` : '')
+    + (r.ok ? '' : ` <span class="muted">${syncEsc(String(r.error || '').slice(0, 40))}</span>`)
+    + '</div>').join('')
+    + `<div class="sync-foot">${state.failed ? `${state.ok} of ${rows.length} ok · ` : 'All sources · '}`
+    + `${(state.totalMs / 1000).toFixed(1)}s · ${syncEsc(syncWhen(state.at))}</div>`;
+}
+
+async function loadSyncStatus() {
+  const btn = document.getElementById('sync-all-btn');
+  if (!btn || currentUser?.role !== 'admin') return;
+  btn.hidden = false;
+  try { renderSyncStatus(await api('/api/sync/all/status'), false); } catch { /* nothing yet */ }
+}
+
+document.getElementById('sync-all-btn')?.addEventListener('click', async () => {
+  const btn = document.getElementById('sync-all-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Syncing…';
+  renderSyncStatus(null, true);
+  const t0 = Date.now();
+  try {
+    const state = await api('/api/sync/all', { method: 'POST' });
+    if (state.error) throw new Error(state.error);
+    renderSyncStatus(state, false);
+    toast(state.failed
+      ? `Synced ${state.ok} of ${state.ok + state.failed} sources in ${(state.totalMs / 1000).toFixed(1)}s`
+      : `All ${state.ok} sources synced in ${(state.totalMs / 1000).toFixed(1)}s ✅`,
+    state.failed ? 'error' : 'success');
+    // Anything on screen that reads synced data is now stale — refetch it.
+    if (typeof rpData !== 'undefined') { rpData = null; if (!document.getElementById('rp-wrap')?.hidden) loadRegional(true); }
+    if (typeof vacancyData !== 'undefined' && !document.getElementById('vac-body')?.hidden) loadVacancy(false);
+  } catch (err) {
+    renderSyncStatus(null, false);
+    toast('Sync failed: ' + (err.message || 'unknown error'), 'error');
+    console.error('[sync-all]', err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⚡ Sync All Data';
+    console.log(`[sync-all] round trip ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  }
 });
