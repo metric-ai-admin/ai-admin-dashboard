@@ -2528,3 +2528,41 @@ tr.ca-sel { background: var(--accent-glow); }
 .mb-table td, .mb-table th { white-space: nowrap; }
 /* Earlier in the same week: still this week's news, but already behind us. */
 .mb-past td { opacity: 0.6; }
+
+/* ---- .data-table --------------------------------------------------------
+   This class was used by five tables (Vacancy ×3, the Regional funnel, the
+   Monday Brief) and matched NOTHING in this stylesheet — they were rendering
+   as bare HTML tables: no cell padding, no header treatment, no row
+   separators. That, not the text colour, is what made them hard to read; the
+   body text was already --text-primary at 17.4:1 on the page background.
+   Modelled on .me-table, which is the established table look here. */
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--bg-elevated); color: var(--text-secondary);
+  text-align: left; padding: 9px 12px;
+  font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .4px;
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.data-table td {
+  padding: 9px 12px; border-bottom: 1px solid var(--border);
+  color: var(--text-primary); vertical-align: middle;
+}
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table tbody tr:hover td { background: var(--bg-elevated); }
+
+/* ---- Monday Brief: reading order within a row --------------------------
+   Everything in a data cell is primary text by default. These three carry
+   less weight on purpose — the unit qualifies the property, the day count
+   qualifies the date — and at 7.2:1 they are comfortably legible, not dim.
+   Flattening them to one colour would cost the scanning order without
+   making anything more readable. */
+.mb-table .muted { color: var(--text-secondary); }
+.mb-table td:first-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* A status is a state, so it reads as one rather than as prose. */
+.mb-state { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 600; }
+.mb-state.good { background: var(--success-bg); color: var(--success); }
+.mb-state.wait { background: var(--warning-bg); color: var(--warning); }
+.mb-state.live { background: var(--info-bg);    color: var(--info); }
+.mb-state.bad  { background: var(--critical-bg); color: var(--critical); }
+.mb-state.flat { background: var(--bg-elevated); color: var(--text-secondary); }

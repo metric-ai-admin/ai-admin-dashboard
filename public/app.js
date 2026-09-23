@@ -9667,6 +9667,20 @@ const mbSetOpen = (id, on) => {
   try { const s = mbOpen(); s[id] = on; localStorage.setItem(MB_OPEN_KEY, JSON.stringify(s)); } catch { /* private window */ }
 };
 
+// Statuses arrive as free text from AppFolio, so they are matched rather than
+// looked up — "Completed (Unconfirmed)" and "Prospect Confirmed" are both real
+// values. Anything unrecognised stays neutral instead of being mis-coloured.
+function mbState(value) {
+  const v = String(value || '').trim();
+  if (!v) return '<span class="muted">—</span>';
+  const cls = /without notice|eviction|skip|abandon/i.test(v) ? 'bad'
+    : /complete|renewed|confirmed|current/i.test(v) ? 'good'
+    : /pending|eligible|notice/i.test(v) ? 'wait'
+    : /scheduled/i.test(v) ? 'live'
+    : 'flat';
+  return `<span class="mb-state ${cls}">${mbEsc(v)}</span>`;
+}
+
 // AppFolio's renewal pipeline states. Renewed is settled, Pending is in
 // flight, Not Eligible is a decision already taken — only Eligible is work
 // still waiting on someone.
@@ -9711,7 +9725,7 @@ function renderBrief() {
       { h: 'Date', v: r => mbEsc(mbDay(r.date)) },
       { h: 'Resident', v: r => mbEsc(r.tenant) + (r.renewal ? ' <span class="badge badge-gray">renewal</span>' : '') },
       { h: 'Property / unit', v: prop },
-      { h: 'Lease status', v: r => `<span class="muted">${mbEsc(r.status || '—')}</span>` },
+      { h: 'Lease status', v: r => mbState(r.status) },
     ], { empty: 'None scheduled this week.' }),
 
     mbSection('moveout', 'Move-outs this week', moveOuts, [
@@ -9719,7 +9733,9 @@ function renderBrief() {
       { h: 'Resident', v: r => mbEsc(r.tenant) },
       { h: 'Property / unit', v: prop },
       { h: 'Phone', v: r => (r.phone ? mbEsc(r.phone) : '<span class="muted">—</span>') },
-      { h: 'Reason', v: r => `<span class="muted">${mbEsc(r.reason || (r.rented ? 'already re-rented' : '—'))}</span>` },
+      { h: 'Reason', v: r => (r.reason ? mbState(r.reason)
+        : r.rented ? '<span class="mb-state good">already re-rented</span>'
+        : '<span class="muted">—</span>') },
     ], { empty: 'None scheduled this week.' }),
 
     mbSection('tours', 'Scheduled tours this week', tours, [
@@ -9727,7 +9743,7 @@ function renderBrief() {
       { h: 'Prospect', v: r => mbEsc(r.prospect) },
       { h: 'Property / unit', v: prop },
       { h: 'Type', v: r => `<span class="muted">${mbEsc(r.type || '—')}</span>` },
-      { h: 'Status', v: r => mbEsc(r.status || '—') },
+      { h: 'Status', v: r => mbState(r.status) },
     ], {
       empty: 'None scheduled this week.',
       rowClass: r => (r.past ? 'mb-past' : ''),
