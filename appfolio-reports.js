@@ -193,6 +193,44 @@ const REPORTS = [
     feeds: 'Phase 0 spike — Vacancy Posting module (not built yet)',
     params: {},
   },
+
+  // ---- Lease expiration coverage — probe, 2026-09-23 -----------------------
+  // Bekah asked for every lease expiring in the next 30 days, not just the
+  // residents who happened to have an event this month (all tenant_tickler can
+  // see). She named two candidate reports; neither resource name is verified
+  // against Reports API v2, and this codebase has already had one
+  // plausible-looking resource (work_order_labor_detail) 400 because it simply
+  // does not exist. So all three likely names are registered at once and the
+  // live sync decides. syncReport never throws — a miss lands in the status
+  // file as an error and nothing else breaks. The losers get deleted in the
+  // follow-up commit; whichever answers becomes the Monday Brief's source.
+  {
+    id: 'rent_roll',
+    resource: 'rent_roll',
+    label: 'Rent Roll',
+    group: 'Leasing / Leases',
+    priority: 9,
+    feeds: 'Probe — lease expirations for the Monday Morning Brief',
+    params: {},
+  },
+  {
+    id: 'lease_expiration_detail',
+    resource: 'lease_expiration_detail',
+    label: 'Lease Expiration Detail',
+    group: 'Leasing / Leases',
+    priority: 9,
+    feeds: 'Probe — lease expirations for the Monday Morning Brief',
+    params: {},
+  },
+  {
+    id: 'tenant_directory',
+    resource: 'tenant_directory',
+    label: 'Tenant Directory',
+    group: 'Leasing / Leases',
+    priority: 9,
+    feeds: 'Probe — lease expirations for the Monday Morning Brief',
+    params: {},
+  },
 ];
 
 const byId = id => REPORTS.find(r => r.id === id);
