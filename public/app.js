@@ -9667,6 +9667,17 @@ const mbSetOpen = (id, on) => {
   try { const s = mbOpen(); s[id] = on; localStorage.setItem(MB_OPEN_KEY, JSON.stringify(s)); } catch { /* private window */ }
 };
 
+// AppFolio's renewal pipeline states. Renewed is settled, Pending is in
+// flight, Not Eligible is a decision already taken — only Eligible is work
+// still waiting on someone.
+const MB_RENEWAL = {
+  Eligible: 'badge-amber', Pending: 'badge-blue',
+  Renewed: 'badge-green', 'Not Eligible': 'badge-gray',
+};
+const mbRenewal = s => (s
+  ? `<span class="badge ${MB_RENEWAL[s] || 'badge-gray'}">${mbEsc(s)}</span>`
+  : '<span class="muted">not recorded</span>');
+
 function mbSection(id, title, rows, cols, opts = {}) {
   const open = mbOpen()[id] !== false;   // open by default
   const body = rows.length
@@ -9687,8 +9698,8 @@ function mbSection(id, title, rows, cols, opts = {}) {
 
 function renderBrief() {
   if (!mbData) return;
-  const { week, horizon, moveIns, moveOuts, tours, expirations, coverage, syncedAt } = mbData;
-  const freshest = [syncedAt?.tickler, syncedAt?.vacancy].filter(Boolean).sort().pop();
+  const { week, horizon, moveIns, moveOuts, tours, expirations, syncedAt } = mbData;
+  const freshest = [syncedAt?.tickler, syncedAt?.vacancy, syncedAt?.rentRoll].filter(Boolean).sort().pop();
 
   document.getElementById('mb-sub').innerHTML =
     `Week of ${mbEsc(mbDay(week.start))} — ${mbEsc(mbDay(week.end))} · data as of ${mbEsc(mbWhen(freshest))}`;
@@ -9724,15 +9735,13 @@ function renderBrief() {
 
     mbSection('expiry', `Lease expirations — next ${horizon.days} days`, expirations, [
       { h: 'Expires', v: r => `${mbEsc(mbDay(r.date))} <span class="muted">${r.daysOut}d</span>` },
-      { h: 'Resident', v: r => mbEsc(r.tenant) },
+      { h: 'Resident', v: r => mbEsc(r.tenant)
+        + (r.alsoOnLease ? ` <span class="muted" title="${mbEsc(r.alsoOnLease)}">+ ${r.alsoOnLease.split(',').length}</span>` : '') },
       { h: 'Property / unit', v: prop },
       { h: 'Renewal', v: r => (r.onNotice
         ? '<span class="badge badge-red">on notice</span>'
-        : '<span class="muted">not recorded</span>') },
-    ], {
-      empty: 'None expiring in the next 30 days.',
-      note: coverage?.expirations?.note,
-    }),
+        : mbRenewal(r.renewalStatus)) },
+    ], { empty: 'None expiring in the next 30 days.' }),
   ].join('');
 }
 

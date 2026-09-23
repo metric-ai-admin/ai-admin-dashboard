@@ -4681,6 +4681,9 @@ function syncAllTasks() {
     // Added 2026-09-23 for the Monday Morning Brief: move-outs and lease end
     // dates come from here, and it was previously only synced by hand.
     report('tenant_tickler', 'Move Ins / Outs'),
+    // Added 2026-09-23 with the Monday Brief's full lease-expiration coverage.
+    report('rent_roll', 'Rent Roll'),
+    report('lease_expiration_detail', 'Lease Expirations'),
     { id: 'guest_cards', label: 'Guest Cards', run: async () => {
       const j = await callOwnRoute('/api/leasing/sync', { date_from: fromCT, date_to: todayCT });
       return { rows: j.count ?? j.rows ?? null };
@@ -4796,9 +4799,11 @@ app.get('/api/regional/weekly-brief', requireAuth, requireRole(...DECISION_QUEUE
     // Both leasing tables are small (tens of rows), so a single page is enough —
     // but the limit is set above the Supabase default so growth is not silently
     // truncated the way an unbounded select would be.
-    const [tick, vac, lease, shows] = await Promise.all([
+    const [tick, vac, rent, exp, lease, shows] = await Promise.all([
       af.readReportData('tenant_tickler'),
       af.readReportData('unit_vacancy'),
+      af.readReportData('rent_roll'),
+      af.readReportData('lease_expiration_detail'),
       db.from('leasing_lease_history').select('property_name,move_in_date,tenant_name,renewal,status').limit(5000),
       db.from('leasing_showings').select('property_name,unit,prospect,showing_date,status,type,synced_at').limit(5000),
     ]);
@@ -4808,6 +4813,8 @@ app.get('/api/regional/weekly-brief', requireAuth, requireRole(...DECISION_QUEUE
     const brief = require('./weekly-brief.js').buildWeeklyBrief({
       tickler: (tick && tick.rows) || [],
       vacancy: (vac && vac.rows) || [],
+      rentRoll: (rent && rent.rows) || [],
+      leaseExpirations: (exp && exp.rows) || [],
       leaseHistory: lease.data || [],
       showings: shows.data || [],
     }, { today: todayCT, isExcludedProperty: propertyIsExcluded });
@@ -4817,6 +4824,7 @@ app.get('/api/regional/weekly-brief', requireAuth, requireRole(...DECISION_QUEUE
       syncedAt: {
         tickler: (tick && tick.fetchedAt) || null,
         vacancy: (vac && vac.fetchedAt) || null,
+        rentRoll: (rent && rent.fetchedAt) || null,
         leasing: (shows.data || []).reduce((m, r) => (r.synced_at > m ? r.synced_at : m), '') || 'live table',
       },
     });

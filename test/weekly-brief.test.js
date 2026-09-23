@@ -150,50 +150,96 @@ t('next week is out of range', () => {
   assert.ok(!build({ showings: SHOW }).tours.some(r => r.prospect === 'Later, Leo'));
 });
 
-console.log('expirations');
 const TICK_EXP = [
-  { property_name: 'Ascent at Northgate', unit: '5-127', tenant: 'Castellanos, Elvin D.', lease_to: '2026-10-11', tenant_status: 'Notice', move_out_date: '2026-10-11' },
   { property_name: 'Hyde Park Square', unit: '209', tenant: 'Guerrero, Jabes', lease_to: '2026-09-30', tenant_status: 'Current' },
-  { property_name: 'Sunset Palms', unit: '206', tenant: 'Lazcano, Roberto', lease_to: '2027-06-30', tenant_status: 'Current' },
-  { property_name: 'Hyde Park Square', unit: '101', tenant: 'Past, Pat', lease_to: '2026-08-31', tenant_status: 'Past' },
-  { property_name: 'Brazos Lofts', unit: '310', tenant: 'Excluded, Ed', lease_to: '2026-10-01', tenant_status: 'Current' },
 ];
-t('only the next 30 days are listed', () => {
-  const out = build({ tickler: TICK_EXP }).expirations.map(r => r.unit);
-  assert.deepStrictEqual(out, ['209', '5-127']);
+
+console.log('expirations');
+// rent_roll is the complete set; lease_expiration_detail supplies renewal
+// status only. Shapes taken from the live reports on 2026-09-23.
+const RR = [
+  { property_name: 'Ascent at Northgate', unit: '4-117', unit_id: 2541, tenant: 'Gabriel Jean', lease_to: '2026-09-30', status: 'Current', rent: '875.00', additional_tenants: null },
+  { property_name: 'Ascent at Northgate', unit: '6-201', unit_id: 2600, tenant: 'Williams Bustamante', lease_to: '2026-10-08', status: 'Notice-Unrented', rent: '900.00', additional_tenants: 'Arminda F. Rodriguez Mendoza, Carmelo Bustamente Morales' },
+  { property_name: 'The Chateau', unit: '203', unit_id: 3100, tenant: 'Zane Conlin', lease_to: '2026-09-30', status: 'Notice-Rented', rent: '1200.00', additional_tenants: null },
+  { property_name: 'Hyde Park Square', unit: '112', unit_id: 2200, tenant: 'Gloria Romero', lease_to: '2026-10-02', status: 'Current', rent: '1100.00', additional_tenants: null },
+  { property_name: 'Brazos Lofts', unit: '210', unit_id: 4000, tenant: 'Zachary Hoereth', lease_to: '2026-09-30', status: 'Current', rent: '1300.00', additional_tenants: null },
+  { property_name: 'Hyde Park Square', unit: '999', unit_id: 2999, tenant: 'Far, Future', lease_to: '2027-06-30', status: 'Current', rent: '1000.00', additional_tenants: null },
+  { property_name: 'Hyde Park Square', unit: '998', unit_id: 2998, tenant: 'Al, Ready', lease_to: '2026-08-31', status: 'Current', rent: '1000.00', additional_tenants: null },
+  { property_name: 'Hyde Park Square', unit: '997', unit_id: 2997, tenant: 'No, Lease', lease_to: null, status: 'Vacant-Unrented', rent: null, additional_tenants: null },
+];
+const LED = [
+  { property_name: 'Ascent at Northgate', unit: '4-117', unit_id: 2541, lease_expires: '2026-09-30', status: 'Eligible' },
+  { property_name: 'Hyde Park Square', unit: '112', unit_id: 2200, lease_expires: '2026-10-02', status: 'Pending' },
+  { property_name: 'Ascent at Northgate', unit: '4-217', unit_id: 2300, lease_expires: '2026-10-02', status: 'Not Eligible' },
+];
+const exp = () => build({ rentRoll: RR, leaseExpirations: LED }).expirations;
+
+t('every lease expiring in the window is listed, not only the renewal pipeline', () => {
+  assert.deepStrictEqual(exp().map(r => r.unit), ['4-117', '203', '112', '6-201']);
 });
-t('an already-expired lease is not upcoming', () => {
-  assert.ok(!build({ tickler: TICK_EXP }).expirations.some(r => r.unit === '101'));
+t('a lease on notice is still listed — the pipeline omits it, this does not', () => {
+  assert.ok(exp().some(r => r.unit === '6-201'));
 });
-t('the horizon is configurable', () => {
-  const out = build({ tickler: TICK_EXP }, { expiryDays: 365 }).expirations.map(r => r.unit);
-  assert.ok(out.includes('206'));
+t('soonest first', () => {
+  const d = exp().map(r => r.date);
+  assert.deepStrictEqual(d, [...d].sort());
+});
+t('a lease past its end date is not upcoming', () => {
+  assert.ok(!exp().some(r => r.unit === '998'));
+});
+t('a lease beyond the horizon is excluded', () => {
+  assert.ok(!exp().some(r => r.unit === '999'));
+});
+t('a unit with no lease end date is skipped rather than crashing', () => {
+  assert.ok(!exp().some(r => r.unit === '997'));
+});
+t('renewal status is joined from lease_expiration_detail on unit and date', () => {
+  assert.strictEqual(exp().find(r => r.unit === '4-117').renewalStatus, 'Eligible');
+  assert.strictEqual(exp().find(r => r.unit === '112').renewalStatus, 'Pending');
+});
+t('a pipeline row for a different date does not lend its status', () => {
+  const out = build({ rentRoll: RR, leaseExpirations: [{ unit_id: 2541, lease_expires: '2027-01-01', status: 'Renewed' }] }).expirations;
+  assert.strictEqual(out.find(r => r.unit === '4-117').renewalStatus, '');
+});
+t('notice outranks any renewal status', () => {
+  const out = build({ rentRoll: RR, leaseExpirations: LED.concat([{ unit_id: 2600, lease_expires: '2026-10-08', status: 'Eligible' }]) }).expirations;
+  const r = out.find(x => x.unit === '6-201');
+  assert.strictEqual(r.onNotice, true);
+  assert.strictEqual(r.renewalStatus, '');
+});
+t('a lease absent from the pipeline reports no status rather than a guessed one', () => {
+  assert.strictEqual(exp().find(r => r.unit === '203').renewalStatus, '');
+});
+t('roommates on the lease are carried so the wrong person is not called', () => {
+  assert.strictEqual(exp().find(r => r.unit === '6-201').alsoOnLease,
+    'Arminda F. Rodriguez Mendoza, Carmelo Bustamente Morales');
+});
+t('excluded properties are dropped', () => {
+  assert.ok(!exp().some(r => r.property === 'Brazos Lofts'));
+});
+t('the same lease appearing twice in the rent roll yields one row', () => {
+  const out = build({ rentRoll: RR.concat([{ ...RR[0] }]), leaseExpirations: LED }).expirations;
+  assert.strictEqual(out.filter(r => r.unit === '4-117').length, 1);
+});
+t('days out is counted from today', () => {
+  assert.strictEqual(exp().find(r => r.unit === '4-117').daysOut, 7);
 });
 t('a lease ending today counts as upcoming', () => {
-  const out = build({ tickler: [{ property_name: 'X', unit: '1', tenant: 'A', lease_to: TODAY }] }).expirations;
+  const out = build({ rentRoll: [{ property_name: 'X', unit: '1', unit_id: 1, tenant: 'A', lease_to: TODAY, status: 'Current' }] }).expirations;
   assert.strictEqual(out.length, 1);
   assert.strictEqual(out[0].daysOut, 0);
 });
-t('days out is counted from today', () => {
-  const out = build({ tickler: TICK_EXP }).expirations;
-  assert.strictEqual(out.find(r => r.unit === '209').daysOut, 7);
+t('the horizon is configurable', () => {
+  const out = buildWeeklyBrief({ rentRoll: RR }, { today: TODAY, isExcludedProperty: excluded, expiryDays: 365 }).expirations;
+  assert.ok(out.some(r => r.unit === '999'));
 });
-t('a resident already on notice is flagged so it is not chased as a renewal', () => {
-  const out = build({ tickler: TICK_EXP }).expirations;
-  assert.strictEqual(out.find(r => r.unit === '5-127').onNotice, true);
-  assert.strictEqual(out.find(r => r.unit === '209').onNotice, false);
-});
-t('duplicate tickler events for one lease produce one row', () => {
-  const dup = [TICK_EXP[1], { ...TICK_EXP[1] }];
-  assert.strictEqual(build({ tickler: dup }).expirations.length, 1);
-});
-t('excluded properties are dropped', () => {
-  assert.ok(!build({ tickler: TICK_EXP }).expirations.some(r => r.property === 'Brazos Lofts'));
+t('tenant_tickler no longer feeds this section', () => {
+  assert.strictEqual(build({ tickler: TICK_EXP }).expirations.length, 0);
 });
 
 console.log('shape');
 t('counts match the arrays', () => {
-  const out = build({ leaseHistory: LH, tickler: TICK_OUT.concat(TICK_EXP), vacancy: [], showings: SHOW });
+  const out = build({ leaseHistory: LH, tickler: TICK_OUT, vacancy: [], showings: SHOW, rentRoll: RR, leaseExpirations: LED });
   assert.deepStrictEqual(out.counts, {
     moveIns: out.moveIns.length, moveOuts: out.moveOuts.length,
     tours: out.tours.length, expirations: out.expirations.length,
@@ -203,11 +249,6 @@ t('no sources at all is an empty brief, not a crash', () => {
   const out = build({});
   assert.deepStrictEqual(out.counts, { moveIns: 0, moveOuts: 0, tours: 0, expirations: 0 });
   assert.strictEqual(out.week.start, '2026-09-21');
-});
-t('expiration coverage is reported as incomplete', () => {
-  const out = build({ tickler: TICK_EXP });
-  assert.strictEqual(out.coverage.expirations.complete, false);
-  assert.strictEqual(out.coverage.expirations.leasesVisible, 5);
 });
 t('the horizon end is 30 days out by default', () => {
   assert.deepStrictEqual(build({}).horizon, { end: '2026-10-23', days: 30 });

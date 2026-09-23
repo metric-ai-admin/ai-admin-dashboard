@@ -194,23 +194,33 @@ const REPORTS = [
     params: {},
   },
 
-  // ---- Lease expiration coverage — probe, 2026-09-23 -----------------------
-  // Bekah asked for every lease expiring in the next 30 days, not just the
-  // residents who happened to have an event this month (all tenant_tickler can
-  // see). She named two candidate reports; neither resource name is verified
-  // against Reports API v2, and this codebase has already had one
-  // plausible-looking resource (work_order_labor_detail) 400 because it simply
-  // does not exist. So all three likely names are registered at once and the
-  // live sync decides. syncReport never throws — a miss lands in the status
-  // file as an error and nothing else breaks. The losers get deleted in the
-  // follow-up commit; whichever answers becomes the Monday Brief's source.
+  // ---- Lease expirations, for the Monday Morning Brief -------------------
+  // Probed live 2026-09-23. Bekah named "Lease Expiration or Rent Roll"; both
+  // exist in Reports API v2, and they answer DIFFERENT questions, so the brief
+  // uses both rather than picking one:
+  //
+  //   rent_roll (438 rows)   every unit, one row per lease, with lease_to.
+  //                          This is the complete set — 11 leases expire in
+  //                          the next 30 days. It is the source of record.
+  //
+  //   lease_expiration_detail (97 rows)   the renewal pipeline, carrying the
+  //                          renewal status rent_roll has no column for
+  //                          (Eligible / Pending / Renewed / Not Eligible).
+  //                          It lists 8 of those 11: it drops units already on
+  //                          notice, which are not renewal conversations. So
+  //                          it is joined for status, never used to filter.
+  //
+  // tenant_directory was probed too and is deliberately NOT registered. It is
+  // per-tenant rather than per-lease (15 rows for the same 11 leases, the
+  // extra 4 being roommates and occupants) and it carries resident birthdates,
+  // which is PII this dashboard has no reason to hold on disk.
   {
     id: 'rent_roll',
     resource: 'rent_roll',
     label: 'Rent Roll',
     group: 'Leasing / Leases',
     priority: 9,
-    feeds: 'Probe — lease expirations for the Monday Morning Brief',
+    feeds: 'Lease expirations — Monday Morning Brief',
     params: {},
   },
   {
@@ -219,16 +229,7 @@ const REPORTS = [
     label: 'Lease Expiration Detail',
     group: 'Leasing / Leases',
     priority: 9,
-    feeds: 'Probe — lease expirations for the Monday Morning Brief',
-    params: {},
-  },
-  {
-    id: 'tenant_directory',
-    resource: 'tenant_directory',
-    label: 'Tenant Directory',
-    group: 'Leasing / Leases',
-    priority: 9,
-    feeds: 'Probe — lease expirations for the Monday Morning Brief',
+    feeds: 'Renewal status — Monday Morning Brief',
     params: {},
   },
 ];

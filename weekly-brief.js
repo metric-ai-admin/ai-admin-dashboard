@@ -26,14 +26,13 @@
 //   leasing_showings        tours. Holds future rows and a status per row, so
 //                           cancellations can be dropped.
 //
-// LEASE EXPIRATIONS ARE NOT FULLY COVERED, and this module reports that rather
-// than implying otherwise. No synced report lists every lease's end date: the
-// only `lease_to` values available are on the ~51 tickler rows, i.e. tenants
-// who happened to have an event this month. The section is built from what
-// exists and carries an explicit coverage figure so nobody mistakes a short
-// list for a complete one. Full coverage needs a tenant-directory or rent-roll
-// report registered in appfolio-reports.js — a new API pull, so a decision
-// rather than something to slip in here.
+//   rent_roll               lease expirations. One row per lease, every unit
+//                           (438 today), so this is the complete set.
+//   lease_expiration_detail  the renewal pipeline — Eligible / Pending /
+//                           Renewed / Not Eligible. It omits units already on
+//                           notice, so it is joined onto rent_roll for the
+//                           status and never used to filter.
+//
 // =====================================================================
 
 const iso = s => {
@@ -79,6 +78,8 @@ const DEAD_SHOWING = /cancel|no show/i;
  *   tickler[]       tenant_tickler report rows
  *   vacancy[]       unit_vacancy report rows
  *   showings[]      leasing_showings rows
+ *   rentRoll[]      rent_roll report rows
+ *   leaseExpirations[]  lease_expiration_detail rows (renewal status only)
  * @param {object} opts
  *   today               YYYY-MM-DD, Central
  *   isExcludedProperty  injected, so server.js keeps the single exclusion list
@@ -172,28 +173,48 @@ function buildWeeklyBrief(src = {}, opts = {}) {
     .sort((a, b) => a.date.localeCompare(b.date) || a.property.localeCompare(b.property));
 
   // ---- 4. Lease expirations, next 30 days ----------------------------------
-  // See the header: partial by construction. `renewalKnown` is false for every
-  // row because no synced source carries a renewal decision against a lease
-  // end date — the `renewal` flag on lease_history describes a move-in.
+  // rent_roll is the complete set: one row per lease, every unit. The renewal
+  // status lives in a different report, so lease_expiration_detail is joined on
+  // unit + date — and only joined, never used to filter, because it leaves out
+  // units already on notice and those still have to appear here.
+  const renewalBy = new Map();
+  (src.leaseExpirations || []).forEach(r => {
+    const d = iso(r.lease_expires);
+    if (d) renewalBy.set(`${r.unit_id}|${d}`, clean(r.status));
+  });
+
   const expSeen = new Set();
-  const expirations = tickler
+  const expirations = (src.rentRoll || [])
     .filter(r => keep(r.property_name) && between(iso(r.lease_to), today, horizon))
     .filter(r => {
-      const k = `${propKey(r.property_name)}|${propKey(r.unit)}|${iso(r.lease_to)}`;
+      const k = `${r.unit_id}|${iso(r.lease_to)}`;
       if (expSeen.has(k)) return false;
       expSeen.add(k);
       return true;
     })
-    .map(r => ({
-      tenant: clean(r.tenant) || '—',
-      unit: clean(r.unit),
-      property: clean(r.property_name),
-      date: iso(r.lease_to),
-      status: clean(r.tenant_status),
-      // A tenant already on notice is not a renewal conversation to have.
-      onNotice: /notice/i.test(clean(r.tenant_status)) || !!iso(r.move_out_date),
-      daysOut: Math.round((new Date(iso(r.lease_to) + 'T00:00:00') - new Date(today + 'T00:00:00')) / 86400000),
-    }))
+    .map(r => {
+      const date = iso(r.lease_to);
+      // rent_roll's status is the UNIT's state — "Notice-Unrented",
+      // "Notice-Rented", "Current". A resident on notice is not a renewal
+      // conversation, so that fact outranks whatever the pipeline says.
+      const onNotice = /notice/i.test(clean(r.status));
+      return {
+        tenant: clean(r.tenant) || '—',
+        unit: clean(r.unit),
+        property: clean(r.property_name),
+        date,
+        status: clean(r.status),
+        onNotice,
+        // Empty when the lease is absent from the renewal pipeline for a reason
+        // other than notice; the UI shows that as "not recorded" rather than
+        // inventing a status.
+        renewalStatus: onNotice ? '' : (renewalBy.get(`${r.unit_id}|${date}`) || ''),
+        // Roommates on the same lease, so a call is not made to the wrong name.
+        alsoOnLease: clean(r.additional_tenants),
+        rent: clean(r.rent),
+        daysOut: Math.round((new Date(date + 'T00:00:00') - new Date(today + 'T00:00:00')) / 86400000),
+      };
+    })
     .sort((a, b) => a.date.localeCompare(b.date) || a.property.localeCompare(b.property));
 
   return {
@@ -203,15 +224,6 @@ function buildWeeklyBrief(src = {}, opts = {}) {
     counts: {
       moveIns: moveIns.length, moveOuts: moveOuts.length,
       tours: tours.length, expirations: expirations.length,
-    },
-    // Surfaced in the UI. Honest beats tidy: a short list of expirations means
-    // "this is all we can see", not "this is all there is".
-    coverage: {
-      expirations: {
-        complete: false,
-        leasesVisible: tickler.filter(r => iso(r.lease_to)).length,
-        note: 'Lease end dates are only available for residents with a move-in, move-out or notice event this month, so this list is partial. Full coverage needs a tenant-directory report added to the AppFolio sync.',
-      },
     },
   };
 }
