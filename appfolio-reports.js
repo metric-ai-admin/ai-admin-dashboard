@@ -214,6 +214,31 @@ const REPORTS = [
   // per-tenant rather than per-lease (15 rows for the same 11 leases, the
   // extra 4 being roommates and occupants) and it carries resident birthdates,
   // which is PII this dashboard has no reason to hold on disk.
+  // ---- PROBE 2026-09-23: is Jay's saved report reachable? ------------------
+  // Jay's spec points at /reports/joined_reports/66378e55-6e71-11f1-948b-
+  // 0269bfa09cb1. That is the UI surface. This file already records (see
+  // tenant_tickler) that saved-report UUIDs are unreachable from the public
+  // API and that the workaround is to pull the BASE report. Registering both
+  // spellings settles whether that still holds, rather than assuming it.
+  // Both entries come straight back out once the answer is recorded.
+  {
+    id: 'probe_cv_uuid',
+    resource: '66378e55-6e71-11f1-948b-0269bfa09cb1',
+    label: 'PROBE — code violation saved report by UUID',
+    group: 'Probe',
+    priority: 9,
+    feeds: 'Probe only',
+    params: {},
+  },
+  {
+    id: 'probe_cv_joined',
+    resource: 'joined_reports/66378e55-6e71-11f1-948b-0269bfa09cb1',
+    label: 'PROBE — code violation saved report, joined_reports path',
+    group: 'Probe',
+    priority: 9,
+    feeds: 'Probe only',
+    params: {},
+  },
   {
     id: 'rent_roll',
     resource: 'rent_roll',
