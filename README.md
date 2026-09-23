@@ -52,6 +52,35 @@ npm start
 
 Dashboard: http://localhost:3001
 
+## Tests
+
+```bash
+npm test
+```
+
+Runs every `test/*.test.js` in its own process and exits non-zero if any fails.
+Run it before every push.
+
+Most suites cover pure modules (vacancy rules, collections triggers, code
+violations, the weekly brief, the call-grades workbook). One is different:
+
+**`boot-smoke.test.js`** loads the real `index.html` and the real front-end
+scripts in a jsdom DOM and asserts the page comes up clean — no uncaught errors,
+`initAuth()` completed, the functions defined at the bottom of `app.js` exist,
+the sidebar rendered, no duplicate element ids.
+
+It exists because on 2026-09-23 a deploy left `wireAsanaEditing('default')`
+behind after its board was removed. That call runs at module level, so it threw
+partway down `app.js` and every line below it — including the `initAuth()` call
+near the end — never ran. The sidebar stuck on "Loading…", the Sync All Data
+button vanished and the Call Analyzer was never defined: three bug reports, one
+dead reference. `node --check` only parses, and nothing else here executes the
+browser bundle.
+
+Every network call in that test is stubbed. A pass means the page BOOTS, not
+that any feature works. jsdom is a devDependency and the server never requires
+it.
+
 ## Claude Desktop MCP config
 
 ```json
