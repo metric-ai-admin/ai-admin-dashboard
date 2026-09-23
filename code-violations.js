@@ -62,10 +62,16 @@ const STATUSES = [
   'Closed by Code Compliance',
 ];
 
-// All nine appear in the UI even at zero. A property with no violations is a
+// Every one appears in the UI even at zero. A property with no violations is a
 // fact worth showing; a property missing from the list looks like an oversight.
+//
+// The Sidney came out 2026-09-23 — Metric no longer manages it. Note that it
+// was ALREADY in METRIC_EXCLUDED_PROPERTY_FRAGMENTS in server.js, so every
+// other module had stopped counting it while this list still named it. That is
+// why buildTracker now takes isExcludedProperty and filters this list through
+// it: two hand-maintained lists of the same thing drift, and this one drifted.
 const PROPERTIES = [
-  'Ascent at Northgate', 'Sunset Palms', 'The Sidney', 'Windy Hill Apartment',
+  'Ascent at Northgate', 'Sunset Palms', 'Windy Hill Apartment',
   'iConic Round Rock', 'iConic Downtown', 'The Chateau', 'The Highlander',
   'Hyde Park Square',
 ];
@@ -234,6 +240,11 @@ function pastDeadline(row = {}, today) {
 function buildTracker(rows = [], opts = {}) {
   const today = opts.today || new Date().toISOString().slice(0, 10);
   const f = opts.filters || {};
+  // Injected by server.js so the single exclusion list stays single. Without it
+  // the property list here is the only authority, which is how The Sidney went
+  // on being counted after everything else had dropped it.
+  const isExcluded = opts.isExcludedProperty || (() => false);
+  const properties = PROPERTIES.filter(p => !isExcluded(p));
 
   const decorated = rows.map(r => {
     const due = isoDate(r.due_date);
@@ -271,7 +282,7 @@ function buildTracker(rows = [], opts = {}) {
   filtered.forEach(r => { if (byStatus[r.status] !== undefined) byStatus[r.status]++; });
 
   // Every property appears, at zero if it has nothing.
-  const byProperty = PROPERTIES.map(name => {
+  const byProperty = properties.map(name => {
     const own = filtered.filter(r => r.property_name === name);
     return {
       property: name,
@@ -286,7 +297,7 @@ function buildTracker(rows = [], opts = {}) {
   // Rows whose property is not one of the nine — a typo or a new property, and
   // either way something a person should see rather than have silently dropped.
   const unknownProperties = [...new Set(
-    filtered.filter(r => !PROPERTIES.includes(r.property_name)).map(r => r.property_name))];
+    filtered.filter(r => !properties.includes(r.property_name)).map(r => r.property_name))];
 
   return {
     rows: filtered,
@@ -303,7 +314,7 @@ function buildTracker(rows = [], opts = {}) {
     // Drives the filter dropdowns from the data rather than a hard-coded list,
     // so a new category appears without a code change.
     facets: {
-      properties: PROPERTIES,
+      properties,
       statuses: STATUSES,
       categories: [...new Set(decorated.map(r => clean(r.category)).filter(Boolean))].sort(),
       years: [...new Set(decorated.map(r => r.year).filter(Boolean))].sort((a, b) => b - a),

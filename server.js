@@ -4866,6 +4866,10 @@ app.get('/api/code-violations', requireAuth, requireRole(...CODE_VIOLATION_ROLES
     const todayCT = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
     const out = codeViolations.buildTracker(v.data || [], {
       today: todayCT,
+      // One exclusion list, not two. The Sidney was in this list while the
+      // tracker's own property list still named it, so it kept being counted
+      // after Metric stopped managing it.
+      isExcludedProperty: propertyIsExcluded,
       filters: {
         property: req.query.property || '', status: req.query.status || '',
         category: req.query.category || '', month: req.query.month || '', year: req.query.year || '',

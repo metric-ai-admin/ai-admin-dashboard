@@ -9,7 +9,10 @@ const TODAY = '2026-09-23';
 
 console.log('vocabulary');
 t('exactly seven statuses', () => assert.strictEqual(cv.STATUSES.length, 7));
-t('exactly nine properties', () => assert.strictEqual(cv.PROPERTIES.length, 9));
+t('eight properties — The Sidney came out 2026-09-23', () => {
+  assert.strictEqual(cv.PROPERTIES.length, 8);
+  assert.ok(!cv.PROPERTIES.includes('The Sidney'));
+});
 t('open excludes everything completed or closed', () => {
   assert.deepStrictEqual(cv.OPEN_STATUSES,
     ['Pending', 'Assigned - No Activity', 'Assigned - In Progress', 'Assigned - Reassignment Needed']);
@@ -209,8 +212,8 @@ const ROWS = [
   { property_name: 'iConic Round Rock', status: 'Assigned - In Progress', due_date: '2026-12-01', deficiency_date: '2026-04-28', category: 'Plumbing' },
 ];
 const tr = (filters) => cv.buildTracker(ROWS, { today: TODAY, filters });
-t('all nine properties appear, including the empty ones', () => {
-  assert.strictEqual(tr().byProperty.length, 9);
+t('every property appears, including the empty ones', () => {
+  assert.strictEqual(tr().byProperty.length, 8);
   assert.strictEqual(tr().byProperty.find(p => p.property === 'The Highlander').total, 0);
 });
 t('all seven statuses appear in the summary, including the zeros', () => {
@@ -235,7 +238,7 @@ t('filter by month and year, derived from the deficiency date', () => {
 t('filters combine', () => {
   assert.strictEqual(tr({ property: 'Sunset Palms', status: 'Pending' }).summary.total, 1);
 });
-t('a property off the list of nine is surfaced, not dropped', () => {
+t('a property off the list is surfaced, not dropped', () => {
   const out = cv.buildTracker(ROWS.concat([{ property_name: 'Brazos Lofts', status: 'Pending' }]), { today: TODAY });
   assert.deepStrictEqual(out.unknownProperties, ['Brazos Lofts']);
   assert.strictEqual(out.summary.total, 5);
@@ -247,9 +250,24 @@ t('facets come from the data', () => {
 t('an empty tracker is a valid tracker', () => {
   const out = cv.buildTracker([], { today: TODAY });
   assert.strictEqual(out.summary.total, 0);
-  assert.strictEqual(out.byProperty.length, 9);
+  assert.strictEqual(out.byProperty.length, 8);
 });
 
+
+t('an excluded property drops out of the per-property table', () => {
+  const out = cv.buildTracker(ROWS, { today: TODAY, isExcludedProperty: n => /sunset/i.test(n) });
+  assert.strictEqual(out.byProperty.length, 7);
+  assert.ok(!out.byProperty.some(p => p.property === 'Sunset Palms'));
+  assert.ok(!out.facets.properties.includes('Sunset Palms'));
+});
+t('rows for an excluded property are SURFACED as unknown, never silently dropped', () => {
+  const out = cv.buildTracker(ROWS, { today: TODAY, isExcludedProperty: n => /sunset/i.test(n) });
+  assert.deepStrictEqual(out.unknownProperties, ['Sunset Palms']);
+  assert.strictEqual(out.summary.total, 4);   // still counted, just not filed under a property
+});
+t('no exclusion function means nothing is excluded', () => {
+  assert.strictEqual(cv.buildTracker(ROWS, { today: TODAY }).byProperty.length, 8);
+});
 
 console.log('evidence links');
 t('an https link is accepted', () => {

@@ -73,7 +73,7 @@ rows.forEach(r => { byProperty[r.property_name] = (byProperty[r.property_name] |
 console.log('\nby property:');
 cv.PROPERTIES.forEach(p => console.log(`  ${p.padEnd(24)} ${byProperty[p] || 0}`));
 const strays = Object.keys(byProperty).filter(p => !cv.PROPERTIES.includes(p));
-if (strays.length) console.log(`  NOT ONE OF THE NINE: ${strays.join(', ')}`);
+if (strays.length) console.log(`  NOT ON THE PROPERTY LIST: ${strays.join(', ')}`);
 
 const byStatus = {};
 rows.forEach(r => { byStatus[r.status] = (byStatus[r.status] || 0) + 1; });

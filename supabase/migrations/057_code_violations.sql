@@ -100,15 +100,16 @@ create table if not exists code_violation_watchlist (
 
 create index if not exists cv_watchlist_property_idx on code_violation_watchlist (property_name);
 
--- ── Seed: the three exceptions Jay named ───────────────────────────────────
+-- ── Seed: the exceptions Jay named ────────────────────────────────────────
+-- The Sidney pool permit was here and was removed 2026-09-23: Metric no longer
+-- manages that property. Dropping it from the seed as well as from the table
+-- means re-running this migration on a fresh database does not bring it back.
 -- Hyde Park Square 22461-1 is in here rather than the tracker BECAUSE it is a
 -- tagging error — a resident's washer, not a code violation. It is recorded so
 -- the next person to see it tagged that way knows it was already looked at,
 -- instead of adding it to the tracker again.
 insert into code_violation_watchlist (property_name, title, authority, work_order, detail, status, added_by)
 select * from (values
-  ('The Sidney', 'Pool permit', 'Austin Public Health', null,
-   'Pool permit obligation that is not tagged as a Code Violation in AppFolio, so it never reaches the tracker feed.', 'Open', 'seed'),
   ('iConic Round Rock', 'Pool gate', 'Round Rock Fire Dept', '19105-1',
    'Pool gate cited by Round Rock Fire Dept. Not tagged as a Code Violation in AppFolio.', 'Open', 'seed'),
   ('Hyde Park Square', 'WO 22461-1 — resident washer, NOT a code violation', null, '22461-1',
