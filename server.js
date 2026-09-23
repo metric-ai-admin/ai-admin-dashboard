@@ -4836,6 +4836,13 @@ app.get('/api/regional/weekly-brief', requireAuth, requireRole(...DECISION_QUEUE
 // as the spec wrote it — checked against the table rather than assumed, since a
 // role that does not exist silently locks out the one person who needs this daily.
 const CODE_VIOLATION_ROLES = ['admin', 'regional_director', 'maintenance'];
+// "Closed by Code Compliance" is the one status that gets reported to a city,
+// so it belongs to the two people who talk to the city — Jay and Bekah
+// (answered 2026-09-23). Erick can move a row through every other status.
+// Jay's role in dashboard_users is `admin` rather than one of his own, so this
+// also admits Arturo and Lyndsay; narrowing it to literally two people wants a
+// named allowlist, which is a one-line change when someone asks for it.
+const CODE_VIOLATION_CLOSE_ROLES = ['admin', 'regional_director'];
 const codeViolations = require('./code-violations.js');
 
 // Until migration 057 is run in the Supabase editor the tables do not exist.
@@ -4872,22 +4879,38 @@ app.get('/api/code-violations', requireAuth, requireRole(...CODE_VIOLATION_ROLES
 // the key, the property and the citation text are not among them, because
 // editing those would quietly make the row a different row.
 app.patch('/api/code-violations/:key', requireAuth, requireRole(...CODE_VIOLATION_ROLES), async (req, res) => {
-  const { status, due_date, pending_items, progress_notes, clearFlag } = req.body || {};
+  const { status, due_date, pending_items, progress_notes, clearFlag,
+    city_notice_url, completion_photo_url } = req.body || {};
   const patch = { updated_at: new Date().toISOString(), updated_by: actorName(req) };
 
   if (status !== undefined) {
     if (!codeViolations.STATUSES.includes(status)) {
       return res.status(400).json({ error: 'Status must be one of the seven.' });
     }
+    // Gated here rather than on the whole route: Erick needs the route for
+    // every other status. Checked server-side, not only hidden in the UI — a
+    // hidden option is a suggestion, and this one is a statement to a city.
+    if (status === 'Closed by Code Compliance'
+      && !CODE_VIOLATION_CLOSE_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({
+        error: 'Only Jay or Bekah can close a case with Code Compliance. Set the work status and ask one of them to close it.',
+      });
+    }
     patch.status = status;
-    // OPEN QUESTION 1 — who may set this — is NOT decided here. What IS decided
-    // is that it never arrives from an importer and always leaves a name and a
-    // time behind it, so whatever gate is chosen later has an audit trail to sit
-    // on top of.
     if (status === 'Closed by Code Compliance') {
       patch.closed_by = actorName(req);
       patch.closed_at = new Date().toISOString();
     }
+  }
+
+  // Evidence links. Validated rather than trusted — these are rendered as
+  // anchors, so a javascript: URL here would be a script waiting to be clicked.
+  for (const [field, value] of [['city_notice_url', city_notice_url],
+    ['completion_photo_url', completion_photo_url]]) {
+    if (value === undefined) continue;
+    const link = codeViolations.validateLink(value);
+    if (!link.ok) return res.status(400).json({ error: `${field}: ${link.error}` });
+    patch[field] = link.url;
   }
   // A due date is only ever what the city issued, so it is set and cleared by
   // hand and never computed from anything.

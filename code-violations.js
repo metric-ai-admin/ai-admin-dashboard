@@ -19,28 +19,36 @@
 // tracker is a Supabase table fed by import and by hand.
 //
 // ---------------------------------------------------------------------
-// THREE OPEN QUESTIONS — recorded, deliberately NOT decided here.
+// THE THREE OPEN QUESTIONS, ANSWERED BY JAY 2026-09-23.
 //
-//   1. WHO MAY SET "Closed by Code Compliance"?
-//      The status is never auto-mapped (see STATUS_MAP), so today it can only
-//      arrive from a person. Which people is not settled. The route is gated
-//      to the same roles as the rest of the module and the table records
-//      closed_by/closed_at, so tightening this later is a route change and a
-//      role check — no migration, no data rewrite.
+//   1. WHO MAY SET "Closed by Code Compliance"?  Jay and Bekah only.
+//      Enforced on the route, not here, because it is an authorisation
+//      question rather than a rule about the data. Erick (role 'maintenance')
+//      can move a row through every other status but not this one — it is the
+//      status that gets reported to a city, so it needs the two people who
+//      talk to the city. It is still never auto-mapped, and the table records
+//      closed_by/closed_at, so the claim always has a name behind it.
 //
-//   2. DOES THIS REPLACE THE EXCEL WORKBOOK, OR MIRROR IT DURING TRANSITION?
-//      Built to mirror: importing the same workbook twice updates rows rather
-//      than duplicating them (that is what deficiencyKey is for), and nothing
-//      here writes back to Excel or to AppFolio. If the answer becomes
-//      "replace", nothing needs undoing — the import simply stops being run.
-//      If it becomes "mirror indefinitely", the import needs a schedule, which
-//      it does not have yet.
+//      WORTH KNOWING: Jay's role in dashboard_users is `admin`, not a role of
+//      his own, so the gate is admin + regional_director — which also admits
+//      Arturo and Lyndsay. Narrowing it to literally two people needs a named
+//      allowlist like CALL_ANALYZER_USERS; say the word and it is one line.
 //
-//   3. WHERE DO CITY NOTICE DOCUMENTS AND COMPLETION PHOTOS LIVE?
-//      No column for them, on purpose. Guessing a location would create a
-//      field people fill in inconsistently and a second place to look. The
-//      unverified-closure flag below exists precisely because that evidence is
-//      NOT in the system yet — it is what a human goes and checks.
+//   2. DOES THIS REPLACE THE WORKBOOK?  Yes. Jay maintains the tracker in the
+//      dashboard from here on; there is no mirror mode and nothing writes back
+//      to Excel. The importer stays because it is how the existing 67 rows get
+//      in once, and because being idempotent costs nothing — but after the
+//      seed it is not expected to run again. `source` therefore defaults to
+//      'manual' now rather than 'excel'.
+//
+//   3. WHERE DO CITY NOTICES AND COMPLETION PHOTOS LIVE?  As links, one for
+//      the city notice and one for the completion photo. Links rather than
+//      uploads on purpose: the documents already exist somewhere — an AppFolio
+//      work-order photo, the city's portal, SharePoint — and copying them here
+//      would make a second copy that has to be kept in step with the first. A
+//      link points at the original and cannot go stale in that particular way.
+//      validateLink() below keeps them to http(s) only.
+//
 // =====================================================================
 
 // Exactly seven, enforced. Anything else is a data error, not a new status.
@@ -304,6 +312,21 @@ function buildTracker(rows = [], opts = {}) {
 }
 
 /**
+ * Evidence links. http(s) only — a javascript: or data: URL in a field that is
+ * rendered as an anchor is a script waiting to be clicked, and no legitimate
+ * city notice or photo is ever anything else. Returns null for blank, so
+ * clearing a link works the same way as never setting one.
+ */
+function validateLink(v) {
+  const s = clean(v);
+  if (!s) return { ok: true, url: null };
+  let u;
+  try { u = new URL(s); } catch { return { ok: false, error: 'Not a valid URL' }; }
+  if (!/^https?:$/.test(u.protocol)) return { ok: false, error: 'Links must start with http:// or https://' };
+  return { ok: true, url: u.href };
+}
+
+/**
  * Normalise one workbook row into the table's shape, computing the key and the
  * flag. Rejects rather than coerces an unknown status: the seven are enforced,
  * and quietly mapping an eighth would hide a data problem.
@@ -326,8 +349,16 @@ function normaliseImportRow(raw = {}, opts = {}) {
     maintenance_remarks: clean(raw.maintenance_remarks) || null,
     client_vendor_remarks: clean(raw.client_vendor_remarks) || null,
     progress_notes: clean(raw.progress_notes) || null,
+    city_notice_url: null,
+    completion_photo_url: null,
     source: opts.source || 'excel',
   };
+
+  for (const field of ['city_notice_url', 'completion_photo_url']) {
+    const link = validateLink(raw[field]);
+    if (!link.ok) return { ok: false, error: `${field}: ${link.error}` };
+    row[field] = link.url;
+  }
 
   if (!row.property_name) return { ok: false, error: 'Missing property name' };
   if (!STATUSES.includes(row.status)) {
@@ -344,6 +375,6 @@ function normaliseImportRow(raw = {}, opts = {}) {
 module.exports = {
   STATUSES, PROPERTIES, OPEN_STATUSES,
   isoDate, codeSection, hash32, deficiencyKey,
-  mapAppfolioStatus, unverifiedClosure, pastDeadline,
+  mapAppfolioStatus, unverifiedClosure, pastDeadline, validateLink,
   buildTracker, normaliseImportRow,
 };

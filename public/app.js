@@ -9900,7 +9900,9 @@ function cvxRow(r) {
     + `<td class="cvx-desc" title="${cvxEsc(r.deficiency_description || '')}">${flag}${cvxEsc(r.deficiency_description || '')}</td>`
     + `<td>${cvxEsc(r.category || '—')}</td>`
     + `<td>${cvxStatus(r.status)}</td>`
-    + `<td>${due}</td></tr>`;
+    + `<td>${due}</td>`
+    + `<td>${cvxEvidence(r)}</td>`
+    + `<td><button class="cvx-edit" data-cvx-edit="${cvxEsc(r.deficiency_key)}">Edit</button></td></tr>`;
 }
 
 function cvxRenderRows() {
@@ -9910,7 +9912,7 @@ function cvxRenderRows() {
     + (rows.length
       ? '<div class="vac-scroll"><table class="data-table cvx-table"><thead><tr>'
         + '<th>Property</th><th>Case</th><th>WO</th><th>Building / unit</th><th>Sec.</th>'
-        + '<th>Cited</th><th>Deficiency</th><th>Category</th><th>Status</th><th>Due</th>'
+        + '<th>Cited</th><th>Deficiency</th><th>Category</th><th>Status</th><th>Due</th><th>Evidence</th><th></th>'
         + `</tr></thead><tbody>${rows.map(cvxRow).join('')}</tbody></table></div>`
       : '<p class="mb-empty">No deficiencies match these filters.</p>');
 }
@@ -9975,6 +9977,8 @@ document.getElementById('maint-view-code-violations')?.addEventListener('change'
 });
 
 document.getElementById('maint-view-code-violations')?.addEventListener('click', e => {
+  const edit = e.target.closest('[data-cvx-edit]');
+  if (edit) { cvxOpenEditor(edit.dataset.cvxEdit); return; }
   const chip = e.target.closest('[data-cvx-status]');
   if (chip) {
     const v = chip.dataset.cvxStatus;
@@ -9987,4 +9991,93 @@ document.getElementById('maint-view-code-violations')?.addEventListener('click',
     loadCodeViolations();
   }
   if (e.target.id === 'cvx-refresh') loadCodeViolations();
+});
+
+// ---- Editing a deficiency ---------------------------------------------------
+// Status, the two evidence links, and the review flag. Everything identifying —
+// the property, the citation text, the key — is deliberately not editable:
+// changing those makes the row a different row.
+
+// Jay and Bekah only (answered 2026-09-23). Hidden here AND refused by the
+// route; this just avoids offering Erick an option he would be told off for.
+const CVX_CLOSE_ROLES = ['admin', 'regional_director'];
+const cvxCanClose = () => CVX_CLOSE_ROLES.includes(currentUser?.role);
+
+const cvxLink = (url, label) => (url
+  ? `<a href="${cvxEsc(url)}" target="_blank" rel="noopener noreferrer" class="cvx-link">${label}</a>`
+  : '');
+
+function cvxEvidence(r) {
+  const bits = [
+    cvxLink(r.city_notice_url, '&#128196; Notice'),
+    cvxLink(r.completion_photo_url, '&#128247; Photo'),
+  ].filter(Boolean);
+  return bits.length ? bits.join(' ') : '<span class="muted">—</span>';
+}
+
+function cvxOpenEditor(key) {
+  const r = (cvxData.rows || []).find(x => x.deficiency_key === key);
+  if (!r) return;
+  const opts = cvxData.facets.statuses.map(s => {
+    const blocked = s === 'Closed by Code Compliance' && !cvxCanClose();
+    return `<option value="${cvxEsc(s)}"${s === r.status ? ' selected' : ''}${blocked ? ' disabled' : ''}>`
+      + `${cvxEsc(s)}${blocked ? ' — Jay or Bekah only' : ''}</option>`;
+  }).join('');
+
+  const box = document.getElementById('cvx-editor');
+  box.innerHTML = `<div class="settings-backdrop" id="cvx-backdrop">
+    <div class="cvx-modal">
+      <h3>${cvxEsc(r.property_name)} &middot; ${cvxEsc(r.address_unit || '')}</h3>
+      <p class="muted small">${cvxEsc(r.deficiency_description || '')}</p>
+      <label class="cvx-field"><span>Status</span><select id="cvx-e-status">${opts}</select></label>
+      <label class="cvx-field"><span>City notice link</span>
+        <input id="cvx-e-notice" type="url" placeholder="https://…" value="${cvxEsc(r.city_notice_url || '')}"></label>
+      <label class="cvx-field"><span>Completion photo link</span>
+        <input id="cvx-e-photo" type="url" placeholder="https://…" value="${cvxEsc(r.completion_photo_url || '')}"></label>
+      <label class="cvx-field"><span>Due date <small>(only if the city issued one)</small></span>
+        <input id="cvx-e-due" type="date" value="${cvxEsc(r.due_date || '')}"></label>
+      <label class="cvx-field"><span>Pending items</span>
+        <textarea id="cvx-e-pending" rows="2">${cvxEsc(r.pending_items || '')}</textarea></label>
+      ${r.unverified_closure ? `<label class="cvx-check"><input type="checkbox" id="cvx-e-clear">
+        Reviewed — clear the flag <small>${cvxEsc(r.unverified_reason || '')}</small></label>` : ''}
+      <div class="cvx-modal-actions">
+        <button class="btn btn-ghost" id="cvx-e-cancel">Cancel</button>
+        <button class="btn" id="cvx-e-save" data-key="${cvxEsc(key)}">Save</button>
+      </div>
+      <p class="cvx-error" id="cvx-e-error" hidden></p>
+    </div></div>`;
+}
+
+async function cvxSave(key) {
+  const g = id => document.getElementById(id);
+  const body = {
+    status: g('cvx-e-status').value,
+    city_notice_url: g('cvx-e-notice').value,
+    completion_photo_url: g('cvx-e-photo').value,
+    due_date: g('cvx-e-due').value,
+    pending_items: g('cvx-e-pending').value,
+  };
+  if (g('cvx-e-clear')?.checked) body.clearFlag = true;
+  const err = g('cvx-e-error');
+  const btn = g('cvx-e-save');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    await api('/api/code-violations/' + encodeURIComponent(key), { method: 'PATCH', body });
+    document.getElementById('cvx-editor').innerHTML = '';
+    loadCodeViolations();
+  } catch (e) {
+    // Includes the 403 when someone who is not Jay or Bekah tries to close a
+    // case — shown in place rather than as a toast that scrolls away.
+    err.hidden = false;
+    err.textContent = e.message || 'Could not save.';
+    btn.disabled = false; btn.textContent = 'Save';
+  }
+}
+
+document.getElementById('cvx-editor')?.addEventListener('click', e => {
+  if (e.target.id === 'cvx-e-cancel' || e.target.id === 'cvx-backdrop') {
+    document.getElementById('cvx-editor').innerHTML = '';
+    return;
+  }
+  if (e.target.id === 'cvx-e-save') cvxSave(e.target.dataset.key);
 });

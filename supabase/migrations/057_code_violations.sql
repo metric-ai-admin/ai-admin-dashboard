@@ -34,10 +34,9 @@ create table if not exists code_violations (
   category        text,                      -- Electrical / Permitting / ...
 
   status          text not null,
-  -- Set by a human only, never by an importer. See the open question in
-  -- code-violations.js: who is allowed to move a row to Closed by Code
-  -- Compliance is NOT decided yet, so the column records who did it and when
-  -- and the route gate can be tightened later without a migration.
+  -- Set by a human only, never by an importer, and only by Jay or Bekah
+  -- (answered 2026-09-23). The route enforces that; these columns record who
+  -- and when, so a city-facing claim always has a name behind it.
   closed_by       text,
   closed_at       timestamptz,
 
@@ -59,7 +58,14 @@ create table if not exists code_violations (
   verified_by             text,
   verified_at             timestamptz,
 
-  source          text not null default 'excel',   -- 'excel' | 'manual' | 'appfolio'
+  -- Evidence, answered 2026-09-23: links rather than uploads. The documents
+  -- already live somewhere (AppFolio work-order photos, the city's own portal,
+  -- SharePoint), and copying them here would create a second copy to keep in
+  -- step with the first. A link points at the original.
+  city_notice_url      text,
+  completion_photo_url text,
+
+  source          text not null default 'manual',  -- 'manual' | 'excel' | 'appfolio'
   imported_at     timestamptz,
   updated_by      text,
   created_at      timestamptz not null default now(),

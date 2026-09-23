@@ -250,4 +250,43 @@ t('an empty tracker is a valid tracker', () => {
   assert.strictEqual(out.byProperty.length, 9);
 });
 
+
+console.log('evidence links');
+t('an https link is accepted', () => {
+  assert.deepStrictEqual(cv.validateLink('https://metric.appfolio.com/wo/22882-1/photo.jpg'),
+    { ok: true, url: 'https://metric.appfolio.com/wo/22882-1/photo.jpg' });
+});
+t('http is accepted too — some city portals are still plain http', () => {
+  assert.strictEqual(cv.validateLink('http://austintexas.gov/notice/123').ok, true);
+});
+t('blank clears the link rather than failing', () => {
+  assert.deepStrictEqual(cv.validateLink(''), { ok: true, url: null });
+  assert.deepStrictEqual(cv.validateLink(null), { ok: true, url: null });
+});
+t('a javascript: URL is REFUSED — these render as anchors', () => {
+  const r = cv.validateLink('javascript:alert(document.cookie)');
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /http/);
+});
+t('a data: URL is refused', () => {
+  assert.strictEqual(cv.validateLink('data:text/html,<script>x</script>').ok, false);
+});
+t('a file: path is refused — it would only open on one machine', () => {
+  assert.strictEqual(cv.validateLink('file:///C:/notices/123.pdf').ok, false);
+});
+t('text that is not a URL is refused', () => {
+  assert.strictEqual(cv.validateLink('ask Jay for it').ok, false);
+});
+t('import carries valid links through', () => {
+  const r = cv.normaliseImportRow({ ...raw, city_notice_url: 'https://austintexas.gov/n/1' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.row.city_notice_url, 'https://austintexas.gov/n/1');
+  assert.strictEqual(r.row.completion_photo_url, null);
+});
+t('import REJECTS a row carrying a dangerous link rather than dropping it', () => {
+  const r = cv.normaliseImportRow({ ...raw, completion_photo_url: 'javascript:alert(1)' });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /completion_photo_url/);
+});
+
 console.log(`\n${pass} passing`);
