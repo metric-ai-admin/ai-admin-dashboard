@@ -10,6 +10,17 @@
 <!-- Lyndsay's Call Quality Analyzer fonts — used only by the Grades view (.svg-tool) -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
+  <!-- Theme before first paint. Without this the page renders dark and then
+       flips to light, which reads as a bug. Inline and tiny on purpose: it has
+       to run before the stylesheet paints, so it cannot live in app.js. -->
+  <script>
+    (function () {
+      try {
+        var p = JSON.parse(localStorage.getItem("metric.displayPrefs") || "{}");
+        if (p.theme === "light") document.documentElement.setAttribute("data-theme", "light");
+      } catch (e) { /* private window or blocked storage — stay on the dark default */ }
+    })();
+  </script>
 </head>
 <body>
 <header class="topbar">
@@ -20,6 +31,10 @@
 <div class="layout">
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
+      <!-- Company logo above the user block. One asset for both themes: the
+           indigo wordmark reads on the near-black sidebar and on white. -->
+      <img id="sidebar-logo" class="sidebar-logo" src="/img/metric-logo.png"
+           alt="Metric Property Management" width="120">
       <div class="sidebar-brand">
         <div class="brand-icon">
           <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -110,6 +125,7 @@
         <span class="status-dot" id="sidebar-status-dot"></span>
         <span id="sidebar-status-text">Connecting…</span>
       </div>
+      <button id="settings-btn" class="btn-logout">⚙ Display settings</button>
       <button id="logout-btn" class="btn-logout">Sign out</button>
     </div>
   </aside>
@@ -2091,5 +2107,34 @@
 <script src="command-center.js"></script>
 <script src="wo-scheduling.js"></script>
 <script src="wo-schedule-calendar.js"></script>
+
+<!-- Display settings. Stored per browser in localStorage, not in Supabase:
+     dashboard_users has no display_name / title columns and adding them needs
+     a migration nobody can run from here. See the handover note. -->
+<div id="settings-modal" class="crm-modal-backdrop hidden">
+  <div class="settings-panel">
+    <div class="settings-head">
+      <h3>Display settings</h3>
+      <button id="settings-close" class="btn-sm">✕</button>
+    </div>
+    <label class="settings-field">Display name
+      <input id="set-display-name" type="text" maxlength="60" placeholder="How your name appears">
+    </label>
+    <label class="settings-field">Job title
+      <input id="set-job-title" type="text" maxlength="60" placeholder="Shown under your name">
+    </label>
+    <div class="settings-field"><span>Theme</span>
+      <div class="settings-themes">
+        <button class="theme-btn" data-theme-choice="dark">🌙 Dark</button>
+        <button class="theme-btn" data-theme-choice="light">☀ Light</button>
+      </div>
+    </div>
+    <p class="settings-note">Saved in this browser and applied immediately.</p>
+    <div class="settings-actions">
+      <button id="settings-reset" class="btn-sm">Reset to defaults</button>
+      <button id="settings-save" class="btn-sm primary">Done</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

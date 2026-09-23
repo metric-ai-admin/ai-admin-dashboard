@@ -55,7 +55,8 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: 'Inter', -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Segoe UI first — the Windows system face the team already reads all day. */
+  font-family: 'Segoe UI', Calibri, Arial, sans-serif;
   background: var(--bg-base); color: var(--text-primary); font-size: 14px; line-height: 1.5;
 }
 code, .mono { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
@@ -2373,3 +2374,74 @@ tr.ca-sel { background: var(--accent-glow); }
 }
 .crm-dm-note::placeholder { color: var(--text-muted); }
 .crm-dm-note:focus { outline: none; border-color: var(--accent); }
+
+/* ===== LIGHT THEME =====================================================
+   Applied by data-theme="light" on <html>. Only the PALETTE tokens are
+   redefined — every alias below them (--bg, --card, --text, --muted …)
+   derives from these, so the whole app follows without touching component
+   rules.
+
+   Microsoft-style: white surfaces on a faintly grey base, not pure white on
+   pure white. Status hues keep their identity but drop to ~10% tints, since a
+   15% tint tuned for a near-black background is far too strong on white.
+
+   CAVEAT worth knowing: styles.css still contains 234 hardcoded hex colours
+   and 87 rgba() literals that predate this. Most are semantic (status reds,
+   the gold/silver/bronze podium) and read fine either way, but anything that
+   hardcoded a dark background will not follow the theme. Those are listed in
+   the handover note rather than mass-edited here.
+   ===================================================================== */
+:root[data-theme="light"] {
+  --bg-base: #f3f3f5;      /* page behind the cards */
+  --bg-surface: #ffffff;   /* cards, sidebar, tables */
+  --bg-elevated: #eef0f4;  /* chips, inputs, hovers */
+  --border: #e1e3e8;
+  --border-accent: #c7cad2;
+
+  --text-primary: #1b1b1f;
+  --text-secondary: #5a5f6b;
+  --text-muted: #8a8f9a;
+
+  --accent: #5b4bd6;       /* darkened so it holds on white */
+  --accent-hover: #4a3cc0;
+  --accent-glow: rgba(91, 75, 214, 0.10);
+
+  --link: #1d4ed8;
+  --link-hover: #1e40af;
+
+  --critical: #c0392b;  --critical-bg: rgba(192, 57, 43, 0.10);
+  --warning:  #b26a00;  --warning-bg:  rgba(178, 106, 0, 0.10);
+  --success:  #0f7a53;  --success-bg:  rgba(15, 122, 83, 0.10);
+  --info:     #0369a1;  --info-bg:     rgba(3, 105, 161, 0.10);
+
+  --shadow: 0 2px 10px rgba(16, 24, 40, 0.08);
+}
+
+/* ---------- Sidebar logo ---------- */
+.sidebar-logo { display:block; width:120px; height:auto; margin:0 0 14px; }
+
+/* ---------- Display settings panel ---------- */
+.settings-panel {
+  position:relative; margin:10vh auto 0; width:min(420px, calc(100vw - 32px));
+  background:var(--bg-surface); border:1px solid var(--border); border-radius:12px;
+  padding:20px; box-shadow:var(--shadow); color:var(--text-primary);
+}
+.settings-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+.settings-head h3 { margin:0; font-size:16px; }
+.settings-field { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:14px; }
+.settings-field input {
+  display:block; width:100%; margin-top:5px; padding:7px 10px; font-family:inherit; font-size:13px;
+  color:var(--text-primary); background:var(--bg-elevated);
+  border:1px solid var(--border); border-radius:6px;
+}
+.settings-field input:focus { outline:none; border-color:var(--accent); }
+.settings-themes { display:flex; gap:8px; margin-top:6px; }
+.theme-btn {
+  flex:1; padding:9px 12px; font-family:inherit; font-size:13px; cursor:pointer;
+  color:var(--text-primary); background:var(--bg-elevated);
+  border:1px solid var(--border); border-radius:8px;
+}
+.theme-btn:hover { border-color:var(--border-accent); }
+.theme-btn.active { border-color:var(--accent); background:var(--accent-glow); color:var(--accent); font-weight:600; }
+.settings-note { font-size:11.5px; color:var(--text-secondary); margin:0 0 14px; }
+.settings-actions { display:flex; justify-content:flex-end; gap:8px; }

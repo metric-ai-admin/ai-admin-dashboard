@@ -122,6 +122,8 @@ async function initAuth() {
   if (brandName) brandName.textContent = currentUser.name;
   if (brandRole) brandRole.textContent = roleLabelFor(currentUser.role);
   if (brandEmail) brandEmail.textContent = currentUser.email;
+  // A saved display name / job title overrides the account values.
+  applyIdentityPrefs();
 
   // Read-only Maintenance. Set alongside the tab gating so it is in place before
   // any maintenance render runs, and on the section itself so the CSS cannot
@@ -9337,4 +9339,94 @@ document.getElementById('dq-refresh')?.addEventListener('click', e => {
   btn.disabled = true;
   btn.textContent = 'Refreshing…';
   loadDecisionQueue(true).finally(() => { btn.disabled = false; btn.textContent = '↻ Refresh'; });
+});
+
+// =====================================================================
+// DISPLAY SETTINGS — theme, display name, job title
+// =====================================================================
+// Per browser, in localStorage. NOT in Supabase: dashboard_users has no
+// display_name or title column and adding them needs a migration that cannot be
+// run through PostgREST. The trade is that preferences do not follow a user to
+// another device — noted in the handover rather than hidden.
+//
+// The theme is applied by setTheme() in <head> BEFORE this file runs, so the
+// page never paints dark and then flips to light.
+
+const PREFS_KEY = 'metric.displayPrefs';
+const PREFS_DEFAULTS = { theme: 'dark', displayName: '', jobTitle: '' };
+
+function readPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    return raw ? { ...PREFS_DEFAULTS, ...JSON.parse(raw) } : { ...PREFS_DEFAULTS };
+  } catch { return { ...PREFS_DEFAULTS }; }   // private window / blocked storage
+}
+
+function writePrefs(patch) {
+  const next = { ...readPrefs(), ...patch };
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(next)); } catch { /* non-fatal */ }
+  return next;
+}
+
+// Dark is the default and needs no attribute, so an unset preference renders
+// exactly as the app always has.
+function applyTheme(theme) {
+  const t = theme === 'light' ? 'light' : 'dark';
+  if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  else document.documentElement.removeAttribute('data-theme');
+  document.querySelectorAll('[data-theme-choice]').forEach(b =>
+    b.classList.toggle('active', b.dataset.themeChoice === t));
+}
+
+// Name and title fall back to the account's own values, so an empty preference
+// is not an empty sidebar.
+function applyIdentityPrefs() {
+  const p = readPrefs();
+  const nameEl = $('.brand-name');
+  const roleEl = $('.brand-role');
+  if (nameEl) nameEl.textContent = p.displayName || (currentUser && currentUser.name) || '';
+  if (roleEl) roleEl.textContent = p.jobTitle || (currentUser ? roleLabelFor(currentUser.role) : '');
+}
+
+function openSettings() {
+  const p = readPrefs();
+  const dn = $('#set-display-name'), jt = $('#set-job-title');
+  if (dn) dn.value = p.displayName || '';
+  if (jt) jt.value = p.jobTitle || '';
+  if (dn) dn.placeholder = (currentUser && currentUser.name) || 'How your name appears';
+  if (jt) jt.placeholder = (currentUser ? roleLabelFor(currentUser.role) : 'Shown under your name');
+  applyTheme(p.theme);
+  $('#settings-modal')?.classList.remove('hidden');
+}
+const closeSettings = () => $('#settings-modal')?.classList.add('hidden');
+
+$('#settings-btn')?.addEventListener('click', openSettings);
+$('#settings-close')?.addEventListener('click', closeSettings);
+$('#settings-save')?.addEventListener('click', closeSettings);
+$('#settings-modal')?.addEventListener('click', e => { if (e.target.id === 'settings-modal') closeSettings(); });
+
+// Each control applies on change — "apply immediately", no Save step. The Done
+// button only closes the panel.
+$('#set-display-name')?.addEventListener('input', e => {
+  writePrefs({ displayName: e.target.value.trim() });
+  applyIdentityPrefs();
+});
+$('#set-job-title')?.addEventListener('input', e => {
+  writePrefs({ jobTitle: e.target.value.trim() });
+  applyIdentityPrefs();
+});
+document.querySelectorAll('[data-theme-choice]').forEach(btn =>
+  btn.addEventListener('click', () => {
+    const t = btn.dataset.themeChoice;
+    writePrefs({ theme: t });
+    applyTheme(t);
+  }));
+
+$('#settings-reset')?.addEventListener('click', () => {
+  try { localStorage.removeItem(PREFS_KEY); } catch { /* non-fatal */ }
+  const dn = $('#set-display-name'), jt = $('#set-job-title');
+  if (dn) dn.value = '';
+  if (jt) jt.value = '';
+  applyTheme('dark');
+  applyIdentityPrefs();
 });
