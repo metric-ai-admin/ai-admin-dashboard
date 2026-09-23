@@ -124,5 +124,9 @@ if (collisions.length) {
     written += (data || chunk).length;
   }
   console.log(`\nwritten   ${written}`);
-  process.exit(rejected.length ? 1 : 0);
+  // process.exitCode, not process.exit(): the Supabase client keeps a handle
+  // open, and tearing the process down under it trips a libuv assertion in the
+  // Windows build AFTER the write has already succeeded — alarming output for a
+  // run that worked. Letting the event loop drain exits on its own.
+  process.exitCode = rejected.length ? 1 : 0;
 })();
