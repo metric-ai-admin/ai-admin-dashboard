@@ -79,6 +79,7 @@
         <button data-tab="eod"><span class="nav-ico">📅</span>End of Day</button>
         <button data-tab="sixpm"><span class="nav-ico">📈</span>6PM Report</button>
         <button data-tab="reports"><span class="nav-ico">📋</span>Daily Report</button>
+        <button data-tab="kpi"><span class="nav-ico">📊</span>KPI Report</button>
       </div>
       <div class="nav-group">
         <div class="nav-group-label">Departments</div>
@@ -112,8 +113,17 @@
             <button data-tab="vacancy">Vacancy Posting</button>
           </div>
         </div>
-        <button data-tab="evictions"><span class="nav-ico">⚖️</span>Evictions</button>
-        <button data-tab="collections"><span class="nav-ico">💵</span>Collections</button>
+        <!-- Collections owns Evictions the way Leasing owns Vacancy Posting:
+             the parent button IS the Collections tab, the child is a real tab,
+             and the generic .subnav-group handling in app.js drives both. The
+             two were siblings and read as unrelated departments; an eviction is
+             where a collections case ends up. -->
+        <div class="subnav-group" id="collections-nav-group">
+          <button data-tab="collections"><span class="nav-ico">💵</span>Collections <span class="subnav-caret" id="collections-subnav-caret">›</span></button>
+          <div class="subnav hidden" id="collections-subnav">
+            <button data-tab="evictions">Evictions</button>
+          </div>
+        </div>
       </div>
       <div class="nav-group">
         <div class="nav-group-label">BD &amp; Performance</div>
@@ -147,10 +157,6 @@
       </div>
     </div>
 
-    <div class="filter-pills" id="tasks-panel-switch">
-      <button class="pill active" data-panel="own">📋 Task Manager</button>
-      <button class="pill" data-panel="asana">🅰️ Asana Tasks</button>
-    </div>
 
     <div id="tasks-panel-own">
     <form id="task-form" class="quick-add">
@@ -197,17 +203,39 @@
     <div id="task-list"></div>
     </div><!-- /tasks-panel-own -->
 
-    <div id="tasks-panel-asana" class="hidden">
-      <div class="view-head">
-        <div><h3 style="margin:0">Asana Tasks</h3><p class="muted small">Arturo's Asana board</p></div>
-        <div class="view-actions"><button class="btn-sm" id="asana-panel-refresh">🔄 Refresh</button></div>
+  </section>
+
+  <!-- ============ KPI REPORT ============ -->
+  <!-- Regional Performance and the Monday Morning Brief were reachable only
+       by scrolling past the Collections Review generator, which is a
+       different job for a different person. Same modules, same role gate
+       (admin + regional_director), their own tab. -->
+  <section id="tab-kpi" class="tab">
+    <div class="view-head">
+      <div><h2>KPI Report</h2><p class="muted small">Portfolio performance and the week ahead.</p></div>
+    </div>
+    <div id="rp-wrap" class="rp-wrap" hidden>
+      <div class="dq-head">
+        <div>
+          <h2 class="dq-title">Regional Performance</h2>
+          <p class="muted small" id="rp-sub">Portfolio health at a glance.</p>
+        </div>
+        <button class="btn btn-ghost" id="rp-refresh">↻ Refresh</button>
       </div>
-      <div class="filter-pills" id="asana-panel-pills">
-        <button class="pill" data-time="today">📅 Today</button>
-        <button class="pill" data-time="week">📆 This Week</button>
-        <button class="pill active" data-time="all">📋 All</button>
+      <div id="rp-totals"></div>
+      <div id="rp-funnel"></div>
+      <div id="rp-cards"></div>
+    </div>
+
+    <div id="mb-wrap" class="mb-wrap" hidden>
+      <div class="dq-head">
+        <div>
+          <h2 class="dq-title">Monday Morning Brief</h2>
+          <p class="muted small" id="mb-sub">What is happening this week.</p>
+        </div>
+        <button class="btn btn-ghost" id="mb-refresh">↻ Refresh</button>
       </div>
-      <div id="asana-panel-body"></div>
+      <div id="mb-sections"></div>
     </div>
   </section>
 
@@ -1957,30 +1985,6 @@
 
     <!-- Regional Performance (Module 2). Same audience as the Decision Queue;
          the server gates the data identically. -->
-    <div id="rp-wrap" class="rp-wrap" hidden>
-      <div class="dq-head">
-        <div>
-          <h2 class="dq-title">Regional Performance</h2>
-          <p class="muted small" id="rp-sub">Portfolio health at a glance.</p>
-        </div>
-        <button class="btn btn-ghost" id="rp-refresh">↻ Refresh</button>
-      </div>
-      <div id="rp-totals"></div>
-      <div id="rp-funnel"></div>
-      <div id="rp-cards"></div>
-    </div>
-
-    <div id="mb-wrap" class="mb-wrap" hidden>
-      <div class="dq-head">
-        <div>
-          <h2 class="dq-title">Monday Morning Brief</h2>
-          <p class="muted small" id="mb-sub">What is happening this week.</p>
-        </div>
-        <button class="btn btn-ghost" id="mb-refresh">↻ Refresh</button>
-      </div>
-      <div id="mb-sections"></div>
-    </div>
-
     <div class="col-wrap">
       <div class="col-hdr">
         <div class="col-logo">Metric <span>PM</span></div>

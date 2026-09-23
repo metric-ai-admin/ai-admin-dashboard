@@ -54,7 +54,7 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy'],
+  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy'],
   ceo:         ['crm', 'platform', 'eod', 'reports'],
   // 'calls' (Call Analyzer) removed 2026-09-18: call transcripts and grades are
   // employee performance data about named staff, alongside resident PII, so the
@@ -72,7 +72,10 @@ const TAB_ACCESS = {
   // is held by exactly one person, so widening the role widens only her access.
   // Collections also needs the role added to COLLECTIONS_ROLES in server.js —
   // the tab renders from this list but its endpoints are gated separately.
-  regional_director:   ['maintenance', 'reports', 'leasing', 'collections'],   // Rebekah Tuckner
+  // 'kpi' added 2026-09-23: Regional Performance and the Monday Brief moved out
+  // of the Collections tab, where they sat below the Collections Review
+  // generator — a different job for a different person.
+  regional_director:   ['maintenance', 'reports', 'leasing', 'collections', 'kpi'],   // Rebekah Tuckner
   // Kara oversees maintenance, leasing and collections as of 2026-09-21.
   resident_success:    ['maintenance', 'reports', 'evictions', 'leasing', 'collections'],   // Kara Garst
   collections_leasing: ['reports', 'collections'],   // Rocío Hunsberger
@@ -275,7 +278,8 @@ function loadTab(tab) {
   if (tab === 'calls') loadCallAnalyzer();
   if (tab === 'evictions') loadEvictions();
   if (tab === 'vacancy') loadVacancy();
-  if (tab === 'collections') { loadCollections(); loadDecisionQueue(); loadRegional(); loadBrief(); }
+  if (tab === 'collections') { loadCollections(); loadDecisionQueue(); }
+  if (tab === 'kpi') { loadRegional(); loadBrief(); }
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
@@ -1448,21 +1452,11 @@ $('#refresh-tasks').addEventListener('click', loadTasks);
 $('#task-type-filter').addEventListener('change', renderTasks);
 $$('#task-time-pills .pill').forEach(p => p.addEventListener('click', () => { taskTimeFilter = p.dataset.time; renderTasks(); }));
 
-// Task Manager ▸ Asana Tasks. Fetched on first switch rather than on page load:
-// it is 183 tasks over the network and most visits to this tab never open it.
-$$('#tasks-panel-switch .pill').forEach(p => p.addEventListener('click', () => {
-  const panel = p.dataset.panel;
-  $$('#tasks-panel-switch .pill').forEach(q => q.classList.toggle('active', q === p));
-  $('#tasks-panel-own')?.classList.toggle('hidden', panel !== 'own');
-  $('#tasks-panel-asana')?.classList.toggle('hidden', panel !== 'asana');
-  if (panel === 'asana' && !asanaPanelLoaded) { asanaPanelLoaded = true; loadAsanaPanel(); }
-}));
-$('#asana-panel-refresh')?.addEventListener('click', loadAsanaPanel);
-$$('#asana-panel-pills .pill').forEach(p => p.addEventListener('click', () => {
-  asanaPanelFilter = p.dataset.time;
-  $$('#asana-panel-pills .pill').forEach(q => q.classList.toggle('active', q === p));
-  asanaBoardRender('default');
-}));
+// Task Manager ▸ Asana Tasks was removed 2026-09-23 (Lyndsay): two entries
+// both called "Asana Tasks" read as a duplicate. They were different boards —
+// this one Arturo's, the one under Maintenance Erick's — and Erick's is the
+// only Asana his role can reach, so this is the one that went. The Task
+// Manager's own Asana sync and imports are untouched.
 $$('#task-status-pills .pill').forEach(p => p.addEventListener('click', () => { taskStatusFilter = p.dataset.status; renderTasks(); }));
 
 // =====================================================================
@@ -5528,8 +5522,6 @@ async function loadMaintenance() {
 // Cached per board so the pills re-render without another round trip — Arturo's
 // board is 183 tasks and refetching on every pill click would be wasteful.
 let maintAsanaCache = [], maintAsanaStale = false, maintAsanaFilter = 'all';
-let asanaPanelCache = [], asanaPanelStale = false, asanaPanelFilter = 'all';
-let asanaPanelLoaded = false;
 
 const ASANA_COLUMNS = [
   { key: 'critical', header: '🔴 Critical',    cls: 'col-critical' },
@@ -5712,15 +5704,13 @@ function renderAsanaKanban(el, tasks, filter, stale, owner) {
   });
 }
 
-// The two boards differ only in where their state lives, so everything below
-// works from this table instead of branching on owner in five places.
+// One board now (Erick's). The table stayed after Arturo's panel was removed
+// on 2026-09-23: everything below takes an owner, so a second board is a table
+// entry rather than a branch in five places.
 const ASANA_BOARDS = {
   erick:   { sel: '#maint-asana-body',
              get: () => ({ tasks: maintAsanaCache, filter: maintAsanaFilter, stale: maintAsanaStale }),
              reload: () => loadMaintenanceAsana() },
-  default: { sel: '#asana-panel-body',
-             get: () => ({ tasks: asanaPanelCache, filter: asanaPanelFilter, stale: asanaPanelStale }),
-             reload: () => loadAsanaPanel() },
 };
 
 function asanaBoardRender(owner) {
@@ -7196,36 +7186,6 @@ async function loadMaintenanceAsana() {
     maintAsanaCache = tasks;
     maintAsanaStale = !!data.stale;
     asanaBoardRender('erick');
-  } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
-}
-
-// ── Arturo's Asana board, inside the Task Manager tab ────────────────
-// Same renderer as Erick's, different endpoint: no owner param means the default
-// token. His tasks come from the project boards in ASANA_EXTRA_PROJECTS rather
-// than from anything assigned to him directly.
-async function loadAsanaPanel() {
-  const el = $('#asana-panel-body');
-  if (!el) return;
-  el.innerHTML = '<p class="small muted">Loading…</p>';
-  try {
-    const data = await api('/api/asana/tasks');
-    const tasks = Array.isArray(data) ? data : (data.tasks || data.data || []);
-
-    if (!tasks.length && data.error) {
-      el.innerHTML = `
-        <div class="banner banner-warn">
-          ⚠ <b>Could not connect to Asana — check token.</b>
-          <div class="small" style="margin-top:6px">
-            This is not an empty board: the request failed, so nothing could be loaded.
-            <div style="margin-top:4px">Asana said: <code>${esc(data.error)}</code></div>
-          </div>
-        </div>`;
-      return;
-    }
-
-    asanaPanelCache = tasks;
-    asanaPanelStale = !!data.stale;
-    asanaBoardRender('default');
   } catch (err) { el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`; }
 }
 
