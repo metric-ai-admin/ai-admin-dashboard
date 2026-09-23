@@ -5424,6 +5424,7 @@ function switchMaintenanceView(view) {
     'wo-scheduling':  loadWoScheduling,   // wo-scheduling.js
     'reports-sync':   loadReportsSync,
     'command-center': loadLyndsayCommandCenter,
+    'code-violations': loadCodeViolations,
   };
   loaders[view]?.();
 
@@ -9794,4 +9795,196 @@ document.getElementById('mb-refresh')?.addEventListener('click', e => {
   const b = e.target;
   b.disabled = true; b.textContent = 'Refreshing…';
   loadBrief(true).finally(() => { b.disabled = false; b.textContent = '↻ Refresh'; });
+});
+
+// =====================================================================
+// CODE VIOLATIONS TRACKER (Jay Manuel's spec)
+// =====================================================================
+// A sub-view of Maintenance, which is how the three audiences the spec names
+// get in without inventing a role: admin and regional_director already hold
+// the Maintenance tab, and Erick's role IS 'maintenance'.
+
+let cvxData = null;
+const cvxFilters = { property: '', status: '', category: '', month: '', year: '' };
+
+const cvxEsc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const CVX_MONTHS = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+
+const cvxDay = d => {
+  if (!d) return '';
+  const x = new Date(d + 'T00:00:00');
+  return x.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+// The seven statuses, coloured by how much attention each wants. Pending and
+// No Activity are the ones nobody is currently working.
+const CVX_STATE = {
+  'Pending': 'bad',
+  'Assigned - No Activity': 'bad',
+  'Assigned - In Progress': 'live',
+  'Assigned - Reassignment Needed': 'wait',
+  'Completed - No Need to Bill': 'good',
+  'Completed by Maintenance': 'good',
+  'Closed by Code Compliance': 'good',
+};
+const cvxStatus = s => `<span class="mb-state ${CVX_STATE[s] || 'flat'}">${cvxEsc(s)}</span>`;
+
+function cvxRenderFilters() {
+  const f = cvxData.facets;
+  const sel = (id, label, opts, value) =>
+    `<label class="cvx-filter"><span>${label}</span><select id="${id}">`
+    + '<option value="">All</option>'
+    + opts.map(o => `<option value="${cvxEsc(o.v)}"${String(o.v) === String(value) ? ' selected' : ''}>${cvxEsc(o.t)}</option>`).join('')
+    + '</select></label>';
+
+  document.getElementById('cvx-filters').innerHTML = '<div class="cvx-filters">'
+    + sel('cvx-f-property', 'Property', f.properties.map(v => ({ v, t: v })), cvxFilters.property)
+    + sel('cvx-f-status', 'Status', f.statuses.map(v => ({ v, t: v })), cvxFilters.status)
+    + sel('cvx-f-category', 'Category', f.categories.map(v => ({ v, t: v })), cvxFilters.category)
+    + sel('cvx-f-month', 'Month', CVX_MONTHS.slice(1).map((t, i) => ({ v: i + 1, t })), cvxFilters.month)
+    + sel('cvx-f-year', 'Year', f.years.map(v => ({ v, t: v })), cvxFilters.year)
+    + '<button class="btn btn-ghost" id="cvx-clear">Clear</button>'
+    + '</div>';
+}
+
+function cvxRenderSummary() {
+  const s = cvxData.summary;
+  const tile = (n, label, cls) =>
+    `<div class="rp-total${cls ? ' ' + cls : ''}"><span class="rp-total-num">${n}</span><span class="rp-total-label">${label}</span></div>`;
+  document.getElementById('cvx-summary').innerHTML = '<div class="rp-totals">'
+    + tile(s.total, 'Deficiencies')
+    + tile(s.open, 'Open')
+    + tile(s.pastDeadline, 'Past city deadline', s.pastDeadline ? 'cvx-alert' : '')
+    + tile(s.unverified, 'Unverified closures', s.unverified ? 'cvx-alert' : '')
+    + '</div>'
+    + '<div class="cvx-statusbar">'
+    + cvxData.facets.statuses.map(st =>
+      `<button class="cvx-chip${cvxFilters.status === st ? ' on' : ''}" data-cvx-status="${cvxEsc(st)}">`
+      + `${cvxEsc(st)} <b>${s.byStatus[st]}</b></button>`).join('')
+    + '</div>'
+    + (cvxData.unknownProperties.length
+      ? `<div class="alert-box warn"><div class="al">CHECK</div>Rows name a property that is not one of the nine: ${cvxEsc(cvxData.unknownProperties.join(', '))}. Either a typo or a property nobody added to the list.</div>`
+      : '');
+}
+
+function cvxRenderProperties() {
+  document.getElementById('cvx-properties').innerHTML =
+    '<div class="rp-section-title">By property</div><div class="vac-scroll"><table class="data-table">'
+    + '<thead><tr><th>Property</th><th>Total</th><th>Open</th><th>Past deadline</th><th>Unverified</th></tr></thead><tbody>'
+    + cvxData.byProperty.map(p => `<tr class="${p.total ? '' : 'mb-past'}">`
+      + `<td>${cvxEsc(p.property)}</td><td>${p.total}</td><td>${p.open}</td>`
+      + `<td>${p.pastDeadline ? `<span class="mb-state bad">${p.pastDeadline}</span>` : '<span class="muted">0</span>'}</td>`
+      + `<td>${p.unverified ? `<span class="mb-state wait">&#9873; ${p.unverified}</span>` : '<span class="muted">0</span>'}</td></tr>`).join('')
+    + '</tbody></table></div>';
+}
+
+function cvxRow(r) {
+  // A blank due date means the city issued none. Saying so beats a dash, which
+  // reads like data somebody forgot to fill in.
+  const due = r.due_date
+    ? `<span class="${r.pastDeadline ? 'cvx-late-date' : ''}">${cvxEsc(cvxDay(r.due_date))}</span>`
+    : '<span class="muted" title="No city deadline was issued. Never derived.">none issued</span>';
+  const flag = r.unverified_closure
+    ? `<span class="cvx-flag" title="${cvxEsc(r.unverified_reason || 'Needs human review')}">&#9873;</span> `
+    : '';
+  return `<tr class="${r.pastDeadline ? 'cvx-late' : ''}">`
+    + `<td>${cvxEsc(r.property_name)}</td>`
+    + `<td>${cvxEsc(r.case_number || '—')}</td>`
+    + `<td>${cvxEsc(r.work_order || '—')}</td>`
+    + `<td>${cvxEsc(r.address_unit || '—')}</td>`
+    + `<td>${cvxEsc(r.code_section || '—')}</td>`
+    + `<td>${cvxEsc(cvxDay(r.deficiency_date) || '—')}</td>`
+    + `<td class="cvx-desc" title="${cvxEsc(r.deficiency_description || '')}">${flag}${cvxEsc(r.deficiency_description || '')}</td>`
+    + `<td>${cvxEsc(r.category || '—')}</td>`
+    + `<td>${cvxStatus(r.status)}</td>`
+    + `<td>${due}</td></tr>`;
+}
+
+function cvxRenderRows() {
+  const rows = cvxData.rows;
+  document.getElementById('cvx-rows').innerHTML =
+    `<div class="rp-section-title">Deficiencies <span class="muted">${rows.length}</span></div>`
+    + (rows.length
+      ? '<div class="vac-scroll"><table class="data-table cvx-table"><thead><tr>'
+        + '<th>Property</th><th>Case</th><th>WO</th><th>Building / unit</th><th>Sec.</th>'
+        + '<th>Cited</th><th>Deficiency</th><th>Category</th><th>Status</th><th>Due</th>'
+        + `</tr></thead><tbody>${rows.map(cvxRow).join('')}</tbody></table></div>`
+      : '<p class="mb-empty">No deficiencies match these filters.</p>');
+}
+
+function cvxRenderWatchlist() {
+  const w = cvxData.watchlist || [];
+  const row = i => `<tr class="${i.status === 'Resolved' ? 'mb-past' : ''}">`
+    + `<td>${cvxEsc(i.property_name)}</td>`
+    + `<td title="${cvxEsc(i.detail || '')}">${cvxEsc(i.title)}</td>`
+    + `<td>${cvxEsc(i.authority || '—')}</td>`
+    + `<td>${cvxEsc(i.work_order || '—')}</td>`
+    + `<td>${i.status === 'Resolved' ? '<span class="mb-state good">Resolved</span>' : '<span class="mb-state wait">Open</span>'}</td></tr>`;
+  document.getElementById('cvx-watchlist').innerHTML =
+    `<div class="rp-section-title">Watchlist <span class="muted">${w.length}</span></div>`
+    + '<p class="rp-note">Obligations that never reach the tracker because nothing tagged them a Code Violation in AppFolio. Kept by hand, and deliberately outside the counts above so a watchlist item is never reported to a city or an owner as a tracked citation.</p>'
+    + (w.length
+      ? '<div class="vac-scroll"><table class="data-table"><thead><tr>'
+        + '<th>Property</th><th>Item</th><th>Authority</th><th>WO</th><th>Status</th>'
+        + `</tr></thead><tbody>${w.map(row).join('')}</tbody></table></div>`
+      : '<p class="mb-empty">Nothing on the watchlist.</p>');
+}
+
+function renderCodeViolations() {
+  if (!cvxData) return;
+  document.getElementById('cvx-sub').innerHTML =
+    `One row per cited deficiency, not per work order &middot; ${cvxData.summary.total} shown`;
+  cvxRenderSummary();
+  cvxRenderFilters();
+  cvxRenderProperties();
+  cvxRenderRows();
+  cvxRenderWatchlist();
+}
+
+async function loadCodeViolations() {
+  const wrap = document.getElementById('cvx-rows');
+  if (!wrap) return;
+  wrap.innerHTML = '<p class="muted">Loading…</p>';
+  const qs = new URLSearchParams(Object.entries(cvxFilters).filter(([, v]) => v)).toString();
+  try {
+    cvxData = await api('/api/code-violations' + (qs ? '?' + qs : ''));
+  } catch (err) {
+    // The tables come from a migration a person runs in Supabase, so "not set
+    // up yet" is an expected state rather than a failure to bury in a stack.
+    const setup = /not set up yet/.test(err.message || '');
+    wrap.innerHTML = `<div class="alert-box warn"><div class="al">${setup ? 'SETUP' : 'ERROR'}</div>${cvxEsc(err.message || 'Could not load.')}</div>`;
+    ['cvx-summary', 'cvx-filters', 'cvx-properties', 'cvx-watchlist'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.innerHTML = '';
+    });
+    return;
+  }
+  renderCodeViolations();
+}
+
+// Delegated — the filter controls are re-rendered on every load.
+document.getElementById('maint-view-code-violations')?.addEventListener('change', e => {
+  const map = { 'cvx-f-property': 'property', 'cvx-f-status': 'status',
+    'cvx-f-category': 'category', 'cvx-f-month': 'month', 'cvx-f-year': 'year' };
+  const key = map[e.target.id];
+  if (!key) return;
+  cvxFilters[key] = e.target.value;
+  loadCodeViolations();
+});
+
+document.getElementById('maint-view-code-violations')?.addEventListener('click', e => {
+  const chip = e.target.closest('[data-cvx-status]');
+  if (chip) {
+    const v = chip.dataset.cvxStatus;
+    cvxFilters.status = cvxFilters.status === v ? '' : v;   // clicking again clears it
+    loadCodeViolations();
+    return;
+  }
+  if (e.target.id === 'cvx-clear') {
+    Object.keys(cvxFilters).forEach(k => { cvxFilters[k] = ''; });
+    loadCodeViolations();
+  }
+  if (e.target.id === 'cvx-refresh') loadCodeViolations();
 });

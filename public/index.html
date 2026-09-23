@@ -98,6 +98,7 @@
             <button data-maint-view="wo-scheduling">WO Scheduling</button>
             <button data-maint-view="reports-sync">Reports Sync</button>
             <button data-maint-view="command-center">Command Center</button>
+            <button data-maint-view="code-violations">Code Violations</button>
           </div>
         </div>
         <button data-tab="accounting"><span class="nav-ico">💰</span>Accounting</button>
@@ -1713,6 +1714,21 @@
     </div>
 
     <!-- 12. Command Center -->
+    <div id="maint-view-code-violations" class="maint-view hidden">
+      <div class="dq-head">
+        <div>
+          <h2 class="dq-title">Code Violations Tracker</h2>
+          <p class="muted small" id="cvx-sub">One row per cited deficiency.</p>
+        </div>
+        <button class="btn btn-ghost" id="cvx-refresh">&#8635; Refresh</button>
+      </div>
+      <div id="cvx-summary"></div>
+      <div id="cvx-filters"></div>
+      <div id="cvx-properties"></div>
+      <div id="cvx-rows"></div>
+      <div id="cvx-watchlist"></div>
+    </div>
+
     <div id="maint-view-command-center" class="maint-view hidden">
       <div class="view-head">
         <div>

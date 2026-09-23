@@ -2566,3 +2566,36 @@ tr.ca-sel { background: var(--accent-glow); }
 .mb-state.live { background: var(--info-bg);    color: var(--info); }
 .mb-state.bad  { background: var(--critical-bg); color: var(--critical); }
 .mb-state.flat { background: var(--bg-elevated); color: var(--text-secondary); }
+
+/* ---- Code Violations Tracker (Jay Manuel) ------------------------------ */
+.cvx-filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 14px 0; }
+.cvx-filter { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-secondary); }
+.cvx-filter select {
+  background: var(--bg-elevated); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
+  font: inherit; font-size: 13px; min-width: 130px;
+}
+.cvx-statusbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.cvx-chip {
+  background: var(--bg-elevated); color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 20px; padding: 5px 12px;
+  font: inherit; font-size: 12px; cursor: pointer;
+}
+.cvx-chip b { color: var(--text-primary); margin-left: 4px; }
+.cvx-chip:hover { filter: brightness(1.1); }
+.cvx-chip.on { border-color: var(--accent); color: var(--text-primary); }
+
+/* Past a city deadline. The left edge carries it rather than a full red row —
+   at 13 of 67 rows a wash of red stops meaning anything. */
+.cvx-late td:first-child { box-shadow: inset 3px 0 0 var(--critical); }
+.cvx-late-date { color: var(--critical); font-weight: 650; }
+.cvx-alert .rp-total-num { color: var(--critical); }
+/* Human review required before this is reported to a city or an owner. */
+.cvx-flag { color: var(--warning); font-weight: 700; cursor: help; }
+
+/* The citation text is the widest column by far and the only one worth
+   wrapping; everything else stays on one line so the row scans. */
+.cvx-table td { white-space: nowrap; }
+.cvx-table .cvx-desc {
+  white-space: normal; min-width: 260px; max-width: 460px; line-height: 1.45;
+}

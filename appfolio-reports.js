@@ -214,31 +214,19 @@ const REPORTS = [
   // per-tenant rather than per-lease (15 rows for the same 11 leases, the
   // extra 4 being roommates and occupants) and it carries resident birthdates,
   // which is PII this dashboard has no reason to hold on disk.
-  // ---- PROBE 2026-09-23: is Jay's saved report reachable? ------------------
-  // Jay's spec points at /reports/joined_reports/66378e55-6e71-11f1-948b-
-  // 0269bfa09cb1. That is the UI surface. This file already records (see
-  // tenant_tickler) that saved-report UUIDs are unreachable from the public
-  // API and that the workaround is to pull the BASE report. Registering both
-  // spellings settles whether that still holds, rather than assuming it.
-  // Both entries come straight back out once the answer is recorded.
-  {
-    id: 'probe_cv_uuid',
-    resource: '66378e55-6e71-11f1-948b-0269bfa09cb1',
-    label: 'PROBE — code violation saved report by UUID',
-    group: 'Probe',
-    priority: 9,
-    feeds: 'Probe only',
-    params: {},
-  },
-  {
-    id: 'probe_cv_joined',
-    resource: 'joined_reports/66378e55-6e71-11f1-948b-0269bfa09cb1',
-    label: 'PROBE — code violation saved report, joined_reports path',
-    group: 'Probe',
-    priority: 9,
-    feeds: 'Probe only',
-    params: {},
-  },
+  // ---- Jay's "Code Violation Work Orders" saved report: NOT REACHABLE -----
+  // Probed live 2026-09-23, both spellings of
+  // /reports/joined_reports/66378e55-6e71-11f1-948b-0269bfa09cb1:
+  //   66378e55-...            400  {"message":["Id is not a valid report."]}
+  //   joined_reports/66378e55-...  404  report not found
+  // So the tenant_tickler note above still holds: saved-report UUIDs are
+  // unreachable from the public API. Unlike tenant_tickler, there is no base
+  // report to fall back to that carries the same grain — work_order returns
+  // ONE ROW PER WORK ORDER, and Jay's tracker is one row per cited deficiency
+  // (WO 22882-1 alone covers three separate citations). The deficiency grain
+  // exists only in the workbook humans maintain, which is why the Code
+  // Violations tracker is a Supabase table rather than a synced report.
+  // Don't re-register this without a name confirmed against a live request.
   {
     id: 'rent_roll',
     resource: 'rent_roll',

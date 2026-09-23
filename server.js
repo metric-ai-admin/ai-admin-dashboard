@@ -4831,6 +4831,162 @@ app.get('/api/regional/weekly-brief', requireAuth, requireRole(...DECISION_QUEUE
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- Code Violations Tracker (Jay Manuel's spec) -----------------------------
+// Erick's role in dashboard_users is `maintenance`, not `maintenance_coordinator`
+// as the spec wrote it — checked against the table rather than assumed, since a
+// role that does not exist silently locks out the one person who needs this daily.
+const CODE_VIOLATION_ROLES = ['admin', 'regional_director', 'maintenance'];
+const codeViolations = require('./code-violations.js');
+
+// Until migration 057 is run in the Supabase editor the tables do not exist.
+// PostgREST answers 42P01; the UI should say "not set up yet" rather than show a
+// stack trace, so that one case is translated and everything else re-thrown.
+const CV_NO_TABLE = 'Code Violations tables are not set up yet — run supabase/migrations/057_code_violations.sql in the Supabase SQL editor.';
+const cvErr = err => (err && /does not exist|schema cache/i.test(err.message || '') ? CV_NO_TABLE : null);
+
+app.get('/api/code-violations', requireAuth, requireRole(...CODE_VIOLATION_ROLES), async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const [v, w] = await Promise.all([
+      db.from('code_violations').select('*').limit(5000),
+      db.from('code_violation_watchlist').select('*').order('property_name').limit(1000),
+    ]);
+    const missing = cvErr(v.error) || cvErr(w.error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (v.error) throw new Error('code_violations: ' + v.error.message);
+    if (w.error) throw new Error('code_violation_watchlist: ' + w.error.message);
+
+    const todayCT = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+    const out = codeViolations.buildTracker(v.data || [], {
+      today: todayCT,
+      filters: {
+        property: req.query.property || '', status: req.query.status || '',
+        category: req.query.category || '', month: req.query.month || '', year: req.query.year || '',
+      },
+    });
+    res.json({ ...out, watchlist: w.data || [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Update one deficiency. Only the fields a person is allowed to change by hand;
+// the key, the property and the citation text are not among them, because
+// editing those would quietly make the row a different row.
+app.patch('/api/code-violations/:key', requireAuth, requireRole(...CODE_VIOLATION_ROLES), async (req, res) => {
+  const { status, due_date, pending_items, progress_notes, clearFlag } = req.body || {};
+  const patch = { updated_at: new Date().toISOString(), updated_by: actorName(req) };
+
+  if (status !== undefined) {
+    if (!codeViolations.STATUSES.includes(status)) {
+      return res.status(400).json({ error: 'Status must be one of the seven.' });
+    }
+    patch.status = status;
+    // OPEN QUESTION 1 — who may set this — is NOT decided here. What IS decided
+    // is that it never arrives from an importer and always leaves a name and a
+    // time behind it, so whatever gate is chosen later has an audit trail to sit
+    // on top of.
+    if (status === 'Closed by Code Compliance') {
+      patch.closed_by = actorName(req);
+      patch.closed_at = new Date().toISOString();
+    }
+  }
+  // A due date is only ever what the city issued, so it is set and cleared by
+  // hand and never computed from anything.
+  if (due_date !== undefined) patch.due_date = codeViolations.isoDate(due_date);
+  if (pending_items !== undefined) patch.pending_items = String(pending_items || '').trim() || null;
+  if (progress_notes !== undefined) patch.progress_notes = String(progress_notes || '').trim() || null;
+  if (clearFlag) {
+    patch.unverified_closure = false;
+    patch.verified_by = actorName(req);
+    patch.verified_at = new Date().toISOString();
+  }
+
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('code_violations')
+      .update(patch).eq('deficiency_key', req.params.key).select();
+    const missing = cvErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    if (!data || !data.length) return res.status(404).json({ error: 'No deficiency with that key.' });
+    res.json({ ok: true, row: data[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Import / re-import. Upserts on deficiency_key, so running the same workbook
+// twice updates rows instead of duplicating them — see open question 2.
+// Rejected rows are RETURNED, never skipped quietly: a citation that fails to
+// import is the one thing this module must not lose without saying so.
+app.post('/api/code-violations/import', requireAuth, requireRole('admin'), async (req, res) => {
+  const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : null;
+  if (!rows) return res.status(400).json({ error: 'Send { rows: [...] }' });
+  const now = new Date().toISOString();
+  const ok = [], rejected = [];
+  rows.forEach((raw, i) => {
+    const r = codeViolations.normaliseImportRow(raw, { source: (req.body && req.body.source) || 'excel' });
+    if (r.ok) ok.push({ ...r.row, imported_at: now, updated_at: now, updated_by: actorName(req) });
+    else rejected.push({ line: i + 1, property: raw.property_name, work_order: raw.work_order, error: r.error });
+  });
+
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    let written = 0;
+    for (let i = 0; i < ok.length; i += 500) {
+      const chunk = ok.slice(i, i + 500);
+      const { data, error } = await db.from('code_violations')
+        .upsert(chunk, { onConflict: 'deficiency_key' }).select('deficiency_key');
+      const missing = cvErr(error);
+      if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+      if (error) throw new Error(error.message);
+      written += (data || chunk).length;
+    }
+    res.json({ ok: true, received: rows.length, written, rejected });
+  } catch (err) { res.status(500).json({ error: err.message, rejected }); }
+});
+
+// ---- Watchlist ---------------------------------------------------------------
+// Obligations that never reach the feed because nothing tagged them a code
+// violation. Entirely human-maintained, by design.
+app.post('/api/code-violations/watchlist', requireAuth, requireRole(...CODE_VIOLATION_ROLES), async (req, res) => {
+  const { property_name, title, authority, work_order, detail, due_date } = req.body || {};
+  if (!String(property_name || '').trim() || !String(title || '').trim()) {
+    return res.status(400).json({ error: 'A property and a title are required.' });
+  }
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('code_violation_watchlist').insert({
+      property_name: String(property_name).trim(), title: String(title).trim(),
+      authority: String(authority || '').trim() || null,
+      work_order: String(work_order || '').trim() || null,
+      detail: String(detail || '').trim() || null,
+      due_date: codeViolations.isoDate(due_date),
+      added_by: actorName(req),
+    }).select();
+    const missing = cvErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, row: data[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/code-violations/watchlist/:id', requireAuth, requireRole(...CODE_VIOLATION_ROLES), async (req, res) => {
+  const patch = { updated_at: new Date().toISOString() };
+  if (req.body && req.body.status) {
+    patch.status = req.body.status === 'Resolved' ? 'Resolved' : 'Open';
+    if (patch.status === 'Resolved') { patch.resolved_by = actorName(req); patch.resolved_at = new Date().toISOString(); }
+    else { patch.resolved_by = null; patch.resolved_at = null; }
+  }
+  if (req.body && req.body.detail !== undefined) patch.detail = String(req.body.detail || '').trim() || null;
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('code_violation_watchlist').update(patch).eq('id', req.params.id).select();
+    const missing = cvErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    if (!data || !data.length) return res.status(404).json({ error: 'No watchlist item with that id.' });
+    res.json({ ok: true, row: data[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/collections/decision-queue', requireAuth, requireRole(...DECISION_QUEUE_ROLES), async (req, res) => {
   try {
     const out = await decisionQueueData({ refresh: req.query.refresh === '1' });
