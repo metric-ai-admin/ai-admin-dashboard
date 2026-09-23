@@ -2504,3 +2504,27 @@ tr.ca-sel { background: var(--accent-glow); }
   border-radius: 50%; animation: sync-spin 0.7s linear infinite; vertical-align: -1px; }
 @keyframes sync-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .sync-spin { animation: none; } }
+
+/* ---- Monday Morning Brief (Bekah, Module 3) ---------------------------- */
+.mb-wrap { margin: 28px 0 26px; padding-top: 22px; border-top: 1px solid var(--border); }
+.mb-section { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+.mb-head {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 12px 14px; background: var(--bg-elevated); border: 0;
+  color: var(--text-primary); font: inherit; font-weight: 600; text-align: left; cursor: pointer;
+}
+.mb-head:hover { filter: brightness(1.08); }
+.mb-caret { width: 12px; color: var(--text-secondary); }
+.mb-title { flex: 1; }
+.mb-count {
+  min-width: 26px; padding: 2px 9px; border-radius: 20px; text-align: center;
+  background: var(--info-bg); color: var(--info); font-size: 12px; font-weight: 700;
+}
+/* A zero is information, not an alert — it should not read as a warning. */
+.mb-count.zero { background: var(--bg-elevated); color: var(--text-secondary); }
+.mb-body { padding: 4px 14px 10px; }
+.mb-empty { color: var(--text-secondary); font-size: 13px; padding: 12px 0 8px; margin: 0; }
+.mb-table { width: 100%; }
+.mb-table td, .mb-table th { white-space: nowrap; }
+/* Earlier in the same week: still this week's news, but already behind us. */
+.mb-past td { opacity: 0.6; }

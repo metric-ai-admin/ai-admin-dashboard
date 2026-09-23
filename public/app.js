@@ -275,7 +275,7 @@ function loadTab(tab) {
   if (tab === 'calls') loadCallAnalyzer();
   if (tab === 'evictions') loadEvictions();
   if (tab === 'vacancy') loadVacancy();
-  if (tab === 'collections') { loadCollections(); loadDecisionQueue(); loadRegional(); }
+  if (tab === 'collections') { loadCollections(); loadDecisionQueue(); loadRegional(); loadBrief(); }
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
@@ -9071,7 +9071,7 @@ function renderVacancy() {
 
   $('#vac-synced').innerHTML = `AppFolio data pulled <strong>${vacWhen(m.syncedAt)}</strong> · ${s.inputRows} units`
     + (m.collapseFloorPlans ? ' · floor plans collapsed' : '')
-    + (m.syncError ? ' · <span class="badge red">sync failed, showing last good pull</span>' : '');
+    + (m.syncError ? ' · <span class="badge badge-red">sync failed, showing last good pull</span>' : '');
 
   $('#vac-kpi').innerHTML = [
     { n: s.remove, label: 'To remove', cls: 'kpi-chip-red' },
@@ -9473,7 +9473,7 @@ function rpCard(c) {
   return `<article class="rp-card rp-edge-${worst}">
     <header class="rp-card-head">
       <span class="rp-prop">${rpEsc(c.property)}</span>
-      ${c.codeViolations ? `<span class="badge red">${c.codeViolations} code violation${c.codeViolations === 1 ? '' : 's'}</span>` : ''}
+      ${c.codeViolations ? `<span class="badge badge-red">${c.codeViolations} code violation${c.codeViolations === 1 ? '' : 's'}</span>` : ''}
     </header>
     <div class="rp-stats">
       ${stat('Vacant units', c.vacantUnits + (c.onNotice ? ` <span class="muted">+${c.onNotice} on notice</span>` : ''))}
@@ -9561,7 +9561,7 @@ document.getElementById('rp-refresh')?.addEventListener('click', e => {
 // footer. The server paces the work; this just reports it.
 
 const SYNC_SOURCE_ORDER = ['unit_vacancy', 'delinquency_as_of', 'work_order',
-  'work_order_labor_summary', 'wo_completed', 'guest_cards', 'showings',
+  'work_order_labor_summary', 'wo_completed', 'tenant_tickler', 'guest_cards', 'showings',
   'applications', 'lease_history'];
 
 const syncEsc = s => String(s == null ? '' : s)
@@ -9619,6 +9619,7 @@ document.getElementById('sync-all-btn')?.addEventListener('click', async () => {
     state.failed ? 'error' : 'success');
     // Anything on screen that reads synced data is now stale — refetch it.
     if (typeof rpData !== 'undefined') { rpData = null; if (!document.getElementById('rp-wrap')?.hidden) loadRegional(true); }
+    if (typeof mbData !== 'undefined') { mbData = null; if (!document.getElementById('mb-wrap')?.hidden) loadBrief(true); }
     if (typeof vacancyData !== 'undefined' && !document.getElementById('vac-body')?.hidden) loadVacancy(false);
   } catch (err) {
     renderSyncStatus(null, false);
@@ -9629,4 +9630,143 @@ document.getElementById('sync-all-btn')?.addEventListener('click', async () => {
     btn.textContent = '⚡ Sync All Data';
     console.log(`[sync-all] round trip ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   }
+});
+
+// =====================================================================
+// MONDAY MORNING BRIEF (Bekah, Module 3)
+// =====================================================================
+// Four collapsible sections over already-synced data. Read-only. Works any
+// day of the week — the header names the Mon–Sun window it is showing, so a
+// Thursday reader is never left guessing which week they are looking at.
+
+let mbData = null;
+
+const mbEsc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const mbDay = d => {
+  if (!d) return '—';
+  const x = new Date(d + 'T00:00:00');
+  return x.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+};
+
+function mbWhen(iso) {
+  if (!iso || iso === 'live table') return 'live';
+  try {
+    return new Date(iso).toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'medium', timeStyle: 'short' });
+  } catch { return String(iso); }
+}
+
+// Collapsed state is per browser and per section — Bekah keeps move-outs open
+// and tours closed; that preference should survive a refresh.
+const MB_OPEN_KEY = 'metric.brief.open';
+const mbOpen = () => {
+  try { return JSON.parse(localStorage.getItem(MB_OPEN_KEY)) || {}; } catch { return {}; }
+};
+const mbSetOpen = (id, on) => {
+  try { const s = mbOpen(); s[id] = on; localStorage.setItem(MB_OPEN_KEY, JSON.stringify(s)); } catch { /* private window */ }
+};
+
+function mbSection(id, title, rows, cols, opts = {}) {
+  const open = mbOpen()[id] !== false;   // open by default
+  const body = rows.length
+    ? `<div class="vac-scroll"><table class="data-table mb-table">
+        <thead><tr>${cols.map(c => `<th>${c.h}</th>`).join('')}</tr></thead>
+        <tbody>${rows.map(r => `<tr class="${opts.rowClass ? opts.rowClass(r) : ''}">${cols.map(c => `<td>${c.v(r)}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table></div>`
+    : `<p class="mb-empty">${mbEsc(opts.empty || 'None scheduled this week.')}</p>`;
+  return `<section class="mb-section" data-mb="${id}">
+    <button class="mb-head" type="button" aria-expanded="${open}">
+      <span class="mb-caret">${open ? '▾' : '▸'}</span>
+      <span class="mb-title">${mbEsc(title)}</span>
+      <span class="mb-count${rows.length ? '' : ' zero'}">${rows.length}</span>
+    </button>
+    <div class="mb-body" ${open ? '' : 'hidden'}>${body}${opts.note ? `<p class="rp-note">${mbEsc(opts.note)}</p>` : ''}</div>
+  </section>`;
+}
+
+function renderBrief() {
+  if (!mbData) return;
+  const { week, horizon, moveIns, moveOuts, tours, expirations, coverage, syncedAt } = mbData;
+  const freshest = [syncedAt?.tickler, syncedAt?.vacancy].filter(Boolean).sort().pop();
+
+  document.getElementById('mb-sub').innerHTML =
+    `Week of ${mbEsc(mbDay(week.start))} — ${mbEsc(mbDay(week.end))} · data as of ${mbEsc(mbWhen(freshest))}`;
+
+  const prop = r => mbEsc(r.property) + (r.unit ? ` <span class="muted">${mbEsc(r.unit)}</span>` : '');
+
+  document.getElementById('mb-sections').innerHTML = [
+    mbSection('movein', 'Move-ins this week', moveIns, [
+      { h: 'Date', v: r => mbEsc(mbDay(r.date)) },
+      { h: 'Resident', v: r => mbEsc(r.tenant) + (r.renewal ? ' <span class="badge badge-gray">renewal</span>' : '') },
+      { h: 'Property / unit', v: prop },
+      { h: 'Lease status', v: r => `<span class="muted">${mbEsc(r.status || '—')}</span>` },
+    ], { empty: 'None scheduled this week.' }),
+
+    mbSection('moveout', 'Move-outs this week', moveOuts, [
+      { h: 'Date', v: r => mbEsc(mbDay(r.date)) },
+      { h: 'Resident', v: r => mbEsc(r.tenant) },
+      { h: 'Property / unit', v: prop },
+      { h: 'Phone', v: r => (r.phone ? mbEsc(r.phone) : '<span class="muted">—</span>') },
+      { h: 'Reason', v: r => `<span class="muted">${mbEsc(r.reason || (r.rented ? 'already re-rented' : '—'))}</span>` },
+    ], { empty: 'None scheduled this week.' }),
+
+    mbSection('tours', 'Scheduled tours this week', tours, [
+      { h: 'Date', v: r => mbEsc(mbDay(r.date)) },
+      { h: 'Prospect', v: r => mbEsc(r.prospect) },
+      { h: 'Property / unit', v: prop },
+      { h: 'Type', v: r => `<span class="muted">${mbEsc(r.type || '—')}</span>` },
+      { h: 'Status', v: r => mbEsc(r.status || '—') },
+    ], {
+      empty: 'None scheduled this week.',
+      rowClass: r => (r.past ? 'mb-past' : ''),
+    }),
+
+    mbSection('expiry', `Lease expirations — next ${horizon.days} days`, expirations, [
+      { h: 'Expires', v: r => `${mbEsc(mbDay(r.date))} <span class="muted">${r.daysOut}d</span>` },
+      { h: 'Resident', v: r => mbEsc(r.tenant) },
+      { h: 'Property / unit', v: prop },
+      { h: 'Renewal', v: r => (r.onNotice
+        ? '<span class="badge badge-red">on notice</span>'
+        : '<span class="muted">not recorded</span>') },
+    ], {
+      empty: 'None expiring in the next 30 days.',
+      note: coverage?.expirations?.note,
+    }),
+  ].join('');
+}
+
+async function loadBrief(force) {
+  const wrap = document.getElementById('mb-wrap');
+  if (!wrap) return;
+  if (!DQ_ROLES.includes(currentUser?.role)) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  if (mbData && !force) { renderBrief(); return; }
+  document.getElementById('mb-sections').innerHTML = '<p class="muted">Loading…</p>';
+  try { mbData = await api('/api/regional/weekly-brief'); }
+  catch (err) {
+    document.getElementById('mb-sections').innerHTML =
+      `<div class="alert-box warn"><div class="al">ERROR</div>${mbEsc(err.message || 'Could not load.')}</div>`;
+    return;
+  }
+  renderBrief();
+}
+
+// Delegated, because the sections are re-rendered on every load.
+document.getElementById('mb-sections')?.addEventListener('click', e => {
+  const head = e.target.closest('.mb-head');
+  if (!head) return;
+  const section = head.closest('.mb-section');
+  const body = section.querySelector('.mb-body');
+  const open = body.hidden;
+  body.hidden = !open;
+  head.setAttribute('aria-expanded', String(open));
+  section.querySelector('.mb-caret').textContent = open ? '▾' : '▸';
+  mbSetOpen(section.dataset.mb, open);
+});
+
+document.getElementById('mb-refresh')?.addEventListener('click', e => {
+  const b = e.target;
+  b.disabled = true; b.textContent = 'Refreshing…';
+  loadBrief(true).finally(() => { b.disabled = false; b.textContent = '↻ Refresh'; });
 });

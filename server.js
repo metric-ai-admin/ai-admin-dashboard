@@ -4678,6 +4678,9 @@ function syncAllTasks() {
     report('work_order', 'Work Orders'),
     report('work_order_labor_summary', 'Labor Summary'),
     report('wo_completed', 'Completed WOs'),
+    // Added 2026-09-23 for the Monday Morning Brief: move-outs and lease end
+    // dates come from here, and it was previously only synced by hand.
+    report('tenant_tickler', 'Move Ins / Outs'),
     { id: 'guest_cards', label: 'Guest Cards', run: async () => {
       const j = await callOwnRoute('/api/leasing/sync', { date_from: fromCT, date_to: todayCT });
       return { rows: j.count ?? j.rows ?? null };
@@ -4776,6 +4779,45 @@ app.get('/api/regional/performance', requireAuth, requireRole(...DECISION_QUEUE_
         delinquency: (del && del.fetchedAt) || null,
         workOrders: wos.length ? 'live table' : null,
         leasing: leads.length ? 'live table' : null,
+      },
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- Monday Morning Brief (Bekah's Module 3) ---------------------------------
+// Same audience again, and again no AppFolio calls: four already-synced sources,
+// filtered to the current Mon–Sun week. Works any day, not only Monday.
+app.get('/api/regional/weekly-brief', requireAuth, requireRole(...DECISION_QUEUE_ROLES), async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const af = require('./appfolio-reports.js');
+    const todayCT = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
+
+    // Both leasing tables are small (tens of rows), so a single page is enough —
+    // but the limit is set above the Supabase default so growth is not silently
+    // truncated the way an unbounded select would be.
+    const [tick, vac, lease, shows] = await Promise.all([
+      af.readReportData('tenant_tickler'),
+      af.readReportData('unit_vacancy'),
+      db.from('leasing_lease_history').select('property_name,move_in_date,tenant_name,renewal,status').limit(5000),
+      db.from('leasing_showings').select('property_name,unit,prospect,showing_date,status,type,synced_at').limit(5000),
+    ]);
+    if (lease.error) throw new Error('leasing_lease_history: ' + lease.error.message);
+    if (shows.error) throw new Error('leasing_showings: ' + shows.error.message);
+
+    const brief = require('./weekly-brief.js').buildWeeklyBrief({
+      tickler: (tick && tick.rows) || [],
+      vacancy: (vac && vac.rows) || [],
+      leaseHistory: lease.data || [],
+      showings: shows.data || [],
+    }, { today: todayCT, isExcludedProperty: propertyIsExcluded });
+
+    res.json({
+      ...brief,
+      syncedAt: {
+        tickler: (tick && tick.fetchedAt) || null,
+        vacancy: (vac && vac.fetchedAt) || null,
+        leasing: (shows.data || []).reduce((m, r) => (r.synced_at > m ? r.synced_at : m), '') || 'live table',
       },
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
