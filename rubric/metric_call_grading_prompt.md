@@ -63,7 +63,10 @@ If the call type cannot be determined from the transcript, mark NOT SCOREABLE wi
 Mark the call NOT SCOREABLE (do not grade) if ANY of the following apply:
 
 - Call is a voicemail with no live conversation
-- Call is an outbound voicemail left by the agent (score the voicemail separately using the voicemail standard in Step 9)
+- Call is an outbound voicemail left by the agent — **this is SCOREABLE, not a
+  gate.** Do not mark it NOT SCOREABLE. Grade it against the voicemail standard
+  in Step 9 and report a normal score and grade. (A voicemail the agent *reached*
+  and did not leave a message on is covered by the first bullet above.)
 - Audio is too garbled or incomplete to evaluate
 - Call duration is less than 20 seconds with no substantive content
 - Call is a wrong number

@@ -126,12 +126,63 @@ function detectAgentFromTranscript(transcript) {
 // error (429, 5xx, credits) is worth retrying, but a malformed response for a
 // given transcript reproduces every time — re-grading it just spends the money
 // again. The auto-grade path stores those as Not Scoreable instead of retrying.
+// Finds the outermost {...} in a response that also contains prose.
+//
+// Brace counting alone is not enough: a transcript quoted inside a "note" can
+// contain a brace, and an apostrophe-heavy call can contain an escaped quote.
+// So string state is tracked — braces inside a JSON string do not count, and a
+// backslash-escaped quote does not close one.
+function extractJsonObject(text) {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0, inString = false, escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (c === '\\') { escaped = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
+  }
+  return null;   // opened and never closed — truncation, not prose
+}
+
+// Parse the model's JSON out of its response.
+//
+// A parse failure is tagged with code MALFORMED_JSON so callers can tell it
+// apart from a transport/API error. The distinction matters for retries: an API
+// error (429, 5xx, credits) is worth retrying, but a malformed response for a
+// given transcript reproduces every time — re-grading it just spends the money
+// again. The auto-grade path stores those as Not Scoreable instead of retrying.
+//
+// That reproducibility is the clue that solved the 2026-09-22 case. One call —
+// a 35-second outbound voicemail, 535 characters, pure ASCII, no escapes and no
+// braces — failed three separate times. Nothing in the transcript could break
+// JSON. The response did parse as JSON; it just was not ONLY JSON. The old
+// version stripped a fence at each END of the string and handed the whole
+// remainder to JSON.parse, so any sentence the model wrote before or after the
+// object failed the parse and lost the entire grading.
+//
+// Step 3 is what invites that sentence. It lists "outbound voicemail left by
+// the agent" as NOT SCOREABLE and in the same breath says to score it against
+// the Step 9 voicemail standard, so on exactly this kind of call the model has
+// something to explain before it can answer. Extracting the object is the
+// robust fix; an unparseable response is still an error, just no longer one
+// that a bit of prose can cause.
 function parseModelJson(text) {
   let clean = String(text || '').trim();
-  clean = clean.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '');
+  // Fences anywhere, not only at the ends — prose before the fence was the bug.
+  clean = clean.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
   try {
     return JSON.parse(clean);
   } catch (err) {
+    const extracted = extractJsonObject(clean);
+    if (extracted) {
+      try {
+        return JSON.parse(extracted);
+      } catch (err2) { /* fall through to the original error */ }
+    }
     const e = new Error('Model returned malformed JSON: ' + err.message);
     e.code = 'MALFORMED_JSON';
     // First 300 chars only — a transcript excerpt is resident PII and this ends
@@ -304,4 +355,4 @@ async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs 
   return textBlock.text;
 }
 
-module.exports = { SYSTEM_PROMPT, gradeTranscript, normaliseScoreability, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };
+module.exports = { SYSTEM_PROMPT, gradeTranscript, normaliseScoreability, parseModelJson, extractJsonObject, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };
