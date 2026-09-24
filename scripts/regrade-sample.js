@@ -33,8 +33,14 @@ const arg = (name, dflt) => {
 const DATE = arg('date', null);
 const N = Number(arg('n', 15));
 const WRITE_CSV = process.argv.includes('--write-csv');
+// Restrict to calls that actually carry a score. The default is everything,
+// because a rubric change can move a call ACROSS the N/S line in either
+// direction and that is worth seeing — but "the 55 scored calls" is the usual
+// ask, and asking for it should not silently return 55 of the 69 including N/S.
+const SCORED_ONLY = process.argv.includes('--scored-only');
+const DRY_RUN = process.argv.includes('--dry-run');
 
-if (!process.env.ANTHROPIC_API_KEY) {
+if (!process.env.ANTHROPIC_API_KEY && !DRY_RUN) {
   console.error('ANTHROPIC_API_KEY is not set in this shell.');
   console.error('Run as:  ANTHROPIC_API_KEY=<key> node scripts/regrade-sample.js --date 2026-09-22 --n 15');
   process.exit(2);
@@ -65,14 +71,35 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
   if (!stored.length) throw new Error('no graded calls found' + (DATE ? ' for ' + DATE : ''));
 
   const day = DATE || stored.map(r => r.call_date).sort().pop();
-  const batch = stored.filter(r => r.call_date === day).sort((a, b) => a.recording_id.localeCompare(b.recording_id));
-  console.log(`batch: ${day} — ${batch.length} graded (${batch.filter(r => !r.not_scoreable).length} scored)`);
+  const wholeDay = stored.filter(r => r.call_date === day).sort((a, b) => a.recording_id.localeCompare(b.recording_id));
+  const batch = SCORED_ONLY ? wholeDay.filter(r => !r.not_scoreable) : wholeDay;
+  console.log(`batch: ${day} — ${wholeDay.length} graded (${wholeDay.filter(r => !r.not_scoreable).length} scored, ${wholeDay.filter(r => r.not_scoreable).length} N/S)`);
+  if (SCORED_ONLY) console.log('--scored-only: N/S calls excluded');
 
-  // Evenly spaced sample, deterministic.
-  const step = Math.max(1, Math.floor(batch.length / N));
-  const sample = [];
-  for (let i = 0; i < batch.length && sample.length < N; i += step) sample.push(batch[i]);
-  console.log(`sampling ${sample.length} of them, evenly spaced\n`);
+  // Take everything when asked for at least as many as there are. Spacing only
+  // applies to a genuine SAMPLE; applied to a full run it would silently drop
+  // the tail of the batch.
+  let sample;
+  if (!Number.isFinite(N) || N >= batch.length) {
+    sample = batch;
+    console.log(`running the FULL batch: ${sample.length} calls\n`);
+  } else {
+    const step = Math.max(1, Math.floor(batch.length / N));
+    sample = [];
+    for (let i = 0; i < batch.length && sample.length < N; i += step) sample.push(batch[i]);
+    console.log(`sampling ${sample.length} of ${batch.length}, evenly spaced\n`);
+  }
+
+  // Say what this will cost before spending it — 55 calls is real money and
+  // roughly ten minutes, and a typo in --date should not discover that.
+  console.log(`this will make ${sample.length} model call(s) at ~6k max output tokens each`);
+  console.log(`expect roughly ${Math.ceil(sample.length * 8 / 60)}-${Math.ceil(sample.length * 15 / 60)} minutes\n`);
+  if (DRY_RUN) {
+    console.log('--dry-run: stopping before any model call.');
+    console.log('first five calls that would be graded:');
+    sample.slice(0, 5).forEach(r => console.log(`  ${r.recording_id}  ${r.agent_name}  stored ${r.not_scoreable ? 'N/S' : r.overall_grade + ' ' + r.overall_score}`));
+    return;
+  }
 
   // Transcripts.
   const ids = sample.map(r => r.recording_id);
@@ -126,6 +153,11 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
   const sa = results.filter(r => !r.fresh.not_scoreable).map(r => r.fresh.overall_score || 0);
   console.log(`\n  mean score   before ${mean(sb)}   after ${mean(sa)}   (${mean(sa) - mean(sb) >= 0 ? '+' : ''}${mean(sa) - mean(sb)})`);
   console.log(`  N/S          before ${before['N/S']}   after ${after['N/S']}`);
+
+  const moved = results.filter(r => gradeOf(r.stored) !== gradeOf(r.fresh));
+  const up = moved.filter(r => GRADE_ORDER.indexOf(gradeOf(r.fresh)) < GRADE_ORDER.indexOf(gradeOf(r.stored)));
+  console.log(`\n  GRADE CHANGED on ${moved.length} of ${results.length} calls — ${up.length} up, ${moved.length - up.length} down`);
+  moved.forEach(r => console.log(`    ${String(r.stored.agent_name || '?').padEnd(16)} ${gradeOf(r.stored)} ${String(r.stored.overall_score ?? '').padStart(3)}  →  ${gradeOf(r.fresh)} ${String(r.fresh.overall_score ?? '').padStart(3)}`));
 
   // Which criteria stopped being zeroed — the most useful single view.
   const zeros = rows => {
