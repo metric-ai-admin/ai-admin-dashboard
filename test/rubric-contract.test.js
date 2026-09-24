@@ -57,6 +57,17 @@ check('Rubric H excludes vendors', ['VENDORS ARE NOT BUSINESS DEVELOPMENT']);
 console.log('\n6  TERMINOLOGY');
 check('never "listing department"', ['NEVER "listing department"', 'leasing department" or "leasing team']);
 
+console.log('\n7  IDENTITY GATE DEFERS TO ASR TOLERANCE');
+// A Roxanne call scoring 86 was thrown out on 2026-09-22 because the transcript
+// rendered the greeting as "Metro Property Management". 4F already forbade the
+// deduction, but it lives in Step 4 and the Step 3 gate runs first.
+check('Step 3 sends the reader to 4F before rejecting on identity',
+  ['BEFORE marking NOT SCOREABLE for identity, apply ']);
+check('the company-name near-misses are named',
+  ['"Metro"', '"Metrix"', '"Metrick"', '"Metropolitan"']);
+check('the gate still catches a genuinely different employer',
+  ['names a *different* employer outright']);
+
 console.log('\nUNTOUCHED (must be unchanged)');
 const c4c = p.slice(p.indexOf('### 4C'), p.indexOf('### 4D'));
 console.log(`  ${c4c.length ? 'ok  ' : 'FAIL'}  §4C closing section still present (${c4c.length} chars)`);

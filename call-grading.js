@@ -233,7 +233,42 @@ async function gradeTranscript({ callType, agent, duration, transcript }) {
     + '\nDuration: ' + (duration || 'unknown') + ' seconds'
     + variantNote
     + '\n\nTRANSCRIPT:\n' + transcript;
-  return anthropicJson({ system: SYSTEM_PROMPT, user: userContent, maxTokens: 6000 });
+  const graded = await anthropicJson({ system: SYSTEM_PROMPT, user: userContent, maxTokens: 6000 });
+  return normaliseScoreability(graded);
+}
+
+// The N/S verdict has to agree with itself.
+//
+// The output contract says an N/S call sets not_scoreable true, overall_grade
+// "N/S", overall_score null and gives a reason. On the 2026-09-22 regrade the
+// model said "N/S" in overall_grade on eight calls while leaving not_scoreable
+// false — so the rows landed as SCOREABLE calls carrying a null score and a
+// grade nothing filters on. Every average over that day quietly included a null,
+// and the N/S count read 2 when the real answer was 10.
+//
+// Nothing checked, because gradeTranscript returned the model's JSON verbatim.
+// A contract the caller never verifies is a comment. Both directions are
+// reconciled here, in the one place both the nightly job and the regrade script
+// go through.
+function normaliseScoreability(g) {
+  if (!g || typeof g !== 'object') return g;
+  const saysNS = String(g.overall_grade || '').trim().toUpperCase() === 'N/S';
+  const flagged = !!g.not_scoreable;
+  if (!saysNS && !flagged) return g;
+
+  const out = { ...g, not_scoreable: true, overall_grade: 'N/S', overall_score: null };
+  if (!String(out.not_scoreable_reason || '').trim()) {
+    // Say which half of the contract was missing rather than inventing a
+    // reason — a blank reason on the dashboard is indistinguishable from a
+    // reason nobody wrote down.
+    out.not_scoreable_reason = saysNS && !flagged
+      ? 'Graded N/S without a stated reason (model set overall_grade "N/S" but not not_scoreable).'
+      : 'Marked not scoreable without a stated reason.';
+  }
+  // An N/S call was never scored against a rubric, so a breakdown here is
+  // leftover, not evidence.
+  if (Array.isArray(out.categories) && !out.categories.length) out.categories = null;
+  return out;
 }
 
 // Like anthropicJson but returns the model's raw text (no JSON parse) — for
@@ -269,4 +304,4 @@ async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs 
   return textBlock.text;
 }
 
-module.exports = { SYSTEM_PROMPT, gradeTranscript, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };
+module.exports = { SYSTEM_PROMPT, gradeTranscript, normaliseScoreability, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };

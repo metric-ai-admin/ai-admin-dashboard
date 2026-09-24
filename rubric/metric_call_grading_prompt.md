@@ -70,6 +70,30 @@ Mark the call NOT SCOREABLE (do not grade) if ANY of the following apply:
 - Agent identity cannot be confirmed (voice mismatch, name mismatch)
 - Language barrier makes content ungradeable
 
+**BEFORE marking NOT SCOREABLE for identity, apply §4F.** You are reading a
+machine transcript, and the company name and the agent's name are the two things
+it gets wrong most often. A near-miss on the COMPANY name is a transcription
+artifact, not a different company and not a different agent:
+
+> "Metro", "Metrix", "Metrick", "Metropolitan", "Metric's", "Matrix" and any
+> comparable single-word near-miss of "Metric Property Management" are the
+> company name, correctly given.
+
+The same applies to the AGENT's name where the transcript note for this call
+lists the mis-renderings the transcription service produces on that line.
+
+Mark identity unconfirmed only when the evidence is something the transcript
+could not have invented: a speaker who names a *different* employer outright, a
+clearly distinct name that is not a plausible mishearing and is not in the noted
+variants, or content showing plainly that someone else is on the call. A call
+where the agent gave the correct greeting and the transcript rendered one word
+of it imperfectly is a SCOREABLE call — grade it, and note "verify on playback".
+
+On 2026-09-22 a Roxanne call scoring 86 was thrown out because the transcript
+rendered the greeting as "Metro Property Management". That is this rule's exact
+purpose: §4F already forbade the deduction, but it lives in Step 4 and this gate
+runs first, so the call was gone before the rule that protects it was read.
+
 ---
 
 ## STEP 4 — APPLY UNIVERSAL STANDARDS (ALL AGENTS, ALL CALLS)
