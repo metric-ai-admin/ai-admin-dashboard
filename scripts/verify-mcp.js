@@ -89,6 +89,24 @@ async function rpc(body, sessionId) {
     } catch (e) { bad(`${label} is rejected`, e.message); }
   }
 
+  // A session id the server has never seen must answer 404, not 400. 404 is the
+  // signal that tells the client to re-initialise; 400 is what left Claude
+  // Desktop dead for 30 minutes on 2026-09-25 while /health kept answering 200.
+  // Needs a valid token, because auth is checked before the session is looked up.
+  if (TOKEN) {
+    console.log('\nstale session');
+    try {
+      const r = await fetch(URL_MCP, {
+        method: 'POST',
+        headers: headers({ 'mcp-session-id': '00000000-0000-4000-8000-000000000000' }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'tools/list' }),
+      });
+      r.status === 404
+        ? ok('an unknown session id answers 404', 'the client will re-initialise')
+        : bad('an unknown session id answers 404', `got ${r.status} — a client has nothing telling it to start a new session`);
+    } catch (e) { bad('an unknown session id answers 404', e.message); }
+  }
+
   if (!TOKEN) {
     console.log('\n  MCP_AUTH_TOKEN is not set in this shell — skipping the handshake.');
     console.log('  Re-run as:  MCP_AUTH_TOKEN=<token> node scripts/verify-mcp.js ' + BASE);
