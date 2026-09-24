@@ -42,7 +42,7 @@ const express = require('express');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
-const cron = require('node-cron');
+const cron = require('./cron-guard');   // ENABLE_CRONS-gated; see cron-guard.js
 const { ConfidentialClientApplication } = require('@azure/msal-node');
 const { PDFDocument } = require('pdf-lib');
 const { randomUUID, timingSafeEqual } = require('crypto');
@@ -258,6 +258,30 @@ function renderIndex() {
   return indexHtml;
 }
 
+// ---- MCP-only mode ---------------------------------------------------------
+// The MCP service runs this same file, so without this it would also publish a
+// second copy of the dashboard UI and every REST route at its own public URL —
+// a second attack surface serving resident and collections data, for no reason.
+// Arturo asked for a service that serves ONLY the MCP routes; this is what
+// makes that literally true.
+//
+// Ahead of every route below, so nothing has to be individually excluded and a
+// route added later is covered by default. Only /mcp (the endpoint) and /health
+// (Render's check, and the keep-alive ping) get through.
+//
+// Not a security boundary on its own — /mcp still requires MCP_AUTH_TOKEN and
+// the upstream still requires METRIC_API_KEY. It removes surface rather than
+// replacing a lock.
+const MCP_ONLY = String(process.env.MCP_ONLY || '').trim().toLowerCase() === 'true';
+if (MCP_ONLY) {
+  logLine('[mcp] MCP_ONLY=true — serving /mcp and /health only; the dashboard UI and REST API are not published on this service');
+  app.use((req, res, next) => {
+    const p = req.path;
+    if (p === '/mcp' || p === '/health') return next();
+    res.status(404).json({ error: 'This service serves the MCP endpoint only. The dashboard is at a different URL.' });
+  });
+}
+
 // Ahead of express.static, which would otherwise serve the unstamped file for
 // "/" and "/index.html". no-store on the HTML itself: it is the document that
 // carries the new stamps, so caching it would pin browsers to the old ones.
@@ -297,11 +321,20 @@ app.get('/health', (req, res) => {
   // grading_configured reports only WHETHER the outbound model key is set — never
   // its value — so a deploy can be confirmed to have picked up ANTHROPIC_API_KEY
   // without exposing the secret.
+  // crons: same idea one step further. The dashboard is the only service that
+  // may run them, and it only does when ENABLE_CRONS is exactly "true" — so if
+  // that variable does not reach Render, every schedule silently stops and the
+  // first sign would be a missing EOD email. This makes it a curl away.
+  const crons = cron.stats();
   res.json({
     status: 'ok',
     uptime: process.uptime(),
     grading_configured: !!process.env.ANTHROPIC_API_KEY,
     grading_model: process.env.CALL_GRADE_MODEL || 'claude-sonnet-4-6',
+    crons_enabled: crons.enabled,
+    crons_scheduled: crons.scheduled,
+    mcp_only: MCP_ONLY,
+    mcp_upstream: process.env.MCP_UPSTREAM_URL ? 'remote' : 'loopback',
   });
 });
 
@@ -3167,7 +3200,30 @@ cron.schedule('0 8 * * *', async () => {
 // If MCP_AUTH_TOKEN is unset the endpoint is disabled rather than open —
 // failing closed, so a missing env var can never silently expose the data.
 
-const MCP_BASE = `http://localhost:${PORT}`;
+// Where the MCP tools fetch their data from.
+//
+// Unset, this is the loopback it has always been: one service answering both
+// /mcp and the REST API it calls, which is what the dashboard still does.
+//
+// The MCP-only service sets MCP_UPSTREAM_URL to the dashboard's public URL and
+// proxies over HTTPS instead. That service carries no disk and no Supabase or
+// Graph credentials — every tool in mcp-tools.cjs is a mapping over the REST
+// API, parameterised by this BASE, so pointing it elsewhere is the whole
+// change. The data stays single-sourced on the dashboard, which matters
+// because Render cannot share a disk between services and half these endpoints
+// read JSON files off it.
+//
+// WHAT THIS BUYS AND WHAT IT DOES NOT. Claude Desktop's MCP session lives on
+// the MCP service, so a dashboard deploy no longer drops the connection — that
+// was the whole complaint. Tool CALLS made during the ~30-60s the dashboard is
+// restarting still fail, because the data is there; they fail as
+// "Could not reach the dashboard" rather than hanging. Removing that too would
+// mean moving the disk-backed state into Supabase, which is a separate job.
+//
+// Trailing slash stripped so `${MCP_BASE}/api/tasks` never becomes a double
+// slash — some proxies 301 that, and a redirect drops the x-metric-key header.
+const MCP_BASE = (process.env.MCP_UPSTREAM_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+if (process.env.MCP_UPSTREAM_URL) logLine(`[mcp] proxying tool calls to ${MCP_BASE}`);
 
 // Routes behind requireMetricAccess (metric-routes.js) take either the session
 // cookie or this header. These loopback calls carry no cookie, so they send the

@@ -19,6 +19,13 @@ services:
         value: production
       - key: DATA_DIR
         value: /var/data
+      # THE ONLY SERVICE THAT MAY RUN THE CRON JOBS. Committed as a literal
+      # rather than sync:false so it cannot go missing from the dashboard, and
+      # deliberately absent from the metric-mcp block below. cron-guard.js
+      # treats anything other than exactly "true" as off, so a typo here stops
+      # the schedules rather than duplicating them — see the note in that file.
+      - key: ENABLE_CRONS
+        value: "true"
       # Must be the service's actual public URL (Render assigns this on
       # first deploy — update it here and redeploy once known). Required for
       # the Microsoft OAuth redirect to work; that exact URL + /auth/callback
@@ -137,6 +144,69 @@ services:
       # PORT is assigned by Render and read by server.js (falling back to 3001
       # locally). Declared here only so the full set is documented; do not pin
       # it to a value — Render sets it and overriding it breaks health checks.
+      - key: PORT
+        sync: false
+
+
+  # =====================================================================
+  # MCP endpoint — its own service
+  # =====================================================================
+  # Claude Desktop holds a long-lived MCP session. When the dashboard
+  # redeploys, that session dies and mcp-remote has to reconnect — the
+  # dashboard carries a disk, so Render can only run one instance of it and a
+  # deploy is a real restart, not a rolling one.
+  #
+  # This service runs the SAME server.js with two switches:
+  #
+  #   MCP_ONLY=true          publishes /mcp and /health and nothing else, so
+  #                          the dashboard UI and REST API are not exposed a
+  #                          second time at a second URL.
+  #   MCP_UPSTREAM_URL=...   points the tools at the dashboard over HTTPS
+  #                          instead of at its own loopback.
+  #
+  # And, deliberately, WITHOUT one: ENABLE_CRONS is absent here. The ten cron
+  # jobs are off unless that reads exactly "true". Two processes running them
+  # would send Lyndsay two EOD emails, grade every call twice against a paid
+  # API, and race each other's writes. Absence is the safe default and this
+  # file is where the absence lives — do not add ENABLE_CRONS to this block.
+  #
+  # NO DISK, on purpose. Render cannot share a disk between services, and this
+  # one needs no state: every tool proxies to the dashboard. No disk also means
+  # Render can deploy it with zero downtime, which is the point.
+  #
+  # It carries NO Supabase, Graph or AppFolio credentials either. The tools are
+  # a mapping over the dashboard's REST API, so METRIC_API_KEY is the only data
+  # credential it needs.
+  - type: web
+    name: metric-mcp
+    env: node
+    region: oregon           # same region as the dashboard — the proxy hop is internal
+    plan: starter
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Serve /mcp and /health only.
+      - key: MCP_ONLY
+        value: "true"
+      # Proxy tool calls to the dashboard. Set this to the dashboard's public
+      # URL after the first deploy: https://ai-admin-dashboard-jkde.onrender.com
+      - key: MCP_UPSTREAM_URL
+        sync: false
+      # Bearer token Claude Desktop presents to /mcp. Must match what the
+      # mcp-remote --header sends. Unset means /mcp answers 503 rather than
+      # running open.
+      - key: MCP_AUTH_TOKEN
+        sync: false
+      # Sent upstream as x-metric-key so the dashboard's requireMetricAccess
+      # routes answer. Must be the SAME value the dashboard has.
+      - key: METRIC_API_KEY
+        sync: false
+      # This service's own public URL. Only used by the keep-alive ping.
+      - key: APP_BASE_URL
+        sync: false
       - key: PORT
         sync: false
 

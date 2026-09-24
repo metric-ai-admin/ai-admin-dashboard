@@ -25,7 +25,7 @@ const path   = require('path');
 const crypto = require('crypto');
 const multer = require('multer');
 const jwt    = require('jsonwebtoken');
-const cron   = require('node-cron');
+const cron   = require('./cron-guard');   // ENABLE_CRONS-gated; see cron-guard.js
 const simplevoip = require('./simplevoip');
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
