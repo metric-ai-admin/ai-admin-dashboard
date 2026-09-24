@@ -6645,6 +6645,7 @@ async function svgLoad() {
     svgState.grades = d.grades || [];
     svgState.progress = prog || null;
     svgState.loaded = true;
+    await svgLoadPendingRubric();
     svgRender();
   } catch (err) {
     el.innerHTML = `<p class="small muted">Error: ${esc(err.message)}</p>`;
@@ -6863,6 +6864,7 @@ function svgRender() {
   el.innerHTML = `<div class="svg-tool">
     ${svgProgressHtml()}
     <div class="svg-toolbar" style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:10px">
+      ${svgPendingRubric.pending ? `<span class="svg-rubric-badge" title="Coaching notes marked Needs Revision that have not been folded into the rubric yet">⚑ ${svgPendingRubric.pending} pending rubric update${svgPendingRubric.pending === 1 ? '' : 's'}</span>` : ''}
       <span class="muted small" id="svg-export-status"></span>
       ${currentUser?.role === 'admin' ? '<span class="muted small" id="svg-backfill-status"></span>' : ''}
       <button class="btn-sm" id="svg-export-btn" title="Export graded calls to CSV">⬇ Export Grades</button>
@@ -7025,6 +7027,10 @@ function svgCallListHtml(list) {
 
 async function svgSelect(id) {
   svgState.selectedId = id;
+  // A different call closes any half-typed revision — it belonged to the
+  // criterion on the call being left, and carrying it over would attach the
+  // text to the wrong note.
+  svgRevisionOpen = null;
   if (!svgState.detailCache[id]) {
     svgRender();   // mark the row selected + show a loading detail while we fetch
     try {
@@ -7034,9 +7040,14 @@ async function svgSelect(id) {
       svgState.detailCache[id] = { error: err.message };
     }
   }
+  // Fetched here, not in the renderer: svgDetailHtml runs on every render and a
+  // fetch inside it would loop.
+  await svgLoadReviews(id);
   svgRender();
 }
 
+// Reviews are fetched alongside the grade rather than inside the renderer:
+// svgDetailHtml runs on every render, and a fetch in there would loop.
 function svgDetailHtml() {
   const id = svgState.selectedId;
   if (!id) return `<div class="cqa-panel cqa-detail"><div class="cqa-empty-detail">
@@ -7106,7 +7117,8 @@ function svgFeedbackHtml(g) {
       html += `<div class="cqa-coach">
         <div class="cqa-coach-cat">${esc(co.category || '')}</div>
         <div class="cqa-coach-row strength">💚 <b>Strength:</b> ${esc(co.strength || '')}</div>
-        <div class="cqa-coach-row improve">🔴 <b>Improve:</b> ${esc(co.improve || '')}</div></div>`;
+        <div class="cqa-coach-row improve">🔴 <b>Improve:</b> ${esc(co.improve || '')}</div>
+        ${svgCoachReviewHtml(g.recording_id || svgState.selectedId, co)}</div>`;
     });
     html += `</div>`;
   }
@@ -10140,3 +10152,133 @@ async function svgSetFlag(rid, { note, remove } = {}) {
     toast(err.message || 'Could not update the flag', 'error');
   }
 }
+
+// ---- Coaching review: accept / needs revision -------------------------------
+// Lyndsay judging the GRADER rather than the agent. A rejection carries the
+// correction, and those corrections are the input to the next rubric revision —
+// which is the point, since today they are WhatsApp notes that never land
+// anywhere near the call they describe.
+//
+// Keyed on the coaching CATEGORY, which is what the model names each block and
+// what the rubric would be edited by. Not the array index: a regrade reorders
+// them and an index-keyed verdict would silently attach to a different note.
+
+// recording_id -> { criterion -> review }. Loaded per call when its detail opens.
+const svgReviews = {};
+// Which criterion has its revision box open, as `${rid}\u0000${criterion}`.
+let svgRevisionOpen = null;
+let svgPendingRubric = { pending: 0, available: true };
+
+const svgRevKey = (rid, criterion) => `${rid}\u0000${criterion}`;
+
+async function svgLoadReviews(rid) {
+  if (!rid || svgReviews[rid]) return;
+  try {
+    const d = await api(`/api/calls/${encodeURIComponent(rid)}/coaching-reviews`);
+    svgReviews[rid] = Object.fromEntries((d.reviews || []).map(r => [r.criterion, r]));
+  } catch {
+    // Before migration 059 this 503s. An empty map keeps the panel working —
+    // the buttons then report the same thing on click, which is where it
+    // belongs, rather than blocking the grade itself from rendering.
+    svgReviews[rid] = {};
+  }
+}
+
+async function svgLoadPendingRubric() {
+  try {
+    const d = await api('/api/calls/rubric-suggestions');
+    svgPendingRubric = { pending: d.pending || 0, available: d.available !== false };
+  } catch { svgPendingRubric = { pending: 0, available: false }; }
+}
+
+function svgCoachReviewHtml(rid, co) {
+  const criterion = String(co.category || '').trim() || '(uncategorised)';
+  const rev = (svgReviews[rid] || {})[criterion] || null;
+  const open = svgRevisionOpen === svgRevKey(rid, criterion);
+  const enc = esc(criterion);
+
+  const accepted = rev && rev.verdict === 'accepted';
+  const rejected = rev && rev.verdict === 'needs_revision';
+
+  return `<div class="svg-coachrev">
+    <div class="svg-coachrev-btns">
+      <button class="svg-cr-btn accept${accepted ? ' on' : ''}" data-cr-accept="${enc}" title="This coaching is right as written">
+        ✅ Accept</button>
+      <button class="svg-cr-btn reject${rejected ? ' on' : ''}" data-cr-reject="${enc}" title="Say what this coaching should have said instead">
+        ✗ Needs Revision</button>
+      ${rev ? `<button class="svg-cr-undo" data-cr-undo="${enc}" title="Remove this verdict">undo</button>` : ''}
+      ${accepted ? `<span class="svg-cr-meta">accepted by ${esc(rev.reviewed_by || '')}</span>` : ''}
+    </div>
+    ${rejected && !open ? `<div class="svg-cr-note"><b>Should say:</b> ${esc(rev.revision_note || '')}
+      <span class="svg-cr-meta">— ${esc(rev.reviewed_by || '')}${rev.applied ? ' · folded into the rubric' : ' · pending rubric update'}</span></div>` : ''}
+    ${open ? `<div class="svg-cr-edit">
+      <label class="small muted" for="svg-cr-input">What should this coaching say instead?</label>
+      <textarea id="svg-cr-input" rows="3" placeholder="e.g. the agent did state the company name at 0:12 — this should not have scored 0">${esc(rev && rev.revision_note || '')}</textarea>
+      <div class="svg-cr-edit-actions">
+        <button class="btn-sm primary" data-cr-save="${enc}">Save revision</button>
+        <button class="btn-sm" data-cr-cancel="1">Cancel</button>
+      </div>
+      <p class="svg-cr-error" hidden></p>
+    </div>` : ''}
+  </div>`;
+}
+
+async function svgSaveReview(rid, criterion, verdict, note) {
+  const co = ((svgState.detailCache[rid] || {}).coaching || [])
+    .find(c => (String(c.category || '').trim() || '(uncategorised)') === criterion) || {};
+  const body = {
+    criterion, verdict,
+    note: note || '',
+    // Copied in so the suggestion still shows what it argued against after a
+    // regrade replaces the call_grades row.
+    original_note: [co.strength ? 'Strength: ' + co.strength : '', co.improve ? 'Improve: ' + co.improve : '']
+      .filter(Boolean).join(' | '),
+  };
+  try {
+    await api(`/api/calls/${encodeURIComponent(rid)}/coaching-reviews`, { method: 'POST', body });
+    delete svgReviews[rid];
+    await svgLoadReviews(rid);
+    svgRevisionOpen = null;
+    await svgLoadPendingRubric();
+    svgRender();
+    toast(verdict === 'accepted' ? 'Coaching accepted' : 'Revision saved — added to the rubric queue', 'success');
+  } catch (err) {
+    const box = document.querySelector('.svg-cr-error');
+    if (box) { box.hidden = false; box.textContent = err.message || 'Could not save.'; }
+    else toast(err.message || 'Could not save.', 'error');
+  }
+}
+
+async function svgUndoReview(rid, criterion) {
+  try {
+    await api(`/api/calls/${encodeURIComponent(rid)}/coaching-reviews?criterion=${encodeURIComponent(criterion)}`, { method: 'DELETE' });
+    delete svgReviews[rid];
+    await svgLoadReviews(rid);
+    await svgLoadPendingRubric();
+    svgRender();
+  } catch (err) { toast(err.message || 'Could not undo.', 'error'); }
+}
+
+// Delegated from the grades view, which re-renders on every change.
+document.getElementById('sv-view-grades')?.addEventListener('click', e => {
+  const rid = svgState.selectedId;
+  if (!rid) return;
+  const acc = e.target.closest('[data-cr-accept]');
+  if (acc) { svgSaveReview(rid, acc.dataset.crAccept, 'accepted'); return; }
+  const rej = e.target.closest('[data-cr-reject]');
+  if (rej) { svgRevisionOpen = svgRevKey(rid, rej.dataset.crReject); svgRender(); return; }
+  const undo = e.target.closest('[data-cr-undo]');
+  if (undo) { svgUndoReview(rid, undo.dataset.crUndo); return; }
+  const save = e.target.closest('[data-cr-save]');
+  if (save) {
+    const v = document.getElementById('svg-cr-input')?.value || '';
+    if (!v.trim()) {
+      const box = document.querySelector('.svg-cr-error');
+      if (box) { box.hidden = false; box.textContent = 'Say what should change — a revision needs a note.'; }
+      return;
+    }
+    svgSaveReview(rid, save.dataset.crSave, 'needs_revision', v);
+    return;
+  }
+  if (e.target.closest('[data-cr-cancel]')) { svgRevisionOpen = null; svgRender(); }
+});

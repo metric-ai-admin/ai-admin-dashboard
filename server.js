@@ -6746,6 +6746,119 @@ app.patch('/api/calls/flag/:recording_id', requireAuth, requireRole('admin'), re
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- Coaching review (accept / needs revision) ------------------------------
+// Lyndsay judging the GRADER, one criterion at a time. A rejection carries the
+// correction, and the pile of rejections is the input to the next rubric
+// revision — which is the point: today these are WhatsApp notes that never
+// accumulate anywhere near the call they describe.
+const COACHING_NO_TABLE = 'Coaching review is not set up yet — run supabase/migrations/059_coaching_reviews.sql in the Supabase SQL editor.';
+const coachErr = err => (err && /does not exist|schema cache/i.test(err.message || '') ? COACHING_NO_TABLE : null);
+
+// All reviews for one call, keyed by criterion so the UI can mark each note.
+app.get('/api/calls/:recording_id/coaching-reviews', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('coaching_reviews').select('*')
+      .eq('recording_id', req.params.recording_id).limit(200);
+    const missing = coachErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    res.json({ reviews: data || [] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/calls/:recording_id/coaching-reviews', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+  const { criterion, verdict, note, original_note, criterion_score } = req.body || {};
+  if (!String(criterion || '').trim()) return res.status(400).json({ error: 'criterion is required' });
+  if (!['accepted', 'needs_revision'].includes(verdict)) {
+    return res.status(400).json({ error: 'verdict must be "accepted" or "needs_revision"' });
+  }
+  // A rejection with no correction is not a rubric suggestion. Enforced here
+  // rather than only in the UI, because this is the whole value of the feature.
+  const revision = String(note || '').trim();
+  if (verdict === 'needs_revision' && !revision) {
+    return res.status(400).json({ error: 'Say what should change — a revision needs a note.' });
+  }
+
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const score = Number(criterion_score);
+    const { data, error } = await db.from('coaching_reviews').upsert({
+      recording_id: req.params.recording_id,
+      criterion: String(criterion).trim(),
+      verdict,
+      revision_note: verdict === 'needs_revision' ? revision : null,
+      // Copied in so the suggestion still shows what it argued against after a
+      // regrade replaces the call_grades row.
+      original_note: String(original_note || '').trim() || null,
+      criterion_score: Number.isFinite(score) ? Math.round(score) : null,
+      reviewed_by: actorName(req),
+      reviewed_at: new Date().toISOString(),
+      // Re-reviewing re-opens it: a note she has just rewritten is pending
+      // again, whatever was done with the previous version.
+      applied: false, applied_by: null, applied_at: null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'recording_id,criterion' }).select();
+    const missing = coachErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, review: data[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Undo — removes the verdict entirely rather than recording a third state.
+app.delete('/api/calls/:recording_id/coaching-reviews', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+  const criterion = String(req.query.criterion || '').trim();
+  if (!criterion) return res.status(400).json({ error: 'criterion is required' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { error } = await db.from('coaching_reviews').delete()
+      .eq('recording_id', req.params.recording_id).eq('criterion', criterion);
+    const missing = coachErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// The queue behind the badge: rejected coaching that has not been folded into
+// the rubric yet. Ordered oldest first — a suggestion sitting for three weeks
+// is the one worth looking at.
+app.get('/api/calls/rubric-suggestions', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    let q = db.from('coaching_reviews').select('*')
+      .eq('verdict', 'needs_revision').order('reviewed_at', { ascending: true }).limit(500);
+    if (req.query.includeApplied !== 'true') q = q.eq('applied', false);
+    const { data, error } = await q;
+    const missing = coachErr(error);
+    // The badge must not break the tab before the migration runs, so this one
+    // answers with a zero count and a flag rather than an error.
+    if (missing) return res.json({ suggestions: [], pending: 0, available: false });
+    if (error) throw new Error(error.message);
+    res.json({ suggestions: data || [], pending: (data || []).filter(r => !r.applied).length, available: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Mark a suggestion as folded into the rubric.
+app.patch('/api/calls/rubric-suggestions/:id', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+  const applied = !!(req.body && req.body.applied);
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('coaching_reviews').update({
+      applied,
+      applied_by: applied ? actorName(req) : null,
+      applied_at: applied ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', req.params.id).select();
+    const missing = coachErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    if (!data || !data.length) return res.status(404).json({ error: 'No suggestion with that id.' });
+    res.json({ ok: true, suggestion: data[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/calls/export?format=detail|summary&from=&to=&agent=&grades=&direction=
 //
 // Self-serve version of scripts/export-call-grades.js, so a reviewer can pull
@@ -10888,6 +11001,8 @@ async function eodGather() {
     const inEviction = u => { const s = stepOf(u).toLowerCase(); return !!s && !/balance[_ ]?only/.test(s); };
     const contactRaw = u => u.lastContact || u.last_contact || u.contactDate || u.last_contact_date || u.lastContactDate || null;
     const contactedRecently = u => { const c = contactRaw(u); if (!c) return false; const t = Date.parse(c); return !isNaN(t) && (Date.now() - t) < 24 * 3600e3; };
+    // `step` stays the raw token from the tracker export — the email renders a
+    // label for it (collStatusLabel), the data keeps what the export said.
     const shape = u => ({ resident: nameOf(u), property: propOf(u), balance: balOf(u), step: stepOf(u) || 'BALANCE_ONLY' });
     // Excludes inactive/fake properties (The Sidney, Live With Metric, Cedar and Sage, …).
     const unitsOf = s => {
@@ -11327,6 +11442,25 @@ function eodRenderHtml(data) {
         ? `<b>${dq.accounts || 0} accounts</b> <span style="color:${EOD.muted};font-size:11px">(rate needs the rent roll, which has not synced)</span>`
         : `<b>${dq.rate.toFixed(1)}%</b> <span style="color:${EOD.muted}">(${dq.accounts} of ${dq.occupied} occupied units)</span>`)
       + '</div>';
+  // BALANCE_ONLY is a raw token in the tracker export, not something to put in
+  // front of the CEO. It is the value the shape falls back to when the export's
+  // "Eviction Status" column is blank, which operationally means no filing.
+  //
+  // THE LABEL SAYS ONLY WHAT THE DATA SUPPORTS. Lyndsay asked on 2026-09-24 for
+  // "No eviction filed · No payment plan in place". The first half is what this
+  // token means. The second half is not in evidence: the tracker DOES carry
+  // ptpAmt1 and ptpDate1-3, and across the last 16 snapshots — 1,290 unit rows
+  // — not one has a promise-to-pay recorded. Uniformly empty is "not captured",
+  // not "none exists", and stating "no payment plan in place" beside a
+  // resident's balance is the kind of claim collections acts on. If the export
+  // starts carrying PTPs, add the clause here.
+  const collStatusLabel = step => {
+    const raw = String(step || '').trim();
+    if (!raw || raw.toUpperCase() === 'BALANCE_ONLY') return 'No eviction filed';
+    // Anything else is a real stage from the export; show it as given.
+    return eodEsc(raw);
+  };
+
   P.push(eodSectionHtml('⚖️', 'Collections',
     e4.error ? eodErr(e4.error) : collHeader,
     e4.error ? collHeadline :
@@ -11334,9 +11468,9 @@ function eodRenderHtml(data) {
       + subLabel('⚠️', 'High Balance, No Recent Contact (&gt;$500)', pf.hasContact
         ? 'Balance over $500, not in eviction, and no contact logged in the last 24 hours — priority follow-up.'
         : 'Balance over $500 and not in eviction (contact-timing data not available in the report — showing all).')
-      + eodTable(['Resident', 'Property', 'Balance', 'Step'], (e4.sectionA || []).map(u => [eodEsc(u.resident), eodEsc(u.property), collBalCell(u), eodEsc(u.step)]))
+      + eodTable(['Resident', 'Property', 'Balance', 'Status'], (e4.sectionA || []).map(u => [eodEsc(u.resident), eodEsc(u.property), collBalCell(u), collStatusLabel(u.step)]))
       + subLabel('🔴', 'Critical Accounts (&gt;$800, Not in Eviction)', 'Balance over $800 and not in eviction, regardless of contact status.')
-      + eodTable(['Resident', 'Property', 'Balance', 'Step'], (e4.sectionB || []).map(u => [eodEsc(u.resident), eodEsc(u.property), collBalCell(u), eodEsc(u.step)]))
+      + eodTable(['Resident', 'Property', 'Balance', 'Status'], (e4.sectionB || []).map(u => [eodEsc(u.resident), eodEsc(u.property), collBalCell(u), collStatusLabel(u.step)]))
       + subLabel('📊', 'Portfolio Delinquency Summary', pf.hasBilled
         ? 'Total delinquent balance and % delinquent (delinquency ÷ billed), portfolio and per property.'
         : 'Total delinquent balance, portfolio and per property. (% delinquent needs billed-this-month, not present in this report.)')
@@ -11344,7 +11478,7 @@ function eodRenderHtml(data) {
       + `<div style="font-size:12px;color:${EOD.text};margin:2px 0 4px"><b>Total delinquent:</b> ${money0(pf.totalDelinq)}${pf.hasBilled ? ` · <b>Billed:</b> ${money0(pf.totalBilled)} · <b>% Delinquent:</b> ${pf.pct == null ? '—' : pf.pct + '%'}` : ''}</div>`
       + eodTable(pf.hasBilled ? ['Property', 'Delinquent', '% Delinquent'] : ['Property', 'Delinquent'],
           (pf.perProperty || []).map(p => pf.hasBilled ? [eodEsc(p.property), money0(p.delinq), p.pct == null ? '—' : p.pct + '%'] : [eodEsc(p.property), money0(p.delinq)]))
-      + `<div style="margin-top:4px;font-size:11px;font-style:italic;color:${EOD.muted}">ⓘ BALANCE_ONLY = Resident has an outstanding balance but no active eviction filing. No legal action has been initiated yet.</div>`));
+      + `<div style="margin-top:4px;font-size:11px;font-style:italic;color:${EOD.muted}">ⓘ "No eviction filed" = the resident has an outstanding balance and the tracker records no eviction filing; no legal action has been initiated. It says nothing about whether a payment plan exists — the tracker's promise-to-pay fields are not being populated by the export.</div>`));
   // Maintenance — deliberately ~13 lines. The previous version printed a
   // 20-row table of every open WO, which is a report, not a summary, and
   // buried the two numbers Erick acts on.

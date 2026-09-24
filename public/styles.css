@@ -2652,3 +2652,41 @@ tr.ca-sel { background: var(--accent-glow); }
 .svg-flagedit-actions { display: flex; gap: 8px; margin-top: 9px; }
 .cqa-pill.policy.active { background: var(--critical-bg); color: var(--critical); border-color: var(--critical); }
 .svg-exp-check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-secondary); }
+
+/* ---- Coaching review: accept / needs revision -------------------------- */
+.svg-coachrev { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.svg-coachrev-btns { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.svg-cr-btn {
+  background: var(--bg-elevated); color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: 7px; padding: 4px 10px;
+  font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.svg-cr-btn:hover { color: var(--text-primary); }
+/* Filled once chosen, so a reviewed note reads as reviewed at a glance rather
+   than needing the button labels to be compared. */
+.svg-cr-btn.accept.on { background: var(--success); border-color: var(--success); color: #fff; }
+.svg-cr-btn.reject.on { background: var(--critical); border-color: var(--critical); color: #fff; }
+.svg-cr-undo {
+  background: none; border: 0; color: var(--text-secondary);
+  font: inherit; font-size: 11px; text-decoration: underline; cursor: pointer; padding: 2px 4px;
+}
+.svg-cr-meta { color: var(--text-secondary); font-size: 11px; }
+.svg-cr-note {
+  margin-top: 6px; padding: 7px 9px; border-radius: 7px;
+  background: var(--critical-bg); color: var(--text-primary);
+  font-size: 12.5px; line-height: 1.5;
+}
+.svg-cr-edit { margin-top: 8px; }
+.svg-cr-edit textarea {
+  width: 100%; margin-top: 4px; background: var(--bg-elevated); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13px;
+}
+.svg-cr-edit-actions { display: flex; gap: 8px; margin-top: 8px; }
+.svg-cr-error { color: var(--critical); font-size: 12px; margin: 8px 0 0; }
+/* The queue behind the badge is work waiting on a person, so it is amber —
+   not an error, but not nothing either. */
+.svg-rubric-badge {
+  background: var(--warning-bg); color: var(--warning);
+  border: 1px solid var(--warning); border-radius: 20px;
+  padding: 3px 11px; font-size: 11.5px; font-weight: 650; white-space: nowrap;
+}
