@@ -48,7 +48,20 @@ const WRITE_GRADES = process.argv.includes('--write-grades');
 // existed: the script accepted it, spent eight minutes and the API budget, and
 // reported success having written nothing. Silence is the worst possible
 // response to "do the dangerous thing".
-const KNOWN_FLAGS = ['--date', '--n', '--write-csv', '--scored-only', '--dry-run', '--write-grades'];
+// An explicit list of calls to regrade, comma-separated. For re-running the
+// handful a batch dropped — four calls on 2026-09-22 failed with malformed JSON
+// and kept their old grades, and re-running the whole day to catch four is both
+// expensive and another 51 needless overwrites.
+const idsAt = process.argv.indexOf('--recording-ids');
+const RECORDING_IDS = idsAt > -1
+  ? String(process.argv[idsAt + 1] || '').split(',').map(x => x.trim()).filter(Boolean)
+  : null;
+if (idsAt > -1 && (!RECORDING_IDS || !RECORDING_IDS.length)) {
+  console.error('--recording-ids needs a comma-separated list of recording_id values.');
+  process.exit(2);
+}
+
+const KNOWN_FLAGS = ['--date', '--n', '--write-csv', '--scored-only', '--dry-run', '--write-grades', '--recording-ids'];
 const unknown = process.argv.slice(2).filter(a => a.startsWith('--') && !KNOWN_FLAGS.includes(a));
 if (unknown.length) {
   console.error('Unknown flag(s): ' + unknown.join(', '));
@@ -88,7 +101,18 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
 
   const day = DATE || stored.map(r => r.call_date).sort().pop();
   const wholeDay = stored.filter(r => r.call_date === day).sort((a, b) => a.recording_id.localeCompare(b.recording_id));
-  const batch = SCORED_ONLY ? wholeDay.filter(r => !r.not_scoreable) : wholeDay;
+  let batch = SCORED_ONLY ? wholeDay.filter(r => !r.not_scoreable) : wholeDay;
+  if (RECORDING_IDS) {
+    // Named calls are named: --scored-only and --n do not get to filter them
+    // out underneath the operator, and an id that is not in the day is an
+    // error rather than a silently shorter run.
+    const byId = Object.fromEntries(wholeDay.map(r => [r.recording_id, r]));
+    const missing = RECORDING_IDS.filter(id => !byId[id]);
+    if (missing.length) {
+      throw new Error(`--recording-ids: not found in ${day}: ${missing.join(', ')}`);
+    }
+    batch = RECORDING_IDS.map(id => byId[id]);
+  }
   console.log(`batch: ${day} — ${wholeDay.length} graded (${wholeDay.filter(r => !r.not_scoreable).length} scored, ${wholeDay.filter(r => r.not_scoreable).length} N/S)`);
   if (SCORED_ONLY) console.log('--scored-only: N/S calls excluded');
 
@@ -96,7 +120,11 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
   // applies to a genuine SAMPLE; applied to a full run it would silently drop
   // the tail of the batch.
   let sample;
-  if (!Number.isFinite(N) || N >= batch.length) {
+  if (RECORDING_IDS) {
+    sample = batch;
+    console.log(`--recording-ids: ${sample.length} named call(s), --n ignored
+`);
+  } else if (!Number.isFinite(N) || N >= batch.length) {
     sample = batch;
     console.log(`running the FULL batch: ${sample.length} calls\n`);
   } else {
@@ -110,7 +138,6 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
   // roughly ten minutes, and a typo in --date should not discover that.
   if (WRITE_GRADES) {
     console.log('*** --write-grades: the stored grades for these calls WILL BE OVERWRITTEN ***');
-    console.log('    A full backup of the current rows is written to exports/ first.');
     console.log('    A backup goes to exports/, and the prior rows are saved to');
     console.log('    call_grades_history (migration 060) before anything is written.\n');
   }
