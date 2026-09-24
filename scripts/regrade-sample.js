@@ -39,6 +39,22 @@ const WRITE_CSV = process.argv.includes('--write-csv');
 // ask, and asking for it should not silently return 55 of the 69 including N/S.
 const SCORED_ONLY = process.argv.includes('--scored-only');
 const DRY_RUN = process.argv.includes('--dry-run');
+// OVERWRITES the stored grades. Off unless asked for, and it takes a backup
+// first — see writeGrades() below.
+const WRITE_GRADES = process.argv.includes('--write-grades');
+
+// A flag this script does not recognise is an ERROR, not something to ignore.
+// On 2026-09-25 a run was launched with --write-grades before that flag
+// existed: the script accepted it, spent eight minutes and the API budget, and
+// reported success having written nothing. Silence is the worst possible
+// response to "do the dangerous thing".
+const KNOWN_FLAGS = ['--date', '--n', '--write-csv', '--scored-only', '--dry-run', '--write-grades'];
+const unknown = process.argv.slice(2).filter(a => a.startsWith('--') && !KNOWN_FLAGS.includes(a));
+if (unknown.length) {
+  console.error('Unknown flag(s): ' + unknown.join(', '));
+  console.error('Known flags: ' + KNOWN_FLAGS.join(' '));
+  process.exit(2);
+}
 
 if (!process.env.ANTHROPIC_API_KEY && !DRY_RUN) {
   console.error('ANTHROPIC_API_KEY is not set in this shell.');
@@ -92,6 +108,11 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
 
   // Say what this will cost before spending it — 55 calls is real money and
   // roughly ten minutes, and a typo in --date should not discover that.
+  if (WRITE_GRADES) {
+    console.log('*** --write-grades: the stored grades for these calls WILL BE OVERWRITTEN ***');
+    console.log('    A full backup of the current rows is written to exports/ first.');
+    console.log('    There is no grade history table — that backup is the only way back.\n');
+  }
   console.log(`this will make ${sample.length} model call(s) at ~6k max output tokens each`);
   console.log(`expect roughly ${Math.ceil(sample.length * 8 / 60)}-${Math.ceil(sample.length * 15 / 60)} minutes\n`);
   if (DRY_RUN) {
@@ -189,5 +210,63 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
     console.log('\nwrote ' + out + ' (gitignored)');
   }
 
-  console.log('\nNothing was written to call_grades — the stored grades are unchanged.');
+  if (!WRITE_GRADES) {
+    console.log('\nNothing was written to call_grades — the stored grades are unchanged.');
+    console.log('Add --write-grades to overwrite them (a backup is taken first).');
+    return;
+  }
+
+  // ---- Overwrite, with a way back -----------------------------------------
+  const fs = require('fs');
+  fs.mkdirSync('exports', { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = `exports/call_grades_backup_${day}_${stamp}.json`;
+
+  // The FULL current rows, not just the columns about to change: a partial
+  // backup is not a backup. Written and re-read before a single update runs —
+  // if the restore file is not on disk and readable, nothing is overwritten.
+  const writtenIds = results.map(r => r.stored.recording_id);
+  const { data: current, error: readErr } = await db.from('call_grades').select('*').in('recording_id', writtenIds);
+  if (readErr) throw new Error('could not read the rows to back up: ' + readErr.message);
+  fs.writeFileSync(backupPath, JSON.stringify(current, null, 1));
+  const verify = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+  if (!Array.isArray(verify) || verify.length !== current.length) {
+    throw new Error('backup did not read back intact — refusing to overwrite anything');
+  }
+  console.log(`\nbacked up ${verify.length} rows to ${backupPath}`);
+
+  const RUBRIC_TAG = 'AI (rubric v2.1 regrade)';
+  let written = 0, failed = 0;
+  for (const { stored: s0, fresh } of results) {
+    const patch = {
+      overall_score: fresh.overall_score ?? null,
+      overall_grade: fresh.overall_grade ?? null,
+      not_scoreable: !!fresh.not_scoreable,
+      not_scoreable_reason: fresh.not_scoreable_reason ?? null,
+      legal_violation: !!fresh.legal_violation,
+      fair_housing_flag: !!fresh.fair_housing_flag,
+      liability_flag: !!fresh.liability_flag,
+      summary: fresh.summary ?? null,
+      outcome: fresh.outcome ?? null,
+      flags: fresh.flags ?? null,
+      categories: fresh.categories ?? null,
+      coaching: fresh.coaching ?? null,
+      key_moments: fresh.key_moments ?? null,
+      agent_role: fresh.agent_role ?? null,
+      call_type: fresh.call_type ?? null,
+      rubric_applied: fresh.rubric_applied ?? null,
+      // Stamped so the record says WHICH rubric produced it. Without this a
+      // v2.1 regrade is indistinguishable from the v2.0 nightly run, and
+      // nobody could later ask "which grades came from the old rubric".
+      graded_by: RUBRIC_TAG,
+      graded_at: new Date().toISOString(),
+    };
+    const { error } = await db.from('call_grades').update(patch).eq('recording_id', s0.recording_id);
+    if (error) { failed++; console.log(`  FAILED ${s0.recording_id}: ${error.message}`); }
+    else written++;
+  }
+
+  console.log(`\nOVERWRITTEN: ${written} row(s)${failed ? `, ${failed} FAILED` : ''}`);
+  console.log(`graded_by is now "${RUBRIC_TAG}" on those rows.`);
+  console.log(`\nTo undo:  node scripts/restore-call-grades.js ${backupPath}`);
 })().catch(e => { console.error('\nfailed:', e.message); process.exitCode = 1; });
