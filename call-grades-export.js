@@ -6,9 +6,12 @@
 // Extracted so scripts/export-call-grades.js and the dashboard's
 // /api/calls/export endpoint produce byte-identical output from one definition.
 // The alternative was a second copy in server.js, and this codebase already has
-// a worked example of where that ends: the grading prompt lives in
-// call-grade-prompt.json AND in public/tools/call-quality-analyzer.html, the
-// comment says they are byte-identical, and they stopped being so.
+// a worked example of where that ends: the grading prompt lived in
+// call-grade-prompt.json AND in public/tools/call-quality-analyzer.html, a
+// comment said they were byte-identical, and they stopped being so. The audit
+// on 2026-09-25 found two different rubrics — with the ORIGINAL rules surviving
+// only in the copy nobody was grading with. The duplicate was deleted rather
+// than resynchronised.
 //
 // Read-only. Nothing here queries the database; callers pass rows in.
 

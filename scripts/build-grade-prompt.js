@@ -33,7 +33,12 @@ function arg(name, fallback = null) {
   const i = process.argv.indexOf('--' + name);
   return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
-const SRC = arg('src', path.join(process.env.USERPROFILE || process.env.HOME || '.', 'Downloads', 'metric_call_grading_prompt.md'));
+// The authored rubric now lives IN THE REPO. It used to default to a file in
+// ~/Downloads, which is how the source went missing: on 2026-09-25 the built
+// JSON was the only surviving copy and the markdown had to be recovered from
+// it. A source of truth that is not in version control is not a source of
+// truth.
+const SRC = arg('src', path.join(__dirname, '..', 'rubric', 'metric_call_grading_prompt.md'));
 const OUT = arg('out', 'call-grade-prompt.json');
 
 const md0 = fs.readFileSync(SRC, 'utf8');
@@ -186,6 +191,6 @@ console.log('  source: ' + SRC);
 console.log('  prompt length: ' + rebuilt.length + ' chars (authored ' + md.length + ')');
 const version = (md.match(/Version\s+([\d.]+)/) || [])[1];
 console.log('  rubric version: ' + (version || 'unknown'));
-for (const marker of ['RUBRIC A', 'RUBRIC B', 'RUBRIC C', 'RUBRIC D', 'RUBRIC E', 'RUBRIC F', 'RUBRIC G', 'RUBRIC H', 'RUBRIC I']) {
+for (const marker of ['RUBRIC A', 'RUBRIC B', 'RUBRIC C', 'RUBRIC D', 'RUBRIC E', 'RUBRIC F', 'RUBRIC G', 'RUBRIC H', 'RUBRIC I', 'RUBRIC J', 'RUBRIC K']) {
   if (!rebuilt.includes(marker)) console.warn('  WARNING: ' + marker + ' missing from the built prompt');
 }

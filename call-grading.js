@@ -11,14 +11,15 @@
 // not paraphrase the rubric.
 //
 // Version 2.0 is role-aware and call-type-aware: Step 1 maps agent to role,
-// Step 2 maps the call to a type, and Step 5 selects one of nine rubrics.
+// Step 2 maps the call to a type, and Step 5 selects one of eleven rubrics.
 // Danny's receptionist protocol is Rubric A within it, which is why there is no
 // longer a separate Danny prompt.
 //
-// NOTE: public/tools/call-quality-analyzer.html carries its own older copy of a
-// SYSTEM_PROMPT for Lyndsay's browser tool. It was already out of step before
-// v2.0 and is further out now. The two are NOT synchronised; treat this file as
-// the server's rubric and that one as the tool's.
+// public/tools/call-quality-analyzer.html used to carry a SECOND copy of the
+// prompt for Lyndsay's browser tool. It was deleted on 2026-09-25: it had
+// drifted to the point of being a different rubric, it was reachable on the
+// public internet with no auth, and the audit found the original June rules
+// surviving there while the server had lost them. One rubric, one file.
 //
 // Anthropic is called from the SERVER with ANTHROPIC_API_KEY, so no key ever
 // reaches the browser (per Metric's key-safety rule).
