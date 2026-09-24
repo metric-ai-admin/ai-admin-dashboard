@@ -3,11 +3,15 @@
 // Put back the grades a --write-grades run overwrote.
 //
 //   node scripts/restore-call-grades.js exports/call_grades_backup_2026-09-22_<stamp>.json
-//   node scripts/restore-call-grades.js <file> --dry-run
+//   node scripts/restore-call-grades.js --batch regrade_2026-09-22_<stamp>
+//   ... either form takes --dry-run
 //
-// There is no grade history table, so the backup file regrade-sample.js writes
-// before it overwrites is the only way back. This is the other half of that:
-// a backup nobody can restore from is a comfort, not a safeguard.
+// Two sources, same restore. The exports/ file is local and disappears with the
+// Render disk; call_grades_history (migration 060) is in the database and does
+// not. --batch is the one to reach for from Render Shell, where the file that
+// a previous deploy wrote is very likely already gone.
+//
+// A backup nobody can restore from is a comfort, not a safeguard.
 //
 // Restores every column the regrade touched, including graded_by and graded_at,
 // so a restored row is indistinguishable from the one the nightly run wrote —
@@ -18,21 +22,22 @@ require('dotenv').config();
 const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
 
-const file = process.argv[2];
 const DRY = process.argv.includes('--dry-run');
+const batchAt = process.argv.indexOf('--batch');
+const BATCH = batchAt > -1 ? process.argv[batchAt + 1] : null;
+const file = batchAt > -1 ? null : process.argv[2];
 
-if (!file) {
+if (batchAt > -1 && !BATCH) {
+  console.error('--batch needs a batch id, e.g. --batch regrade_2026-09-22_2026-09-25T18-04-11-902Z');
+  process.exit(2);
+}
+if (!BATCH && !file) {
   console.error('Usage: node scripts/restore-call-grades.js <backup.json> [--dry-run]');
+  console.error('   or: node scripts/restore-call-grades.js --batch <batch_id> [--dry-run]');
   process.exit(2);
 }
-if (!fs.existsSync(file)) {
+if (file && !fs.existsSync(file)) {
   console.error('No such backup file: ' + file);
-  process.exit(2);
-}
-
-const rows = JSON.parse(fs.readFileSync(file, 'utf8'));
-if (!Array.isArray(rows) || !rows.length) {
-  console.error('Backup is empty or not an array of rows — refusing to restore.');
   process.exit(2);
 }
 
@@ -46,7 +51,26 @@ const COLUMNS = ['overall_score', 'overall_grade', 'not_scoreable', 'not_scoreab
 (async () => {
   const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY);
 
-  console.log(`backup: ${file}`);
+  let rows;
+  if (BATCH) {
+    // `previous` is the whole pre-overwrite call_grades row, so history rows
+    // restore through exactly the same path as file rows below.
+    const { data, error } = await db.from('call_grades_history')
+      .select('previous').eq('batch_id', BATCH);
+    if (error) {
+      throw new Error('could not read call_grades_history: ' + error.message
+        + '\nIf the table is missing, run supabase/migrations/060_call_grades_history.sql.');
+    }
+    if (!data || !data.length) throw new Error(`no history rows for batch ${BATCH}`);
+    rows = data.map(r => r.previous);
+  } else {
+    rows = JSON.parse(fs.readFileSync(file, 'utf8'));
+  }
+  if (!Array.isArray(rows) || !rows.length) {
+    throw new Error('Nothing to restore from — refusing to touch call_grades.');
+  }
+
+  console.log(`source: ${BATCH ? 'call_grades_history batch ' + BATCH : file}`);
   console.log(`  ${rows.length} row(s), call_date ${[...new Set(rows.map(r => r.call_date))].join(', ')}`);
   console.log(`  graded_by in the backup: ${[...new Set(rows.map(r => r.graded_by))].join(', ')}`);
 

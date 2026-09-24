@@ -111,7 +111,8 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
   if (WRITE_GRADES) {
     console.log('*** --write-grades: the stored grades for these calls WILL BE OVERWRITTEN ***');
     console.log('    A full backup of the current rows is written to exports/ first.');
-    console.log('    There is no grade history table — that backup is the only way back.\n');
+    console.log('    A backup goes to exports/, and the prior rows are saved to');
+    console.log('    call_grades_history (migration 060) before anything is written.\n');
   }
   console.log(`this will make ${sample.length} model call(s) at ~6k max output tokens each`);
   console.log(`expect roughly ${Math.ceil(sample.length * 8 / 60)}-${Math.ceil(sample.length * 15 / 60)} minutes\n`);
@@ -236,6 +237,40 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
   console.log(`\nbacked up ${verify.length} rows to ${backupPath}`);
 
   const RUBRIC_TAG = 'AI (rubric v2.1 regrade)';
+
+  // ---- History, before a single row changes -------------------------------
+  //
+  // The exports/ file above is a file: gitignored, on a Render disk, gone when
+  // the instance recycles. call_grades_history (migration 060) is the durable
+  // record. Written FIRST and read back — if history cannot be recorded then
+  // nothing is overwritten, because an un-auditable overwrite is exactly the
+  // thing this was asked to prevent.
+  const batchId = `regrade_${day}_${stamp}`;
+  const historyRows = current.map(row => ({
+    recording_id: row.recording_id,
+    previous: row,
+    previous_score: row.overall_score ?? null,
+    previous_grade: row.overall_grade ?? null,
+    previous_graded_by: row.graded_by ?? null,
+    previous_graded_at: row.graded_at ?? null,
+    batch_id: batchId,
+    replaced_by: RUBRIC_TAG,
+    source: 'scripts/regrade-sample.js',
+  }));
+  const { error: histErr } = await db.from('call_grades_history').insert(historyRows);
+  if (histErr) {
+    throw new Error(
+      'could not write call_grades_history: ' + histErr.message
+      + '\nNothing was overwritten. If the table is missing, run'
+      + ' supabase/migrations/060_call_grades_history.sql first.');
+  }
+  const { count: histCount, error: histCountErr } = await db.from('call_grades_history')
+    .select('id', { count: 'exact', head: true }).eq('batch_id', batchId);
+  if (histCountErr || histCount !== historyRows.length) {
+    throw new Error(`history did not read back intact (${histCount} of ${historyRows.length}) — refusing to overwrite anything`);
+  }
+  console.log(`history: ${histCount} row(s) saved to call_grades_history, batch ${batchId}`);
+
   let written = 0, failed = 0;
   for (const { stored: s0, fresh } of results) {
     const patch = {
@@ -269,4 +304,6 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
   console.log(`\nOVERWRITTEN: ${written} row(s)${failed ? `, ${failed} FAILED` : ''}`);
   console.log(`graded_by is now "${RUBRIC_TAG}" on those rows.`);
   console.log(`\nTo undo:  node scripts/restore-call-grades.js ${backupPath}`);
+  console.log(`Or from the database, which survives this disk:`);
+  console.log(`          node scripts/restore-call-grades.js --batch ${batchId}`);
 })().catch(e => { console.error('\nfailed:', e.message); process.exitCode = 1; });
