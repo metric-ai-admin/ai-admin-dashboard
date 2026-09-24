@@ -3231,19 +3231,52 @@ if (process.env.MCP_UPSTREAM_URL) logLine(`[mcp] proxying tool calls to ${MCP_BA
 const mcpMetricKeyHeaders = () =>
   process.env.METRIC_API_KEY ? { 'x-metric-key': process.env.METRIC_API_KEY } : {};
 
-async function mcpGetJSON(pathname, timeoutMs = 30_000) {
+// Retried ONCE on a connection failure, because the dashboard restarts on every
+// deploy and a tool call landing in that 30-60s window would otherwise just fail
+// in front of whoever asked.
+//
+// ONLY THIS FUNCTION RETRIES. It is the GET path — reads, idempotent, safe to
+// repeat. mcpDoFetch below carries the POST/PATCH/DELETE tools, and retrying
+// those would create a task twice or re-flag a call whose first request
+// actually succeeded before the connection dropped. A duplicate write is worse
+// than a visible failure, so that one is deliberately left alone.
+//
+// Only connection-level failures are retried: an HTTP error means the dashboard
+// answered, so repeating the request would just get the same answer.
+const MCP_RETRY_DELAY_MS = 1500;
+
+async function mcpGetOnce(pathname, timeoutMs) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
     const res = await fetchFn(`${MCP_BASE}${pathname}`, { signal: ac.signal, headers: mcpMetricKeyHeaders() });
-    if (!res.ok) return { _error: `The dashboard returned ${res.status} for ${pathname}` };
-    return await res.json();
+    if (!res.ok) return { ok: false, retryable: false, value: { _error: `The dashboard returned ${res.status} for ${pathname}` } };
+    return { ok: true, value: await res.json() };
   } catch (err) {
-    if (err.name === 'AbortError') return { _error: `The dashboard took too long to respond (${timeoutMs / 1000}s).` };
-    return { _error: `Could not reach the dashboard at ${MCP_BASE}.` };
+    const timedOut = err.name === 'AbortError';
+    return {
+      ok: false,
+      // A timeout is not retried: the caller has already waited the full window,
+      // and a second wait doubles it for a tool call somebody is sitting in
+      // front of.
+      retryable: !timedOut,
+      value: { _error: timedOut
+        ? `The dashboard took too long to respond (${timeoutMs / 1000}s).`
+        : `Could not reach the dashboard at ${MCP_BASE}.` },
+    };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function mcpGetJSON(pathname, timeoutMs = 30_000) {
+  const first = await mcpGetOnce(pathname, timeoutMs);
+  if (first.ok || !first.retryable) return first.value;
+  logLine(`[mcp] ${pathname} could not reach the dashboard — retrying once in ${MCP_RETRY_DELAY_MS}ms`);
+  await new Promise(r => setTimeout(r, MCP_RETRY_DELAY_MS));
+  const second = await mcpGetOnce(pathname, timeoutMs);
+  if (second.ok) { logLine(`[mcp] ${pathname} succeeded on retry`); return second.value; }
+  return second.value;
 }
 
 const mcpText = v => ({ content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }] });
@@ -3315,7 +3348,26 @@ app.all('/mcp', async (req, res) => {
     const mcpServer = new McpServer({ name: 'ai-admin-dashboard', version: '1.0.0' });
     registerAllTools(mcpServer, { BASE: MCP_BASE, getJSON: mcpGetJSON, doFetch: mcpDoFetch, text: mcpText });
     await mcpServer.connect(transport);
+  } else if (sessionId) {
+    // A session id we do not recognise. This is the normal state after ANY
+    // restart of this service: mcpTransports is in memory, so a redeploy empties
+    // it while the client still holds its id.
+    //
+    // 404 IS THE FIX, and it is not cosmetic. The Streamable HTTP spec treats
+    // 404 on a request carrying a session id as the signal to start a new
+    // session with a fresh InitializeRequest — the SDK's own transport
+    // documents the same behaviour ("Requests with invalid session IDs are
+    // rejected with 404 Not Found"). This handler used to answer 400, which
+    // carries no such contract, so the client had nothing telling it to
+    // re-initialise and the session simply stayed dead. That is what the
+    // 30-minute outage on 2026-09-25 was.
+    logLine(`[mcp] unknown session ${String(sessionId).slice(0, 8)}… — answering 404 so the client re-initialises`);
+    res.status(404).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Session not found. Start a new session with an initialize request.' }, id: null });
+    return;
   } else {
+    // No session id and not an initialize — genuinely malformed, and 400 is
+    // right here. Kept distinct from the case above on purpose: answering 404
+    // to this would tell a client to retry something that will never work.
     res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session ID provided' }, id: null });
     return;
   }

@@ -182,6 +182,16 @@ services:
     env: node
     region: oregon           # same region as the dashboard — the proxy hop is internal
     plan: starter
+    # THE POINT OF THE SEPARATION. Both services build from this repo, so with
+    # autoDeploy on Render redeployed BOTH on every push — measured 2026-09-25,
+    # the two came back 14 seconds apart — which restarts the MCP service, empties
+    # its in-memory session map and drops Claude Desktop's session on every
+    # dashboard commit. Exactly what splitting them was meant to prevent.
+    #
+    # Redeploy this service by hand (Render → Manual Deploy) when the MCP
+    # surface or mcp-tools.cjs changes. Nothing else here needs it: the tools
+    # proxy to the dashboard, so dashboard changes reach them without a restart.
+    autoDeploy: false
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /health
