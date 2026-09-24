@@ -32,8 +32,35 @@ function toast(msg, type = '') {
   setTimeout(() => t.classList.add('hidden'), 3200);
 }
 
+// A JSON body needs the Content-Type header or express.json() will not parse it:
+// req.body arrives as {}, and the route rejects the request for missing the
+// fields that were in fact sent. That is the whole of Bekah's 2026-09-25
+// "key and a valid action are required" — the note WAS in the body, unparsed.
+//
+// Four call sites had it wrong (decision-queue/decide, vacancy/applied,
+// calls/flag, coaching-reviews) against 33 that set it by hand, so this is
+// fixed HERE rather than at each site: a helper that silently drops the body
+// unless every caller remembers a header will keep collecting these.
+//
+// Objects are stringified, strings are left alone, and FormData/Blob are not
+// touched at all — the browser sets its own multipart boundary and overriding
+// it breaks the upload.
+function apiBody(opts) {
+  if (!opts || opts.body === undefined || opts.body === null) return opts;
+  const b = opts.body;
+  const isRaw = (typeof FormData !== 'undefined' && b instanceof FormData)
+    || (typeof Blob !== 'undefined' && b instanceof Blob)
+    || (typeof URLSearchParams !== 'undefined' && b instanceof URLSearchParams)
+    || (typeof ArrayBuffer !== 'undefined' && b instanceof ArrayBuffer);
+  if (isRaw) return opts;
+  const headers = { ...(opts.headers || {}) };
+  const hasCT = Object.keys(headers).some(k => k.toLowerCase() === 'content-type');
+  if (!hasCT) headers['Content-Type'] = 'application/json';
+  return { ...opts, headers, body: typeof b === 'string' ? b : JSON.stringify(b) };
+}
+
 async function api(url, opts) {
-  const res = await fetch(url, opts);
+  const res = await fetch(url, apiBody(opts));
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
@@ -9252,7 +9279,6 @@ function dqCard(a) {
 
     <div class="dq-actions">
       <button class="btn btn-ghost dq-act" data-action="karla_handles">Karla handles</button>
-      <button class="btn btn-ghost dq-act" data-action="escalate_lyndsay">Escalate to Lyndsay</button>
       <button class="btn btn-ghost dq-act" data-action="note">Add note</button>
     </div>
     <div class="dq-notebox" hidden>
@@ -9267,6 +9293,36 @@ const dqActionLabel = a => ({
   escalate_lyndsay: 'Escalated to Lyndsay',
   note: 'Note added',
 }[a] || a);
+
+// A credit card carries no triggers and no call history — it is one number and
+// the resident it belongs to. Notes still work, because "why does this resident
+// have $2,120 sitting on their account" is exactly the kind of thing worth
+// writing down next to the number.
+function dqCreditCard(c) {
+  const decided = c.decision;
+  return `<article class="dq-card dq-card-credit" data-key="${dqEsc(c.key)}">
+    <div class="dq-card-head">
+      <div>
+        <div class="dq-name">${dqEsc(c.name)}</div>
+        <div class="dq-prop">${dqEsc(c.property)} · ${dqEsc(c.unit)}</div>
+      </div>
+      <div class="dq-figs">
+        <div><span class="dq-fig-label">Credit</span><span class="dq-fig dq-fig-credit">${dqMoney(c.credit)}</span></div>
+      </div>
+    </div>
+    ${c.status ? `<div class="dq-meta">Unit status: ${dqEsc(c.status)}</div>` : ''}
+    ${c.moveOut ? `<div class="dq-meta">Move-out on file: ${dqEsc(dqDate(String(c.moveOut).slice(0, 10)) || '')}</div>` : ''}
+    ${decided ? `<div class="dq-decided">Last action: <strong>${dqEsc(dqActionLabel(decided.action))}</strong>
+       by ${dqEsc(decided.by)}${decided.note ? `<div class="dq-note">“${dqEsc(decided.note)}”</div>` : ''}</div>` : ''}
+    <div class="dq-actions">
+      <button class="btn btn-ghost dq-act" data-action="note">Add note</button>
+    </div>
+    <div class="dq-notebox" hidden>
+      <input type="text" class="dq-note-input" placeholder="What should happen with this credit?" maxlength="500">
+      <button class="btn dq-note-save">Save note</button>
+    </div>
+  </article>`;
+}
 
 async function loadDecisionQueue(refresh) {
   const wrap = document.getElementById('dq-wrap');
@@ -9305,9 +9361,40 @@ function renderDecisionQueue() {
     + `${stats.considered} reviewed`
     + (meta && meta.syncedAt ? ` · data from ${dqEsc(dqDate(meta.syncedAt.slice(0, 10)) || '')}` : '');
 
-  cards.innerHTML = historyNote + (queue.length
-    ? `<div class="dq-grid">${queue.map(dqCard).join('')}</div>`
-    : '<div class="empty-state">No accounts need your attention today.</div>');
+  // Split by size rather than interleaved by trigger: the small ones are
+  // Karla's routine work and the large ones are what Bekah actually decides on,
+  // and reading them as one list means re-sorting in your head every time.
+  const ceiling = (dqData.thresholds && dqData.thresholds.smallBalanceCeiling) || 500;
+  const high = queue.filter(a => Number(a.balance) >= ceiling);
+  const small = queue.filter(a => Number(a.balance) < ceiling);
+  const credits = dqData.credits || [];
+  const creditFloor = (dqData.thresholds && dqData.thresholds.creditFloor) || 500;
+
+  const section = (title, note, items, render, emptyText) =>
+    `<section class="dq-section">
+      <div class="dq-section-head">
+        <h3>${dqEsc(title)}</h3>
+        <span class="dq-section-count${items.length ? '' : ' zero'}">${items.length}</span>
+      </div>
+      <p class="dq-section-note">${dqEsc(note)}</p>
+      ${items.length
+        ? `<div class="dq-grid">${items.map(render).join('')}</div>`
+        : `<p class="dq-empty">${dqEsc(emptyText)}</p>`}
+    </section>`;
+
+  cards.innerHTML = historyNote
+    + section(`High balances — ${dqMoney(ceiling)} and over`,
+      'Accounts where the decision is yours rather than Karla\'s.',
+      high, dqCard, 'Nothing over the threshold today.')
+    + section(`Small balances — under ${dqMoney(ceiling)}`,
+      'Karla\'s routine follow-up. Leave a note here if you want something specific done.',
+      small, dqCard, 'No small balances flagged today.')
+    + (dqData.creditsError
+      ? `<section class="dq-section"><div class="dq-section-head"><h3>Residents in credit</h3></div>
+         <div class="alert-box warn"><div class="al">NO DATA</div>${dqEsc(dqData.creditsError)}</div></section>`
+      : section(`Residents in credit — ${dqMoney(creditFloor)} and over`,
+        'Accounts carrying a credit balance. From the rent roll, not the delinquency report — a credit cannot appear in that one.',
+        credits, dqCreditCard, 'No resident is in credit by that much.'));
 
   cards.querySelectorAll('.dq-card').forEach(card => {
     const key = card.dataset.key;

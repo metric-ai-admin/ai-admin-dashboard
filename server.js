@@ -4660,6 +4660,13 @@ async function lastInboundCallByPhone(db, days = 120) {
   return map;
 }
 
+// Where the board splits. Small balances are Karla's routine work and high
+// balances are the ones Bekah actually decides on, so they are shown apart
+// rather than interleaved by trigger (Bekah, 2026-09-25).
+const SMALL_BALANCE_CEILING = Number(process.env.DQ_SMALL_BALANCE_CEILING || 500);
+// A resident whose account is in credit by at least this much.
+const CREDIT_FLOOR = Number(process.env.DQ_CREDIT_FLOOR || 500);
+
 async function decisionQueueData({ refresh = false } = {}) {
   let syncError = null;
   if (refresh) {
@@ -4711,7 +4718,49 @@ async function decisionQueueData({ refresh = false } = {}) {
   const keyOf = a => String(a.occupancyId || `${a.property}|${a.unit}|${a.name}`);
   result.queue = result.queue.map(a => ({ ...a, key: keyOf(a), decision: decisions[keyOf(a)] || null }));
 
-  return { ...result, meta: { syncedAt: data.fetchedAt || null, rowCount: (data.rows || []).length, syncError } };
+  // RESIDENTS IN CREDIT (Bekah, 2026-09-25).
+  //
+  // NOT from delinquency_as_of, which is where the brief pointed. That report is
+  // filtered to delinquent accounts — 72 rows, every balance positive, zero
+  // negatives — so a credit can never appear in it by construction. rent_roll
+  // carries past_due per lease across all 438 units, and a negative past_due IS
+  // the credit. Checked before building: 38 residents in credit, 14 of them at
+  // $500 or more before exclusions.
+  let credits = [];
+  let creditsError = null;
+  try {
+    const rr = await require('./appfolio-reports.js').readReportData('rent_roll');
+    if (!rr || !Array.isArray(rr.rows) || !rr.rows.length) {
+      creditsError = 'rent_roll has not synced — run Sync All Data.';
+    } else {
+      const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[$,]/g, '')); return isNaN(n) ? 0 : n; };
+      credits = rr.rows
+        .filter(r => !propertyIsExcluded(r.property_name))
+        .map(r => ({
+          property: r.property_name || '—',
+          unit: r.unit || '—',
+          name: r.tenant || '—',
+          // Reported as a POSITIVE number with the label saying "credit". A
+          // column of negative numbers under a heading that already says credit
+          // reads as a double negative and gets misread as debt.
+          credit: -num(r.past_due),
+          status: r.status || '',
+          moveOut: r.move_out || null,
+          key: 'credit:' + String(r.unit_id || `${r.property_name}|${r.unit}`),
+        }))
+        .filter(c => c.credit >= CREDIT_FLOOR)
+        .sort((a, b) => b.credit - a.credit);
+      credits = credits.map(c => ({ ...c, decision: decisions[c.key] || null }));
+    }
+  } catch (err) { creditsError = err.message; }
+
+  return {
+    ...result,
+    credits,
+    creditsError,
+    thresholds: { smallBalanceCeiling: SMALL_BALANCE_CEILING, creditFloor: CREDIT_FLOOR },
+    meta: { syncedAt: data.fetchedAt || null, rowCount: (data.rows || []).length, syncError },
+  };
 }
 
 // =====================================================================
@@ -5135,7 +5184,11 @@ app.get('/api/collections/decision-queue', requireAuth, requireRole(...DECISION_
 // can be revisited rather than silently overwritten.
 app.post('/api/collections/decision-queue/decide', requireAuth, requireRole(...DECISION_QUEUE_ROLES), async (req, res) => {
   const { key, action, note } = req.body || {};
-  const ALLOWED = ['karla_handles', 'escalate_lyndsay', 'note'];
+  // 'escalate_lyndsay' was retired on 2026-09-25 — Bekah confirmed she almost
+  // never used it. Removed from what can be RECORDED, deliberately not from
+  // what can be READ: decisions already carrying it still render their history,
+  // and dropping the label would turn those into a blank "Last action:".
+  const ALLOWED = ['karla_handles', 'note'];
   if (!key || !ALLOWED.includes(action)) return res.status(400).json({ error: 'key and a valid action are required' });
   if (action === 'note' && !String(note || '').trim()) return res.status(400).json({ error: 'A note action needs text' });
   try {

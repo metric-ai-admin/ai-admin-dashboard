@@ -2690,3 +2690,21 @@ tr.ca-sel { background: var(--accent-glow); }
   border: 1px solid var(--warning); border-radius: 20px;
   padding: 3px 11px; font-size: 11.5px; font-weight: 650; white-space: nowrap;
 }
+
+/* ---- Decision Queue: sections by balance size ------------------------- */
+.dq-section { margin: 0 0 22px; }
+.dq-section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
+.dq-section-head h3 { margin: 0; font-size: 14px; font-weight: 650; color: var(--text-primary); }
+.dq-section-count {
+  min-width: 24px; padding: 1px 9px; border-radius: 20px; text-align: center;
+  background: var(--info-bg); color: var(--info); font-size: 12px; font-weight: 700;
+}
+/* A zero here is a good outcome, not an alert. */
+.dq-section-count.zero { background: var(--bg-elevated); color: var(--text-secondary); }
+.dq-section-note { font-size: 11.5px; color: var(--text-secondary); margin: 0 0 10px; line-height: 1.5; }
+.dq-empty { font-size: 13px; color: var(--text-secondary); padding: 10px 0 4px; margin: 0; }
+
+/* Credit balances are the opposite of a delinquency, so they read green and
+   carry no urgency colouring — the point is to notice them, not to chase. */
+.dq-card-credit { border-left: 3px solid var(--success); }
+.dq-fig-credit { color: var(--success); }
