@@ -155,10 +155,27 @@ const FIELDS = {
   unbilledAmount: ['unbilled_amount', 'unbilled', 'amount_unbilled'],
   amount: ['amount', 'total_amount', 'vendor_bill_amount'],
   billableType: ['billable_type', 'billable', 'bill_to'],
+  description: ['description', 'job_description', 'work_order_issue'],
+  unit: ['unit', 'unit_name', 'unit_address'],
   date: ['work_completed_on', 'completed_on', 'date', 'work_done_on', 'labor_date', 'created_date'],
 };
 
 // Builds { logicalName -> actual header } once per file.
+// An aggregate column belongs to the GROUP row, not to the data rows.
+// "count(Work Order Number)" contains "work_order_number", so the loose pass
+// below happily matched it as the work-order column — empty on every data row,
+// and countedBy then claimed the counts came from work-order numbers when they
+// came from the fallback identity. A wrong label on a right number is still a
+// thing someone acts on.
+const AGGREGATE_HEADER = /^(count|sum|avg|average|min|max|total)_/;
+
+// Every name any field claims exactly. The loose pass must not steal a header
+// that another field owns outright: "work_order_status" CONTAINS "work_order",
+// so the work-order column resolved to the STATUS column, every row's identity
+// became its own status, and three separate jobs with the same status counted
+// as one. The counts were wrong in the direction that looks plausible.
+const CLAIMED_HEADERS = new Set(Object.values(FIELDS).flat());
+
 function resolveColumns(headers) {
   const byNorm = {};
   headers.forEach(h => { byNorm[norm(h)] = h; });
@@ -167,15 +184,37 @@ function resolveColumns(headers) {
     const hit = candidates.find(c => byNorm[c]);
     // Fall back to a header that CONTAINS the candidate, so "Total Billed
     // Amount" still resolves — but only when nothing matched exactly, or
-    // "hours" would swallow "worked_hours".
+    // "hours" would swallow "worked_hours". Aggregates are excluded from this
+    // pass only; an exact match on one would still be honoured.
     map[field] = hit ? byNorm[hit]
-      : (candidates.map(c => Object.keys(byNorm).find(k => k.includes(c)))
+      : (candidates.map(c => Object.keys(byNorm).find(k =>
+        k.includes(c)
+        && !AGGREGATE_HEADER.test(k)
+        && !(CLAIMED_HEADERS.has(k) && !candidates.includes(k))))
         .filter(Boolean).map(k => byNorm[k])[0] || null);
   }
   return map;
 }
 
 const get = (row, cols, field) => (cols[field] ? row[cols[field]] : undefined);
+
+// What makes two rows the same work order.
+//
+// The grouped export has no work-order number on its data rows — only
+// count(Work Order Number) on the group header — so counting distinct work
+// orders per status needs a stand-in. Unit, description and date together are
+// what separate one job from another on those rows. It can undercount if the
+// same unit has two identical descriptions on one day; that is a closer answer
+// than counting billable LINES, where a single job with four parts reads as
+// four work orders.
+function woIdentity(row, cols) {
+  const wo = get(row, cols, 'workOrder');
+  if (wo) return 'wo:' + String(wo).trim();
+  return 'k:' + [
+    get(row, cols, 'property'), get(row, cols, 'unit'),
+    get(row, cols, 'date'), String(get(row, cols, 'description') || '').slice(0, 60),
+  ].map(x => String(x == null ? '' : x).trim().toLowerCase()).join('|');
+}
 
 // Money and hours arrive as "$1,234.50", "(45.00)" for negatives, or "".
 function num(v) {
@@ -192,16 +231,24 @@ function num(v) {
 // ---- Status buckets ---------------------------------------------------------
 // The report cares about three groups. Matched on normalised text so "Ready To
 // Bill" and "ready_to_bill" land together.
+// Patterns rather than a fixed list. An exact-match list is brittle against a
+// report that writes "Work Done - Billable", "Ready To Bill (Owner)" or a
+// trailing space, and the failure is silent: the status lands in "other" and
+// the card reads 0 while the file plainly contains those rows.
 const STATUS_GROUPS = {
-  workDone: ['work_done'],
-  readyToBill: ['ready_to_bill'],
-  completed: ['completed', 'completed_no_need_to_bill'],
+  // norm() joins words with underscores, and \b does not fire between a letter
+  // and an underscore — so /^completed\b/ never matched
+  // "completed_no_need_to_bill". The separator has to be spelled out.
+  workDone: /^work_?done(?:_|$)/,
+  readyToBill: /^ready_?to_?bill(?:_|$)/,
+  completed: /^completed(?:_|$)/,
 };
 
 function statusGroup(raw) {
   const n = norm(raw);
-  for (const [group, values] of Object.entries(STATUS_GROUPS)) {
-    if (values.includes(n)) return group;
+  if (!n) return null;
+  for (const [group, re] of Object.entries(STATUS_GROUPS)) {
+    if (re.test(n)) return group;
   }
   return null;
 }
@@ -243,7 +290,8 @@ function summarisePeriod(parsed) {
   const s = {
     rows: rows.length,
     rowsExcluded: parsed.rows.length - rows.length,
-    workDone: 0, readyToBill: 0, completed: 0, otherStatus: 0,
+    statusKeys: { workDone: new Set(), readyToBill: new Set(), completed: new Set() },
+    otherKeys: new Set(),
     billableHours: 0, workedHours: 0,
     billed: 0, unbilled: 0,
     // Counted as DISTINCT work orders, not rows: the billable detail is one row
@@ -257,7 +305,14 @@ function summarisePeriod(parsed) {
     const raw = get(r, cols, 'status');
     const g = statusGroup(raw);
     if (raw) s.statusesSeen[raw] = (s.statusesSeen[raw] || 0) + 1;
-    if (g) s[g]++; else s.otherStatus++;
+    // Counted as DISTINCT work orders per status, not rows: one work order can
+    // carry several billable lines and would otherwise be counted once per
+    // line. Where the grouped export gives no work-order number, the identity
+    // falls back to unit + description + date, which is what distinguishes one
+    // job from another on those rows. Stated in `countedBy` so the number is
+    // never silently a row count pretending to be a work-order count.
+    if (g) s.statusKeys[g].add(woIdentity(r, cols));
+    else if (raw) s.otherKeys.add(woIdentity(r, cols));
     s.billableHours += num(get(r, cols, 'billableHours'));
     s.workedHours += num(get(r, cols, 'workedHours'));
     s.billed += num(get(r, cols, 'billedAmount'));
@@ -278,6 +333,15 @@ function summarisePeriod(parsed) {
   const dates = exportDate(rows, cols);
   return {
     ...s,
+    statusKeys: undefined,
+    otherKeys: undefined,
+    workDone: s.statusKeys.workDone.size,
+    readyToBill: s.statusKeys.readyToBill.size,
+    completed: s.statusKeys.completed.size,
+    otherStatus: s.otherKeys.size,
+    // Whether those three are true work-order counts or a best-effort identity.
+    countedBy: cols.workOrder ? 'work order number' : 'unit + description + date',
+    statusColumn: cols.status,
     workOrders,
     grouped: !!parsed.grouped,
     billableHours: round1(s.billableHours),
@@ -301,13 +365,17 @@ function byProperty(parsed, { woAlertThreshold = 10 } = {}) {
     if (isExcludedProperty(property)) return;
     if (!map.has(property)) {
       map.set(property, {
-        property, workDone: 0, readyToBill: 0, completed: 0, other: 0,
+        property,
+        statusKeys: { workDone: new Set(), readyToBill: new Set(), completed: new Set() },
+        otherKeys: new Set(),
         billableHours: 0, workedHours: 0, billed: 0, unbilled: 0, workOrders: new Set(),
       });
     }
     const p = map.get(property);
-    const g = statusGroup(get(r, cols, 'status'));
-    if (g) p[g]++; else p.other++;
+    const raw = get(r, cols, 'status');
+    const g = statusGroup(raw);
+    if (g) p.statusKeys[g].add(woIdentity(r, cols));
+    else if (raw) p.otherKeys.add(woIdentity(r, cols));
     p.billableHours += num(get(r, cols, 'billableHours'));
     p.workedHours += num(get(r, cols, 'workedHours'));
     p.billed += num(get(r, cols, 'billedAmount'));
@@ -319,6 +387,12 @@ function byProperty(parsed, { woAlertThreshold = 10 } = {}) {
   return [...map.values()]
     .map(p => ({
       ...p,
+      statusKeys: undefined,
+      otherKeys: undefined,
+      workDone: p.statusKeys.workDone.size,
+      readyToBill: p.statusKeys.readyToBill.size,
+      completed: p.statusKeys.completed.size,
+      other: p.otherKeys.size,
       // The grouped export's header count is authoritative: its data rows have
       // no work-order number, so the Set would be empty and every property
       // would read zero.

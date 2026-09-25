@@ -141,7 +141,10 @@ t('an unknown status is not silently bucketed', () => {
 console.log('\nperiod summary');
 t('counts, hours and money add up with exclusions applied', () => {
   const s = B.summarisePeriod(parseUI());
-  assert.strictEqual(s.completed, 2);      // two Ascent rows
+  // 1, not 2: the two Completed rows are both work order 21818-1. Status counts
+  // are DISTINCT WORK ORDERS, not billable lines — a job with four parts is one
+  // completed work order, not four.
+  assert.strictEqual(s.completed, 1);
   assert.strictEqual(s.readyToBill, 1);
   assert.strictEqual(s.workDone, 1);
   assert.strictEqual(s.otherStatus, 1);    // Assigned
@@ -352,6 +355,120 @@ t('rows appearing before any group header are not silently dropped', () => {
   const p = B.parseCsv('Group,count(Work Order Number),Amount\n,,$5.00\n-> A,1,\n,,$10.00');
   assert.strictEqual(p.rows.length, 2);
   assert.strictEqual(p.rows[0].__property, '');
+});
+
+console.log('\nstatus counting — distinct work orders, tolerant matching');
+t('a status with a suffix still lands in its group', () => {
+  // The silent failure this replaces: an exact-match list put "Work Done -
+  // Billable" in "other", and the card read 0 while the file plainly had
+  // Work Done rows in it.
+  assert.strictEqual(B.statusGroup('Work Done - Billable'), 'workDone');
+  assert.strictEqual(B.statusGroup('Ready to Bill (Owner)'), 'readyToBill');
+  assert.strictEqual(B.statusGroup('Completed No Need To Bill'), 'completed');
+});
+t('underscores do not defeat the match', () => {
+  // norm() joins words with underscores and \b does not fire between a letter
+  // and an underscore, which is how /^completed\b/ missed the whole group.
+  ['completed_no_need_to_bill', 'work_done', 'ready_to_bill'].forEach(v =>
+    assert.ok(B.statusGroup(v), v));
+});
+t('unrelated statuses are still not swallowed', () => {
+  ['Assigned', 'Canceled', 'Scheduled', 'New', 'Waiting'].forEach(v =>
+    assert.strictEqual(B.statusGroup(v), null, v));
+});
+
+const MULTILINE = [
+  'Group,count(Work Order Number),Unit,Vendor,Created Date,Description,Amount,Worked Hours,Billable Hours,Work Order Status,Billed Amount,Unbilled Amount',
+  '-> Hyde Park Square,3,,,,,,,,,,',
+  // One job, THREE billable lines. Counting rows would say 3 Ready to Bill.
+  ',,5-224,Acme,09/22/2026,Leak under sink,$100.00,1,1,Ready to Bill,$0.00,$100.00',
+  ',,5-224,Acme,09/22/2026,Leak under sink,$100.00,1,1,Ready to Bill,$0.00,$100.00',
+  ',,5-224,Acme,09/22/2026,Leak under sink,$100.00,1,1,Ready to Bill,$0.00,$100.00',
+  // A genuinely different job, same day, same property.
+  ',,3-101,Acme,09/22/2026,Door lock,$50.00,1,1,Ready to Bill,$0.00,$50.00',
+  ',,A-1,Bright,09/22/2026,Breaker,$75.00,1,1,Work Done,$0.00,$75.00',
+].join('\n');
+
+t('one job with several billable lines counts ONCE per status', () => {
+  const sum = B.summarisePeriod(B.parseCsv(MULTILINE));
+  assert.strictEqual(sum.readyToBill, 2, 'three lines of one job + one other job = 2');
+  assert.strictEqual(sum.workDone, 1);
+});
+t('money still sums every LINE, not the distinct jobs', () => {
+  // The counts deduplicate; the money must not.
+  const sum = B.summarisePeriod(B.parseCsv(MULTILINE));
+  assert.strictEqual(sum.unbilled, 425);   // 100+100+100+50+75
+});
+t('how the count was reached is reported, never implied', () => {
+  const grouped = B.summarisePeriod(B.parseCsv(MULTILINE));
+  assert.strictEqual(grouped.countedBy, 'unit + description + date');
+  const flat = B.summarisePeriod(parseUI());
+  assert.strictEqual(flat.countedBy, 'work order number');
+});
+t('a real work-order number is preferred over the fallback identity', () => {
+  const s2 = B.summarisePeriod(parseUI());
+  assert.strictEqual(s2.completed, 1);     // both rows are 21818-1
+});
+t('the status column actually used is named', () => {
+  assert.strictEqual(B.summarisePeriod(B.parseCsv(MULTILINE)).statusColumn, 'Work Order Status');
+});
+t('every status value found in the file is reported', () => {
+  const seen = B.summarisePeriod(B.parseCsv(MULTILINE)).statusesSeen;
+  assert.deepStrictEqual(Object.keys(seen).sort(), ['Ready to Bill', 'Work Done']);
+  assert.strictEqual(seen['Ready to Bill'], 4);   // rows, so a mismatch is visible
+});
+t('per-property status counts are distinct too', () => {
+  const p = B.byProperty(B.parseCsv(MULTILINE))[0];
+  assert.strictEqual(p.readyToBill, 2);
+  assert.strictEqual(p.workDone, 1);
+});
+t('a file whose statuses are ALL unrecognised reports them rather than zeros', () => {
+  const odd = 'Group,count(Work Order Number),Unit,Created Date,Description,Work Order Status,Billable Hours\n'
+    + '-> A,1,,,,,\n,,U1,09/22/2026,Job,Pending Approval,1\n';
+  const sum = B.summarisePeriod(B.parseCsv(odd));
+  assert.strictEqual(sum.workDone + sum.readyToBill + sum.completed, 0);
+  assert.strictEqual(sum.otherStatus, 1);
+  assert.deepStrictEqual(Object.keys(sum.statusesSeen), ['Pending Approval']);
+});
+
+const REAL_HEADERS = ['Group', 'count(Work Order Number)', 'Unit', 'Vendor', 'Billable Type',
+  'Created Date', 'Description', 'GL Account', 'Quantity', 'Rate', 'Amount', 'Worked Hours',
+  'Billable Hours', 'Work Order Status', 'Billed Amount', 'Unbilled Amount', '__property'];
+
+console.log('\ncolumn resolution must not steal a column another field owns');
+t('workOrder does not resolve to "Work Order Status"', () => {
+  // "work_order_status" CONTAINS "work_order". The loose pass took it, so every
+  // row's work-order identity became its own status and three separate jobs
+  // sharing a status counted as one. Wrong in the direction that looks right.
+  const cols = B.resolveColumns(REAL_HEADERS);
+  assert.strictEqual(cols.status, 'Work Order Status');
+  assert.strictEqual(cols.workOrder, null);
+});
+t('workOrder does not resolve to the group aggregate either', () => {
+  // "count(Work Order Number)" belongs to the GROUP row, not the data rows.
+  const cols = B.resolveColumns(REAL_HEADERS);
+  assert.notStrictEqual(cols.workOrder, 'count(Work Order Number)');
+});
+t('every other column on the real export resolves', () => {
+  const cols = B.resolveColumns(REAL_HEADERS);
+  assert.deepStrictEqual({
+    property: cols.property, tech: cols.tech, status: cols.status,
+    workedHours: cols.workedHours, billableHours: cols.billableHours,
+    billedAmount: cols.billedAmount, unbilledAmount: cols.unbilledAmount,
+    amount: cols.amount, billableType: cols.billableType,
+    unit: cols.unit, description: cols.description, date: cols.date,
+  }, {
+    property: '__property', tech: 'Vendor', status: 'Work Order Status',
+    workedHours: 'Worked Hours', billableHours: 'Billable Hours',
+    billedAmount: 'Billed Amount', unbilledAmount: 'Unbilled Amount',
+    amount: 'Amount', billableType: 'Billable Type',
+    unit: 'Unit', description: 'Description', date: 'Created Date',
+  });
+});
+t('an exact match still beats the restriction', () => {
+  // The rule only governs the LOOSE pass — a field may still claim a header
+  // it names exactly.
+  assert.strictEqual(B.resolveColumns(['work_order_number']).workOrder, 'work_order_number');
 });
 
 console.log(`\n${pass} passing`);

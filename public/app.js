@@ -5639,6 +5639,28 @@ function blWireOnce() {
   });
 }
 
+// What the file actually contained.
+//
+// Work Done and Ready to Bill read 0 on 2026-09-25 while the CSVs plainly held
+// those rows, and nothing on screen said why — the values were landing in
+// "other" because the matcher was an exact list. A count of 0 next to a file
+// that has the rows is the one case where the page has to show its working,
+// so the statuses found are listed whenever any of them went unrecognised.
+function blStatusNote(s) {
+  const seen = s.statusesSeen || {};
+  const names = Object.keys(seen);
+  if (!names.length) {
+    return `<div class="bl-warn">No status values found${s.statusColumn ? ' in "' + blEsc(s.statusColumn) + '"' : ' &mdash; no status column resolved'}.</div>`;
+  }
+  const bits = names.sort().map(n => `${blEsc(n)} <b>${blNum(seen[n])}</b>`).join(' &middot; ');
+  const unmatched = s.otherStatus > 0;
+  return `<div class="bl-statuses${unmatched ? ' bl-warn' : ''}">
+    Statuses in file: ${bits}
+    ${unmatched ? `<br>${blNum(s.otherStatus)} work order(s) matched none of Work Done / Ready to Bill / Completed.` : ''}
+    <br><span class="muted">Counted by ${blEsc(s.countedBy || 'work order number')}.</span>
+  </div>`;
+}
+
 function blCard(title, s) {
   return `<div class="bl-card">
     <div class="bl-card-title">${blEsc(title)}</div>
@@ -5653,6 +5675,7 @@ function blCard(title, s) {
     </div>
     ${s.columnsMissing && s.columnsMissing.length
     ? `<div class="bl-warn">No column found for: ${blEsc(s.columnsMissing.join(', '))} &mdash; those figures read zero.</div>` : ''}
+    ${blStatusNote(s)}
   </div>`;
 }
 
