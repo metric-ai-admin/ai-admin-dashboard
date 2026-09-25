@@ -400,10 +400,14 @@ t('money still sums every LINE, not the distinct jobs', () => {
   assert.strictEqual(sum.unbilled, 425);   // 100+100+100+50+75
 });
 t('how the count was reached is reported, never implied', () => {
+  // MULTILINE has the count(Work Order Number) column but leaves it blank on
+  // the data rows, so the identity really is the fallback — and the label says
+  // so, including WHY, rather than naming a column it did not use.
   const grouped = B.summarisePeriod(B.parseCsv(MULTILINE));
-  assert.strictEqual(grouped.countedBy, 'unit + description + date');
+  assert.ok(grouped.countedBy.startsWith('unit + description + date'), grouped.countedBy);
+  assert.ok(/is empty on every row/.test(grouped.countedBy), grouped.countedBy);
   const flat = B.summarisePeriod(parseUI());
-  assert.strictEqual(flat.countedBy, 'work order number');
+  assert.strictEqual(flat.countedBy, '"Work Order Number"');
 });
 t('a real work-order number is preferred over the fallback identity', () => {
   const s2 = B.summarisePeriod(parseUI());
@@ -442,12 +446,18 @@ t('workOrder does not resolve to "Work Order Status"', () => {
   // sharing a status counted as one. Wrong in the direction that looks right.
   const cols = B.resolveColumns(REAL_HEADERS);
   assert.strictEqual(cols.status, 'Work Order Status');
-  assert.strictEqual(cols.workOrder, null);
+  assert.notStrictEqual(cols.workOrder, 'Work Order Status');
 });
-t('workOrder does not resolve to the group aggregate either', () => {
-  // "count(Work Order Number)" belongs to the GROUP row, not the data rows.
-  const cols = B.resolveColumns(REAL_HEADERS);
-  assert.notStrictEqual(cols.workOrder, 'count(Work Order Number)');
+t('workOrder DOES resolve to count(Work Order Number)', () => {
+  // This assertion used to say the opposite. The column was excluded as an
+  // aggregate on the strength of its name; a real export on 2026-09-25 showed
+  // it carries the work order itself ("22884-1") on data rows, and only a
+  // count on group rows — which are dropped before any of this runs.
+  assert.strictEqual(B.resolveColumns(REAL_HEADERS).workOrder, 'count(Work Order Number)');
+});
+t('other aggregates are still kept out of the loose pass', () => {
+  // The exclusion still stands for names nothing claims exactly.
+  assert.strictEqual(B.resolveColumns(['Group', 'sum(Billed Amount)']).billedAmount, null);
 });
 t('every other column on the real export resolves', () => {
   const cols = B.resolveColumns(REAL_HEADERS);
@@ -558,6 +568,51 @@ t('a flat property-only grouping still behaves as before', () => {
   const p = B.parseCsv(GROUPED);
   assert.deepStrictEqual(p.emptyStatusGroups, []);
   assert.strictEqual(B.summarisePeriod(p).completed, 1);
+});
+
+console.log('\ncount(Work Order Number) is the WO number on data rows');
+
+// Confirmed from a real export on 2026-09-25: on a GROUP row that column holds
+// a count, on a DATA row it holds the work order itself ("22884-1"). Same
+// column, two meanings, decided by which kind of row you are on. It had been
+// excluded as an aggregate, so deduplication fell back to unit + description +
+// date — close, but it merges two same-day jobs on one unit with the same
+// description, and splits one job whose description was edited mid-week.
+const WITH_WO = [
+  'Group,count(Work Order Number),Unit,Vendor,Billable Type,Created Date,Description,GL Account,Quantity,Rate,Amount,Worked Hours,Billable Hours,Work Order Status,Billed Amount,Unbilled Amount',
+  '-> Hyde Park Square,12,,,,,,,,,"$3,600.00",14.4,12.0,,"$3,600.00",$0.00',
+  ',22884-1,5-224,Acme,Tenant,09/22/2026,Leak,6595,1,300,$300.00,1.2,1.0,Completed,$300.00,$0.00',
+  ',22884-1,5-224,Acme,Tenant,09/22/2026,Leak part two,6595,1,150,$150.00,0.6,0.5,Completed,$150.00,$0.00',
+  ',22879-1,3-101,Acme,Owner,09/22/2026,Lock,6595,1,200,$200.00,1.0,1.0,Completed,$200.00,$0.00',
+].join(String.fromCharCode(10));
+
+t('it resolves as the work-order column', () => {
+  assert.strictEqual(B.resolveColumns(B.parseCsv(WITH_WO).headers).workOrder, 'count(Work Order Number)');
+});
+t('the group row still yields a COUNT from the same column', () => {
+  assert.strictEqual(B.parseCsv(WITH_WO).groupCounts['Hyde Park Square'], 12);
+});
+t('two lines of one work order count once, even with different descriptions', () => {
+  // The fallback identity would have said 3 here: the two 22884-1 lines carry
+  // different descriptions, so unit+description+date splits one job in two.
+  assert.strictEqual(B.summarisePeriod(B.parseCsv(WITH_WO)).completed, 2);
+});
+t('money still sums every line', () => {
+  assert.strictEqual(B.summarisePeriod(B.parseCsv(WITH_WO)).billed, 650);
+});
+t('the card names the actual column it counted by', () => {
+  assert.strictEqual(B.summarisePeriod(B.parseCsv(WITH_WO)).countedBy, '"count(Work Order Number)"');
+});
+t('a real Work Order Number column is still preferred over it', () => {
+  const both = 'Group,count(Work Order Number),Work Order Number,Unit,Created Date,Description,Billable Hours,Work Order Status'
+    + String.fromCharCode(10) + '-> P,2,,,,,,'
+    + String.fromCharCode(10) + ',9,WO-1,U1,09/22/2026,A,1,Completed';
+  assert.strictEqual(B.resolveColumns(B.parseCsv(both).headers).workOrder, 'Work Order Number');
+});
+t('per-property counts still come from the group header, not the rows', () => {
+  const hyde = B.byProperty(B.parseCsv(WITH_WO))[0];
+  assert.strictEqual(hyde.workOrders, 12);
+  assert.strictEqual(hyde.completed, 2);
 });
 
 console.log(`\n${pass} passing`);
