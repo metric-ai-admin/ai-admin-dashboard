@@ -2798,3 +2798,13 @@ tr.ca-sel { background: var(--accent-glow); }
   padding: 10px 12px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin-top: 6px; }
 .af-field { display: inline-block; min-width: 96px; color: var(--muted); }
 .af-unbound { color: var(--warning); }
+
+/* Sync panel — the source list collapses.
+   Ten rows of it pushed the navigation below the fold on a laptop, which is a
+   worse problem than not seeing every report's row count at a glance. */
+.sync-summary { font-size: 11px; color: var(--muted); padding: 4px 0 2px; }
+.sync-summary .sync-bad { color: var(--critical); font-weight: 600; }
+.sync-toggle { background: none; border: none; color: var(--muted); font-size: 11px;
+  padding: 2px 0; cursor: pointer; text-align: left; width: 100%; }
+.sync-toggle:hover { color: var(--text-primary); }
+.sync-list { margin-top: 4px; }

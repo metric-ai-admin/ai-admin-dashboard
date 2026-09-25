@@ -10040,6 +10040,38 @@ function syncWhen(iso) {
   } catch { return String(iso); }
 }
 
+// "3m ago" rather than a timestamp. The sidebar is glanced at, not read, and
+// the question it answers is "is this fresh" — which a date makes you work out.
+// The exact time stays in the title attribute.
+function syncAgo(iso) {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!isFinite(ms) || ms < 0) return syncWhen(iso);
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return days === 1 ? 'yesterday' : `${days}d ago`;
+}
+
+// The per-source list is collapsed by default: ten rows of it pushed the
+// navigation below the fold on a laptop, which is a worse problem than not
+// knowing the row count of every report at a glance.
+const SYNC_OPEN_KEY = 'syncSourcesOpen';
+
+function syncListOpen() {
+  // Wrapped: localStorage throws in a private window and returns null with
+  // site data cleared, and a sidebar that fails to render is worse than one
+  // that forgets a preference.
+  try { return localStorage.getItem(SYNC_OPEN_KEY) === '1'; } catch { return false; }
+}
+
+function setSyncListOpen(open) {
+  try { localStorage.setItem(SYNC_OPEN_KEY, open ? '1' : '0'); } catch { /* not fatal */ }
+}
+
 function renderSyncStatus(state, running) {
   const box = document.getElementById('sync-all-status');
   if (!box) return;
@@ -10052,14 +10084,46 @@ function renderSyncStatus(state, running) {
   box.hidden = false;
   const rows = (state.results || []).slice().sort(
     (a, b) => SYNC_SOURCE_ORDER.indexOf(a.id) - SYNC_SOURCE_ORDER.indexOf(b.id));
-  box.innerHTML = rows.map(r =>
+
+  // A failure opens the list for this render regardless of the saved
+  // preference. Collapsing a ❌ out of sight is how a stale report goes
+  // unnoticed for a week; the stored preference is left alone, so the next
+  // clean sync collapses again.
+  const failed = state.failed || rows.filter(r => !r.ok).length;
+  const open = syncListOpen() || failed > 0;
+
+  const summary = failed
+    ? `<span class="sync-bad">${failed} failed</span> · ${rows.length - failed} ok`
+    : `Last sync: ${syncEsc(syncAgo(state.at))}`;
+
+  box.innerHTML = `<div class="sync-summary" title="${syncEsc(syncWhen(state.at))} · ${(state.totalMs / 1000).toFixed(1)}s">
+      ${summary}
+    </div>
+    <button type="button" class="sync-toggle" id="sync-toggle"
+      aria-expanded="${open ? 'true' : 'false'}" aria-controls="sync-list">
+      ${open ? '▲ Hide' : `▼ ${rows.length} source${rows.length === 1 ? '' : 's'}`}
+    </button>
+    <div class="sync-list" id="sync-list"${open ? '' : ' hidden'}>
+      ${rows.map(r =>
     `<div class="sync-line ${r.ok ? '' : 'bad'}" title="${syncEsc(r.error || '')}">`
-    + `${r.ok ? '✅' : '❌'} ${syncEsc(r.label)}`
-    + (r.ok && r.rows != null ? ` <span class="muted">${r.rows}</span>` : '')
-    + (r.ok ? '' : ` <span class="muted">${syncEsc(String(r.error || '').slice(0, 40))}</span>`)
-    + '</div>').join('')
-    + `<div class="sync-foot">${state.failed ? `${state.ok} of ${rows.length} ok · ` : 'All sources · '}`
-    + `${(state.totalMs / 1000).toFixed(1)}s · ${syncEsc(syncWhen(state.at))}</div>`;
+        + `${r.ok ? '✅' : '❌'} ${syncEsc(r.label)}`
+        + (r.ok && r.rows != null ? ` <span class="muted">${r.rows}</span>` : '')
+        + (r.ok ? '' : ` <span class="muted">${syncEsc(String(r.error || '').slice(0, 40))}</span>`)
+        + '</div>').join('')}
+      <div class="sync-foot">${failed ? `${rows.length - failed} of ${rows.length} ok · ` : 'All sources · '}${(state.totalMs / 1000).toFixed(1)}s · ${syncEsc(syncWhen(state.at))}</div>
+    </div>`;
+
+  const toggle = document.getElementById('sync-toggle');
+  const list = document.getElementById('sync-list');
+  if (toggle && list) {
+    toggle.addEventListener('click', () => {
+      const nowOpen = list.hidden;
+      list.hidden = !nowOpen;
+      toggle.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
+      toggle.innerHTML = nowOpen ? '▲ Hide' : `▼ ${rows.length} source${rows.length === 1 ? '' : 's'}`;
+      setSyncListOpen(nowOpen);
+    });
+  }
 }
 
 async function loadSyncStatus() {
