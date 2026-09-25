@@ -5524,11 +5524,13 @@ async function blLoadStatus() {
         ${s.present ? 'Replace' : 'Upload CSV'}
         <input type="file" accept=".csv,text/csv" data-bl-slot="${blEsc(s.slot)}" hidden>
       </label>
+      <span class="bl-drop-hint">or drop a CSV here</span>
     </div>`;
   }).join('');
 
   wrap.querySelectorAll('input[data-bl-slot]').forEach(inp =>
     inp.addEventListener('change', () => blUpload(inp.dataset.blSlot, inp.files[0])));
+  blWireDropTargets(wrap);
 
   const gen = document.getElementById('bl-generate');
   if (gen) gen.disabled = !st.ready;
@@ -5560,6 +5562,57 @@ async function blUpload(slot, file) {
     blSay(`${file.name}: ${blNum(data.rows)} rows.${missing}`, missing ? 'warn' : 'ok');
     await blLoadStatus();
   } catch (e) { blSay(e.message, 'error'); }
+}
+
+// Each slot is a drop target as well as a button.
+//
+// dragover must be cancelled on BOTH the slot and the page: the browser's
+// default is to navigate to a dropped file, so a near-miss outside a slot would
+// replace the dashboard with a CSV in a blank window, losing whatever was on
+// screen. The page-level handler is registered once and swallows the default
+// everywhere, while the slots do the actual accepting.
+let blDropWired = false;
+
+function blWireDropTargets(wrap) {
+  if (!blDropWired) {
+    blDropWired = true;
+    ['dragover', 'drop'].forEach(evt =>
+      document.addEventListener(evt, e => {
+        if (!e.target.closest || !e.target.closest('.bl-slot')) e.preventDefault();
+      }));
+  }
+
+  wrap.querySelectorAll('.bl-slot').forEach(slot => {
+    const input = slot.querySelector('input[data-bl-slot]');
+    if (!input) return;
+    const name = input.dataset.blSlot;
+
+    // dragenter/dragleave fire for every CHILD element the cursor crosses, so a
+    // plain toggle flickers the highlight off as soon as the pointer moves over
+    // the label inside the slot. Counting entries against leaves is what keeps
+    // it steady.
+    let depth = 0;
+    const paint = on => slot.classList.toggle('bl-drop', on);
+
+    slot.addEventListener('dragenter', e => { e.preventDefault(); depth++; paint(true); });
+    slot.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+    slot.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) paint(false); });
+    slot.addEventListener('drop', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      depth = 0; paint(false);
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (!files || !files.length) return;
+      if (files.length > 1) return blSay('One file per slot — drop them one at a time.', 'warn');
+      const f = files[0];
+      // Checked before upload so a dropped .xlsx fails here with a sentence
+      // rather than as a parse error after a round trip.
+      if (!/\.csv$/i.test(f.name)) {
+        return blSay(`${f.name} is not a .csv — export the report as CSV, not Excel.`, 'error');
+      }
+      blUpload(name, f);
+    });
+  });
 }
 
 function blWireOnce() {

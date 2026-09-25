@@ -78,7 +78,59 @@ function parseCsv(text) {
     headers.forEach((h, j) => { o[h] = r[j] === undefined ? '' : String(r[j]).trim(); });
     out.push(o);
   }
-  return { headers, rows: out };
+  return expandGroups({ headers, rows: out });
+}
+
+// ---- The grouped export -----------------------------------------------------
+//
+// AppFolio's Work Order Billable Detail exports GROUPED, not flat. There is no
+// property column: the first column is "Group", and a property appears as its
+// own row reading "-> Hyde Park Square", with that property's work orders on
+// the rows beneath it until the next "->" header.
+//
+//   Group,count(Work Order Number),Unit,Vendor,...
+//   -> Hyde Park Square,28,,,...          <- header AND subtotal
+//   ,,5-224,Acme Plumbing,...             <- a work order under it
+//   ,,3-101,Acme Plumbing,...
+//   -> Ascent at Northgate,12,,,...
+//
+// Two things follow, and the second is easy to miss:
+//
+//   1. The property has to be forward-filled onto the rows below it.
+//   2. The header row is a SUBTOTAL, not a work order. Counting it as data
+//      would add a phantom row per property and double the money, since its
+//      amount columns repeat the group's totals.
+//
+// And there is no Work Order Number column on the data rows at all — only
+// count(Work Order Number) on the header. So the distinct-work-order count for
+// a property can only come from that header value, which is why groupCounts is
+// carried out of here rather than recomputed downstream.
+function expandGroups(parsed) {
+  const groupKey = parsed.headers.find(h => norm(h) === 'group');
+  if (!groupKey) return { ...parsed, grouped: false, groupCounts: null };
+
+  const countKey = parsed.headers.find(h => /count.*work_order_number|work_order_count/.test(norm(h)))
+    || parsed.headers.find(h => norm(h).startsWith('count'));
+
+  const rows = [];
+  const groupCounts = {};
+  let current = '';
+  for (const r of parsed.rows) {
+    const cell = String(r[groupKey] || '').trim();
+    // "->" is what AppFolio writes; en/em dashes appear when the file has been
+    // opened and re-saved in Excel.
+    const header = cell.match(/^(?:->|[-–—]>|→)\s*(.+)$/);
+    if (header) {
+      current = header[1].trim();
+      const n = countKey ? parseInt(String(r[countKey] || '').replace(/[^0-9]/g, ''), 10) : NaN;
+      if (isFinite(n)) groupCounts[current] = (groupCounts[current] || 0) + n;
+      continue;                      // subtotal row: never data
+    }
+    // A row before any header has no property; keep it so it is visible as
+    // "(no property)" rather than silently vanishing.
+    rows.push({ ...r, __property: current });
+  }
+  return { headers: [...parsed.headers, '__property'], rows, grouped: true, groupCounts };
 }
 
 // ---- Column resolution ------------------------------------------------------
@@ -90,7 +142,10 @@ function parseCsv(text) {
 const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
 const FIELDS = {
-  property: ['property_name', 'property', 'property_address'],
+  // __property is synthesised by expandGroups() for the grouped export, which
+  // has no property column at all — the name lives in "-> Name" header rows.
+  // First in the list so it wins when present.
+  property: ['__property', 'property_name', 'property', 'property_address'],
   tech: ['maintenance_tech', 'technician', 'tech', 'assigned_user', 'assigned_to', 'vendor'],
   status: ['work_order_status', 'status', 'wo_status'],
   workOrder: ['work_order_number', 'work_order', 'wo_number', 'wo', 'work_order_id', 'service_request_number'],
@@ -211,10 +266,20 @@ function summarisePeriod(parsed) {
     if (wo) s.workOrders.add(String(wo));
   });
 
+  // In the grouped export the data rows carry no work-order number — the count
+  // lives on the "-> Property" header. Sum those, skipping excluded properties.
+  let workOrders = s.workOrders.size;
+  if (parsed.groupCounts) {
+    workOrders = Object.entries(parsed.groupCounts)
+      .filter(([p]) => !isExcludedProperty(p))
+      .reduce((a, [, n]) => a + n, 0);
+  }
+
   const dates = exportDate(rows, cols);
   return {
     ...s,
-    workOrders: s.workOrders.size,
+    workOrders,
+    grouped: !!parsed.grouped,
     billableHours: round1(s.billableHours),
     workedHours: round1(s.workedHours),
     billed: round2(s.billed),
@@ -254,15 +319,20 @@ function byProperty(parsed, { woAlertThreshold = 10 } = {}) {
   return [...map.values()]
     .map(p => ({
       ...p,
-      workOrders: p.workOrders.size,
+      // The grouped export's header count is authoritative: its data rows have
+      // no work-order number, so the Set would be empty and every property
+      // would read zero.
+      workOrders: (parsed.groupCounts && parsed.groupCounts[p.property] !== undefined)
+        ? parsed.groupCounts[p.property]
+        : p.workOrders.size,
       billableHours: round1(p.billableHours),
       workedHours: round1(p.workedHours),
       billed: round2(p.billed),
       unbilled: round2(p.unbilled),
-      // The red-highlight rule, decided here rather than in the template so it
-      // is testable and so every surface agrees on what "over" means.
-      alert: p.workOrders.size > woAlertThreshold,
     }))
+    // The red-highlight rule is applied AFTER the count is settled, so it reads
+    // the group header's number rather than an empty Set.
+    .map(p => ({ ...p, alert: p.workOrders > woAlertThreshold }))
     .sort((a, b) => b.workOrders - a.workOrders || a.property.localeCompare(b.property));
 }
 

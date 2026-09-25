@@ -247,4 +247,111 @@ t('the header uses the labels', () => {
   assert.ok(B.toCsv([], [{ key: 'p', label: 'Property' }]).startsWith('Property\n'));
 });
 
+console.log('\nthe REAL AppFolio format — grouped, no property column');
+// The export has no property column at all. The first column is "Group", the
+// property is a row reading "-> Hyde Park Square", and its work orders are the
+// rows beneath it. That header row is also a SUBTOTAL, and the data rows carry
+// no work-order number — only count(Work Order Number) on the header.
+const GROUPED = [
+  'Group,count(Work Order Number),Unit,Vendor,Billable Type,Created Date,Description,GL Account,Quantity,Rate,Amount,Worked Hours,Billable Hours,Work Order Status,Billed Amount,Unbilled Amount',
+  '-> Hyde Park Square,12,,,,,,,,,"$3,600.00",14.4,12.0,,"$3,600.00",$0.00',
+  ',,5-224,Acme Plumbing,Tenant,09/22/2026,Leak under sink,6595,1,300,$300.00,1.2,1.0,Completed,$300.00,$0.00',
+  ',,3-101,Acme Plumbing,Owner,09/22/2026,Door lock,6595,1,300,$300.00,1.2,1.0,Ready to Bill,$0.00,$300.00',
+  '-> Ascent at Northgate,2,,,,,,,,,"$1,250.00",3.0,2.5,,"$1,250.00",$0.00',
+  ',,A-12,Bright Electric,Owner,09/21/2026,Breaker,6595,1,1250,"$1,250.00",3.0,2.5,Work Done,$0.00,"$1,250.00"',
+  '-> 513 Wolf Ridge,9,,,,,,,,,"$9,999.00",9.0,9.0,,"$9,999.00",$0.00',
+  ',,W-1,Ghost Vendor,Owner,09/22/2026,Excluded,6595,1,9999,"$9,999.00",9.0,9.0,Completed,"$9,999.00",$0.00',
+].join('\n');
+
+t('the Group column is detected and the format flagged', () => {
+  const p = B.parseCsv(GROUPED);
+  assert.strictEqual(p.grouped, true);
+  assert.ok(p.groupCounts);
+});
+t('"-> Name" rows set the property for the rows beneath them', () => {
+  const p = B.parseCsv(GROUPED);
+  assert.deepStrictEqual(p.rows.map(r => r.__property),
+    ['Hyde Park Square', 'Hyde Park Square', 'Ascent at Northgate', '513 Wolf Ridge']);
+});
+t('the group header is a SUBTOTAL and is not kept as data', () => {
+  // 8 lines in, 1 header + 3 group rows removed = 4 data rows. Keeping the
+  // group rows would add a phantom work order per property AND double the
+  // money, since their amount columns repeat the group totals.
+  assert.strictEqual(B.parseCsv(GROUPED).rows.length, 4);
+});
+t('count(Work Order Number) is read off the header', () => {
+  const p = B.parseCsv(GROUPED);
+  assert.strictEqual(p.groupCounts['Hyde Park Square'], 12);
+  assert.strictEqual(p.groupCounts['Ascent at Northgate'], 2);
+});
+t('the property resolves through the synthesised column', () => {
+  const p = B.parseCsv(GROUPED);
+  assert.strictEqual(B.resolveColumns(p.headers).property, '__property');
+});
+t('en-dash and arrow variants from an Excel round-trip still parse', () => {
+  ['-> A,1', '–> A,1', '→ A,1'].forEach(line => {
+    const p = B.parseCsv('Group,count(Work Order Number)\n' + line + '\n,\n');
+    assert.ok(p.groupCounts.A !== undefined, line);
+  });
+});
+
+t('work orders come from the header counts, not the rows', () => {
+  // The data rows have no work-order number: counting them would say 2.
+  const sum = B.summarisePeriod(B.parseCsv(GROUPED));
+  assert.strictEqual(sum.workOrders, 14);      // 12 + 2, Wolf Ridge's 9 excluded
+});
+t('money and hours come from the DATA rows, not the subtotals', () => {
+  const sum = B.summarisePeriod(B.parseCsv(GROUPED));
+  assert.strictEqual(sum.billed, 300);         // one $300 Completed row
+  assert.strictEqual(sum.unbilled, 1550);      // 300 + 1250
+  assert.strictEqual(sum.billableHours, 4.5);  // 1 + 1 + 2.5
+});
+t('statuses are read from the data rows', () => {
+  const sum = B.summarisePeriod(B.parseCsv(GROUPED));
+  assert.strictEqual(sum.completed, 1);
+  assert.strictEqual(sum.readyToBill, 1);
+  assert.strictEqual(sum.workDone, 1);
+});
+t('an excluded property is dropped, header count and all', () => {
+  const rows = B.byProperty(B.parseCsv(GROUPED));
+  assert.deepStrictEqual(rows.map(r => r.property).sort(), ['Ascent at Northgate', 'Hyde Park Square']);
+  assert.strictEqual(B.summarisePeriod(B.parseCsv(GROUPED)).workOrders, 14);
+});
+t('per-property work orders use the header count', () => {
+  const rows = B.byProperty(B.parseCsv(GROUPED));
+  const hyde = rows.find(r => r.property === 'Hyde Park Square');
+  assert.strictEqual(hyde.workOrders, 12);
+  assert.strictEqual(hyde.unbilled, 300);
+});
+t('the >10 alert fires on the header count, not the row count', () => {
+  // Hyde Park has 12 work orders but only 2 rows in this file. Reading the
+  // rows would say 2 and the alert would never fire.
+  const hyde = B.byProperty(B.parseCsv(GROUPED)).find(r => r.property === 'Hyde Park Square');
+  assert.strictEqual(hyde.alert, true);
+  const ascent = B.byProperty(B.parseCsv(GROUPED)).find(r => r.property === 'Ascent at Northgate');
+  assert.strictEqual(ascent.alert, false);
+});
+t('Vendor stands in for the technician when there is no tech column', () => {
+  const rows = B.byTech(B.parseCsv(GROUPED));
+  assert.ok(rows.find(r => r.tech === 'Acme Plumbing'), rows.map(r => r.tech).join(','));
+  assert.ok(!rows.find(r => r.tech === 'Ghost Vendor'), 'excluded property leaked into the tech table');
+});
+t('Created Date is used as the date when Work Completed On is absent', () => {
+  const sum = B.summarisePeriod(B.parseCsv(GROUPED));
+  assert.strictEqual(sum.dateRange.first, '2026-09-21');
+  assert.strictEqual(sum.dateRange.last, '2026-09-22');
+});
+t('a flat CSV with a real property column still works', () => {
+  // The grouped path must not break the format the Labor Summary arrives in.
+  const p = parseAPI();
+  assert.strictEqual(p.grouped, false);
+  assert.strictEqual(p.groupCounts, null);
+  assert.strictEqual(B.resolveColumns(p.headers).property, 'property_name');
+});
+t('rows appearing before any group header are not silently dropped', () => {
+  const p = B.parseCsv('Group,count(Work Order Number),Amount\n,,$5.00\n-> A,1,\n,,$10.00');
+  assert.strictEqual(p.rows.length, 2);
+  assert.strictEqual(p.rows[0].__property, '');
+});
+
 console.log(`\n${pass} passing`);

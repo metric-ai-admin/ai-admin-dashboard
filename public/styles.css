@@ -2752,3 +2752,11 @@ tr.ca-sel { background: var(--accent-glow); }
 .bl-table tr.bl-alert td:first-child { box-shadow: inset 3px 0 0 var(--critical); font-weight: 600; }
 .bl-table tr.bl-alert td { background: var(--critical-bg); }
 .bl-foot { margin-top: 18px; font-size: 12px; }
+
+/* Drag-and-drop onto an upload slot. The dashed outline and lifted background
+   are both present because colour alone is a weak signal mid-drag, when the
+   cursor is carrying a file thumbnail over the target. */
+.bl-slot { transition: border-color .12s, background .12s; }
+.bl-slot.bl-drop { border-color: var(--accent); border-style: dashed; background: var(--accent-glow); }
+.bl-slot.bl-drop .bl-drop-hint { color: var(--accent); }
+.bl-drop-hint { font-size: 12px; color: var(--muted); margin-left: 8px; }
