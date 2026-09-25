@@ -2708,3 +2708,47 @@ tr.ca-sel { background: var(--accent-glow); }
    carry no urgency colouring — the point is to notice them, not to chase. */
 .dq-card-credit { border-left: 3px solid var(--success); }
 .dq-fig-credit { color: var(--success); }
+
+/* ── Billable Labor Report ────────────────────────────────────────────────
+   Four upload slots, three period cards, three tables. The stale warning and
+   the >10 work-order highlight both use --critical: they are the two things
+   on this page that mean "look here before you trust the numbers". */
+.bl-slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.bl-slot { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.bl-slot.filled { border-color: var(--border-accent); }
+.bl-slot.stale { border-color: var(--critical); }
+.bl-slot-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.bl-slot-label { font-weight: 600; font-size: 13px; }
+.bl-slot-state { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.bl-slot-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.bl-stale { font-size: 12px; color: var(--critical); margin-top: 6px; }
+.bl-upload { display: inline-block; margin-top: 10px; cursor: pointer; }
+
+.bl-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.bl-actions .muted { font-size: 12px; }
+
+.bl-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.bl-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.bl-card-title { font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: .06em; color: var(--muted); margin-bottom: 10px; }
+.bl-card-rows > div { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; font-size: 13px; }
+.bl-card-rows span { color: var(--muted); }
+.bl-card-rows b { font-variant-numeric: tabular-nums; }
+/* Unbilled is the figure this whole report exists to surface. */
+.bl-unbilled { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 7px !important; }
+.bl-unbilled b { color: var(--warning); }
+.bl-warn { font-size: 12px; color: var(--warning); margin-top: 8px; }
+
+.bl-h3 { margin: 26px 0 10px; font-size: 15px; display: flex; align-items: center; gap: 12px; }
+.bl-dl { font-size: 12px; padding: 3px 10px; }
+.bl-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+
+.bl-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.bl-table th, .bl-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+.bl-table th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.bl-table td.num, .bl-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.bl-table tbody tr:hover { background: var(--bg-elevated); }
+/* Over the work-order threshold. A left bar as well as colour, so the signal
+   does not depend on distinguishing red from grey. */
+.bl-table tr.bl-alert td:first-child { box-shadow: inset 3px 0 0 var(--critical); font-weight: 600; }
+.bl-table tr.bl-alert td { background: var(--critical-bg); }
+.bl-foot { margin-top: 18px; font-size: 12px; }

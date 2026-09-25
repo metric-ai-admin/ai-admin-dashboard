@@ -100,6 +100,7 @@
             <button data-maint-view="reports-sync">Reports Sync</button>
             <button data-maint-view="command-center">Command Center</button>
             <button data-maint-view="code-violations">Code Violations</button>
+            <button data-maint-view="billable">Billable Labor</button>
           </div>
         </div>
         <button data-tab="accounting"><span class="nav-ico">💰</span>Accounting</button>
@@ -1742,6 +1743,26 @@
     </div>
 
     <!-- 12. Command Center -->
+    <div id="maint-view-billable" class="maint-view hidden">
+      <h2 class="dq-title">Billable Labor Report</h2>
+      <p class="muted" style="margin:-6px 0 14px">
+        Built from four CSVs exported from AppFolio. Work Done and Ready to Bill
+        cannot be pulled through the Reports API &mdash; it returns Completed work
+        orders only &mdash; so these four files are exported by hand.
+      </p>
+
+      <div id="bl-slots" class="bl-slots"></div>
+
+      <div class="bl-actions">
+        <button id="bl-generate" class="btn" disabled>Generate Report</button>
+        <button id="bl-email" class="btn btn-ghost" disabled>Email Report</button>
+        <span id="bl-generated" class="muted"></span>
+      </div>
+
+      <div id="bl-msg"></div>
+      <div id="bl-report"></div>
+    </div>
+
     <div id="maint-view-code-violations" class="maint-view hidden">
       <div class="dq-head">
         <div>

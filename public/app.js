@@ -5446,6 +5446,7 @@ function switchMaintenanceView(view) {
     'reports-sync':   loadReportsSync,
     'command-center': loadLyndsayCommandCenter,
     'code-violations': loadCodeViolations,
+    'billable':       loadBillableReport,
   };
   loaders[view]?.();
 
@@ -5457,6 +5458,230 @@ function switchMaintenanceView(view) {
   if (view === 'coverage')       loadOpenWoTable();
   if (view === 'appfolio')       loadBillableFeed();
   if (view === 'command-center') loadUrgentFeed();
+}
+
+
+// ---------------------------------------------------------------------------
+// BILLABLE LABOR REPORT
+//
+// Four CSVs in, three period summaries and three tables out. The upload step is
+// not a design preference: work_order_billable_detail returns Completed work
+// orders only, and AppFolio ignores the status filter on it, so Work Done and
+// Ready to Bill — the money not yet billed — cannot be pulled automatically.
+// ---------------------------------------------------------------------------
+
+let blReport = null;
+let blPeriod = 'monthly';
+let blWired = false;
+
+const blEsc = t => String(t == null ? '' : t)
+  .replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const blMoney = n => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const blNum = n => Number(n || 0).toLocaleString('en-US');
+
+function blSay(msg, kind) {
+  const el = document.getElementById('bl-msg');
+  if (!el) return;
+  el.innerHTML = msg
+    ? `<div class="alert-box ${kind === 'error' ? 'bad' : kind === 'warn' ? 'warn' : 'ok'}">${blEsc(msg)}</div>`
+    : '';
+}
+
+async function loadBillableReport() {
+  blWireOnce();
+  await blLoadStatus();
+  // Show the last generated report rather than a blank page — reopening the tab
+  // should not require re-uploading four files.
+  try {
+    const saved = await api('/api/billable/report');
+    if (saved && !saved.empty) { blReport = saved; blRender(); }
+  } catch (e) { /* nothing generated yet */ }
+}
+
+async function blLoadStatus() {
+  const wrap = document.getElementById('bl-slots');
+  if (!wrap) return;
+  let st;
+  try { st = await api('/api/billable/status'); }
+  catch (e) { wrap.innerHTML = `<div class="alert-box bad">${blEsc(e.message)}</div>`; return; }
+
+  wrap.innerHTML = st.slots.map(s => {
+    // The date INSIDE the file, not when it was uploaded: a file uploaded this
+    // morning can hold last month's rows, and that is the failure this module
+    // is most exposed to.
+    const span = s.dateRange && s.dateRange.last
+      ? `${blEsc(s.dateRange.first)} &rarr; ${blEsc(s.dateRange.last)}`
+      : '&mdash;';
+    return `<div class="bl-slot${s.present ? ' filled' : ''}${s.stale ? ' stale' : ''}">
+      <div class="bl-slot-head">
+        <span class="bl-slot-label">${blEsc(s.label)}</span>
+        <span class="bl-slot-state">${s.present ? blNum(s.rows) + ' rows' : 'not uploaded'}</span>
+      </div>
+      <div class="bl-slot-meta">Data covers ${span}</div>
+      ${s.present ? `<div class="bl-slot-meta">Uploaded ${blEsc((s.uploadedAt || '').slice(0, 16).replace('T', ' '))}${s.uploadedBy ? ' by ' + blEsc(s.uploadedBy) : ''}</div>` : ''}
+      ${s.stale ? `<div class="bl-stale">Newest row is ${s.staleDays} days old &mdash; is this the current export?</div>` : ''}
+      <label class="btn btn-ghost bl-upload">
+        ${s.present ? 'Replace' : 'Upload CSV'}
+        <input type="file" accept=".csv,text/csv" data-bl-slot="${blEsc(s.slot)}" hidden>
+      </label>
+    </div>`;
+  }).join('');
+
+  wrap.querySelectorAll('input[data-bl-slot]').forEach(inp =>
+    inp.addEventListener('change', () => blUpload(inp.dataset.blSlot, inp.files[0])));
+
+  const gen = document.getElementById('bl-generate');
+  if (gen) gen.disabled = !st.ready;
+  const mail = document.getElementById('bl-email');
+  if (mail) mail.disabled = !st.lastGenerated;
+  const stamp = document.getElementById('bl-generated');
+  if (stamp) {
+    stamp.innerHTML = st.lastGenerated
+      ? `Last generated ${blEsc(st.lastGenerated.slice(0, 16).replace('T', ' '))}`
+        + (st.lastEmailed ? ` &middot; emailed ${blEsc(st.lastEmailed.slice(0, 16).replace('T', ' '))}` : '')
+        + ` &middot; sends to ${blEsc((st.recipients || []).join(', '))}`
+      : (st.ready ? 'All four files are in. Generate when ready.' : 'Upload all four CSVs to enable Generate.');
+  }
+}
+
+async function blUpload(slot, file) {
+  if (!file) return;
+  blSay('Uploading ' + file.name + ' …');
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    // NOT through api(): FormData must keep its own multipart boundary, which
+    // setting Content-Type would destroy.
+    const res = await fetch(`/api/billable/upload/${encodeURIComponent(slot)}`, { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+    const missing = (data.columnsMissing || []).length
+      ? ` Columns not found: ${data.columnsMissing.join(', ')}.` : '';
+    blSay(`${file.name}: ${blNum(data.rows)} rows.${missing}`, missing ? 'warn' : 'ok');
+    await blLoadStatus();
+  } catch (e) { blSay(e.message, 'error'); }
+}
+
+function blWireOnce() {
+  if (blWired) return;
+  blWired = true;
+  document.getElementById('bl-generate')?.addEventListener('click', async () => {
+    blSay('Generating …');
+    try {
+      blReport = await api('/api/billable/generate', { method: 'POST', body: {} });
+      blRender();
+      await blLoadStatus();
+      blSay('Report generated.', 'ok');
+    } catch (e) { blSay(e.message, 'error'); }
+  });
+  document.getElementById('bl-email')?.addEventListener('click', async () => {
+    const to = (blReport && blReport.recipients) || [];
+    if (!confirm('Email this report' + (to.length ? ' to ' + to.join(', ') : '') + '?')) return;
+    blSay('Sending …');
+    try {
+      const r = await api('/api/billable/email', { method: 'POST', body: {} });
+      blSay('Sent to ' + (r.sentTo || []).join(', '), 'ok');
+      await blLoadStatus();
+    } catch (e) { blSay(e.message, 'error'); }
+  });
+}
+
+function blCard(title, s) {
+  return `<div class="bl-card">
+    <div class="bl-card-title">${blEsc(title)}</div>
+    <div class="bl-card-rows">
+      <div><span>Work Done</span><b>${blNum(s.workDone)}</b></div>
+      <div><span>Ready to Bill</span><b>${blNum(s.readyToBill)}</b></div>
+      <div><span>Completed</span><b>${blNum(s.completed)}</b></div>
+      <div><span>Work orders</span><b>${blNum(s.workOrders)}</b></div>
+      <div><span>Billable hours</span><b>${blNum(s.billableHours)}</b></div>
+      <div><span>Billed</span><b>${blMoney(s.billed)}</b></div>
+      <div class="bl-unbilled"><span>Unbilled</span><b>${blMoney(s.unbilled)}</b></div>
+    </div>
+    ${s.columnsMissing && s.columnsMissing.length
+    ? `<div class="bl-warn">No column found for: ${blEsc(s.columnsMissing.join(', '))} &mdash; those figures read zero.</div>` : ''}
+  </div>`;
+}
+
+function blTable(rows, columns, empty) {
+  if (!rows.length) return `<p class="muted">${blEsc(empty)}</p>`;
+  return `<table class="bl-table">
+    <thead><tr>${columns.map(c => `<th${c.num ? ' class="num"' : ''}>${blEsc(c.label)}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r => `<tr${r.alert ? ' class="bl-alert"' : ''}>${
+    columns.map(c => `<td${c.num ? ' class="num"' : ''}>${blEsc(c.fmt ? c.fmt(r[c.key]) : r[c.key])}</td>`).join('')
+  }</tr>`).join('')}</tbody>
+  </table>`;
+}
+
+function blRender() {
+  const el = document.getElementById('bl-report');
+  if (!el || !blReport) return;
+  const r = blReport;
+  const N = { num: true, fmt: blNum };
+  const M = { num: true, fmt: blMoney };
+
+  el.innerHTML = `
+    <h3 class="bl-h3">Management Summary</h3>
+    <div class="bl-cards">
+      ${blCard('Daily', r.summary.daily)}
+      ${blCard('Weekly', r.summary.weekly)}
+      ${blCard('Monthly', r.summary.monthly)}
+    </div>
+
+    <h3 class="bl-h3">Status Breakdown by Property
+      <button class="btn btn-ghost bl-dl" data-bl-export="property">Export CSV</button>
+    </h3>
+    <div class="bl-tabs">
+      ${['daily', 'weekly', 'monthly'].map(p =>
+    `<button class="pill${p === blPeriod ? ' active' : ''}" data-bl-period="${p}">${p[0].toUpperCase() + p.slice(1)}</button>`).join('')}
+    </div>
+    <div id="bl-property-table">${blTable(r.byProperty[blPeriod] || [], [
+    { key: 'property', label: 'Property' },
+    { key: 'workOrders', label: 'Work orders', ...N },
+    { key: 'workDone', label: 'Work Done', ...N },
+    { key: 'readyToBill', label: 'Ready to Bill', ...N },
+    { key: 'completed', label: 'Completed', ...N },
+    { key: 'billableHours', label: 'Billable hrs', ...N },
+    { key: 'billed', label: 'Billed', ...M },
+    { key: 'unbilled', label: 'Unbilled', ...M },
+  ], 'No rows for this period.')}</div>
+
+    <h3 class="bl-h3">Billable Labor by Property and Technician
+      <button class="btn btn-ghost bl-dl" data-bl-export="propertyTech">Export CSV</button>
+    </h3>
+    ${blTable(r.byPropertyAndTech || [], [
+    { key: 'property', label: 'Property' },
+    { key: 'tech', label: 'Technician' },
+    { key: 'workOrders', label: 'Work orders', ...N },
+    { key: 'hours', label: 'Billable hrs', ...N },
+    { key: 'workedHours', label: 'Worked hrs', ...N },
+  ], 'The Labor Summary has no rows.')}
+
+    <h3 class="bl-h3">By Technician
+      <button class="btn btn-ghost bl-dl" data-bl-export="tech">Export CSV</button>
+    </h3>
+    ${blTable(r.byTech || [], [
+    { key: 'tech', label: 'Technician' },
+    { key: 'workOrders', label: 'Work orders', ...N },
+    { key: 'properties', label: 'Properties', ...N },
+    { key: 'hours', label: 'Billable hrs', ...N },
+    { key: 'workedHours', label: 'Worked hrs', ...N },
+    { key: 'unbillableHours', label: 'Unbillable hrs', ...N },
+  ], 'The Labor Summary has no rows.')}
+
+    <p class="muted bl-foot">
+      Rows over ${blNum(r.woAlertThreshold)} work orders are highlighted.
+      Excluded throughout: ${blEsc((r.excludedFragments || []).join(', '))}.
+    </p>`;
+
+  el.querySelectorAll('[data-bl-period]').forEach(b => b.addEventListener('click', () => {
+    blPeriod = b.dataset.blPeriod;
+    blRender();
+  }));
+  el.querySelectorAll('[data-bl-export]').forEach(b => b.addEventListener('click', () => {
+    const section = b.dataset.blExport;
+    window.location = `/api/billable/export/${section}?period=${encodeURIComponent(blPeriod)}`;
+  }));
 }
 
 async function loadMaintenance() {

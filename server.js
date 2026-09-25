@@ -7475,6 +7475,292 @@ cron.schedule('0 2 * * *', () => {
 }, { timezone: LYNDSAY_TIMEZONE });
 
 // =====================================================================
+// BILLABLE LABOR REPORT — four uploaded CSVs, shown on screen
+// =====================================================================
+//
+// WHY UPLOADS AND NOT A SYNC
+//
+// work_order_billable_detail is reachable through the Reports API and carries
+// every column this needs, but it only ever returns Completed work orders:
+// "Work Done" and "Ready to Bill" — the money not yet billed — are absent, and
+// AppFolio ignores the status filter on that report (documented in
+// appfolio-reports.js since 2026-09-17). The web UI can filter on what the API
+// cannot, so the CSV a person exports carries statuses no automated pull
+// reaches. Hence four slots and a human.
+//
+// STORAGE lives under DATA_DIR, never ./exports. DATA_DIR is the Render disk
+// (/var/data); anything written relative to the working directory is wiped by
+// the next deploy. These uploads are the ONLY copy of data the API cannot
+// give us, so losing them loses the report.
+const BILLABLE_DIR = path.join(DATA_DIR, 'billable');
+const BILLABLE_SLOTS = ['daily', 'weekly', 'monthly', 'labor'];
+const BILLABLE_LABELS = {
+  daily: 'MDaily — Work Order Billable Detail',
+  weekly: 'MWeekly — Work Order Billable Detail',
+  monthly: 'MMonthly — Work Order Billable Detail',
+  labor: 'Work Order Labor Summary',
+};
+const BILLABLE_ROLES = ['admin', 'maintenance'];
+const BILLABLE_MANIFEST = path.join(BILLABLE_DIR, '_manifest.json');
+const billableReport = require('./billable-report.js');
+
+// Its OWN multer instance, deliberately. multerMemory is declared ~900 lines
+// below this block, and `multerMemory.single('file')` is evaluated when the
+// route is REGISTERED — at module load — not when a request arrives. Reaching
+// forward to it throws a TDZ ReferenceError before the server ever listens,
+// which takes down the whole dashboard rather than just this feature.
+// 15MB: a monthly billable-detail export is larger than the 10MB the CRM
+// importer allows for.
+const billableUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+});
+
+// Lyndsay and Jay. Overridable without a deploy; EOD_RECIPIENT is a single
+// address and could not be reused for a two-person send.
+const BILLABLE_RECIPIENTS = (process.env.BILLABLE_RECIPIENTS
+  || 'lyndsay@metricpropertymanagement.com,admin@metricpropertymanagement.com')
+  .split(',').map(x => x.trim()).filter(Boolean);
+
+async function billableManifest() {
+  return await readJSON(BILLABLE_MANIFEST, {});
+}
+
+function billableSlotPath(slot) {
+  return path.join(BILLABLE_DIR, `${slot}.csv`);
+}
+
+// Reads whichever slots are on disk. A missing file is absent, not an error:
+// the UI's job is to say which of the four are still needed.
+async function billableFiles() {
+  const out = {};
+  for (const slot of BILLABLE_SLOTS) {
+    try { out[slot] = await fsp.readFile(billableSlotPath(slot), 'utf8'); }
+    catch { out[slot] = null; }
+  }
+  return out;
+}
+
+app.get('/api/billable/status', requireAuth, requireRole(...BILLABLE_ROLES), async (req, res) => {
+  try {
+    const manifest = await billableManifest();
+    const files = await billableFiles();
+    const slots = BILLABLE_SLOTS.map(slot => {
+      const m = manifest[slot] || null;
+      const present = !!files[slot];
+      let rows = null, dateRange = null, staleDays = null;
+      if (present) {
+        // Parsed on read rather than trusted from the manifest: the export date
+        // that matters is the one INSIDE the file, not when it was uploaded. A
+        // file uploaded this morning can contain last month's data.
+        const parsed = billableReport.parseCsv(files[slot]);
+        const cols = billableReport.resolveColumns(parsed.headers);
+        rows = parsed.rows.length;
+        dateRange = billableReport.exportDate(parsed.rows, cols);
+        if (dateRange.last) {
+          staleDays = Math.round((Date.parse(ctDateStr(0) + 'T00:00:00Z')
+            - Date.parse(dateRange.last + 'T00:00:00Z')) / 86400000);
+        }
+      }
+      return {
+        slot, label: BILLABLE_LABELS[slot], present, rows, dateRange, staleDays,
+        stale: staleDays !== null && staleDays > 2,
+        uploadedAt: m && m.uploadedAt || null,
+        uploadedBy: m && m.uploadedBy || null,
+        filename: m && m.filename || null,
+      };
+    });
+    res.json({
+      slots,
+      ready: slots.every(s => s.present),
+      lastGenerated: manifest._lastGenerated || null,
+      lastEmailed: manifest._lastEmailed || null,
+      recipients: BILLABLE_RECIPIENTS,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/billable/upload/:slot', requireAuth, requireRole(...BILLABLE_ROLES),
+  billableUpload.single('file'), async (req, res) => {
+    try {
+      const slot = String(req.params.slot || '');
+      if (!BILLABLE_SLOTS.includes(slot)) return res.status(400).json({ error: 'Unknown slot.' });
+      if (!req.file) return res.status(400).json({ error: 'No file received.' });
+
+      const text = req.file.buffer.toString('utf8');
+      // Validate BEFORE overwriting the slot. Replacing a good file with an
+      // unreadable one and reporting success would lose the only copy.
+      const parsed = billableReport.parseCsv(text);
+      if (!parsed.headers.length || !parsed.rows.length) {
+        return res.status(400).json({ error: 'That file has no readable rows — is it the CSV export?' });
+      }
+      const cols = billableReport.resolveColumns(parsed.headers);
+      if (!cols.property) {
+        return res.status(400).json({
+          error: 'No property column found. Columns seen: ' + parsed.headers.slice(0, 8).join(', '),
+        });
+      }
+
+      await fsp.mkdir(BILLABLE_DIR, { recursive: true });
+      await fsp.writeFile(billableSlotPath(slot), text, 'utf8');
+      const manifest = await billableManifest();
+      manifest[slot] = {
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: req.user && (req.user.name || req.user.username) || 'unknown',
+        filename: req.file.originalname || null,
+        rows: parsed.rows.length,
+      };
+      await writeJSON(BILLABLE_MANIFEST, manifest);
+
+      const dateRange = billableReport.exportDate(parsed.rows, cols);
+      res.json({ ok: true, slot, rows: parsed.rows.length, dateRange,
+        columnsMissing: Object.entries(cols).filter(([, v]) => !v).map(([k]) => k) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+app.post('/api/billable/generate', requireAuth, requireRole(...BILLABLE_ROLES), async (req, res) => {
+  try {
+    const files = await billableFiles();
+    const missing = BILLABLE_SLOTS.filter(s => !files[s]);
+    if (missing.length) {
+      return res.status(400).json({ error: 'Still missing: ' + missing.map(m => BILLABLE_LABELS[m]).join(', ') });
+    }
+    // ctDateStr so "today" is Central business time, not the server's UTC.
+    const report = billableReport.buildReport(files, { today: ctDateStr(0) });
+    report.generatedAt = new Date().toISOString();
+
+    const manifest = await billableManifest();
+    manifest._lastGenerated = report.generatedAt;
+    manifest._lastGeneratedBy = req.user && (req.user.name || req.user.username) || 'unknown';
+    await writeJSON(BILLABLE_MANIFEST, manifest);
+    // Kept so the page can be reopened without re-uploading.
+    await writeJSON(path.join(BILLABLE_DIR, 'report.json'), report);
+
+    res.json(report);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// The last generated report, for a page load that should not regenerate.
+app.get('/api/billable/report', requireAuth, requireRole(...BILLABLE_ROLES), async (req, res) => {
+  try {
+    const report = await readJSON(path.join(BILLABLE_DIR, 'report.json'), null);
+    res.json(report || { empty: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Per-section CSV. Built from the STORED report, so the download always matches
+// the numbers on screen rather than silently regenerating from newer uploads.
+const BILLABLE_EXPORTS = {
+  property: {
+    columns: [
+      { key: 'property', label: 'Property' }, { key: 'workOrders', label: 'Work Orders' },
+      { key: 'workDone', label: 'Work Done' }, { key: 'readyToBill', label: 'Ready to Bill' },
+      { key: 'completed', label: 'Completed' }, { key: 'billableHours', label: 'Billable Hours' },
+      { key: 'workedHours', label: 'Worked Hours' }, { key: 'billed', label: 'Billed' },
+      { key: 'unbilled', label: 'Unbilled' },
+    ],
+    rows: (r, period) => (r.byProperty[period] || r.byProperty.monthly || []),
+  },
+  propertyTech: {
+    columns: [
+      { key: 'property', label: 'Property' }, { key: 'tech', label: 'Technician' },
+      { key: 'workOrders', label: 'Work Orders' }, { key: 'hours', label: 'Billable Hours' },
+      { key: 'workedHours', label: 'Worked Hours' },
+    ],
+    rows: r => r.byPropertyAndTech || [],
+  },
+  tech: {
+    columns: [
+      { key: 'tech', label: 'Technician' }, { key: 'workOrders', label: 'Work Orders' },
+      { key: 'properties', label: 'Properties' }, { key: 'hours', label: 'Billable Hours' },
+      { key: 'workedHours', label: 'Worked Hours' }, { key: 'unbillableHours', label: 'Unbillable Hours' },
+    ],
+    rows: r => r.byTech || [],
+  },
+};
+
+app.get('/api/billable/export/:section', requireAuth, requireRole(...BILLABLE_ROLES), async (req, res) => {
+  try {
+    const spec = BILLABLE_EXPORTS[String(req.params.section || '')];
+    if (!spec) return res.status(400).json({ error: 'Unknown section.' });
+    const report = await readJSON(path.join(BILLABLE_DIR, 'report.json'), null);
+    if (!report) return res.status(400).json({ error: 'No report generated yet.' });
+    const period = ['daily', 'weekly', 'monthly'].includes(req.query.period) ? req.query.period : 'monthly';
+    const csv = billableReport.toCsv(spec.rows(report, period), spec.columns);
+    const name = `billable_${req.params.section}${spec.rows.length > 1 ? '_' + period : ''}_${ctDateStr(0)}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+    res.send(csv);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+function billableEmailHtml(report) {
+  const money = n => '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const card = (title, s) => `
+    <td style="padding:10px 14px;border:1px solid #d7d7d7;vertical-align:top">
+      <div style="font:600 12px system-ui;color:#666;text-transform:uppercase">${esc(title)}</div>
+      <div style="font:13px system-ui;color:#111;margin-top:6px;line-height:1.7">
+        Work Done <b>${s.workDone}</b><br>
+        Ready to Bill <b>${s.readyToBill}</b><br>
+        Completed <b>${s.completed}</b><br>
+        Billable hours <b>${s.billableHours}</b><br>
+        Billed <b>${money(s.billed)}</b><br>
+        Unbilled <b>${money(s.unbilled)}</b>
+      </div>
+    </td>`;
+
+  const flagged = (report.byProperty.monthly || []).filter(p => p.alert);
+  return `<div style="font:14px system-ui;color:#111">
+    <h2 style="margin:0 0 4px">Billable Labor Report</h2>
+    <div style="color:#666;font-size:12px">Generated ${esc(report.generatedAt || '')} · business date ${esc(report.today || '')}</div>
+    <table style="border-collapse:collapse;margin:16px 0"><tr>
+      ${card('Daily', report.summary.daily)}
+      ${card('Weekly', report.summary.weekly)}
+      ${card('Monthly', report.summary.monthly)}
+    </tr></table>
+    ${flagged.length ? `<p style="margin:0 0 6px"><b>Properties over ${report.woAlertThreshold} work orders (monthly):</b></p>
+      <ul style="margin:0 0 16px">${flagged.map(p => `<li>${esc(p.property)} — ${p.workOrders} work orders, ${money(p.unbilled)} unbilled</li>`).join('')}</ul>`
+    : `<p style="color:#666">No property is over ${report.woAlertThreshold} work orders this month.</p>`}
+    <p style="color:#666;font-size:12px;margin-top:18px">
+      Built from CSVs exported from AppFolio. Work Done and Ready to Bill cannot be
+      pulled through the Reports API, which returns Completed work orders only.
+    </p>
+  </div>`;
+}
+
+app.post('/api/billable/email', requireAuth, requireRole(...BILLABLE_ROLES), async (req, res) => {
+  try {
+    const report = await readJSON(path.join(BILLABLE_DIR, 'report.json'), null);
+    if (!report) return res.status(400).json({ error: 'Generate the report before emailing it.' });
+
+    const token = await graphMailToken();
+    const payload = {
+      message: {
+        subject: `Billable Labor Report — ${report.today}`,
+        body: { contentType: 'HTML', content: billableEmailHtml(report) },
+        toRecipients: BILLABLE_RECIPIENTS.map(a => ({ emailAddress: { address: a } })),
+      },
+      saveToSentItems: true,
+    };
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(EOD_SENDER)}/sendMail`;
+    const r = await fetchFn(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const body = await r.text();
+      throw new Error(`Graph sendMail ${r.status}: ${body.slice(0, 300) || r.statusText}`);
+    }
+    const manifest = await billableManifest();
+    manifest._lastEmailed = new Date().toISOString();
+    await writeJSON(BILLABLE_MANIFEST, manifest);
+    res.json({ ok: true, sentTo: BILLABLE_RECIPIENTS, at: manifest._lastEmailed });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// =====================================================================
 // SOP REVIEW — Lyndsay's SOP Review Tracker (sop_review table)
 // =====================================================================
 // The operational SOP library (89 records). SEPARATE from the file-based 'sops'
