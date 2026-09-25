@@ -2768,3 +2768,11 @@ tr.ca-sel { background: var(--accent-glow); }
 .bl-statuses b { color: var(--text-primary); }
 .bl-statuses.bl-warn { color: var(--warning); }
 .bl-statuses.bl-warn b { color: var(--warning); }
+
+/* The upload diagnostics. Monospaced and scrollable: this is raw file content
+   being read, not a summary, and wrapping it would hide a shifted column. */
+.bl-diag { font-size: 11px; padding: 2px 8px; margin-left: 8px; }
+.bl-diag-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; font-size: 13px; }
+.bl-diag-box p { margin: 0 0 12px; }
+.bl-pre { background: var(--bg-base); border: 1px solid var(--border); border-radius: 6px; padding: 10px;
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; max-height: 260px; margin: 6px 0 0; }

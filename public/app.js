@@ -5525,11 +5525,14 @@ async function blLoadStatus() {
         <input type="file" accept=".csv,text/csv" data-bl-slot="${blEsc(s.slot)}" hidden>
       </label>
       <span class="bl-drop-hint">or drop a CSV here</span>
+      ${s.present ? `<button class="btn btn-ghost bl-diag" data-bl-diag="${blEsc(s.slot)}">Diagnose</button>` : ''}
     </div>`;
   }).join('');
 
   wrap.querySelectorAll('input[data-bl-slot]').forEach(inp =>
     inp.addEventListener('change', () => blUpload(inp.dataset.blSlot, inp.files[0])));
+  wrap.querySelectorAll('[data-bl-diag]').forEach(b =>
+    b.addEventListener('click', () => blDiagnose(b.dataset.blDiag)));
   blWireDropTargets(wrap);
 
   const gen = document.getElementById('bl-generate');
@@ -5613,6 +5616,45 @@ function blWireDropTargets(wrap) {
       blUpload(name, f);
     });
   });
+}
+
+// What the parser actually sees in an uploaded file.
+//
+// Work Done and Ready to Bill read 0 across two rounds of fixes, each aimed at
+// a cause that turned out not to be it, because the file was being described
+// rather than read. This prints it: the resolved columns, the rows DROPPED as
+// group headers, every distinct status value on both kinds of row, and a few
+// raw rows. The dropped rows are first because that is where a status can go
+// missing without leaving a trace anywhere else.
+async function blDiagnose(slot) {
+  const el = document.getElementById('bl-report');
+  if (!el) return;
+  blSay('Reading ' + slot + ' …');
+  try {
+    const d = await api('/api/billable/debug/' + encodeURIComponent(slot));
+    blSay('');
+    const pre = o => `<pre class="bl-pre">${blEsc(JSON.stringify(o, null, 1))}</pre>`;
+    const tally = o => Object.entries(o || {}).sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${blEsc(k)} <b>${blNum(v)}</b>`).join(' &middot; ') || '(none)';
+    el.innerHTML = `<h3 class="bl-h3">Diagnostics &mdash; ${blEsc(slot)}</h3>
+      <div class="bl-diag-box">
+        <p><b>Status values on DATA rows:</b><br>${tally(d.statusValuesOnDataRows)}</p>
+        <p><b>Status values on the DROPPED group rows:</b><br>${tally(d.statusValuesOnGroupRows)}</p>
+        <p><b>Group names found:</b><br>${(d.groupNames || []).map(blEsc).join(' &middot; ') || '(none)'}</p>
+        <p>${blNum(d.dataRows)} data rows &middot; ${blNum(d.droppedGroupRows)} group rows dropped &middot;
+           grouped: ${d.grouped}</p>
+        <p><b>Status column resolved to:</b> ${blEsc(d.resolvedColumns && d.resolvedColumns.status || '(none)')}<br>
+           <b>Columns not found:</b> ${blEsc((d.columnsMissing || []).join(', ') || 'none')}</p>
+        <p><b>First lines of the raw file</b>${pre(d.rawFirstLines)}</p>
+        <p><b>Headers</b>${pre(d.headers)}</p>
+        <p><b>Resolved columns</b>${pre(d.resolvedColumns)}</p>
+        <p><b>Group counts</b>${pre(d.groupCounts)}</p>
+        <p><b>Sample group rows (dropped)</b>${pre(d.sampleGroupRows)}</p>
+        <p><b>Sample data rows</b>${pre(d.sampleDataRows)}</p>
+      </div>
+      <p class="muted">Re-generate the report to leave this view.</p>`;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) { blSay(e.message, 'error'); }
 }
 
 function blWireOnce() {

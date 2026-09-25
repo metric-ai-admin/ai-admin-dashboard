@@ -471,4 +471,93 @@ t('an exact match still beats the restriction', () => {
   assert.strictEqual(B.resolveColumns(['work_order_number']).workOrder, 'work_order_number');
 });
 
+console.log('\nnested groups: property then status');
+
+// The report can group by STATUS as well as by property, and the two nest.
+// When it does, "-> Work Done" is a group header carrying a work-order count —
+// and a work order with nothing billed yet has NO rows beneath it. The header
+// is its only trace in the file. Treating that header as a property put "Work
+// Done" in the property column and lost the status, which is how Work Done and
+// Ready to Bill read 0 beside a file that plainly contained them.
+const NESTED = [
+  'Group,count(Work Order Number),Unit,Vendor,Billable Type,Created Date,Description,GL Account,Quantity,Rate,Amount,Worked Hours,Billable Hours,Work Order Status,Billed Amount,Unbilled Amount',
+  '-> Hyde Park Square,12,,,,,,,,,,,,,,',
+  '-> Work Done,1,,,,,,,,,,,,,,',
+  '-> Completed,11,,,,,,,,,,,,,,',
+  ',,5-224,Acme,Tenant,09/22/2026,Leak,6595,1,300,$300.00,1.2,1.0,Completed,$300.00,$0.00',
+  ',,3-101,Acme,Owner,09/22/2026,Lock,6595,1,200,$200.00,1.0,1.0,Completed,$200.00,$0.00',
+  '-> Ascent at Northgate,3,,,,,,,,,,,,,,',
+  '-> Ready to Bill,3,,,,,,,,,,,,,,',
+  ',,A-12,Bright,Owner,09/21/2026,Breaker,6595,1,500,$500.00,2.0,2.0,Ready to Bill,$0.00,$500.00',
+].join('\n');
+
+t('a status-named group is not treated as a property', () => {
+  const p = B.parseCsv(NESTED);
+  assert.deepStrictEqual(Object.keys(p.groupCounts), ['Hyde Park Square', 'Ascent at Northgate']);
+  assert.deepStrictEqual([...new Set(p.rows.map(r => r.__property))],
+    ['Hyde Park Square', 'Ascent at Northgate']);
+});
+t('status-group counts are kept separately', () => {
+  const p = B.parseCsv(NESTED);
+  assert.strictEqual(p.statusGroupCounts['Work Done'], 1);
+  assert.strictEqual(p.statusGroupCounts['Completed'], 11);
+});
+t('a status group with NO rows beneath it is still counted', () => {
+  // The whole bug: Work Done has a header and no data rows.
+  const sum = B.summarisePeriod(B.parseCsv(NESTED));
+  assert.strictEqual(sum.workDone, 1);
+  assert.deepStrictEqual(B.parseCsv(NESTED).emptyStatusGroups, ['Work Done']);
+});
+t('a status group WITH rows is not double-counted', () => {
+  // Completed has a header saying 11 and two data rows. The rows win; adding
+  // the header count as well would report 13.
+  const sum = B.summarisePeriod(B.parseCsv(NESTED));
+  assert.strictEqual(sum.completed, 2);
+});
+t('a row inherits the status group it sits under when it has no status', () => {
+  const noStatus = [
+    'Group,count(Work Order Number),Unit,Created Date,Description,Billable Hours,Work Order Status,Unbilled Amount',
+    '-> Hyde Park Square,2,,,,,,',
+    '-> Ready to Bill,2,,,,,,',
+    ',,5-224,09/22/2026,Leak,1.0,,$100.00',
+    ',,3-101,09/22/2026,Lock,1.0,,$50.00',
+  ].join('\n');
+  assert.strictEqual(B.summarisePeriod(B.parseCsv(noStatus)).readyToBill, 2);
+});
+t('a real per-row status beats the group it sits under', () => {
+  const conflict = [
+    'Group,count(Work Order Number),Unit,Created Date,Description,Billable Hours,Work Order Status,Unbilled Amount',
+    '-> Hyde Park Square,1,,,,,,',
+    '-> Ready to Bill,1,,,,,,',
+    ',,5-224,09/22/2026,Leak,1.0,Completed,$0.00',
+  ].join('\n');
+  const sum = B.summarisePeriod(B.parseCsv(conflict));
+  assert.strictEqual(sum.completed, 1);
+  assert.strictEqual(sum.readyToBill, 0);
+});
+t('the per-property table shows a header-only status too', () => {
+  const rows = B.byProperty(B.parseCsv(NESTED));
+  const hyde = rows.find(r => r.property === 'Hyde Park Square');
+  assert.strictEqual(hyde.workDone, 1);
+  assert.strictEqual(hyde.completed, 2);
+  const ascent = rows.find(r => r.property === 'Ascent at Northgate');
+  assert.strictEqual(ascent.readyToBill, 1);
+});
+t('a status group does not leak across into the next property', () => {
+  // Ascent's rows must not inherit Hyde Park's last status section.
+  const p = B.parseCsv(NESTED);
+  const ascentRows = p.rows.filter(r => r.__property === 'Ascent at Northgate');
+  assert.deepStrictEqual([...new Set(ascentRows.map(r => r.__groupStatus))], ['Ready to Bill']);
+});
+t('money is unaffected by the header-only counts', () => {
+  const sum = B.summarisePeriod(B.parseCsv(NESTED));
+  assert.strictEqual(sum.unbilled, 500);
+  assert.strictEqual(sum.billed, 500);
+});
+t('a flat property-only grouping still behaves as before', () => {
+  const p = B.parseCsv(GROUPED);
+  assert.deepStrictEqual(p.emptyStatusGroups, []);
+  assert.strictEqual(B.summarisePeriod(p).completed, 1);
+});
+
 console.log(`\n${pass} passing`);

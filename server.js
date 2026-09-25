@@ -7618,6 +7618,57 @@ app.post('/api/billable/upload/:slot', requireAuth, requireRole(...BILLABLE_ROLE
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+// What is ACTUALLY in the uploaded file.
+//
+// Work Done and Ready to Bill read 0 on 2026-09-25 across two rounds of fixes,
+// each aimed at a plausible cause that turned out not to be it. Guessing from a
+// description of the file is what made that possible, so this returns the file
+// as the parser sees it: the resolved columns, the rows that were DROPPED as
+// group headers, every distinct status value with its count, and a handful of
+// raw rows. Admin and maintenance only, same as everything else here.
+app.get('/api/billable/debug/:slot', requireAuth, requireRole(...BILLABLE_ROLES), async (req, res) => {
+  try {
+    const slot = String(req.params.slot || '');
+    if (!BILLABLE_SLOTS.includes(slot)) return res.status(400).json({ error: 'Unknown slot.' });
+    const files = await billableFiles();
+    if (!files[slot]) return res.status(400).json({ error: 'Nothing uploaded in that slot.' });
+
+    const parsed = billableReport.parseCsv(files[slot]);
+    const cols = billableReport.resolveColumns(parsed.headers);
+    const statusCol = cols.status;
+
+    const tally = (rows, key) => {
+      const t = {};
+      rows.forEach(r => { const v = key ? String(r[key] == null ? '' : r[key]).trim() : ''; t[v || '(empty)'] = (t[v || '(empty)'] || 0) + 1; });
+      return t;
+    };
+
+    // The first line of the raw file, verbatim — a header AppFolio writes with
+    // a stray quote or a second title line would change everything downstream.
+    const rawHead = files[slot].split(/\r?\n/).slice(0, 6);
+
+    res.json({
+      slot,
+      bytes: files[slot].length,
+      rawFirstLines: rawHead,
+      headers: parsed.headers,
+      resolvedColumns: cols,
+      columnsMissing: Object.entries(cols).filter(([, v2]) => !v2).map(([k]) => k),
+      grouped: parsed.grouped,
+      groupCounts: parsed.groupCounts,
+      dataRows: parsed.rows.length,
+      droppedGroupRows: (parsed.groupRows || []).length,
+      // Every distinct value of the status column, on BOTH kinds of row.
+      statusValuesOnDataRows: tally(parsed.rows, statusCol),
+      statusValuesOnGroupRows: tally(parsed.groupRows || [], statusCol),
+      groupNames: [...new Set((parsed.groupRows || []).map(r => String(r.__group || '').trim()).filter(Boolean))],
+      // Raw rows exactly as parsed, so a shifted column is visible.
+      sampleGroupRows: (parsed.groupRows || []).slice(0, 5),
+      sampleDataRows: parsed.rows.slice(0, 5),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/billable/generate', requireAuth, requireRole(...BILLABLE_ROLES), async (req, res) => {
   try {
     const files = await billableFiles();
