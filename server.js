@@ -5059,6 +5059,16 @@ app.patch('/api/code-violations/:key', requireAuth, requireRole(...CODE_VIOLATIO
       });
     }
     patch.status = status;
+    // The record that a PERSON set this. Written only here, never by an
+    // importer — it is what tells the import to leave this row's status alone.
+    // updated_by cannot serve: it is actorName(req) on both paths, so an
+    // import and a human edit look identical in it.
+    patch.status_set_by = actorName(req);
+    patch.status_set_at = patch.updated_at;
+    // Setting the status by hand answers any parked import by implication.
+    patch.pending_import_status = null;
+    patch.pending_import_at = null;
+    patch.pending_import_source = null;
     if (status === 'Closed by Code Compliance') {
       patch.closed_by = actorName(req);
       patch.closed_at = new Date().toISOString();
@@ -5097,6 +5107,46 @@ app.patch('/api/code-violations/:key', requireAuth, requireRole(...CODE_VIOLATIO
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Keep the manual status, or take the one the import proposed.
+//
+// Same roles as the rest of the tracker, with one exception carried over from
+// the close gate: syncing TO "Closed by Code Compliance" is still a city-facing
+// claim, so it needs Jay or Bekah even though accepting an import feels like a
+// smaller act than setting the status by hand. It is not a smaller act.
+app.post('/api/code-violations/:key/resolve-import', requireAuth,
+  requireRole(...CODE_VIOLATION_ROLES), async (req, res) => {
+    const decision = String((req.body && req.body.decision) || '');
+    try {
+      const db = supabaseAdmin || supabasePublic;
+      const { data: rows, error: readErr } = await db.from('code_violations')
+        .select('*').eq('deficiency_key', req.params.key).limit(1);
+      const missing = cvErr(readErr);
+      if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+      if (readErr) throw new Error(readErr.message);
+      if (!rows || !rows.length) return res.status(404).json({ error: 'No deficiency with that key.' });
+
+      const stored = rows[0];
+      const out = codeViolations.resolveConflict(stored, decision, { by: actorName(req) });
+      if (!out.ok) return res.status(400).json({ error: out.error });
+
+      if (out.status === 'Closed by Code Compliance'
+        && !CODE_VIOLATION_CLOSE_ROLES.includes(req.user?.role)) {
+        return res.status(403).json({
+          error: 'Only Jay or Bekah can close a case with Code Compliance. Ask one of them to accept this one.',
+        });
+      }
+      if (out.status === 'Closed by Code Compliance') {
+        out.patch.closed_by = actorName(req);
+        out.patch.closed_at = out.patch.status_set_at;
+      }
+
+      const { data, error } = await db.from('code_violations')
+        .update(out.patch).eq('deficiency_key', req.params.key).select();
+      if (error) throw new Error(error.message);
+      res.json({ ok: true, decision, row: data && data[0] });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
 // Import / re-import. Upserts on deficiency_key, so running the same workbook
 // twice updates rows instead of duplicating them — see open question 2.
 // Rejected rows are RETURNED, never skipped quietly: a citation that fails to
@@ -5114,9 +5164,42 @@ app.post('/api/code-violations/import', requireAuth, requireRole('admin'), async
 
   try {
     const db = supabaseAdmin || supabasePublic;
+
+    // READ BEFORE WRITE. A blind upsert cannot tell a row a person is holding
+    // from one nobody has touched, and that is the whole bug: re-running the
+    // workbook replaced every manual status with the spreadsheet's. Rows are
+    // fetched by key first so each one can be decided individually.
+    const keys = ok.map(r => r.deficiency_key);
+    const storedByKey = {};
+    for (let i = 0; i < keys.length; i += 200) {
+      const { data, error } = await db.from('code_violations')
+        .select('*').in('deficiency_key', keys.slice(i, i + 200));
+      const missing = cvErr(error);
+      if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+      if (error) throw new Error(error.message);
+      (data || []).forEach(r => { storedByKey[r.deficiency_key] = r; });
+    }
+
+    const source = (req.body && req.body.source) || 'excel';
+    const flagged = [];
+    const resolved = ok.map(row => {
+      const out = codeViolations.resolveImportRow(storedByKey[row.deficiency_key], row, { source });
+      if (out.flagged) {
+        flagged.push({
+          deficiency_key: row.deficiency_key,
+          property_name: row.property_name,
+          work_order: row.work_order,
+          kept: storedByKey[row.deficiency_key].status,
+          proposed: out.row.pending_import_status,
+          heldBy: storedByKey[row.deficiency_key].status_set_by,
+        });
+      }
+      return out.row;
+    });
+
     let written = 0;
-    for (let i = 0; i < ok.length; i += 500) {
-      const chunk = ok.slice(i, i + 500);
+    for (let i = 0; i < resolved.length; i += 500) {
+      const chunk = resolved.slice(i, i + 500);
       const { data, error } = await db.from('code_violations')
         .upsert(chunk, { onConflict: 'deficiency_key' }).select('deficiency_key');
       const missing = cvErr(error);
@@ -5124,7 +5207,10 @@ app.post('/api/code-violations/import', requireAuth, requireRole('admin'), async
       if (error) throw new Error(error.message);
       written += (data || chunk).length;
     }
-    res.json({ ok: true, received: rows.length, written, rejected });
+    // `flagged` is returned rather than logged: an import that quietly declined
+    // to apply part of itself is the same class of problem as one that quietly
+    // overwrote everything.
+    res.json({ ok: true, received: rows.length, written, rejected, flagged });
   } catch (err) { res.status(500).json({ error: err.message, rejected }); }
 });
 

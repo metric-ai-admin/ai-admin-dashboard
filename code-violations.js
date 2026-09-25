@@ -383,7 +383,130 @@ function normaliseImportRow(raw = {}, opts = {}) {
   return { ok: true, row };
 }
 
+/**
+ * Decide what an import may write to a row that already exists.
+ *
+ * THE BUG THIS REPLACES. The import upserted the whole normalised row, status
+ * included, so re-running the workbook overwrote every status a person had set
+ * and stamped updated_by with the importer's name. There was no trace that the
+ * manual value had ever existed.
+ *
+ * THE RULE. A row is "held" once somebody has set its status through the PATCH
+ * route, which records status_set_at. For a held row the person's status stays,
+ * and a DIFFERENT incoming status is parked in pending_import_status for them
+ * to accept or reject. For every other row the import writes as before — the
+ * workbook is still the source for the rows nobody has touched, and locking it
+ * out of those would break the thing the import is for.
+ *
+ * SCOPE. Status is what Jay asked for, and status is what gets the accept /
+ * reject treatment. But the same upsert also overwrites pending_items,
+ * progress_notes and due_date, which are equally hand-edited, so on a held row
+ * those are preserved too when the person has filled them in — silently losing
+ * Bekah's notes while advertising that we had fixed the overwrite would be
+ * worse than the original bug. They are preserved, not staged: there is no
+ * meaningful "accept the spreadsheet's version of a free-text note".
+ *
+ * Pure: takes the stored row and the incoming row, returns the patch to write.
+ * No clock of its own — `now` is passed in.
+ */
+const IMPORT_PRESERVED_FIELDS = ['pending_items', 'progress_notes', 'due_date'];
+
+function resolveImportRow(stored, incoming, { now = new Date().toISOString(), source = 'excel' } = {}) {
+  // Unknown row: nothing to protect.
+  if (!stored) return { row: { ...incoming }, flagged: false, preserved: [] };
+
+  const held = !!stored.status_set_at;
+  if (!held) {
+    // Never touched by a person. The workbook wins, which is the default that
+    // keeps the import useful. Any stale pending flag is cleared.
+    return {
+      row: { ...incoming, pending_import_status: null, pending_import_at: null, pending_import_source: null },
+      flagged: false,
+      preserved: [],
+    };
+  }
+
+  const row = { ...incoming };
+
+  // The human's status stands.
+  row.status = stored.status;
+  row.status_set_by = stored.status_set_by;
+  row.status_set_at = stored.status_set_at;
+  // closed_by / closed_at belong to the manual close and must not be reverted
+  // to whatever the spreadsheet carried.
+  row.closed_by = stored.closed_by;
+  row.closed_at = stored.closed_at;
+
+  // Hand-entered free text and the city's deadline, kept where the person has
+  // actually filled them in. An empty manual field takes the import's value.
+  const preserved = [];
+  for (const field of IMPORT_PRESERVED_FIELDS) {
+    const manual = stored[field];
+    if (manual !== null && manual !== undefined && String(manual).trim() !== ''
+      && String(manual) !== String(incoming[field] == null ? '' : incoming[field])) {
+      row[field] = manual;
+      preserved.push(field);
+    }
+  }
+
+  const incomingStatus = clean(incoming.status);
+  const disagrees = !!incomingStatus && incomingStatus !== clean(stored.status);
+  if (disagrees) {
+    row.pending_import_status = incomingStatus;
+    row.pending_import_at = now;
+    row.pending_import_source = source;
+  } else {
+    // The spreadsheet has caught up with the person; nothing left to decide.
+    row.pending_import_status = null;
+    row.pending_import_at = null;
+    row.pending_import_source = null;
+  }
+
+  return { row, flagged: disagrees, preserved };
+}
+
+/**
+ * Apply a person's answer to a parked status.
+ *
+ * 'keep'  — the manual status stands; the parked value is discarded.
+ * 'sync'  — the spreadsheet's value becomes the status, and it becomes the new
+ *           manually-held value. Deliberately: someone chose it, so a later
+ *           import must not silently overwrite it either.
+ */
+function resolveConflict(stored, decision, { by = 'Dashboard', now = new Date().toISOString() } = {}) {
+  if (!stored || !stored.pending_import_status) {
+    return { ok: false, error: 'That row has no import to resolve.' };
+  }
+  if (decision === 'keep') {
+    return {
+      ok: true,
+      patch: {
+        pending_import_status: null, pending_import_at: null, pending_import_source: null,
+        updated_at: now, updated_by: by,
+      },
+    };
+  }
+  if (decision === 'sync') {
+    const next = stored.pending_import_status;
+    if (!STATUSES.includes(next)) {
+      return { ok: false, error: `"${next}" is not one of the seven statuses.` };
+    }
+    return {
+      ok: true,
+      status: next,
+      patch: {
+        status: next,
+        status_set_by: by, status_set_at: now,
+        pending_import_status: null, pending_import_at: null, pending_import_source: null,
+        updated_at: now, updated_by: by,
+      },
+    };
+  }
+  return { ok: false, error: 'Decision must be "keep" or "sync".' };
+}
+
 module.exports = {
+  resolveImportRow, resolveConflict, IMPORT_PRESERVED_FIELDS,
   STATUSES, PROPERTIES, OPEN_STATUSES,
   isoDate, codeSection, hash32, deficiencyKey,
   mapAppfolioStatus, unverifiedClosure, pastDeadline, validateLink,
