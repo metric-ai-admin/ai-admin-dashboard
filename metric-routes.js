@@ -144,23 +144,11 @@ const csvMemUpload = multer({ storage: multer.memoryStorage(), limits: { fileSiz
 
 // ── AppFolio WO analyzer helpers (extracted from metric-dashboard/server.js) ──
 
-function buildHeaderMap(headers) {
-  const norm = h => h.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const map = {};
-  headers.forEach((h, i) => {
-    const n = norm(h);
-    if (/(workorder|^wo|wonumber|wonum|ticket)/.test(n) && map.wo === undefined) map.wo = i;
-    if (/(property|building|community)/.test(n) && map.property === undefined) map.property = i;
-    if (/(unit|aptapt|apartment)/.test(n) && map.unit === undefined) map.unit = i;
-    if (/(status|stage)/.test(n) && map.status === undefined) map.status = i;
-    if (/(assign|tech|vendor|technician)/.test(n) && map.assignee === undefined) map.assignee = i;
-    if (/(description|issue|details|summary|problem)/.test(n) && map.description === undefined) map.description = i;
-    if (/(created|opened|requestdate|datereceived|submitted)/.test(n) && map.created === undefined) map.created = i;
-    if (/(updated|modified|lastactivity)/.test(n) && map.updated === undefined) map.updated = i;
-    if (/(photo|image|attachment)/.test(n) && map.photos === undefined) map.photos = i;
-  });
-  return map;
-}
+// Column mapping lives in wo-columns.js, which SCORES candidates instead of
+// taking the first header containing a keyword. The old version bound `wo` to
+// work_order_type on the real export — so every row was labelled by its type
+// ("Plumbing") and two different work orders looked identical. See that file.
+const woColumns = require('./wo-columns.js');
 
 function looksSpanish(text) {
   if (!text) return false;
@@ -179,7 +167,13 @@ function daysBetween(dateStr, now) {
 function analyzeWorkOrders(rows) {
   if (rows.length < 2) return { actions: [], count: 0, headers: [] };
   const headers = rows[0].map(h => h.trim());
-  const map = buildHeaderMap(headers);
+  const { map, bound, unbound, rejected } = woColumns.buildHeaderMap(headers);
+  // A field that could not be bound is REPORTED, not guessed at. The rules
+  // below that depend on one are skipped rather than run against a column that
+  // is not there — `photos` was unbound on every real export, which silently
+  // made hasPhotos false for every row: "Request photos" fired on everything
+  // and "Ready for QC" could never fire at all.
+  const has = field => map[field] !== undefined;
   const now = new Date();
   const dataRows = rows.slice(1);
   const records = dataRows.map((r, i) => {
@@ -210,20 +204,33 @@ function analyzeWorkOrders(rows) {
     const isClosed = /closed|complete|cancel/.test(rec.statusLower);
     if (rec.isSpanish) acts.push({ action: 'Translate to English', tier: 'followup', recommendation: 'Description is in Spanish. Translate it before assigning.' });
     if (isNew && !rec.assignee) acts.push({ action: 'Assign technician', tier: 'urgent', recommendation: 'New work order with no technician. Assign one as soon as possible.' });
-    if (isWorkDone && !rec.hasPhotos) acts.push({ action: 'Request photos', tier: 'followup', recommendation: 'Marked Work Done with no photos. Request photos from the technician.' });
+    if (has('photos') && isWorkDone && !rec.hasPhotos) acts.push({ action: 'Request photos', tier: 'followup', recommendation: 'Marked Work Done with no photos. Request photos from the technician.' });
     if (rec.ageDays !== null && rec.ageDays > 30 && !isClosed) acts.push({ action: 'Escalate', tier: 'urgent', recommendation: `Open for ${rec.ageDays} days. Escalate immediately.` });
     else if (rec.updatedDays !== null && rec.updatedDays > 7 && !isClosed && !isWorkDone) acts.push({ action: 'Follow up with tech', tier: 'followup', recommendation: `No update in ${rec.updatedDays} days.` });
-    if (isWorkDone && !rec.isSpanish && rec.hasPhotos) acts.push({ action: 'QC Ready', tier: 'ready', recommendation: 'Ready for QC / billing.' });
+    if (isWorkDone && !rec.isSpanish && (has('photos') ? rec.hasPhotos : true)) {
+      acts.push({ action: 'QC Ready', tier: 'ready',
+        recommendation: has('photos') ? 'Ready for QC / billing.'
+          : 'Marked Work Done. This export has no photo column, so photos were not checked.' });
+    }
     const key = `${rec.property}||${rec.unit}`.toLowerCase();
     if (rec.unit && openByUnit[key] && openByUnit[key].length > 1) acts.push({ action: 'Possible duplicate', tier: 'followup', recommendation: `${openByUnit[key].length} open work orders on the same unit.` });
-    if (!acts.length) acts.push({ action: 'No action needed', tier: 'none', recommendation: 'No action needed right now.' });
+    if (!acts.length) {
+      // NOT "no action needed", and never a tick. An open work order that
+      // matches no rule is still open — Jay read the old green ✅ plus this
+      // wording as the analyzer having marked it complete. It says what it
+      // knows: nothing flagged it, which is not the same as finished.
+      acts.push({ action: 'Nothing flagged', tier: 'none',
+        recommendation: isClosed ? 'Closed in AppFolio.' : 'Open, but no rule flagged it. Not a completion.' });
+    }
     const topTier = acts.reduce((best, a) => order[a.tier] < order[best] ? a.tier : best, 'none');
     return { wo: rec.wo, property: rec.property, unit: rec.unit, status: rec.status || '—',
       assignee: rec.assignee || null, ageDays: rec.ageDays, isSpanish: rec.isSpanish, hasPhotos: rec.hasPhotos,
       description: rec.description, descriptionPreview: rec.description.slice(0, 120), fields: rec.fields,
       actions: acts, topTier };
   });
-  return { actions, count: actions.length, headers };
+  // The caller shows this: which column fed which field, and what was left
+  // unbound. Surfacing the mapping is what made the old one's failure findable.
+  return { actions, count: actions.length, headers, columns: { bound, unbound, rejected } };
 }
 
 // ── Property assignment field mapping ─────────────────────────────────────────
@@ -784,7 +791,7 @@ function registerMetricRoutes(app, db) {
       const analysis = analyzeWorkOrders(rows);
       const groups = { urgent: [], followup: [], ready: [], none: [] };
       for (const a of analysis.actions) groups[a.topTier].push(a);
-      const result = { analyzedAt: new Date().toISOString(), file: req.file.filename, sourceType: 'csv', totalWorkOrders: analysis.count, headers: analysis.headers, groups };
+      const result = { analyzedAt: new Date().toISOString(), file: req.file.filename, sourceType: 'csv', totalWorkOrders: analysis.count, headers: analysis.headers, columns: analysis.columns, groups };
       const analysisPath = path.join(REPORTS_DIR, req.file.filename.replace(/\.csv$/i, '_analysis.json'));
       await fsp.writeFile(analysisPath, JSON.stringify(result, null, 2), 'utf8');
       res.json(result);

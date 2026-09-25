@@ -7590,7 +7590,12 @@ const AF_GROUP_META = {
   urgent:   { icon: '🔴', label: 'Urgent actions' },
   followup: { icon: '🟡', label: 'Follow-up needed' },
   ready:    { icon: '🟢', label: 'Ready for QC / Billing' },
-  none:     { icon: '✅', label: 'No action needed' },
+  // Not a tick, and not "no action needed". Jay read the green ✅ over an OPEN
+  // work order as the analyzer having marked it complete — and with every row
+  // also labelled by work_order_type, two adjacent "Plumbing" rows were
+  // indistinguishable, so one of a pair looked closed. Nothing here ever marks
+  // anything complete; this bucket only means no rule matched.
+  none:     { icon: '🔵', label: 'Open, no action flagged' },
 };
 
 let appfolioData = null;
@@ -7646,6 +7651,24 @@ function renderAppfolio(data) {
     <div class="stat"><div class="stat-num" style="color:var(--amber)">${g.followup.length}</div><div class="stat-label">Follow-up</div></div>
     <div class="stat"><div class="stat-num" style="color:var(--green)">${g.ready.length}</div><div class="stat-label">Ready QC</div></div>
     ${data.analyzedAt ? `<div class="stat"><div class="stat-num" style="font-size:15px">${esc(new Date(data.analyzedAt).toLocaleString())}</div><div class="stat-label">Analyzed</div></div>` : ''}`;
+
+  // Which column fed which field. The old mapper bound `wo` to work_order_type
+  // and `photos` to nothing at all, and neither was visible anywhere — showing
+  // the mapping is what makes the next mis-binding a five-second diagnosis.
+  const cols = data.columns;
+  const colsEl = $('#appfolioColumns');
+  if (colsEl) {
+    colsEl.innerHTML = !cols ? '' : `<details class="af-cols">
+      <summary>Columns read from this file${(cols.unbound || []).length
+  ? ` &mdash; <span class="af-unbound">${cols.unbound.length} not found</span>` : ''}</summary>
+      <div class="af-cols-body">
+        ${Object.entries(cols.bound || {}).map(([field, b]) =>
+    `<div><span class="af-field">${esc(field)}</span> &rarr; ${esc(b.column)}</div>`).join('')}
+        ${(cols.unbound || []).map(f =>
+    `<div class="af-unbound"><span class="af-field">${esc(f)}</span> &rarr; no column found; rules needing it were skipped</div>`).join('')}
+      </div>
+    </details>`;
+  }
 
   $('#appfolioGroups').innerHTML = ['urgent', 'followup', 'ready', 'none'].map(key => {
     const items = g[key] || [];

@@ -2787,3 +2787,14 @@ tr.ca-sel { background: var(--accent-glow); }
 .cvx-conflict-text strong { color: var(--warning); }
 .cvx-conflict-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .cvx-conflict-banner .cvx-conflict-line { font-size: 12px; margin-top: 6px; }
+
+/* Which column of the uploaded work-order export fed which field. Collapsed by
+   default — it only matters when a number looks wrong, and then it matters a
+   lot: the previous mapper bound the work-order NUMBER to work_order_type and
+   nothing showed it. */
+.af-cols { margin: 0 0 14px; font-size: 12px; }
+.af-cols summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
+.af-cols-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 2px 18px;
+  padding: 10px 12px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin-top: 6px; }
+.af-field { display: inline-block; min-width: 96px; color: var(--muted); }
+.af-unbound { color: var(--warning); }
