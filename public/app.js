@@ -10344,7 +10344,38 @@ function cvxRow(r) {
     + `<td>${cvxStatus(r.status)}</td>`
     + `<td>${due}</td>`
     + `<td>${cvxEvidence(r)}</td>`
-    + `<td><button class="cvx-edit" data-cvx-edit="${cvxEsc(r.deficiency_key)}">Edit</button></td></tr>`;
+    + `<td><button class="cvx-edit" data-cvx-edit="${cvxEsc(r.deficiency_key)}">Edit</button></td></tr>`
+    + cvxConflictRow(r);
+}
+
+// An import that disagrees with a status somebody set by hand.
+//
+// Shown as a second row beneath the deficiency rather than a badge inside it:
+// this asks a question and needs two buttons and a sentence, and squeezing that
+// into the status cell would make it easy to miss — which is how the silent
+// overwrite went unnoticed in the first place.
+function cvxConflictRow(r) {
+  if (!r.pending_import_status) return '';
+  const who = r.status_set_by ? cvxEsc(r.status_set_by) : 'someone';
+  const when = r.status_set_at ? cvxEsc(cvxDay(String(r.status_set_at).slice(0, 10))) : 'earlier';
+  const src = r.pending_import_source ? ` (${cvxEsc(r.pending_import_source)})` : '';
+  return `<tr class="cvx-conflict-row" data-cvx-conflict="${cvxEsc(r.deficiency_key)}">
+    <td colspan="12">
+      <div class="cvx-conflict">
+        <div class="cvx-conflict-text">
+          <strong>Import disagrees.</strong>
+          Status was set to <b>${cvxEsc(r.status)}</b> by ${who} on ${when}.
+          The spreadsheet${src} says <b>${cvxEsc(r.pending_import_status)}</b>.
+          The manual status is what the tracker is using.
+        </div>
+        <div class="cvx-conflict-actions">
+          <button class="btn btn-ghost" data-cvx-resolve="keep"
+            data-cvx-key="${cvxEsc(r.deficiency_key)}">Keep ${cvxEsc(r.status)}</button>
+          <button class="btn" data-cvx-resolve="sync"
+            data-cvx-key="${cvxEsc(r.deficiency_key)}">Use ${cvxEsc(r.pending_import_status)}</button>
+        </div>
+      </div>
+    </td></tr>`;
 }
 
 function cvxRenderRows() {
@@ -10357,6 +10388,24 @@ function cvxRenderRows() {
         + '<th>Cited</th><th>Deficiency</th><th>Category</th><th>Status</th><th>Due</th><th>Evidence</th><th></th>'
         + `</tr></thead><tbody>${rows.map(cvxRow).join('')}</tbody></table></div>`
       : '<p class="mb-empty">No deficiencies match these filters.</p>');
+}
+
+// How many rows are waiting on a decision, at the top where it is seen.
+// A conflict buried in a 67-row table is a conflict nobody answers.
+function cvxRenderConflicts() {
+  const el = document.getElementById('cvx-conflicts');
+  if (!el) return;
+  const pending = (cvxData.rows || []).filter(r => r.pending_import_status);
+  if (!pending.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="alert-box warn cvx-conflict-banner">
+    <div class="al">${pending.length} row${pending.length === 1 ? '' : 's'} where an import disagrees with a manual status</div>
+    The status somebody set by hand is the one in use. Each row below offers the choice.
+    ${pending.slice(0, 6).map(r => `<div class="cvx-conflict-line">
+      ${cvxEsc(r.property_name)} &middot; ${cvxEsc(r.work_order || 'no WO')} &mdash;
+      keeping <b>${cvxEsc(r.status)}</b>, import says <b>${cvxEsc(r.pending_import_status)}</b>
+    </div>`).join('')}
+    ${pending.length > 6 ? `<div class="cvx-conflict-line muted">and ${pending.length - 6} more</div>` : ''}
+  </div>`;
 }
 
 function cvxRenderWatchlist() {
@@ -10381,6 +10430,7 @@ function renderCodeViolations() {
   if (!cvxData) return;
   document.getElementById('cvx-sub').innerHTML =
     `One row per cited deficiency, not per work order &middot; ${cvxData.summary.total} shown`;
+  cvxRenderConflicts();
   cvxRenderSummary();
   cvxRenderFilters();
   cvxRenderProperties();
@@ -10433,6 +10483,19 @@ document.getElementById('maint-view-code-violations')?.addEventListener('click',
     loadCodeViolations();
   }
   if (e.target.id === 'cvx-refresh') loadCodeViolations();
+
+  const resolve = e.target.closest && e.target.closest('[data-cvx-resolve]');
+  if (resolve) {
+    const decision = resolve.dataset.cvxResolve;
+    const key = resolve.dataset.cvxKey;
+    // Disabled immediately: these two buttons are a decision about a city
+    // case, and a double click on "Use ..." would apply it twice.
+    resolve.disabled = true;
+    api('/api/code-violations/' + encodeURIComponent(key) + '/resolve-import',
+      { method: 'POST', body: { decision } })
+      .then(() => { toast(decision === 'keep' ? 'Kept the manual status' : 'Using the imported status', 'success'); loadCodeViolations(); })
+      .catch(err => { resolve.disabled = false; toast(err.message, 'error'); });
+  }
 });
 
 // ---- Editing a deficiency ---------------------------------------------------

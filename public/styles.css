@@ -2776,3 +2776,14 @@ tr.ca-sel { background: var(--accent-glow); }
 .bl-diag-box p { margin: 0 0 12px; }
 .bl-pre { background: var(--bg-base); border: 1px solid var(--border); border-radius: 6px; padding: 10px;
   font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; max-height: 260px; margin: 6px 0 0; }
+
+/* An import disagreeing with a manually-set status. Its own row under the
+   deficiency, not a badge inside it: this asks a question and needs two
+   buttons and a sentence, and a badge is easy to scroll past — which is how
+   the silent overwrite went unnoticed for as long as it did. */
+.cvx-conflict-row td { background: var(--warning-bg); border-top: none; padding: 10px 12px; }
+.cvx-conflict { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; justify-content: space-between; }
+.cvx-conflict-text { font-size: 13px; line-height: 1.6; max-width: 70ch; }
+.cvx-conflict-text strong { color: var(--warning); }
+.cvx-conflict-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.cvx-conflict-banner .cvx-conflict-line { font-size: 12px; margin-top: 6px; }
