@@ -7658,6 +7658,8 @@ app.get('/api/billable/debug/:slot', requireAuth, requireRole(...BILLABLE_ROLES)
       groupCounts: parsed.groupCounts,
       dataRows: parsed.rows.length,
       droppedGroupRows: (parsed.groupRows || []).length,
+      droppedSubtotalRows: (parsed.subtotalRows || []).length,
+      sampleSubtotalRows: (parsed.subtotalRows || []).slice(0, 5),
       // Every distinct value of the status column, on BOTH kinds of row.
       statusValuesOnDataRows: tally(parsed.rows, statusCol),
       statusValuesOnGroupRows: tally(parsed.groupRows || [], statusCol),

@@ -352,7 +352,10 @@ t('a flat CSV with a real property column still works', () => {
   assert.strictEqual(B.resolveColumns(p.headers).property, 'property_name');
 });
 t('rows appearing before any group header are not silently dropped', () => {
-  const p = B.parseCsv('Group,count(Work Order Number),Amount\n,,$5.00\n-> A,1,\n,,$10.00');
+  // Each row carries a status, so it is a real line rather than one of the
+  // unlabelled subtotal rows dropSubtotalRows() removes.
+  const p = B.parseCsv('Group,count(Work Order Number),Work Order Status,Amount\n'
+    + ',,Completed,$5.00\n-> A,1,,\n,,Completed,$10.00');
   assert.strictEqual(p.rows.length, 2);
   assert.strictEqual(p.rows[0].__property, '');
 });
@@ -613,6 +616,78 @@ t('per-property counts still come from the group header, not the rows', () => {
   const hyde = B.byProperty(B.parseCsv(WITH_WO))[0];
   assert.strictEqual(hyde.workOrders, 12);
   assert.strictEqual(hyde.completed, 2);
+});
+
+console.log('\nunlabelled subtotal rows');
+
+// Besides the "-> Property" headers, the export carries unlabelled subtotal
+// rows: no work order, no status, no vendor, no unit — just the Amount and
+// Hours columns filled with the totals of the rows above. Kept as data they
+// roughly double every money figure, and they are invisible in the output
+// because they land under whichever property they trail.
+const H2 = 'Group,count(Work Order Number),Unit,Vendor,Created Date,Description,Amount,Worked Hours,Billable Hours,Work Order Status,Billed Amount,Unbilled Amount';
+const WITH_SUBTOTAL = [
+  H2,
+  '-> Hyde Park Square,2,,,,,,,,,,',
+  ',22963-1,206,Acme,09/25/2026,Leak,$300.00,1.2,1.0,Completed,$300.00,$0.00',
+  ',22964-1,101,Acme,09/25/2026,Lock,$200.00,1.0,1.0,Completed,$200.00,$0.00',
+  ',,,,,,$500.00,2.2,2.0,,$500.00,$0.00',
+].join(String.fromCharCode(10));
+
+t('the unlabelled subtotal row is dropped', () => {
+  const p = B.parseCsv(WITH_SUBTOTAL);
+  assert.strictEqual(p.rows.length, 2);
+  assert.strictEqual(p.subtotalRows.length, 1);
+});
+t('and the money is not doubled by it', () => {
+  const sum = B.summarisePeriod(B.parseCsv(WITH_SUBTOTAL));
+  assert.strictEqual(sum.billed, 500);          // not 1000
+  assert.strictEqual(sum.billableHours, 2);     // not 4
+  assert.strictEqual(sum.completed, 2);
+});
+t('how many were dropped is reported', () => {
+  assert.strictEqual(B.summarisePeriod(B.parseCsv(WITH_SUBTOTAL)).subtotalRowsDropped, 1);
+});
+
+t('a row that identifies SOMETHING is never dropped, however sparse', () => {
+  // Each of these lacks the work order, the status and the vendor — the three
+  // conditions originally proposed — but names a unit, a description or a date.
+  // Dropping on those three alone would have deleted every one of them.
+  [
+    ',,206,,,,$300.00,1,1,,$300.00,$0.00',            // unit only
+    ',,,,,Leak under sink,$300.00,1,1,,$300.00,$0.00', // description only
+    ',,,,09/25/2026,,$300.00,1,1,,$300.00,$0.00',      // date only
+  ].forEach(line => {
+    const p = B.parseCsv([H2, '-> P,1,,,,,,,,,,', line].join(String.fromCharCode(10)));
+    assert.strictEqual(p.rows.length, 1, line);
+    assert.strictEqual(p.subtotalRows.length, 0, line);
+  });
+});
+t('a row inheriting its status from a status group survives', () => {
+  // The case that made the first version of this filter wrong: in a
+  // status-grouped file the per-row status is blank, and with no vendor or
+  // work order the row looks exactly like a subtotal until you notice it
+  // names a unit.
+  const nested = [
+    H2,
+    '-> Hyde Park Square,2,,,,,,,,,,',
+    '-> Ready to Bill,2,,,,,,,,,,',
+    ',,5-224,,09/22/2026,Leak,$100.00,1,1,,$0.00,$100.00',
+    ',,3-101,,09/22/2026,Lock,$50.00,1,1,,$0.00,$50.00',
+  ].join(String.fromCharCode(10));
+  const p = B.parseCsv(nested);
+  assert.strictEqual(p.rows.length, 2);
+  assert.strictEqual(B.summarisePeriod(p).readyToBill, 2);
+});
+t('an all-zero row with nothing in it is left alone, not counted as a subtotal', () => {
+  // hasMoney is required: a blank trailing line is not a subtotal, and it is
+  // already handled by the blank-line skip in the parser.
+  const p = B.parseCsv([H2, '-> P,1,,,,,,,,,,', ',,,,,,$0.00,0,0,,$0.00,$0.00'].join(String.fromCharCode(10)));
+  assert.strictEqual(p.subtotalRows.length, 0);
+});
+t('a flat file with no subtotals is unaffected', () => {
+  assert.strictEqual(B.parseCsv(API_CSV).subtotalRows.length, 0);
+  assert.strictEqual(B.parseCsv(GROUPED).subtotalRows.length, 0);
 });
 
 console.log(`\n${pass} passing`);
