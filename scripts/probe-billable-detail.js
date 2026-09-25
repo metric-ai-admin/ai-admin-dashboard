@@ -57,6 +57,11 @@ const HOST = `https://${SUBDOMAIN}.appfolio.com`;
 
 // Asked for by name first; the rest are the near-misses worth ruling out in the
 // same run, since each one costs a single request against a 7-per-15s limit.
+// work_order_billable_detail leads on real evidence, not a guess: the base
+// report's own URL is /buffered_reports/work_order_billable_detail — a NAME,
+// where the three saved views are UUIDs. The already-working labor summary sits
+// at the same kind of named path, so on this account a named buffered_report
+// has so far always corresponded to a real API resource of that name.
 const NAMES = [
   'work_order_billable_detail',
   'work_order_billable',
@@ -65,9 +70,19 @@ const NAMES = [
   'work_order_billable_summary',
 ];
 
+// The UI calls the filter "Status Date: Work Done On", which is the date the
+// work was performed — NOT the created date. That is what separates the Daily,
+// Weekly and Monthly views, so getting this parameter right is the whole job.
+//
+// labor_performed_from/to leads because it is the same idea in the same account:
+// it is what work_order_labor_summary requires, and "labor performed on" and
+// "work done on" are the same date by another name. The rest follow the UI
+// wording and the generic spelling.
 const DATE_PARAMS = [
+  ['labor_performed_from', 'labor_performed_to'],
+  ['work_done_from', 'work_done_to'],
+  ['status_date_from', 'status_date_to'],
   ['from_date', 'to_date'],
-  ['labor_performed_from', 'labor_performed_to'],   // what the labor summary requires
   ['billable_from', 'billable_to'],
 ];
 
@@ -179,6 +194,31 @@ async function call(report, body) {
     if (!exact && !near) missing++;
   });
   console.log(`\n  ${WANTED.length - missing} of ${WANTED.length} needed columns present.`);
+  console.log('\n=== 5. Status filter ==============================================');
+  // The UI restricts to Work Done, Ready to Bill and Completed. work_order takes
+  // NUMERIC status codes under `work_order_statuses` (4 = Completed, 5 =
+  // Canceled, 7 = Completed No Need To Bill), so the same key is worth trying
+  // here — but only a row-count CHANGE proves it is read, for the same reason
+  // as the dates.
+  if (bestParams) {
+    const base = await call(live, { [bestParams.from]: ONE_WEEK[0], [bestParams.to]: ONE_WEEK[1] });
+    await pause();
+    const filtered = await call(live, {
+      [bestParams.from]: ONE_WEEK[0], [bestParams.to]: ONE_WEEK[1],
+      work_order_statuses: ['4'],
+    });
+    const cb = base.rows ? base.rows.length : null;
+    const cf = filtered.rows ? filtered.rows.length : null;
+    console.log(`  no status filter ${String(cb).padStart(5)}   work_order_statuses:['4'] ${String(cf).padStart(5)}   ${
+      cb === null || cf === null ? 'inconclusive' : cb !== cf ? 'READ' : 'ignored (or all rows share that status)'}`);
+  } else {
+    console.log('  Skipped — no working date filter to hold constant, so a count');
+    console.log('  difference could not be attributed to the status filter.');
+  }
+
+  console.log('\n=== SUMMARY =======================================================');
+  console.log(`  report name    : ${live}`);
+  console.log(`  needed columns : ${WANTED.length - missing} of ${WANTED.length}`);
   if (bestParams) console.log(`  Date filter that works: ${bestParams.from} / ${bestParams.to}`);
   else console.log('  WARNING: no date filter was confirmed to be read. A range we think we are');
   console.log('  sending may be silently ignored, returning everything.');
