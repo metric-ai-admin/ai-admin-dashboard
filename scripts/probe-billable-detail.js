@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 //
-// Is "Work Order Billable Detail" reachable as a BASE report?
+// work_order_billable_detail — why does it answer 200 with no rows?
 //
 //   node scripts/probe-billable-detail.js
 //
@@ -8,37 +8,39 @@
 // registered. Run on Render Shell where the AppFolio credentials live — this
 // script never asks for a credential and never prints one.
 //
-// WHY THIS IS THE RIGHT QUESTION
+// WHERE THIS STANDS
 //
-// The three saved reports (MDaily/MWeekly/MMonthly) are all views of one report
-// named "Work Order Billable Detail". Their UUIDs answer 400 through the API
-// and their buffered_reports pages want a login session. But the Move Out
-// Directory went exactly the same way and is synced today: the saved view was
-// unreachable while the BASE report (tenant_tickler) answered fine. If the base
-// report here is reachable, the three views are filters and date ranges we can
-// reproduce locally rather than endpoints we need to fetch.
+// The report EXISTS: /api/v2/reports/work_order_billable_detail.json answered
+// 200. Every date window then returned 0 rows, on every parameter spelling.
+// That result is not evidence about the dates. Zero rows for ALL of them is the
+// signature of something upstream of the filter, and there are four candidates
+// worth separating before anyone concludes the data is not there:
 //
-// TWO UNKNOWNS, PROBED SEPARATELY
+//   1. MY OWN PROBE WAS WRONG. The first version sent ?paginate_results=false.
+//      appfolio-client.js:200 says in as many words that we do NOT use that
+//      parameter because AppFolio CAPS it — the supported path is following
+//      next_page_url. A capped or rejected pagination mode returning an empty
+//      first page would produce exactly what was seen, on every window, which
+//      is the pattern here. This version does not send it. That makes this the
+//      first thing to rule out, and the most likely.
 //
-// 1. The report NAME. The UI label is "Work Order Billable Detail"; the API
-//    wants the underlying resource name, and those are not always the obvious
-//    snake_case of the label. work_order_labor_detail looked just as plausible
-//    and answers 400 — it does not exist (appfolio-reports.js:109). So several
-//    candidates are tried and a 400 is treated as information, not failure.
+//   2. THE ENVELOPE IS NOT WHAT WE ASSUME. The client expects
+//      { results: [...], next_page_url }. If this report answers with a
+//      different shape, "0 rows" is a misread of a populated response rather
+//      than an empty one. So the raw top-level keys are printed on every call.
 //
-// 2. The DATE PARAMETER names. The request asks for from_date/to_date, but the
-//    labor summary on this same account requires labor_performed_from /
-//    labor_performed_to, and a wrong filter name is not always an error —
-//    `status: 'Completed'` was silently IGNORED on work_order and returned a
-//    full unfiltered pull that looked like a successful filter. So each name
-//    pair is sent AND the returned row count is compared between a one-day and
-//    a seven-day window. If the filter is being read, the counts differ. If
-//    they are identical, the filter is being ignored and any date range we
-//    think we are sending is fiction.
+//   3. A REQUIRED FILTER IS MISSING. work_order_labor_summary returns nothing
+//      useful without labor_performed_from/to; a report that needs an entity or
+//      status selection may answer 200 with an empty set rather than an error.
 //
-// Column VALUES are not printed. Column names, types and row counts answer the
-// question; the rows carry vendor and cost detail that has no reason to sit in
-// a terminal log.
+//   4. THE WINDOW GENUINELY HAD NO BILLABLE WORK. Possible — but note that
+//      "54 graded calls on 2026-09-22" is about phone calls, not work orders,
+//      and says nothing about whether any labor was performed or billed that
+//      day. This probe widens to 30 and 90 days so an empty result has to
+//      survive a window where the business certainly did billable work.
+//
+// Column VALUES are not printed. Names, types and counts answer the question;
+// the rows carry vendor and cost detail with no reason to sit in a terminal log.
 
 require('dotenv').config();
 
@@ -54,52 +56,17 @@ if (!CLIENT_ID || !SECRET) {
 
 const AUTH = 'Basic ' + Buffer.from(`${CLIENT_ID}:${SECRET}`).toString('base64');
 const HOST = `https://${SUBDOMAIN}.appfolio.com`;
+const REPORT = 'work_order_billable_detail';
 
-// Asked for by name first; the rest are the near-misses worth ruling out in the
-// same run, since each one costs a single request against a 7-per-15s limit.
-// work_order_billable_detail leads on real evidence, not a guess: the base
-// report's own URL is /buffered_reports/work_order_billable_detail — a NAME,
-// where the three saved views are UUIDs. The already-working labor summary sits
-// at the same kind of named path, so on this account a named buffered_report
-// has so far always corresponded to a real API resource of that name.
-const NAMES = [
-  'work_order_billable_detail',
-  'work_order_billable',
-  'billable_detail',
-  'work_order_billing_detail',
-  'work_order_billable_summary',
-];
+const pause = () => new Promise(r => setTimeout(r, 2300));   // 7 req / 15s limit
 
-// The UI calls the filter "Status Date: Work Done On", which is the date the
-// work was performed — NOT the created date. That is what separates the Daily,
-// Weekly and Monthly views, so getting this parameter right is the whole job.
-//
-// labor_performed_from/to leads because it is the same idea in the same account:
-// it is what work_order_labor_summary requires, and "labor performed on" and
-// "work done on" are the same date by another name. The rest follow the UI
-// wording and the generic spelling.
-const DATE_PARAMS = [
-  ['labor_performed_from', 'labor_performed_to'],
-  ['work_done_from', 'work_done_to'],
-  ['status_date_from', 'status_date_to'],
-  ['from_date', 'to_date'],
-  ['billable_from', 'billable_to'],
-];
-
-const ONE_DAY = ['2026-09-25', '2026-09-25'];
-const ONE_WEEK = ['2026-09-19', '2026-09-25'];
-
-// What we need the report to carry, per the ask.
 const WANTED = ['Vendor', 'Billable Type', 'Amount', 'Worked Hours', 'Billable Hours',
   'Work Order Status', 'Billed Amount', 'Unbilled Amount'];
 const norm = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
-// Be kind to the 7-requests-per-15-seconds limit; a probe that trips it reads
-// as a broken endpoint.
-const pause = () => new Promise(r => setTimeout(r, 2300));
-
-async function call(report, body) {
-  const url = `${HOST}/api/v2/reports/${report}.json?paginate_results=false`;
+// NOTE: no paginate_results. See candidate 1 above.
+async function call(body, { report = REPORT } = {}) {
+  const url = `${HOST}/api/v2/reports/${report}.json`;
   let res, text = '';
   try {
     res = await fetch(url, {
@@ -109,68 +76,110 @@ async function call(report, body) {
       redirect: 'manual',
     });
     text = await res.text();
-  } catch (e) {
-    return { error: e.code || e.message };
-  }
+  } catch (e) { return { error: e.code || e.message }; }
+
   let json = null;
   try { json = JSON.parse(text); } catch {}
   const rows = json && (Array.isArray(json) ? json : json.results || json.rows || json.data);
   return {
     status: res.status,
-    contentType: (res.headers.get('content-type') || '').split(';')[0],
-    isJson: !!json,
+    json,
+    // Every top-level key, so an unexpected envelope is visible rather than
+    // silently read as empty.
+    keys: json && !Array.isArray(json) ? Object.keys(json) : Array.isArray(json) ? ['(bare array)'] : [],
     rows: Array.isArray(rows) ? rows : null,
-    snippet: text.replace(/\s+/g, ' ').slice(0, 180),
+    nextPage: json && (json.next_page_url || json.nextPageUrl) ? 'yes' : 'no',
+    snippet: text.replace(/\s+/g, ' ').slice(0, 200),
   };
 }
 
+function line(label, r) {
+  if (r.error) return console.log(`  ${label.padEnd(46)} NETWORK ${r.error}`);
+  const n = r.rows ? r.rows.length : null;
+  console.log(`  ${label.padEnd(46)} ${String(r.status).padEnd(4)} rows=${String(n === null ? '?' : n).padStart(5)}  next_page=${r.nextPage}  keys=[${r.keys.join(',')}]`);
+  if (n === null && r.snippet) console.log(`  ${''.padEnd(46)} body: ${r.snippet.slice(0, 140)}`);
+}
+
 (async () => {
-  console.log(`Work Order Billable Detail — base-report probe against ${HOST}`);
-  console.log('READ-ONLY. Column names and counts only; no row values are printed.\n');
+  console.log(`${REPORT} — why 200 with no rows?   ${HOST}`);
+  console.log('READ-ONLY. No paginate_results this time (see header).\n');
 
-  console.log('=== 1. Does the report name exist? =================================');
-  let live = null;
-  for (const name of NAMES) {
-    const r = await call(name, {});
-    if (r.error) { console.log(`  ${name.padEnd(30)} NETWORK ${r.error}`); await pause(); continue; }
-    const verdict = r.status === 200 ? 'EXISTS'
-      : r.status === 400 ? 'no such report'
-        : r.status === 401 || r.status === 403 ? 'AUTH REFUSED'
-          : String(r.status);
-    console.log(`  ${name.padEnd(30)} ${String(r.status).padEnd(4)} ${verdict}`);
-    if (r.status !== 200 && r.snippet) console.log(`  ${''.padEnd(30)}      ${r.snippet.slice(0, 120)}`);
-    if (r.status === 200 && !live) live = name;
+  console.log('=== 1. No filters at all ===========================================');
+  console.log('    If this returns rows, the report is fine and a FILTER emptied it.');
+  console.log('    If this is also empty, the filters were never the problem.\n');
+  const bare = await call({});
+  line('no params', bare);
+  if (bare.json && !bare.rows) {
+    console.log('\n  Unrecognised envelope. Full top-level shape:');
+    console.log('  ' + JSON.stringify(bare.json).slice(0, 500));
+  }
+  await pause();
+
+  console.log('\n=== 2. Windows that certainly contain billable work ================');
+  // "54 graded calls on 2026-09-22" is about phone calls, not work orders — it
+  // is not evidence of billable labor. 30 and 90 days are here so an empty
+  // result has to survive a window the business cannot have been idle through.
+  const WINDOWS = [
+    ['1 day  2026-09-22', '2026-09-22', '2026-09-22'],
+    ['7 days 09-19..09-25', '2026-09-19', '2026-09-25'],
+    ['30 days 08-26..09-25', '2026-08-26', '2026-09-25'],
+    ['90 days 06-27..09-25', '2026-06-27', '2026-09-25'],
+  ];
+  const PARAMS = [
+    ['labor_performed_from', 'labor_performed_to'],
+    ['work_done_from', 'work_done_to'],
+    ['status_date_from', 'status_date_to'],
+    ['from_date', 'to_date'],
+  ];
+  const counts = {};
+  for (const [from, to] of PARAMS) {
+    console.log(`\n  --- ${from} / ${to}`);
+    for (const [label, a, b] of WINDOWS) {
+      const r = await call({ [from]: a, [to]: b });
+      line(label, r);
+      counts[`${from}|${label}`] = r.rows ? r.rows.length : null;
+      await pause();
+    }
+  }
+
+  console.log('\n=== 3. Date FORMAT ================================================');
+  // ISO works for work_order_labor_summary on this account, so this is a long
+  // shot — but it costs two requests and would explain a silent empty set.
+  for (const [from, to] of [['labor_performed_from', 'labor_performed_to']]) {
+    line('US format 08/26/2026-09/25/2026',
+      await call({ [from]: '08/26/2026', [to]: '09/25/2026' }));
     await pause();
   }
 
-  if (!live) {
-    console.log('\nNone of the candidate names exist. The UI label does not map to a public');
-    console.log('report resource, same as work_order_labor_detail. Nothing further to test.');
-    return;
-  }
-  console.log(`\nReachable base report: ${live}`);
+  console.log('\n=== 4. Status filter, both spellings ==============================');
+  // The UI restricts to Work Done / Ready to Bill / Completed. work_order takes
+  // NUMERIC codes under work_order_statuses; the label spelling is tried too.
+  const W30 = { labor_performed_from: '2026-08-26', labor_performed_to: '2026-09-25' };
+  line('statuses as labels', await call({ ...W30, work_order_statuses: ['Work Done', 'Ready to Bill', 'Completed'] }));
+  await pause();
+  line('statuses as codes', await call({ ...W30, work_order_statuses: ['4', '7'] }));
+  await pause();
+  line('no window, labels only', await call({ work_order_statuses: ['Work Done', 'Ready to Bill', 'Completed'] }));
+  await pause();
 
-  console.log('\n=== 2. Are the date filters actually read? =========================');
-  console.log('    (identical row counts for 1 day and 7 days means the filter is IGNORED)');
-  let bestParams = null;
-  for (const [from, to] of DATE_PARAMS) {
-    const a = await call(live, { [from]: ONE_DAY[0], [to]: ONE_DAY[1] });
-    await pause();
-    const b = await call(live, { [from]: ONE_WEEK[0], [to]: ONE_WEEK[1] });
-    await pause();
-    const ca = a.rows ? a.rows.length : null;
-    const cb = b.rows ? b.rows.length : null;
-    const read = ca !== null && cb !== null && ca !== cb;
-    console.log(`  ${(from + ' / ' + to).padEnd(44)} 1-day ${String(ca).padStart(5)}   7-day ${String(cb).padStart(5)}   ${
-      ca === null || cb === null ? `status ${a.status}/${b.status}` : read ? 'FILTER IS READ' : 'filter ignored (or genuinely equal)'}`);
-    if (read && !bestParams) bestParams = { from, to, sample: b.rows };
-  }
+  console.log('\n=== 5. Control: a report we KNOW returns rows ======================');
+  // Proves the credentials and this request shape are good, so an empty result
+  // above is about THIS report and not about how the probe is calling.
+  line('work_order_labor_summary 30d', await call(
+    { labor_performed_from: '2026-08-26', labor_performed_to: '2026-09-25' },
+    { report: 'work_order_labor_summary' }));
+  await pause();
+  line('work_order (no params)', await call({}, { report: 'work_order' }));
 
-  console.log('\n=== 3. Columns ====================================================');
-  const probe = bestParams ? bestParams.sample : (await call(live, {})).rows;
-  if (!probe || !probe.length) {
-    console.log('  No rows returned for the window tested, so the column list is unknown.');
-    console.log('  Re-run with a range known to contain billable work.');
+  console.log('\n=== 6. Columns, from whichever call returned the most rows =========');
+  // Re-run the widest window and read the schema off it.
+  const best = await call({ labor_performed_from: '2026-06-27', labor_performed_to: '2026-09-25' });
+  const probe = best.rows && best.rows.length ? best.rows : (bare.rows || []);
+  if (!probe.length) {
+    console.log('  Still no rows, so the column list is unknown.');
+    console.log('  Read section 1 first: if the unfiltered call is also empty, the report');
+    console.log('  is reachable but returns nothing to this credential — which points at');
+    console.log('  entity/property scope on the API user, not at the date parameters.');
     return;
   }
   // Union across rows: AppFolio omits empty columns per row, so the first row
@@ -180,10 +189,10 @@ async function call(report, body) {
     if (!cols.has(k)) cols.set(k, new Set());
     if (v !== null && v !== '') cols.get(k).add(typeof v);
   }));
-  console.log(`  ${probe.length} row(s); ${cols.size} distinct column(s):\n`);
+  console.log(`  ${probe.length} row(s); ${cols.size} column(s):\n`);
   [...cols.keys()].sort().forEach(k => console.log(`    ${k.padEnd(38)} ${[...cols.get(k)].join('|') || '(always empty)'}`));
 
-  console.log('\n=== 4. Do we get what we need? ====================================');
+  console.log('\n=== 7. Do we get what we need? ====================================');
   const have = new Set([...cols.keys()].map(norm));
   let missing = 0;
   WANTED.forEach(w => {
@@ -194,32 +203,8 @@ async function call(report, body) {
     if (!exact && !near) missing++;
   });
   console.log(`\n  ${WANTED.length - missing} of ${WANTED.length} needed columns present.`);
-  console.log('\n=== 5. Status filter ==============================================');
-  // The UI restricts to Work Done, Ready to Bill and Completed. work_order takes
-  // NUMERIC status codes under `work_order_statuses` (4 = Completed, 5 =
-  // Canceled, 7 = Completed No Need To Bill), so the same key is worth trying
-  // here — but only a row-count CHANGE proves it is read, for the same reason
-  // as the dates.
-  if (bestParams) {
-    const base = await call(live, { [bestParams.from]: ONE_WEEK[0], [bestParams.to]: ONE_WEEK[1] });
-    await pause();
-    const filtered = await call(live, {
-      [bestParams.from]: ONE_WEEK[0], [bestParams.to]: ONE_WEEK[1],
-      work_order_statuses: ['4'],
-    });
-    const cb = base.rows ? base.rows.length : null;
-    const cf = filtered.rows ? filtered.rows.length : null;
-    console.log(`  no status filter ${String(cb).padStart(5)}   work_order_statuses:['4'] ${String(cf).padStart(5)}   ${
-      cb === null || cf === null ? 'inconclusive' : cb !== cf ? 'READ' : 'ignored (or all rows share that status)'}`);
-  } else {
-    console.log('  Skipped — no working date filter to hold constant, so a count');
-    console.log('  difference could not be attributed to the status filter.');
-  }
-
-  console.log('\n=== SUMMARY =======================================================');
-  console.log(`  report name    : ${live}`);
-  console.log(`  needed columns : ${WANTED.length - missing} of ${WANTED.length}`);
-  if (bestParams) console.log(`  Date filter that works: ${bestParams.from} / ${bestParams.to}`);
-  else console.log('  WARNING: no date filter was confirmed to be read. A range we think we are');
-  console.log('  sending may be silently ignored, returning everything.');
+  console.log('\n  Date filter verdict — compare these counts:');
+  Object.entries(counts).forEach(([k, v]) => { if (v) console.log(`    ${k}: ${v}`); });
+  console.log('    Different counts across windows for one parameter pair = filter IS read.');
+  console.log('    Identical non-zero counts = filter ignored; we would window locally.');
 })().catch(e => { console.error('\nprobe failed:', e.message); process.exitCode = 1; });
