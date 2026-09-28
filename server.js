@@ -7849,18 +7849,65 @@ function billableEmailHtml(report) {
       </div>
     </td>`;
 
-  const flagged = (report.byProperty.monthly || []).filter(p => p.alert);
+  // WHAT THIS REPORT IS FOR. The old section listed properties over ten work
+  // orders, which is a volume measure — a busy property that is fully billed
+  // needs nothing done about it, and a quiet one sitting on $2,000 of unbilled
+  // labour is the reason anyone opens this email. Unbilled money is the
+  // actionable number, so that is what it leads with.
+  //
+  // Monthly is the window used: it is the widest of the three, so a balance
+  // that appears in Daily or Weekly appears here too, and quoting the same
+  // property from three periods would triple-count the same money.
+  const unbilled = (report.byProperty.monthly || [])
+    .filter(p => Number(p.unbilled) > 0)
+    .sort((a, b) => b.unbilled - a.unbilled);
+  const totalUnbilled = unbilled.reduce((a, p) => a + Number(p.unbilled || 0), 0);
+
+  // The line before anything else, naming the biggest balances. Three at most:
+  // a banner listing twelve properties is a table, and nobody reads a banner
+  // that long as urgent.
+  const attention = unbilled.slice(0, 3)
+    .map(p => `<div style="margin:2px 0">⚠️ <b>${esc(p.property)}</b>: ${money(p.unbilled)} unbilled (Monthly)</div>`)
+    .join('');
+
   return `<div style="font:14px system-ui;color:#111">
     <h2 style="margin:0 0 4px">Billable Labor Report</h2>
     <div style="color:#666;font-size:12px">Generated ${esc(report.generatedAt || '')} · business date ${esc(report.today || '')}</div>
+
+    ${unbilled.length ? `<div style="margin:14px 0;padding:10px 14px;border-left:3px solid #d97706;background:#fff7ed">
+      <div style="font:600 12px system-ui;color:#92400e;text-transform:uppercase;letter-spacing:.04em">Needs attention</div>
+      <div style="font:13px system-ui;color:#111;margin-top:6px">${attention}</div>
+      ${unbilled.length > 3 ? `<div style="font-size:12px;color:#92400e;margin-top:4px">and ${unbilled.length - 3} more below</div>` : ''}
+    </div>` : ''}
+
     <table style="border-collapse:collapse;margin:16px 0"><tr>
       ${card('Daily', report.summary.daily)}
       ${card('Weekly', report.summary.weekly)}
       ${card('Monthly', report.summary.monthly)}
     </tr></table>
-    ${flagged.length ? `<p style="margin:0 0 6px"><b>Properties over ${report.woAlertThreshold} work orders (monthly):</b></p>
-      <ul style="margin:0 0 16px">${flagged.map(p => `<li>${esc(p.property)} — ${p.workOrders} work orders, ${money(p.unbilled)} unbilled</li>`).join('')}</ul>`
-    : `<p style="color:#666">No property is over ${report.woAlertThreshold} work orders this month.</p>`}
+
+    ${unbilled.length
+    ? `<p style="margin:0 0 6px"><b>Properties with unbilled labor</b>
+         <span style="color:#666;font-weight:normal">— ${money(totalUnbilled)} across ${unbilled.length} ${unbilled.length === 1 ? 'property' : 'properties'} (Monthly)</span></p>
+       <table style="border-collapse:collapse;font:13px system-ui;margin:0 0 16px">
+         <tr style="color:#666;font-size:11px;text-transform:uppercase">
+           <td style="padding:4px 12px 4px 0">Property</td>
+           <td style="padding:4px 12px 4px 0;text-align:right">Unbilled</td>
+           <td style="padding:4px 12px 4px 0;text-align:right">Billed</td>
+           <td style="padding:4px 0;text-align:right">Work orders</td>
+         </tr>
+         ${unbilled.map(p => `<tr>
+           <td style="padding:3px 12px 3px 0;border-top:1px solid #eee">${esc(p.property)}</td>
+           <td style="padding:3px 12px 3px 0;border-top:1px solid #eee;text-align:right"><b>${money(p.unbilled)}</b></td>
+           <td style="padding:3px 12px 3px 0;border-top:1px solid #eee;text-align:right;color:#666">${money(p.billed)}</td>
+           <td style="padding:3px 0;border-top:1px solid #eee;text-align:right;color:#666">${p.workOrders}</td>
+         </tr>`).join('')}
+       </table>`
+    : `<p style="margin:0 0 16px;padding:10px 14px;border-left:3px solid #059669;background:#ecfdf5">
+         <b>All properties fully billed this period ✅</b>
+         <span style="color:#666"> — nothing is sitting unbilled.</span>
+       </p>`}
+
     <p style="color:#666;font-size:12px;margin-top:18px">
       Built from CSVs exported from AppFolio. Work Done and Ready to Bill cannot be
       pulled through the Reports API, which returns Completed work orders only.

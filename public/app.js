@@ -5683,16 +5683,9 @@ function blWireOnce() {
     }
   });
 
-  document.getElementById('bl-email')?.addEventListener('click', async () => {
-    const to = (blReport && blReport.recipients) || [];
-    if (!confirm('Email this report' + (to.length ? ' to ' + to.join(', ') : '') + '?')) return;
-    blSay('Sending …');
-    try {
-      const r = await api('/api/billable/email', { method: 'POST', body: {} });
-      blSay('Sent to ' + (r.sentTo || []).join(', '), 'ok');
-      await blLoadStatus();
-    } catch (e) { blSay(e.message, 'error'); }
-  });
+  // Both buttons open the preview. There is no direct send any more: this
+  // message goes to Lyndsay, and the cost of glancing at it first is a click.
+  document.getElementById('bl-email')?.addEventListener('click', blOpenPreview);
 }
 
 // What the file actually contained.
