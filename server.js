@@ -5594,30 +5594,78 @@ const leasingDateOnly = v => { if (v === '' || v == null) return null; const d =
 // Fetch a Reports-API report with the Reports credentials, following next_page_url
 // (same pagination as the evictions/delinquency sync). Returns the concatenated
 // result rows. Throws err.code = HTTP status on failure.
+// AppFolio allows 7 requests per 15 seconds. appfolio-client.js has enforced
+// that for years; this path never did — it paginated in a tight loop and
+// survived only because these reports fit in one or two pages. That is luck,
+// not design: if AppFolio shrinks the page size, the loop emits requests as
+// fast as the network allows and takes a 429 with nothing to catch it.
+//
+// It matters more now that a cron calls it. A manual sync failing is something
+// a person sees; a 05:30 sync failing is something nobody sees.
+//
+// 2200ms is 15/7 rounded up with a little room. It costs nothing on a
+// single-page report, which is every one of these today.
+const APPFOLIO_REPORTS_PAGE_PAUSE_MS = 2200;
+const APPFOLIO_REPORTS_MAX_RETRIES = 3;
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function appfolioReportsFetch(reportPath, body) {
   const id = process.env.APPFOLIO_REPORTS_CLIENT_ID, secret = process.env.APPFOLIO_REPORTS_CLIENT_SECRET;
   if (!id || !secret) { const e = new Error('AppFolio Reports API not configured — set APPFOLIO_REPORTS_CLIENT_ID and APPFOLIO_REPORTS_CLIENT_SECRET.'); e.code = 503; throw e; }
   const auth = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
   const pull = obj => Array.isArray(obj) ? obj : (obj?.results || obj?.data || []);
+
+  // One request, retried on 429 and on the 5xx that a rate limiter sometimes
+  // answers with instead. Anything else — 400, 401, 404 — is a real answer and
+  // is thrown at once: retrying a bad report name just spends the budget.
+  async function request(url, init, label) {
+    let wait = APPFOLIO_REPORTS_PAGE_PAUSE_MS;
+    for (let attempt = 0; ; attempt++) {
+      const resp = await fetchFn(url, init);
+      if (resp.ok) return resp.json().catch(() => null);
+
+      const retryable = resp.status === 429 || resp.status === 503 || resp.status === 502;
+      if (!retryable || attempt >= APPFOLIO_REPORTS_MAX_RETRIES) {
+        const j = await resp.json().catch(() => null);
+        const e = new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status}${label ? ' ' + label : ''}`);
+        e.code = resp.status;
+        throw e;
+      }
+      // Honour Retry-After when the server sends one; it knows better than we do.
+      const retryAfter = Number(resp.headers.get('retry-after'));
+      const delay = isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : wait;
+      console.warn(`[appfolio-reports] ${resp.status} on ${reportPath}${label ? ' ' + label : ''} — `
+        + `retry ${attempt + 1}/${APPFOLIO_REPORTS_MAX_RETRIES} in ${Math.round(delay / 100) / 10}s`);
+      await sleep(delay);
+      wait *= 2;
+    }
+  }
+
   const raw = [];
-  let resp = await fetchFn(`${APPFOLIO_REPORTS_BASE}${reportPath}`, { method: 'POST', headers: { Authorization: auth, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  let j = await resp.json().catch(() => null);
-  if (!resp.ok) { const e = new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status}`); e.code = resp.status; throw e; }
+  let j = await request(`${APPFOLIO_REPORTS_BASE}${reportPath}`, {
+    method: 'POST',
+    headers: { Authorization: auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, '');
   raw.push(...pull(j));
+
   let next = j && j.next_page_url, guard = 0;
   while (next && guard++ < 500) {
+    // Paced BEFORE the request, not after: the pause exists to space this call
+    // from the previous one, and sleeping afterwards would delay the return
+    // without protecting anything.
+    await sleep(APPFOLIO_REPORTS_PAGE_PAUSE_MS);
     // AppFolio returns next_page_url as a RELATIVE path (e.g. /api/v2/reports/…?
     // page=1); Node fetch can't parse a relative URL, so resolve it to absolute.
     const nextUrl = /^https?:\/\//i.test(next) ? next : APPFOLIO_REPORTS_BASE + next;
-    resp = await fetchFn(nextUrl, { headers: { Authorization: auth } });
-    j = await resp.json().catch(() => null);
-    if (!resp.ok) { const e = new Error((j && (j.error || j.message)) || `AppFolio returned ${resp.status} on a later page`); e.code = resp.status; throw e; }
+    j = await request(nextUrl, { headers: { Authorization: auth } }, `on page ${guard + 1}`);
     raw.push(...pull(j));
     next = j && j.next_page_url;
   }
+  if (guard >= 500) console.warn(`[appfolio-reports] ${reportPath} stopped at the 500-page guard`);
   return raw;
 }
-
 // Map one raw report row to a leasing_leads record (or null to skip). `propMap`
 // (property_id → property_name) resolves rows that arrive without a property name
 // (guest_card_inquiries often omits it); a row that still can't be attributed to a
