@@ -444,8 +444,10 @@ const LASTWEEK={
 // "MM/DD/YYYY, Call" followed by a timestamp/property/note -- these are counted and bucketed
 // by actual call date into lease-up weeks 1-10 (through the week ending 8/8), now recomputed
 // from the real guest_card_inquiries all-time export. NOTE: seeded under the old
-// Sun-Sat boundary; the 2026-09-21 realignment relabels these columns Mon-Sun
-// without re-deriving the seeded totals.
+// Sun-Sat boundary, relabelled Mon-Sun on 2026-09-21 and relabelled back to
+// Sun-Sat now. The seeded totals have never been re-derived through any of
+// those moves, so these ten columns are the original Sun-Sat buckets and the
+// labels finally agree with them again.
 const CALLS_BY_WEEK={
  "Ascent at Northgate":[38,27,24,25,61,101,47,47,12,13],
  "Windy Hill Apartment":[28,25,24,23,29,15,26,11,1,4],
@@ -793,16 +795,21 @@ const boardExcluded=n=>{ const s=String(n||"").toLowerCase(); return BOARD_EXCLU
 })();
 
 const PORT_CONV=0.130, CONV_BENCH=0.10, CANC_BENCH=0.05, DEN_BENCH=0.10, SLOWAPP_FLAG=0.10;
-// Monday 2026-06-01. Weeks run Mon-Sun; week_ending is the Sunday.
+// Sunday 2026-05-31. Weeks run Sun-Sat; week_ending is the SATURDAY.
 //
-// This line previously read "Sunday -- weeks run Sun-Sat to match AppFolio's own
-// reporting convention". That was a wrong assumption and it drove the whole
-// module: checked with Lyndsay on 2026-09-21, AppFolio has NO fixed week
-// convention (its leasing reports are arbitrary ranges — Last 30 Days,
-// Month-to-date), and the team works Mon-Sun. Sun-Sat also left leasing as the
-// only module out of step with the rest of the dashboard, which already starts
-// its weeks on Monday.
-const START=new Date(2026,5,1);
+// This is the third labelling of these weeks: Mon-Sun originally, Sun-Sat on a
+// claim that it matched AppFolio's convention, Mon-Sun again on 2026-09-21 when
+// that claim proved wrong, and Sun-Sat here by Lyndsay's decision. AppFolio has
+// no fixed week either way — its leasing reports are arbitrary ranges (Last 30
+// Days, Month-to-date) — so this is a choice about how the leasing team works.
+//
+// Leasing is now the only module in this dashboard on a Sunday start; the 6 PM
+// report, End of Day, tasks and call analytics all begin their week on Monday.
+//
+// NOT new Date('2026-05-31'). A date-only string is parsed as UTC midnight, so
+// west of UTC it renders as the 30th — a Saturday — and every column label on
+// this board would be a day early. The numeric form is local midnight.
+const START=new Date(2026,4,31);   // month is 0-based: 4 = May
 const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 
 const FUNNEL=[
@@ -978,7 +985,10 @@ function viewLabel(){
 }
 
 /* ============ WEEK HELPERS ============ */
-function mondayOf(weekIdx){ const d=new Date(START.getTime()); d.setDate(d.getDate()+weekIdx*7); return d; } // the MONDAY starting that week — the name is accurate again after the 2026-09-21 Mon-Sun realignment
+// The SUNDAY that starts week N. Renamed from mondayOf with the return to
+// Sun-Sat — this file has renamed it each time the boundary moved, and a
+// helper whose name disagrees with its result is worse than no helper.
+function sundayOf(weekIdx){ const d=new Date(START.getTime()); d.setDate(d.getDate()+weekIdx*7); return d; }
 function weekEndDate(weekIdx){
   // In live mode the injected column carries its real AppFolio week-ending date,
   // which may differ from START + weekIdx (e.g. a current week appended past the
@@ -986,7 +996,8 @@ function weekEndDate(weekIdx){
   if(LIVE_MODE && LIVE_COL!==null && weekIdx===LIVE_COL && LIVE_WEEK_ENDING){
     return new Date(LIVE_WEEK_ENDING+"T00:00:00");
   }
-  const d=mondayOf(weekIdx); d.setDate(d.getDate()+6); return d;
+  // +6 from Sunday = the Saturday that closes the week.
+  const d=sundayOf(weekIdx); d.setDate(d.getDate()+6); return d;
 }
 function weekEndMD(weekIdx){ return fmtMD(weekEndDate(weekIdx)); }
 function isoOf(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,"0"), day=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}`; }
@@ -994,13 +1005,13 @@ function fmtMD(d){ return `${d.getMonth()+1}/${d.getDate()}`; }
 function weekKeyList(){
   const n=Math.max(settings.wk,8);
   const keys=[];
-  for(let i=0;i<n;i++) keys.push(isoOf(mondayOf(i)));
+  for(let i=0;i<n;i++) keys.push(isoOf(sundayOf(i)));
   Object.keys(mkt).forEach(k=>{ if(!keys.includes(k)) keys.push(k); });
   return keys;
 }
 function weekLabelForKey(key){
   const n=Math.max(settings.wk,8);
-  for(let i=0;i<n;i++){ if(isoOf(mondayOf(i))===key) return `Week ${i+1} · ${fmtMD(mondayOf(i))}`; }
+  for(let i=0;i<n;i++){ if(isoOf(sundayOf(i))===key) return `Week ${i+1} · ${fmtMD(sundayOf(i))}`; }
   const d=new Date(key+"T00:00:00");
   return `Week · ${fmtMD(d)}`;
 }
@@ -1247,7 +1258,7 @@ function sumActuals(p,k){
 
 /* ============ RENDER: MARKETING ============ */
 function renderMarketing(){
-  if(!curWeekKey) curWeekKey=isoOf(mondayOf(0));
+  if(!curWeekKey) curWeekKey=isoOf(sundayOf(0));
   const sel=document.getElementById("weekSelect");
   const keys=weekKeyList();
   sel.innerHTML=keys.map(k=>`<option value="${k}" ${k===curWeekKey?"selected":""}>${weekLabelForKey(k)}</option>`).join("");
@@ -1825,7 +1836,7 @@ function bindTopButtons(){
   document.getElementById("btnClear").addEventListener("click",()=>{
     if(!confirm("This will clear all actuals, promos, marketing plan, Facebook links, and the concessions log. Continue?")) return;
     actuals={}; promo={}; mkt={}; fbLinks={}; CONC=[];
-    curWeekKey=isoOf(mondayOf(0));
+    curWeekKey=isoOf(sundayOf(0));
     scheduleSave();
     render();
   });
@@ -1940,7 +1951,7 @@ async function init(){
     fbSeedApplied3=true;
     scheduleSave();
   }
-  curWeekKey=isoOf(mondayOf(0));
+  curWeekKey=isoOf(sundayOf(0));
   bindControlsOnce();
   bindNarrativeOnce();
   renderNarrative();
@@ -1999,7 +2010,7 @@ window.getLeasingPayload = function(){
    Everything referenced is in scope inside this IIFE. */
 function weekIdxForEnding(weekEndingISO){
   var end=new Date(weekEndingISO+"T00:00:00");
-  var w0=mondayOf(0); w0.setDate(w0.getDate()+6); // native SUNDAY closing week 0 (Mon + 6)
+  var w0=sundayOf(0); w0.setDate(w0.getDate()+6); // native SUNDAY closing week 0 (Mon + 6)
   return Math.round((end - w0)/(7*24*3600*1000));
 }
 function liveNarrative(){

@@ -5482,50 +5482,110 @@ const leasingVal = (row, key) => {
   return (v === undefined || v === null || String(v).trim() === '') ? null : v;
 };
 
-// week_ending = the SUNDAY closing the Mon–Sun week a date falls in.
+// ---- Central-time date helpers ---------------------------------------------
 //
-// Leasing ran Sun–Sat until 2026-09-21, on the strength of a comment in the Goal
-// Board tool asserting that matched "AppFolio's own reporting convention".
-// Checked with Lyndsay: AppFolio has no fixed week at all — its leasing reports
-// are arbitrary ranges (Last 30 Days, Month-to-date) — and the team works
-// Mon–Sun. The assumption was wrong, and Sun–Sat also made leasing the only
-// module out of step with the dashboard: the 6 PM report, End of Day, tasks and
-// call analytics all compute -((getDay() + 6) % 7), a Monday start.
-//
-// (7 - getDay()) % 7 leaves a Sunday on itself and pushes Mon–Sat forward to the
-// Sunday that closes their week.
-function leasingWeekEnding(d) {
-  const dt = (d instanceof Date) ? d : new Date(d);
-  if (isNaN(dt.getTime())) return null;
-  const day = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
-  day.setDate(day.getDate() + ((7 - day.getDay()) % 7)); // 0=Sun..6=Sat -> forward to Sunday
-  return day.toLocaleDateString('en-CA');
+// Every date in this module is a BUSINESS date in America/Chicago, not an
+// instant. Render runs UTC, so after 7pm Central `new Date()` is already
+// tomorrow there — enough to roll a week over a day early every week. These
+// four keep the arithmetic on YYYY-MM-DD strings, where a day is a day and no
+// timezone can shift one.
+
+// An instant (Date or ISO string) as the calendar date it falls on in Chicago.
+function toChicagoYMD(value) {
+  const d = (value instanceof Date) ? value : new Date(value);
+  if (isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
 }
-// week_ending of the most recent COMPLETE Mon–Sun week: the latest Sunday
+
+// Day of week of a YYYY-MM-DD, 0 = Sunday .. 6 = Saturday.
+// Read through UTC deliberately: `new Date('2026-09-20T00:00:00')` is local
+// midnight, and on a machine behind UTC that is the 19th.
+function dowYMD(ymd) {
+  const d = ymdToUTC(ymd);
+  return d ? d.getUTCDay() : null;
+}
+
+// A YYYY-MM-DD to a UTC Date, or null if it is not a real calendar date.
+//
+// The shape check alone is not enough: "2026-13-45" matches \d{4}-\d{2}-\d{2},
+// and Date.UTC(2026, 12, 45) rolls over into a perfectly valid day in 2027 —
+// so a typo would have produced a confident, wrong week instead of nothing.
+// Comparing the parts back is what catches it.
+function ymdToUTC(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3]) return null;
+  return d;
+}
+
+// Add (or subtract) whole days to a YYYY-MM-DD and get a YYYY-MM-DD back.
+function addDaysYMD(ymd, n) {
+  const d = ymdToUTC(ymd);
+  if (!d) return null;
+  d.setUTCDate(d.getUTCDate() + Number(n || 0));
+  return d.toISOString().slice(0, 10);
+}
+
+// The instant midnight Central begins on a given calendar date, as an ISO
+// string — for querying timestamptz columns by a Central day.
+//
+// The offset is DERIVED for that date rather than assumed: Chicago is UTC-5 in
+// summer and UTC-6 in winter, and hardcoding either puts an hour of leads in
+// the wrong week twice a year.
+function chicagoStartOfDayISO(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
+  if (!m || !ymdToUTC(ymd)) return null;
+  const guess = Date.UTC(+m[1], +m[2] - 1, +m[3], 12, 0, 0);   // midday avoids the DST edge
+  const asChicago = new Date(guess).toLocaleString('en-US', { timeZone: 'America/Chicago', hour12: false });
+  const asUTC = new Date(guess).toLocaleString('en-US', { timeZone: 'UTC', hour12: false });
+  const offsetMs = Date.parse(asUTC) - Date.parse(asChicago);   // +5h or +6h
+  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 0, 0, 0) + offsetMs).toISOString();
+}
+
+// ---- Leasing weeks: Sunday–Saturday ----------------------------------------
+//
+// week_ending = the SATURDAY closing the Sun–Sat week a date falls in.
+//
+// This is the THIRD labelling of these weeks. They were Mon–Sun, moved to
+// Sun–Sat on a claim that it matched AppFolio's convention, moved back to
+// Mon–Sun on 2026-09-21 when that claim turned out to be wrong, and return to
+// Sun–Sat here by Lyndsay's decision. AppFolio still has no fixed week — its
+// leasing reports are arbitrary ranges — so this is a choice about how the
+// leasing team works, not a technical constraint.
+//
+// Worth knowing: leasing is now the only module here on a Sunday start. The
+// 6 PM report, End of Day, tasks and call analytics all compute
+// -((getDay() + 6) % 7), a Monday start. A week-over-week comparison between
+// leasing and any of those is comparing different seven-day windows.
+//
+// (6 - dow) leaves a Saturday on itself and pushes Sun–Fri forward to the
+// Saturday that closes their week.
+function leasingWeekEnding(d) {
+  const ymd = (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) ? d : toChicagoYMD(d);
+  if (!ymd) return null;
+  const dow = dowYMD(ymd);
+  return addDaysYMD(ymd, (6 - dow) % 7);
+}
+
+// week_ending of the most recent COMPLETE Sun–Sat week: the latest Saturday
 // strictly before today.
 //
-// The Portfolio Roll-Up used leasingWeekEnding(new Date()), which is the
-// closing day of the week we are CURRENTLY IN — a week that has not happened yet.
-// Reported by Katie on Monday 2026-09-21, when the roll-up read 09/20 → 09/26:
-// a range that was one day old and five days in the future, so the table was
-// near-empty every Sunday through Saturday until the week filled in.
+// On a Saturday this deliberately returns the PREVIOUS week rather than the one
+// ending today: at 9am Saturday the week is not over, and a roll-up counting a
+// partial day looks like a collapse in performance. The week selector still
+// reaches any week, including the one in progress.
 //
-// On a Sunday this deliberately returns the PREVIOUS week rather than the one
-// ending today: at 9am Sunday the week is not over, and a roll-up that counts
-// a partial day looks like a collapse in performance. The week selector still
-// reaches any week, including the in-progress one.
-//
-// Computed in Lyndsay's timezone, not the server's. Render runs UTC, so after
-// 7pm Central `new Date()` is already tomorrow there — enough to roll the week
-// over a day early every Sunday evening.
+// The original bug this guards, reported by Katie on Monday 2026-09-21: the
+// Portfolio Roll-Up used the week we are CURRENTLY IN, so the table was
+// near-empty for most of every week until it filled in.
 function leasingLastCompleteWeekEnding(nowIso) {
   const today = nowIso || ctDateStr(0);            // YYYY-MM-DD in America/Chicago
-  const d = new Date(today + 'T00:00:00');
-  // Days back to the last Sunday that has finished. On a Sunday go back a full
-  // week rather than counting today, which is still in progress.
-  const back = d.getDay() === 0 ? 7 : d.getDay();   // 0=Sun..6=Sat
-  d.setDate(d.getDate() - back);
-  return d.toLocaleDateString('en-CA');
+  const dow = dowYMD(today);
+  if (dow === null) return null;
+  // Sat (6) -> back a full week; otherwise back to the Saturday just gone.
+  const back = dow === 6 ? 7 : dow + 1;
+  return addDaysYMD(today, -back);
 }
 
 const leasingTruthy = v => v === true || v === 'true' || v === 'Yes' || v === 'yes' || v === 'Y' || v === 1 || v === '1';
@@ -5605,6 +5665,15 @@ function leasingRowFromReport(r, propMap = {}) {
     status: leasingVal(r, F.status),
     lead_type: leasingVal(r, F.lead_type),
     property_id: propIdStr,
+    // PERSISTED, not just used and thrown away.
+    //
+    // "Traffic = First Contact Date" (Lyndsay 2026-09-15) decides which week a
+    // lead belongs to, but the date itself was never stored — so every later
+    // change to the week rule had to re-derive it from interest_received and
+    // silently lost the distinction for exactly the rows where the two differ.
+    // Stored as the CENTRAL calendar date: a lead first contacted at 8pm
+    // Central belongs to that day, not to the UTC tomorrow.
+    first_contact_date: trafficValid ? toChicagoYMD(trafficDate) : null,
     week_ending: trafficValid ? leasingWeekEnding(trafficDate) : (interestIso ? leasingWeekEnding(interestDate) : null),
     synced_at: new Date().toISOString(),
   };
@@ -5836,24 +5905,30 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
   }
   try {
     const db = supabaseAdmin || supabasePublic;
-    // Over-fetch the leads window by a day on each side in UTC, then narrow to
-    // the exact Central days below. Converting a Central date to a UTC instant
-    // in a PostgREST filter would need the DST offset for that date; padding and
-    // filtering here is exact and costs nothing at this table's size.
-    // Pad two whole days each side in UTC. Two, not one, and computed per end
-    // rather than by comparing the date to weekStart — that earlier form had two
-    // bugs: a single-day range made both ends take the start branch and padded
-    // BACKWARDS, returning nothing; and a one-day pad at 00:00Z cut off the last
-    // five hours of the final Central day, losing any lead that arrived after
-    // 7pm. The exact narrowing happens in JS below, so over-padding is free.
-    const padDays = (day, n) => {
-      const x = new Date(day + 'T00:00:00Z');
-      x.setUTCDate(x.getUTCDate() + n);
-      return x.toISOString();
-    };
+    // The over-fetch-and-pad approach this replaces is gone: chicagoStartOfDayISO
+    // derives the real DST offset for the date, so the bounds are exact and
+    // there is nothing to pad around.
+
+    // Traffic is FIRST CONTACT DATE, so the window is filtered on it — with
+    // interest_received as the fallback for rows synced before that column
+    // existed. One .or() rather than two round trips:
+    //
+    //   first_contact_date within the range
+    //   OR (first_contact_date is null AND interest_received within it)
+    //
+    // The timestamp bounds are real Central instants from chicagoStartOfDayISO,
+    // not a date string: comparing a timestamptz to '2026-09-20' makes Postgres
+    // read it as UTC midnight, which drops the last five hours of the previous
+    // Central day and picks up five of the next.
+    const fromInstant = chicagoStartOfDayISO(weekStart);
+    const toInstant = chicagoStartOfDayISO(addDaysYMD(weekEnd, 1));   // exclusive upper bound
+    const leadsFilter = [
+      `and(first_contact_date.gte.${weekStart},first_contact_date.lte.${weekEnd})`,
+      `and(first_contact_date.is.null,interest_received.gte.${fromInstant},interest_received.lt.${toInstant})`,
+    ].join(',');
+
     const [leadsRes, occRes, showRes, appRes, lhRes] = await Promise.all([
-      db.from('leasing_leads').select('*')
-        .gte('interest_received', padDays(weekStart, -2)).lte('interest_received', padDays(weekEnd, 2)).limit(10000),
+      db.from('leasing_leads').select('*').or(leadsFilter).limit(10000),
       db.from('leasing_occupancy').select('*').limit(10000),
       db.from('leasing_showings').select('property_name,property_id,showing_date,status').gte('showing_date', weekStart).lte('showing_date', weekEnd).limit(10000),
       db.from('leasing_applications').select('property_name,property_id,application_date,status').gte('application_date', weekStart).lte('application_date', weekEnd).limit(10000),
@@ -5863,12 +5938,20 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
     if (occRes.error) throw new Error(occRes.error.message);
     // The 3 Phase-5 tables may not exist yet (migration 040 not run) — treat
     // their errors as empty rather than failing the whole board.
-    // Narrow the padded fetch to the exact Central days requested. This is the
-    // line that makes an arbitrary range exact — a lead that arrived 7:27pm
-    // Central on the last day is inside the range even though its UTC timestamp
-    // reads as the following day.
+    // Narrow to the exact Central days requested, on the SAME date the SQL
+    // filter used. Keying this off interest_received alone would discard every
+    // row whose first contact is inside the window but whose interest_received
+    // is not — which is precisely the set first_contact_date exists to capture.
+    //
+    // It still runs even though the query is now filtered: first_contact_date
+    // is a date and needs no narrowing, but the interest_received fallback is a
+    // timestamp, and a lead that arrived 7:27pm Central on the last day reads
+    // as the following day in UTC.
+    const leadDay = l => l.first_contact_date
+      ? String(l.first_contact_date).slice(0, 10)
+      : leasingCentralDay(l.interest_received);
     const leads = (leadsRes.data || []).filter(l => {
-      const day = leasingCentralDay(l.interest_received);
+      const day = leadDay(l);
       return day && day >= weekStart && day <= weekEnd;
     });
     const occ = occRes.data || [];
