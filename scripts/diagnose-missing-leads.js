@@ -15,22 +15,23 @@
 //
 // RUN ON RENDER SHELL: the AppFolio credentials live there.
 //
-// THE QUESTION. 185 of the 648 rows in leasing_leads did not come back in the
-// 2026-09-28 full pull, including 8 that sit in the week ending 09/26. Their
-// neighbours by guest_card_id DID come back (8877 is missing, 8878 and 8879
-// arrived), so it is not a cut-off, a page boundary or a date filter. They are
-// all status=Active in our copy, across several properties and sources.
+// THE QUESTION, AND ITS ANSWER. 185 of the 648 rows in leasing_leads did not
+// come back in the 2026-09-28 full pull, including 8 in the week ending 09/26.
+// Their neighbours by guest_card_id DID come back (8877 missing, 8878 and 8879
+// present), so it was never a cut-off, a page boundary or a date filter.
 //
-// That leaves three possibilities this script tries to separate:
+// ANSWERED 2026-09-28 from the AppFolio UI: all 8 exist and are INACTIVE — "No
+// Longer Interested", "No Response", "Other". Nothing was merged or deleted.
+// guest_card_inquiries returns active cards only, so a card going inactive
+// simply stops appearing. The week is 68 and the Goal Board is right.
 //
-//   a) they converted — became a rental application or a lease, and the
-//      inquiries report only carries cards that are still inquiries
-//   b) they were merged into another card as duplicates, so their UUID is gone
-//   c) they were deleted
-//
-// It matters because the Goal Board is publishing 68 for that week. If those 8
-// were merged or deleted, the honest figure is 60. If they merely converted,
-// they are real traffic and 68 stands.
+// THIS SCRIPT'S OUTPUT MUST BE READ IN THAT LIGHT. Absence from the report is
+// the NORMAL fate of an inactive card, not evidence of anything. An earlier
+// version of this file printed "-> merged or deleted" next to a missing card,
+// which stated a conclusion the data never supported and sent two rounds of
+// investigation down the wrong path. A merge has to be shown positively — by a
+// twin carrying the same name, or an inactive_reason that names the surviving
+// card — and section 3 is what looks for that.
 
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
@@ -223,7 +224,9 @@ const showStatus = (row, keys) => keys.map(k => `${k}=${JSON.stringify(maskValue
     const hit = byUuid.get(String(m.appfolio_id)) || byId.get(String(m.guest_card_id));
     console.log(`  ${String(m.guest_card_id).padStart(5)}  ${String(m.property).padEnd(22)} ${String(m.name).slice(0, 24).padEnd(26)}`);
     if (!hit) {
-      console.log('         NOT PRESENT in the guest_cards report at all -> merged or deleted');
+      // NOT a conclusion. The report carries active cards only, so this is what
+      // an inactive card looks like from here — and inactive is the common case.
+      console.log('         not in report (likely inactive; the report returns active cards only)');
       continue;
     }
     // maskRow, not JSON.stringify: without it this line dumps the entire
@@ -290,13 +293,20 @@ const showStatus = (row, keys) => keys.map(k => `${k}=${JSON.stringify(maskValue
 
   // ---- what it adds up to --------------------------------------------------
   console.log('\n=== READING THIS ========================================================');
-  console.log('  "NOT PRESENT" for most of the 8      -> merged or deleted. The week is 60,');
-  console.log('                                          not 68, and the Goal Board is high.');
-  console.log('  present with an inactive/closed flag -> they converted or went cold. 68 is');
-  console.log('                                          right; the sync just needs to ask');
-  console.log('                                          for inactive cards too.');
-  console.log('  present with nothing unusual         -> the report is not deterministic,');
-  console.log('                                          which is a question for AppFolio.');
+  console.log('  Established 2026-09-28: guest_card_inquiries returns ACTIVE cards only, and');
+  console.log('  the 8 from the week ending 09/26 are all present in AppFolio and inactive.');
+  console.log('  So "not in report" is the expected state of an inactive card and proves');
+  console.log('  nothing on its own. Read the output as:');
+  console.log('');
+  console.log('  not in report               -> almost certainly inactive. Expected. It does');
+  console.log('                                 NOT mean merged or deleted.');
+  console.log('  a twin with the same name   -> the one real sign of a merge. Worth opening');
+  console.log('     or an inactive_reason       both cards in AppFolio before concluding.');
+  console.log('     naming another card');
+  console.log('  present and unremarkable    -> it came back this time; nothing to explain.');
+  console.log('');
+  console.log('  The count to trust is the one in Supabase. A lead that went inactive was');
+  console.log('  still traffic in the week it arrived.');
   console.log('\n  Nothing was written. Supabase and AppFolio are both untouched.');
   console.log('  Emails, phones and free text are masked; names are intentionally not.');
 })().catch(e => { console.error('\nfailed:', e.message); process.exitCode = 1; });
