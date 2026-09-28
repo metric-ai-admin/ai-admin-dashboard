@@ -5809,6 +5809,43 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
     const received = rows.length;
     const kept = rows.filter(inRange);
     const outOfRange = received - kept.length;
+
+    // Stamp EVERYTHING the report returned, not just what we write.
+    //
+    // That distinction is the whole value of the column. The report carries
+    // active cards only, so "came back in this pull" is the closest thing we
+    // have to "still active in AppFolio" — and it is the rows OUTSIDE the range
+    // that make it useful, since those are the ones nothing else touches.
+    // Stamping only the 60 we write would mark 403 rows as unseen when they
+    // were seen.
+    //
+    // An UPDATE of one column rather than an upsert of whole rows: the range
+    // filter exists to stop rewriting history, and this must not undo it.
+    //
+    // Chunks of 100. PostgREST puts `in` lists in the QUERY STRING and these
+    // are 36-character UUIDs, so 463 at once builds a ~17KB URL and the fetch
+    // is rejected outright with an unhelpful "TypeError: fetch failed" — the
+    // same wall the image rescue hit at 200 ids.
+    const seenAt = new Date().toISOString();
+    let stamped = 0;
+    const allIds = rows.map(r => r.appfolio_id).filter(Boolean);
+    for (let i = 0; i < allIds.length; i += 100) {
+      const ids = allIds.slice(i, i + 100);
+      const { error } = await db.from('leasing_leads')
+        .update({ last_seen_in_report: seenAt }).in('appfolio_id', ids);
+      if (error) {
+        // A missing column means migration 065 has not run. Say so plainly and
+        // carry on — the sync itself is still correct without the stamp, and
+        // failing the whole pull over a bookkeeping column would be worse.
+        if (/last_seen_in_report/.test(error.message)) {
+          console.warn('[leasing-sync] last_seen_in_report not stamped — run '
+            + 'supabase/migrations/065_leasing_last_seen_in_report.sql');
+          break;
+        }
+        throw new Error('last_seen_in_report: ' + error.message);
+      }
+      stamped += ids.length;
+    }
     if (outOfRange) {
       console.log(`[leasing-sync] ${received} received, ${kept.length} within ${date_from}..${date_to}, `
         + `${outOfRange} outside it and NOT written (source=${source})`);
@@ -5823,7 +5860,7 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
     }
     // `received` and `out_of_range` are reported, not just logged: a sync that
     // quietly discards 87% of what it was handed should say so on screen.
-    res.json({ ok: true, synced, received, out_of_range: outOfRange, excluded, date_from, date_to, source });
+    res.json({ ok: true, synced, received, out_of_range: outOfRange, seen: stamped, excluded, date_from, date_to, source });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Leasing sync failed: ' + err.message });
   }
