@@ -12221,6 +12221,14 @@ async function eodGather() {
     };
   } catch (e) { S.delinquency = { error: e.message }; }
 
+  // The 05:30 leasing sync, read from the file the cron writes. Absent on a
+  // first run and on a service that has never run it — reported as "has not
+  // run yet" rather than as a failure, because those are different things.
+  try {
+    const st = await readJSON(LEASING_SYNC_STATE, null);
+    S.leasingSync = st || { error: 'has not run yet (no state file)' };
+  } catch (e) { S.leasingSync = { error: e.message }; }
+
   // 5 — MAINTENANCE (AppFolio work orders + labor)
   try {
     const [woR, laborR] = await Promise.all([
@@ -12472,6 +12480,21 @@ function eodRenderHtml(data) {
       : '';
     return `${c.graded} graded overnight${day} · ${c.total} scored${ns}`;
   };
+  // The 05:30 leasing sync. Last, and short: it is plumbing, and it only earns
+  // attention when it breaks. But it has to be HERE — a cron whose only trace
+  // is a log line nobody opens fails quietly for weeks, which is exactly how
+  // the leasing week stayed wrong for as long as it did.
+  const ls = S.leasingSync;
+  if (ls) {
+    const stale = ls.at && (Date.now() - Date.parse(ls.at)) > 36 * 3600 * 1000;
+    P.push(eodSectionHtml('🔄', 'Leasing sync (05:30)',
+      ls.error ? eodErr(ls.error)
+        : stale ? eodErr(`Last ran ${eodEsc(String(ls.at).slice(0, 16).replace('T', ' '))} — over a day ago. The cron may not be running.`)
+          : `${ls.received} received, <b>${ls.in_range}</b> in range for ${eodEsc(ls.date_from)} → ${eodEsc(ls.date_to)}`
+            + (ls.out_of_range ? ` · ${ls.out_of_range} outside it` : ''),
+      ''));
+  }
+
   P.push(eodSectionHtml('📞', 'Call Analyzer',
     c2.error ? eodErr(c2.error) : callsSummary(c2),
     (c2.agents && c2.agents.length ? eodTable(['Agent', 'Calls', 'Avg', 'F'], c2.agents.map(a => [eodEsc(a.agent), a.calls, a.avg, a.f])) : '')
@@ -12742,6 +12765,76 @@ app.post('/api/reports/eod-email/send', requireAuth, requireRole('admin'), async
 // rows. Failure is logged and swallowed — eodGather already reports the report
 // as stale rather than printing a zero, so a failed sync degrades to an honest
 // "not synced today" instead of a wrong number.
+// Leasing guest cards, early, so the day's leads are captured before anyone
+// starts marking them inactive.
+//
+// WHY IT EXISTS. guest_card_inquiries returns ACTIVE cards only (established
+// 2026-09-28). A lead an agent marks "No Longer Interested" on Tuesday is gone
+// from the report on Wednesday, and if we never pulled it on Monday it is gone
+// from our numbers too — the week silently loses traffic that really happened.
+//
+// 05:30 Central: after the 02:00 auto-grade and well before the 08:00 inbox
+// job, and twelve hours from the 17:45 wo_completed pull, which goes through
+// the OTHER AppFolio credential and its own 7-per-15s limiter. Nothing to
+// collide with either way.
+//
+// A SEVEN DAY WINDOW, not one. A lead that arrives Friday evening may not
+// surface until Monday, and a one-day window loses it permanently. With the
+// range filter in place seven days writes seven days — roughly 60-80 rows,
+// not the 463 the report hands over.
+//
+// The timezone is passed explicitly, as it is for every other cron here.
+// Render runs UTC: without it this would fire at 05:30 UTC, which is 00:30
+// Central in summer and 23:30 the previous day in winter — and it would MOVE
+// by an hour twice a year while looking like it had not changed.
+const LEASING_SYNC_WINDOW_DAYS = 7;
+// Where the last run is recorded, so the EOD can report it.
+const LEASING_SYNC_STATE = path.join(DATA_DIR, 'leasing_sync_state.json');
+
+async function leasingCronSync() {
+  const todayCT = ctDateStr(0);
+  const fromCT = (() => {
+    const d = new Date(todayCT + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - LEASING_SYNC_WINDOW_DAYS);
+    return d.toISOString().slice(0, 10);
+  })();
+  const r = await callOwnRoute('/api/leasing/sync', { date_from: fromCT, date_to: todayCT });
+  const summary = {
+    at: new Date().toISOString(),
+    date_from: fromCT,
+    date_to: todayCT,
+    received: r.received ?? null,
+    in_range: r.synced ?? null,
+    out_of_range: r.out_of_range ?? null,
+    seen: r.seen ?? null,
+    source: r.source || null,
+    error: null,
+  };
+  // Written where the EOD can read it. A cron whose only trace is a log line
+  // fails silently for weeks — which is how the leasing week itself went wrong
+  // for as long as it did.
+  await writeJSON(LEASING_SYNC_STATE, summary);
+  return summary;
+}
+
+cron.schedule('30 5 * * *', () => {
+  if (!CRM_CONFIGURED) return;
+  leasingCronSync()
+    .then(s => logLine(`[leasing-sync] ${s.received} received, ${s.in_range} in range, `
+      + `${s.out_of_range} outside ${s.date_from}..${s.date_to}, ${s.seen} stamped (source=${s.source})`))
+    .catch(async err => {
+      logLine(`[leasing-sync] FAILED: ${err.message}`);
+      // Recorded, not just logged: the EOD reads this file, and a failure that
+      // only reaches the log is a failure nobody reads.
+      try {
+        await writeJSON(LEASING_SYNC_STATE, {
+          at: new Date().toISOString(), error: err.message,
+          received: null, in_range: null, out_of_range: null, seen: null,
+        });
+      } catch { /* the log line already carries it */ }
+    });
+}, { timezone: LYNDSAY_TIMEZONE });
+
 cron.schedule('45 17 * * *', () => {
   require('./appfolio-reports.js').syncReport('wo_completed')
     .then(r => logLine(`[wo-completed-sync] ${r?.rowCount ?? '?'} rows`))
