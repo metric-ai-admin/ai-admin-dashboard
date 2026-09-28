@@ -817,10 +817,17 @@ async function leasingSyncFromAppFolio() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ date_from: from, date_to: to }),
     });
-    toast(`Synced ${r.synced} leads ✅`, 'success');
+    // Dos cifras, no una. "Synced 463" para una semana de 60 llevó a pensar
+    // que la semana tenía 463: AppFolio ignora el filtro de fechas y devuelve
+    // el histórico entero, así que lo recibido y lo que cae en el rango son
+    // números distintos y ambos importan.
+    const gotMsg = r.received != null && r.received !== r.synced
+      ? `${r.received} received, ${r.synced} in range`
+      : `${r.synced} leads`;
+    toast(`Synced — ${gotMsg} ✅`, 'success');
     // Interim, replaced below once the board has loaded — the reloads take a
     // moment and an empty status bar reads like nothing happened.
-    if (status) status.textContent = `Synced ${r.synced} leads for ${from} → ${to}. Loading week…`;
+    if (status) status.textContent = `Synced — ${gotMsg} for ${from} → ${to}. Loading week…`;
     // The Roll-Up shows the range EXACTLY as picked. This used to map the range
     // onto its dominant week, which was the right answer only while the
     // API could not do better — syncing 09/14 → 09/20 then reported the week
@@ -841,7 +848,8 @@ async function leasingSyncFromAppFolio() {
     const gb = $('#leasing-gb-week'); if (gb) gb.value = '';
     leasingLoadLeads({ date_from: from, date_to: to });
     if (status) {
-      status.textContent = `Synced ${r.synced} leads for ${from} → ${to}. `
+      status.textContent = `Synced — ${gotMsg} for ${from} → ${to}. `
+        + (r.out_of_range ? `${r.out_of_range} row(s) outside the range were not written. ` : '')
         + `Roll-Up showing that exact range.`
         + (spans > 1 ? ` The weekly Goal Board below shows week ending ${syncedWeek}.` : '');
     }

@@ -5737,14 +5737,45 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
       rows.push(rec);
     }
     if (excluded) console.log(`[leasing-sync] excluded ${excluded} row(s) with no resolvable property (source=${source})`);
+
+    // APPFOLIO IGNORES THE DATE FILTER, so we apply it ourselves.
+    //
+    // Measured on 2026-09-28: a sync for 09/20–09/26 came back with 463 rows
+    // spanning 2026-06-28 → 2026-09-28 — only 60 of them inside the week. It is
+    // not that the report filtered on some OTHER date either; first_contact_date,
+    // interest_received and last_activity_date were each ~13% inside the range,
+    // so no filter was applied at all. Same behaviour as `status` on the
+    // work_order report: an unrecognised parameter is dropped in silence rather
+    // than rejected.
+    //
+    // Without this, every sync rewrites the whole history to update one week —
+    // and the toast says "463 leads" for a week that has 60.
+    //
+    // Keyed on first_contact_date because that is what Traffic means (Lyndsay
+    // 2026-09-15), falling back to the Central day of interest_received for
+    // rows where the report omits it.
+    const inRange = rec => {
+      const day = rec.first_contact_date || toChicagoYMD(rec.interest_received);
+      return !!day && day >= date_from && day <= date_to;
+    };
+    const received = rows.length;
+    const kept = rows.filter(inRange);
+    const outOfRange = received - kept.length;
+    if (outOfRange) {
+      console.log(`[leasing-sync] ${received} received, ${kept.length} within ${date_from}..${date_to}, `
+        + `${outOfRange} outside it and NOT written (source=${source})`);
+    }
+
     let synced = 0;
-    for (let i = 0; i < rows.length; i += 500) {
-      const chunk = rows.slice(i, i + 500);
+    for (let i = 0; i < kept.length; i += 500) {
+      const chunk = kept.slice(i, i + 500);
       const { error } = await db.from('leasing_leads').upsert(chunk, { onConflict: 'appfolio_id' });
       if (error) throw new Error(error.message);
       synced += chunk.length;
     }
-    res.json({ ok: true, synced, excluded, date_from, date_to, source });
+    // `received` and `out_of_range` are reported, not just logged: a sync that
+    // quietly discards 87% of what it was handed should say so on screen.
+    res.json({ ok: true, synced, received, out_of_range: outOfRange, excluded, date_from, date_to, source });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Leasing sync failed: ' + err.message });
   }
