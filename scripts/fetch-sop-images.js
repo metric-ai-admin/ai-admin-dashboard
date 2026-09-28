@@ -164,10 +164,15 @@ async function fetchOne(url) {
   // What is already recorded, so a re-run is a no-op rather than 501 duplicate
   // rows. Read in one query; matched on the canonical url.
   const known = new Map();
-  for (let i = 0; i < work.length; i += 200) {
+  // 40, not 200. PostgREST puts `in` lists in the QUERY STRING, and these URLs
+  // are ~90 characters each — a batch of 200 builds a 17 KB request URL and the
+  // fetch is rejected outright with an unhelpful "TypeError: fetch failed".
+  // Measured: 80 works, 200 does not. 40 leaves room for longer URLs.
+  const BATCH = 40;
+  for (let i = 0; i < work.length; i += BATCH) {
     const { data, error } = await db.from('sop_assets')
       .select('id,canonical_url,stored_path,fetch_error')
-      .in('canonical_url', work.slice(i, i + 200).map(w => w.canonical));
+      .in('canonical_url', work.slice(i, i + BATCH).map(w => w.canonical));
     if (error) {
       if (/canonical_url/.test(error.message)) {
         throw new Error('sop_assets is missing canonical_url / source_path — run '
