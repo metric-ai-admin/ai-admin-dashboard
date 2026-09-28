@@ -12226,7 +12226,32 @@ async function eodGather() {
   // run yet" rather than as a failure, because those are different things.
   try {
     const st = await readJSON(LEASING_SYNC_STATE, null);
-    S.leasingSync = st || { error: 'has not run yet (no state file)' };
+    if (st) S.leasingSync = st;
+    else {
+      // No state file. Did this process exist when 05:30 last came round?
+      //
+      // Process start, not a 24h window: a service deployed at 09:00 has not
+      // missed anything, and one that has been up since yesterday and still
+      // wrote nothing has. Both are "never ran" and they mean opposite things.
+      const startedAt = Date.now() - process.uptime() * 1000;
+      const lastSlot = (() => {
+        const nowCT = new Date(new Date().toLocaleString('en-US', { timeZone: LYNDSAY_TIMEZONE }));
+        const slot = new Date(nowCT); slot.setHours(5, 30, 0, 0);
+        if (slot > nowCT) slot.setDate(slot.getDate() - 1);   // today's has not arrived
+        // Back to a real instant: nowCT is wall-clock Central expressed as if
+        // it were local, so the difference from now() is the offset to undo.
+        return new Date(slot.getTime() + (Date.now() - nowCT.getTime()));
+      })();
+      const nextSlotCT = new Date(lastSlot.getTime() + 24 * 3600 * 1000);
+      S.leasingSync = {
+        missedItsSlot: startedAt < lastSlot.getTime(),
+        nextRunLabel: nextSlotCT.toLocaleDateString('en-US',
+          { timeZone: LYNDSAY_TIMEZONE, month: 'short', day: 'numeric' }),
+        error: startedAt < lastSlot.getTime()
+          ? 'The 05:30 run did not happen and wrote no state.'
+          : null,
+      };
+    }
   } catch (e) { S.leasingSync = { error: e.message }; }
 
   // 5 — MAINTENANCE (AppFolio work orders + labor)
@@ -12487,11 +12512,22 @@ function eodRenderHtml(data) {
   const ls = S.leasingSync;
   if (ls) {
     const stale = ls.at && (Date.now() - Date.parse(ls.at)) > 36 * 3600 * 1000;
+    // "Has not run yet" is not a failure, and printing it in red sent Lyndsay
+    // an EOD that looked broken on the day the cron shipped.
+    //
+    // Whether it SHOULD have run is answered by comparing the process start to
+    // the last scheduled 05:30, not by a fixed window: if this service came up
+    // after today's 05:30, the job has not had its turn and there is nothing
+    // wrong. If it was already running when 05:30 passed and still wrote no
+    // state, that IS a failure and stays red.
+    const neverRan = !ls.at;
     P.push(eodSectionHtml('🔄', 'Leasing sync (05:30)',
-      ls.error ? eodErr(ls.error)
-        : stale ? eodErr(`Last ran ${eodEsc(String(ls.at).slice(0, 16).replace('T', ' '))} — over a day ago. The cron may not be running.`)
-          : `${ls.received} received, <b>${ls.in_range}</b> in range for ${eodEsc(ls.date_from)} → ${eodEsc(ls.date_to)}`
-            + (ls.out_of_range ? ` · ${ls.out_of_range} outside it` : ''),
+      neverRan && !ls.missedItsSlot
+        ? `<span style="color:${EOD.muted}">First run scheduled ${eodEsc(ls.nextRunLabel || 'tomorrow')} 05:30 CT.</span>`
+        : ls.error ? eodErr(ls.error)
+          : stale ? eodErr(`Last ran ${eodEsc(String(ls.at).slice(0, 16).replace('T', ' '))} — over a day ago. The cron may not be running.`)
+            : `${ls.received} received, <b>${ls.in_range}</b> in range for ${eodEsc(ls.date_from)} → ${eodEsc(ls.date_to)}`
+              + (ls.out_of_range ? ` · ${ls.out_of_range} outside it` : ''),
       ''));
   }
 
@@ -12816,6 +12852,23 @@ async function leasingCronSync() {
   await writeJSON(LEASING_SYNC_STATE, summary);
   return summary;
 }
+
+// Runs the CRON'S job, not a plain sync — it writes the state file the EOD
+// reads, which an ordinary /api/leasing/sync does not. For seeding that file
+// on the day the cron is deployed, and for testing the job without waiting
+// until 05:30.
+app.post('/api/leasing/sync/run-now', requireMetricAccess, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
+  try {
+    const summary = await leasingCronSync();
+    logLine(`[leasing-sync] manual run — ${summary.received} received, ${summary.in_range} in range, `
+      + `${summary.out_of_range} outside ${summary.date_from}..${summary.date_to}, ${summary.seen} stamped`);
+    res.json({ ok: true, ...summary });
+  } catch (err) {
+    logLine(`[leasing-sync] manual run FAILED: ${err.message}`);
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
 
 cron.schedule('30 5 * * *', () => {
   if (!CRM_CONFIGURED) return;
