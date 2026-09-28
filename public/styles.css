@@ -2889,3 +2889,13 @@ tr.ca-sel { background: var(--accent-glow); }
 .sl-form textarea { font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
 .sl-form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
 .sl-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* The single-workbook alternative. Visually above the four slots and clearly
+   an either/or, not a fifth slot. */
+.bl-workbook { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--card); border: 1px dashed var(--border-accent); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 14px; transition: border-color .12s, background .12s; }
+.bl-workbook.bl-drop { border-color: var(--accent); background: var(--accent-glow); }
+.bl-workbook-head { display: flex; flex-direction: column; gap: 2px; margin-right: auto; }
+.bl-workbook-head strong { font-size: 13px; }
+.bl-workbook-head .muted { font-size: 12px; }

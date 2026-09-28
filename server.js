@@ -7757,6 +7757,82 @@ app.get('/api/billable/debug/:slot', requireAuth, requireRole(...BILLABLE_ROLES)
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Erick's workbook — one .xlsx holding all four reports as sheets.
+//
+// AppFolio's Excel plugin refreshes it in place, which is a great deal less
+// work than exporting four CSVs. It is converted to the same four CSV slots the
+// rest of this module already reads, so nothing downstream changes and the
+// four-CSV route keeps working for anyone who prefers it.
+app.post('/api/billable/upload-workbook', requireAuth, requireRole(...BILLABLE_ROLES),
+  billableUpload.single('file'), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'No file received.' });
+      if (!/\.xlsx?$/i.test(req.file.originalname || '')) {
+        return res.status(400).json({ error: 'That is not an Excel file. Use the CSV slots for a .csv.' });
+      }
+
+      let wb;
+      try {
+        // cellDates off and raw:false below: every value is read as the STRING
+        // Excel displays, so "$1,234.50" and "09/22/2026" arrive exactly as the
+        // CSV export would have written them and the existing parsers apply.
+        wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+      } catch (e) {
+        return res.status(400).json({ error: 'Could not read that workbook: ' + e.message });
+      }
+
+      const { sheets, missing, unused } = billableReport.matchSheets(wb.SheetNames);
+      if (missing.length) {
+        return res.status(400).json({
+          error: `This workbook has no sheet for: ${missing.join(', ')}. Sheets found: ${wb.SheetNames.join(' | ')}`,
+          sheets: wb.SheetNames, missing,
+        });
+      }
+
+      // Validate ALL FOUR before writing ANY. A workbook that half-loads leaves
+      // the slots holding two new sheets and two from last week, and the report
+      // would quietly mix them.
+      const converted = {};
+      for (const [slot, name] of Object.entries(sheets)) {
+        const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
+        const csv = billableReport.sheetToCsv(aoa);
+        const parsed = billableReport.parseCsv(csv);
+        if (!parsed.headers.length || !parsed.rows.length) {
+          return res.status(400).json({ error: `Sheet "${name}" has no rows below the header. Has it been refreshed?` });
+        }
+        const cols = billableReport.resolveColumns(parsed.headers);
+        if (!cols.property) {
+          return res.status(400).json({
+            error: `Sheet "${name}" has no property column. Columns seen: ${parsed.headers.slice(0, 8).join(', ')}`,
+          });
+        }
+        converted[slot] = { csv, name, rows: parsed.rows.length, dateRange: billableReport.exportDate(parsed.rows, cols) };
+      }
+
+      await fsp.mkdir(BILLABLE_DIR, { recursive: true });
+      const manifest = await billableManifest();
+      const now = new Date().toISOString();
+      for (const [slot, out] of Object.entries(converted)) {
+        await fsp.writeFile(billableSlotPath(slot), out.csv, 'utf8');
+        manifest[slot] = {
+          uploadedAt: now,
+          uploadedBy: req.user && (req.user.name || req.user.username) || 'unknown',
+          // The workbook AND the sheet, so "where did this come from" survives.
+          filename: `${req.file.originalname} → ${out.name}`,
+          rows: out.rows,
+        };
+      }
+      manifest._lastWorkbook = { at: now, filename: req.file.originalname, sheets };
+      await writeJSON(BILLABLE_MANIFEST, manifest);
+
+      res.json({
+        ok: true,
+        filename: req.file.originalname,
+        slots: Object.fromEntries(Object.entries(converted).map(([k, v]) => [k, { sheet: v.name, rows: v.rows, dateRange: v.dateRange }])),
+        unusedSheets: unused,
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
 app.post('/api/billable/generate', requireAuth, requireRole(...BILLABLE_ROLES), async (req, res) => {
   try {
     const files = await billableFiles();

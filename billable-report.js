@@ -225,6 +225,85 @@ function expandGroups(parsed) {
   };
 }
 
+// ---- Erick's workbook -------------------------------------------------------
+//
+// AppFolio's Excel plugin refreshes ONE .xlsx holding all four reports as
+// sheets, which is a great deal less work than exporting four CSVs. Same data,
+// so it joins the existing pipeline rather than getting its own: each sheet is
+// turned into the CSV text the four slots already hold, and everything
+// downstream — grouping, subtotal removal, column resolution, the report — is
+// untouched and stays covered by the tests it already has.
+//
+// Each sheet carries five rows of report metadata (title, company, date range,
+// a blank, a generated-on stamp) before the header on row 6.
+const SHEET_HEADER_ROW = 5;          // zero-based: row 6 in Excel's numbering
+
+// Matched on a substring because the tab names are truncated by Excel's 31
+// character limit and carry stray spaces: "Maintenance - Work Order Labor ",
+// "MWeekly - Work Order Billable D". Order matters — 'labor' is tested first so
+// the labour sheet cannot be claimed by another pattern.
+const SHEET_PATTERNS = [
+  ['labor', /labor|labour/i],
+  ['daily', /daily/i],
+  ['weekly', /weekly/i],
+  ['monthly', /monthly/i],
+];
+
+/**
+ * Which sheet is which. Returns { daily, weekly, monthly, labor } of sheet
+ * names, plus what could not be matched — a workbook missing a sheet is a
+ * thing to say out loud, not to quietly report zeros for.
+ */
+function matchSheets(sheetNames) {
+  const out = {};
+  const taken = new Set();
+  for (const [slot, re] of SHEET_PATTERNS) {
+    const hit = (sheetNames || []).find(n => !taken.has(n) && re.test(String(n)));
+    if (hit) { out[slot] = hit; taken.add(hit); }
+  }
+  const missing = SHEET_PATTERNS.map(([slot]) => slot).filter(slot => !out[slot]);
+  const unused = (sheetNames || []).filter(n => !taken.has(n));
+  return { sheets: out, missing, unused };
+}
+
+/**
+ * A sheet's rows (array of arrays, as sheet_to_json({header:1}) gives them)
+ * into the CSV text the rest of this module already reads.
+ *
+ * `skip` drops the report metadata above the header. It is a parameter rather
+ * than a constant because a workbook whose layout shifts by a row should be a
+ * one-line fix, not a re-read of this file.
+ */
+function sheetToCsv(rows, { skip = SHEET_HEADER_ROW } = {}) {
+  const body = (rows || []).slice(skip);
+  // Trailing all-empty columns are an artifact of Excel padding every row to
+  // the widest one; carrying them makes every row end in a run of commas.
+  let width = 0;
+  body.forEach(r => {
+    for (let i = (r || []).length - 1; i >= 0; i--) {
+      if (String(r[i] == null ? '' : r[i]).trim() !== '') { width = Math.max(width, i + 1); break; }
+    }
+  });
+  // Quoting only — NO formula-injection escaping here.
+  //
+  // This CSV is an internal intermediate that parseCsv reads back at once; it
+  // is never handed to a person or opened in Excel. Applying the = + - @ guard
+  // to it CORRUPTED the data: AppFolio's group markers start with '-', so
+  // "-> Hyde Park Square" became "'-> Hyde Park Square", no group header was
+  // recognised, every property read as "(no property)", and the subtotal rows
+  // were counted as data. The guard belongs on toCsv(), which produces files
+  // people download, and it is still there.
+  const esc = v => {
+    const t = v === null || v === undefined ? '' : String(v);
+    return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+
+  return body
+    .map(r => Array.from({ length: width }, (_, i) => esc((r || [])[i])).join(','))
+    .filter((line, i) => i === 0 || line.replace(/,/g, '').trim() !== '')
+    .join('\n');
+}
+
 // ---- Column resolution ------------------------------------------------------
 //
 // The CSV comes from the WEB UI, which writes human labels ("Work Order
@@ -701,6 +780,7 @@ function toCsv(rows, columns) {
 }
 
 module.exports = {
+  matchSheets, sheetToCsv, SHEET_HEADER_ROW,
   parseCsv, resolveColumns, buildReport, summarisePeriod,
   byProperty, byPropertyAndTech, byTech, toCsv,
   isExcludedProperty, cleanTech, num, statusGroup, exportDate,

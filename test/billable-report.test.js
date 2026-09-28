@@ -690,4 +690,100 @@ t('a flat file with no subtotals is unaffected', () => {
   assert.strictEqual(B.parseCsv(GROUPED).subtotalRows.length, 0);
 });
 
+console.log('\nthe workbook: four sheets in one .xlsx');
+
+// AppFolio's Excel plugin refreshes ONE file with all four reports as sheets.
+// Each sheet carries five rows of report metadata before the header on row 6,
+// and the tab names are truncated by Excel's 31-character limit.
+const SHEETS = ['Maintenance - Work Order Labor ', 'MDaily - Work Order Billable',
+  'MWeekly - Work Order Billable D', 'MMonthly - Work Order Billable'];
+
+t('each sheet is matched to its slot by substring', () => {
+  const { sheets, missing } = B.matchSheets(SHEETS);
+  assert.strictEqual(sheets.labor, 'Maintenance - Work Order Labor ');
+  assert.strictEqual(sheets.daily, 'MDaily - Work Order Billable');
+  assert.strictEqual(sheets.weekly, 'MWeekly - Work Order Billable D');
+  assert.strictEqual(sheets.monthly, 'MMonthly - Work Order Billable');
+  assert.deepStrictEqual(missing, []);
+});
+t('a sheet is claimed once, so labour cannot be taken by another pattern', () => {
+  const { sheets } = B.matchSheets(['Daily Labor Report', 'MDaily - Work Order Billable']);
+  assert.strictEqual(sheets.labor, 'Daily Labor Report');
+  assert.strictEqual(sheets.daily, 'MDaily - Work Order Billable');
+});
+t('a missing sheet is NAMED, not silently zero', () => {
+  const { missing } = B.matchSheets(['MDaily - Work Order Billable']);
+  assert.deepStrictEqual(missing.sort(), ['labor', 'monthly', 'weekly']);
+});
+t('sheets that match nothing are reported as unused', () => {
+  const { unused } = B.matchSheets([...SHEETS, 'Pivot', 'Notes']);
+  assert.deepStrictEqual(unused.sort(), ['Notes', 'Pivot']);
+});
+t('an empty workbook matches nothing and says so', () => {
+  const { sheets, missing } = B.matchSheets([]);
+  assert.deepStrictEqual(sheets, {});
+  assert.strictEqual(missing.length, 4);
+});
+
+const META = [
+  ['MDaily'], ['Metric Property Management'], ['Date Range: 09/01/2026 - 09/28/2026'], [], ['Generated 09/28/2026'],
+];
+const AOA = [...META,
+  ['Group', 'count(Work Order Number)', 'Unit', 'Work Order Status', 'Amount', 'Billed Amount'],
+  ['-> Hyde Park Square', '12', '', '', '$3,600.00', '$3,600.00'],
+  ['', '22884-1', '5-224', 'Completed', '$300.00', '$300.00'],
+];
+
+t('the five metadata rows are skipped and row 6 is the header', () => {
+  const csv = B.sheetToCsv(AOA);
+  assert.ok(csv.startsWith('Group,count(Work Order Number)'), csv.slice(0, 60));
+  assert.ok(!/Metric Property Management/.test(csv));
+  assert.ok(!/Date Range/.test(csv));
+});
+t('the group marker survives conversion — it must NOT be formula-escaped', () => {
+  // The bug this guards: "-> " starts with '-', so a formula-injection guard
+  // turned it into "'-> Hyde Park Square". No group header was then
+  // recognised, every property read as "(no property)", and the subtotal rows
+  // were counted as data — money came out at 13x.
+  const csv = B.sheetToCsv(AOA);
+  assert.ok(/^-> Hyde Park Square,/m.test(csv), csv);
+  assert.ok(!/'-> /.test(csv), 'the group marker was escaped');
+});
+t('a cell containing a comma is quoted', () => {
+  assert.ok(/"\$3,600\.00"/.test(B.sheetToCsv(AOA)));
+});
+t('a converted sheet parses back into the same structure a CSV would', () => {
+  const p = B.parseCsv(B.sheetToCsv(AOA));
+  assert.strictEqual(p.grouped, true);
+  assert.strictEqual(p.groupCounts['Hyde Park Square'], 12);
+  assert.strictEqual(p.rows.length, 1);
+  assert.strictEqual(p.rows[0].__property, 'Hyde Park Square');
+});
+t('the numbers match what the same data as a CSV produces', () => {
+  const viaSheet = B.summarisePeriod(B.parseCsv(B.sheetToCsv(AOA)));
+  const asCsv = [
+    'Group,count(Work Order Number),Unit,Work Order Status,Amount,Billed Amount',
+    '-> Hyde Park Square,12,,,"$3,600.00","$3,600.00"',
+    ',22884-1,5-224,Completed,$300.00,$300.00',
+  ].join(String.fromCharCode(10));
+  const viaCsv = B.summarisePeriod(B.parseCsv(asCsv));
+  assert.strictEqual(viaSheet.workOrders, viaCsv.workOrders);
+  assert.strictEqual(viaSheet.billed, viaCsv.billed);
+  assert.strictEqual(viaSheet.completed, viaCsv.completed);
+  assert.strictEqual(viaSheet.billed, 300, 'the subtotal row must not be counted');
+});
+t('trailing empty columns from Excel padding are trimmed', () => {
+  const padded = [...META, ['A', 'B', '', '', ''], ['1', '2', '', '', '']];
+  const csv = B.sheetToCsv(padded);
+  assert.strictEqual(csv.split(String.fromCharCode(10))[0], 'A,B');
+});
+t('a different header row can be asked for', () => {
+  const csv = B.sheetToCsv([['x'], ['Group,junk'], ['Group', 'Amount']], { skip: 2 });
+  assert.ok(csv.startsWith('Group,Amount'), csv);
+});
+t('the export path still escapes formulas — the guard was only removed inside', () => {
+  const csv = B.toCsv([{ p: '=cmd|calc' }], [{ key: 'p', label: 'Property' }]);
+  assert.ok(csv.includes("'=cmd|calc"), csv);
+});
+
 console.log(`\n${pass} passing`);

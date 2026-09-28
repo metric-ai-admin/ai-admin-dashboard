@@ -5663,6 +5663,32 @@ async function blDiagnose(slot) {
   } catch (e) { blSay(e.message, 'error'); }
 }
 
+// One workbook instead of four CSVs.
+//
+// It fills the same four slots, so everything below it — the staleness
+// warnings, Generate, the report — behaves identically. The four-CSV path is
+// untouched: this is an alternative, not a replacement.
+async function blUploadWorkbook(file) {
+  if (!file) return;
+  if (!/\.xlsx?$/i.test(file.name)) {
+    return blSay(`${file.name} is not an Excel file. Use the four slots below for CSVs.`, 'error');
+  }
+  blSay('Reading ' + file.name + ' …');
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    // Not through api(): FormData must keep its own multipart boundary.
+    const res = await fetch('/api/billable/upload-workbook', { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+    const lines = Object.entries(data.slots || {})
+      .map(([slot, s]) => `${slot}: ${blNum(s.rows)} rows from "${s.sheet}"`).join(' · ');
+    blSay(`${file.name} — ${lines}`
+      + ((data.unusedSheets || []).length ? `  (ignored: ${data.unusedSheets.join(', ')})` : ''), 'ok');
+    await blLoadStatus();
+  } catch (e) { blSay(e.message, 'error'); }
+}
+
 function blWireOnce() {
   if (blWired) return;
   blWired = true;
@@ -5675,6 +5701,28 @@ function blWireOnce() {
       blSay('Report generated.', 'ok');
     } catch (e) { blSay(e.message, 'error'); }
   });
+  document.getElementById('bl-workbook-file')?.addEventListener('change', e => blUploadWorkbook(e.target.files[0]));
+
+  // The workbook zone is a drop target too. Same depth counter as the slots:
+  // dragleave fires when the pointer crosses a child, and a plain toggle
+  // flickers the highlight off exactly as you aim at it.
+  const wbZone = document.getElementById('bl-workbook');
+  if (wbZone) {
+    let depth = 0;
+    const paint = on => wbZone.classList.toggle('bl-drop', on);
+    wbZone.addEventListener('dragenter', e => { e.preventDefault(); depth++; paint(true); });
+    wbZone.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+    wbZone.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) paint(false); });
+    wbZone.addEventListener('drop', e => {
+      e.preventDefault(); e.stopPropagation();
+      depth = 0; paint(false);
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (!files || !files.length) return;
+      if (files.length > 1) return blSay('One workbook at a time.', 'warn');
+      blUploadWorkbook(files[0]);
+    });
+  }
+
   document.getElementById('bl-preview')?.addEventListener('click', blOpenPreview);
   document.querySelectorAll('[data-bl-preview-close]').forEach(el =>
     el.addEventListener('click', blClosePreview));
@@ -5839,6 +5887,8 @@ function blRender() {
     <h3 class="bl-h3">By Technician
       <button class="btn btn-ghost bl-dl" data-bl-export="tech">Export CSV</button>
     </h3>
+    ${(r.labor && (r.labor.columnsMissing || []).includes('billableHours'))
+    ? `<p class="bl-warn">This labour source has no billable-hours column, so those read 0. Worked hours are real.</p>` : ''}
     ${blTable(r.byTech || [], [
     { key: 'tech', label: 'Technician' },
     { key: 'workOrders', label: 'Work orders', ...N },
