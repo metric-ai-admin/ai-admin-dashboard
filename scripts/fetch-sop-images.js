@@ -37,18 +37,30 @@ const arg = (name, fallback = null) => {
 const DRY = process.argv.includes('--dry-run');
 const LIMIT = parseInt(arg('limit', '0'), 10) || 0;
 const ZIP = arg('zip');
+// Read the work list from sop_assets instead of from the export.
+//
+// This is how the images reach RENDER. Every row already carries the signed
+// URL it was first found at, so the ZIP — which lives on a laptop — is not
+// needed: the server reads the database it already reads, downloads to its own
+// disk, and nothing has to move 86 MB between machines.
+const FROM_DB = process.argv.includes('--from-db');
 
-const KNOWN = ['--zip', '--dry-run', '--limit', '--out'];
+const KNOWN = ['--zip', '--dry-run', '--limit', '--out', '--from-db'];
 const unknown = process.argv.slice(2).filter(a => a.startsWith('--') && !KNOWN.includes(a));
 if (unknown.length) {
   console.error('Unknown flag(s): ' + unknown.join(', ') + '\nKnown: ' + KNOWN.join(' '));
   process.exit(2);
 }
-if (!ZIP) {
+if (!ZIP && !FROM_DB) {
   console.error('Usage: node scripts/fetch-sop-images.js --zip <path-to-slab-export.zip> [--dry-run] [--limit N]');
+  console.error('   or: node scripts/fetch-sop-images.js --from-db          (reads sop_assets; use this on Render)');
   process.exit(2);
 }
-if (!fs.existsSync(ZIP)) {
+if (ZIP && FROM_DB) {
+  console.error('Pass --zip or --from-db, not both.');
+  process.exit(2);
+}
+if (ZIP && !fs.existsSync(ZIP)) {
   console.error('No such file: ' + ZIP);
   process.exit(2);
 }
@@ -129,27 +141,57 @@ async function fetchOne(url) {
 }
 
 (async () => {
-  console.log(`Slab image rescue — ${ZIP}`);
+  console.log(`Slab image rescue — ${FROM_DB ? 'work list from sop_assets' : ZIP}`);
   console.log(`storing under ${ASSET_DIR}${DRY ? '   (DRY RUN — nothing written)' : ''}\n`);
 
-  const files = readZip(ZIP);
-  console.log(`read ${files.length} markdown files from the export`);
+  const dbEarly = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY);
+  let work;
 
-  // url -> the first article that referenced it. First, not all: source_path
-  // records provenance, and an image used in six articles came from one place.
-  const refs = new Map();
-  let total = 0;
-  for (const f of files) {
-    let m;
-    IMG_RE.lastIndex = 0;
-    while ((m = IMG_RE.exec(f.text))) {
-      total++;
-      const c = canonical(m[1]);
-      if (!refs.has(c)) refs.set(c, { url: m[1], canonical: c, source_path: f.name });
+  if (FROM_DB) {
+    // Every row, not only the ones the imported articles reference. The extra
+    // handful costs a couple of megabytes and means an excluded folder brought
+    // back later does not need a second pass against URLs that may by then have
+    // expired.
+    const rows = [];
+    for (let from = 0; ; from += 500) {
+      const { data, error } = await dbEarly.from('sop_assets')
+        .select('id,original_url,canonical_url,stored_path,source_path').range(from, from + 499);
+      if (error) {
+        if (/canonical_url/.test(error.message)) {
+          throw new Error('sop_assets is missing canonical_url — run '
+            + 'supabase/migrations/063_sop_assets_preimport.sql first.');
+        }
+        throw new Error(error.message);
+      }
+      rows.push(...(data || []));
+      if (!data || data.length < 500) break;
     }
+    if (!rows.length) {
+      throw new Error('sop_assets is empty. Run with --zip on a machine that has the export first, '
+        + 'so the URLs are recorded, then --from-db here.');
+    }
+    work = rows.map(r => ({ url: r.original_url, canonical: r.canonical_url || canonical(r.original_url), source_path: r.source_path }));
+    console.log(`${work.length} images recorded in sop_assets`);
+  } else {
+    const files = readZip(ZIP);
+    console.log(`read ${files.length} markdown files from the export`);
+
+    // url -> the first article that referenced it. First, not all: source_path
+    // records provenance, and an image used in six articles came from one place.
+    const refs = new Map();
+    let total = 0;
+    for (const f of files) {
+      let m;
+      IMG_RE.lastIndex = 0;
+      while ((m = IMG_RE.exec(f.text))) {
+        total++;
+        const c = canonical(m[1]);
+        if (!refs.has(c)) refs.set(c, { url: m[1], canonical: c, source_path: f.name });
+      }
+    }
+    work = [...refs.values()];
+    console.log(`${total} image references resolving to ${work.length} distinct images`);
   }
-  let work = [...refs.values()];
-  console.log(`${total} image references resolving to ${work.length} distinct images`);
   if (LIMIT) { work = work.slice(0, LIMIT); console.log(`--limit ${LIMIT}: fetching the first ${work.length}`); }
 
   if (DRY) {
@@ -159,7 +201,7 @@ async function fetchOne(url) {
   }
 
   await fsp.mkdir(ASSET_DIR, { recursive: true });
-  const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY);
+  const db = dbEarly;
 
   // What is already recorded, so a re-run is a no-op rather than 501 duplicate
   // rows. Read in one query; matched on the canonical url.
