@@ -5539,6 +5539,8 @@ async function blLoadStatus() {
   if (gen) gen.disabled = !st.ready;
   const mail = document.getElementById('bl-email');
   if (mail) mail.disabled = !st.lastGenerated;
+  const prev = document.getElementById('bl-preview');
+  if (prev) prev.disabled = !st.lastGenerated;
   const stamp = document.getElementById('bl-generated');
   if (stamp) {
     stamp.innerHTML = st.lastGenerated
@@ -5669,6 +5671,18 @@ function blWireOnce() {
       blSay('Report generated.', 'ok');
     } catch (e) { blSay(e.message, 'error'); }
   });
+  document.getElementById('bl-preview')?.addEventListener('click', blOpenPreview);
+  document.querySelectorAll('[data-bl-preview-close]').forEach(el =>
+    el.addEventListener('click', blClosePreview));
+  document.getElementById('bl-preview-send')?.addEventListener('click', blSendFromPreview);
+  // Escape closes it. A modal that traps you is a modal people avoid opening,
+  // and this one exists to be opened every time before sending.
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !document.getElementById('bl-preview-modal')?.classList.contains('hidden')) {
+      blClosePreview();
+    }
+  });
+
   document.getElementById('bl-email')?.addEventListener('click', async () => {
     const to = (blReport && blReport.recipients) || [];
     if (!confirm('Email this report' + (to.length ? ' to ' + to.join(', ') : '') + '?')) return;
@@ -5701,6 +5715,56 @@ function blStatusNote(s) {
     ${unmatched ? `<br>${blNum(s.otherStatus)} work order(s) matched none of Work Done / Ready to Bill / Completed.` : ''}
     <br><span class="muted">Counted by ${blEsc(s.countedBy || 'work order number')}.</span>
   </div>`;
+}
+
+// The email, before it is an email.
+//
+// The preview and the send call the SAME server function for subject, body and
+// recipients — a preview built separately drifts, and a drifted preview is
+// worse than none because it is a promise about what will be sent.
+async function blOpenPreview() {
+  const modal = document.getElementById('bl-preview-modal');
+  if (!modal) return;
+  blSay('Building the preview …');
+  try {
+    const mail = await api('/api/billable/email/preview');
+    blSay('');
+    document.getElementById('bl-preview-to').textContent = (mail.recipients || []).join(', ');
+    document.getElementById('bl-preview-subject').textContent = mail.subject || '';
+    // srcdoc into a sandboxed frame: no scripts, no same-origin, so the email
+    // body renders as a mail client would show it and cannot touch the page.
+    document.getElementById('bl-preview-frame').srcdoc = mail.html || '';
+    modal.classList.remove('hidden');
+    document.getElementById('bl-preview-send')?.focus();
+  } catch (e) { blSay(e.message, 'error'); }
+}
+
+function blClosePreview() {
+  const modal = document.getElementById('bl-preview-modal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  // Drop the content rather than leave it in a hidden frame — reopening should
+  // re-fetch, so a preview never shows a report generated two changes ago.
+  const frame = document.getElementById('bl-preview-frame');
+  if (frame) frame.srcdoc = '';
+  const send = document.getElementById('bl-preview-send');
+  if (send) { send.disabled = false; send.textContent = 'Send to these recipients'; }
+}
+
+async function blSendFromPreview() {
+  const btn = document.getElementById('bl-preview-send');
+  const to = document.getElementById('bl-preview-to').textContent;
+  if (!confirm('Send this report to ' + to + '?')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    const r = await api('/api/billable/email', { method: 'POST', body: {} });
+    blClosePreview();
+    blSay('Sent to ' + (r.sentTo || []).join(', '), 'ok');
+    await blLoadStatus();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Send to these recipients'; }
+    blSay(e.message, 'error');
+  }
 }
 
 function blCard(title, s) {

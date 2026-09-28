@@ -7868,17 +7868,43 @@ function billableEmailHtml(report) {
   </div>`;
 }
 
+// The whole email, in one place.
+//
+// The preview and the send MUST come from the same function or they drift, and
+// a preview that drifts is worse than none: it is a promise about what will be
+// sent. Subject, recipients and body are decided here and both routes use it.
+function billableEmail(report) {
+  return {
+    subject: `Billable Labor Report — ${report.today}`,
+    recipients: BILLABLE_RECIPIENTS,
+    html: billableEmailHtml(report),
+  };
+}
+
+// Preview. Reads, renders, sends nothing.
+app.get('/api/billable/email/preview', requireAuth, requireRole(...BILLABLE_ROLES), async (req, res) => {
+  try {
+    const report = await readJSON(path.join(BILLABLE_DIR, 'report.json'), null);
+    if (!report) return res.status(400).json({ error: 'Generate the report before previewing the email.' });
+    // JSON rather than raw HTML: the client drops the body into a sandboxed
+    // iframe, so the email's own styles cannot leak into the dashboard and the
+    // dashboard's cannot flatter the email into looking better than it will.
+    res.json(billableEmail(report));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/billable/email', requireAuth, requireRole(...BILLABLE_ROLES), async (req, res) => {
   try {
     const report = await readJSON(path.join(BILLABLE_DIR, 'report.json'), null);
     if (!report) return res.status(400).json({ error: 'Generate the report before emailing it.' });
 
+    const mail = billableEmail(report);
     const token = await graphMailToken();
     const payload = {
       message: {
-        subject: `Billable Labor Report — ${report.today}`,
-        body: { contentType: 'HTML', content: billableEmailHtml(report) },
-        toRecipients: BILLABLE_RECIPIENTS.map(a => ({ emailAddress: { address: a } })),
+        subject: mail.subject,
+        body: { contentType: 'HTML', content: mail.html },
+        toRecipients: mail.recipients.map(a => ({ emailAddress: { address: a } })),
       },
       saveToSentItems: true,
     };

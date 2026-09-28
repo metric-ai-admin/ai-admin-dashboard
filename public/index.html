@@ -1756,6 +1756,7 @@
 
       <div class="bl-actions">
         <button id="bl-generate" class="btn" disabled>Generate Report</button>
+        <button id="bl-preview" class="btn btn-ghost" disabled>Preview Email</button>
         <button id="bl-email" class="btn btn-ghost" disabled>Email Report</button>
         <span id="bl-generated" class="muted"></span>
       </div>
@@ -2175,6 +2176,27 @@
 <!-- Display settings. Stored per browser in localStorage, not in Supabase:
      dashboard_users has no display_name / title columns and adding them needs
      a migration nobody can run from here. See the handover note. -->
+<div id="bl-preview-modal" class="acct-modal hidden" role="dialog" aria-modal="true"
+     aria-labelledby="bl-preview-title">
+  <div class="acct-modal-overlay" data-bl-preview-close></div>
+  <div class="acct-modal-panel bl-preview-panel">
+    <h3 id="bl-preview-title">Preview &mdash; Billable Labor Report</h3>
+    <div class="bl-preview-meta">
+      <div><span class="bl-preview-label">To</span> <span id="bl-preview-to"></span></div>
+      <div><span class="bl-preview-label">Subject</span> <span id="bl-preview-subject"></span></div>
+    </div>
+    <!-- Sandboxed: this is the email's own HTML, and rendering it inline would
+         let its styles into the dashboard and the dashboard's into it, so the
+         preview would not be showing what actually gets sent. -->
+    <iframe id="bl-preview-frame" class="bl-preview-frame" sandbox="" title="Email preview"></iframe>
+    <p class="bl-preview-note">Nothing has been sent. Send delivers this exact message to the addresses above.</p>
+    <div class="bl-preview-actions">
+      <button class="btn btn-ghost" data-bl-preview-close>Close</button>
+      <button id="bl-preview-send" class="btn">Send to these recipients</button>
+    </div>
+  </div>
+</div>
+
 <div id="settings-modal" class="settings-backdrop hidden">
   <div class="settings-panel">
     <div class="settings-head">
