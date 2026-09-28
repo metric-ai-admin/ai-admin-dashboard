@@ -369,6 +369,18 @@
         <button class="sopr-subtab active" data-sopr-tab="readme">Read Me</button>
         <button class="sopr-subtab" data-sopr-tab="structure">Category Structure</button>
         <button class="sopr-subtab" data-sopr-tab="tracker">SOP Tracker</button>
+        <button class="sopr-subtab" data-sopr-tab="library">SOP Library</button>
+      </div>
+      <div id="sopr-library" class="hidden">
+        <div class="sl-bar">
+          <input id="sl-q" class="sl-search" type="search" placeholder="Search titles, tags and body…">
+          <select id="sl-dept"><option value="">All departments</option></select>
+          <select id="sl-status"><option value="">All statuses</option></select>
+          <label class="sl-check"><input type="checkbox" id="sl-overdue"> Overdue only</label>
+          <span id="sl-count" class="muted"></span>
+        </div>
+        <div id="sl-list"></div>
+        <div id="sl-article" class="hidden"></div>
       </div>
       <div id="sopr-readme" class="sopr-pane"></div>
       <div id="sopr-structure" class="sopr-pane hidden"></div>

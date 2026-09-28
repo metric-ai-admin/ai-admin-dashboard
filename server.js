@@ -7973,6 +7973,231 @@ app.post('/api/billable/email', requireAuth, requireRole(...BILLABLE_ROLES), asy
 });
 
 // =====================================================================
+// SOP LIBRARY v2 — sop_documents / sop_versions / sop_departments
+// =====================================================================
+//
+// Replaces Slab. The 89 curated SOPs are imported by
+// scripts/import-sop-review.js; the 708-article Slab export is NOT imported
+// until Jay confirms the department mapping.
+//
+// Access is driven by the sop_departments table rather than a constant here,
+// so granting a role access to a department is a row change and not a deploy.
+// It is enforced on every route, not only in the UI: a document that reaches
+// the browser is one the person asking was entitled to read.
+const sopLib = require('./sop-library.js');
+// server.js destructures crypto ({ randomUUID, timingSafeEqual }) rather than
+// binding the namespace, so createHash is not otherwise reachable here.
+const sopCrypto = require('crypto');
+const SOP_NO_TABLE = 'SOP Library tables are not set up yet — run supabase/migrations/062_sop_library_v2.sql in the Supabase SQL editor.';
+const sopErr = e => (e && /does not exist|schema cache/i.test(e.message || '') ? SOP_NO_TABLE : null);
+const SOP_ASSET_DIR = path.join(DATA_DIR, 'sop-assets');
+
+async function sopDepartments(db) {
+  const { data, error } = await db.from('sop_departments').select('*').order('sort_order');
+  if (error) throw error;
+  return data || [];
+}
+
+// The list. Filtered SERVER-SIDE by what this role may read.
+app.get('/api/sop/documents', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const departments = await sopDepartments(db);
+    const role = req.user?.role;
+    const allowed = sopLib.readableDepartments(role, departments);
+    if (!allowed.length) return res.json({ documents: [], departments: [], total: 0, readable: [] });
+
+    let q = db.from('sop_documents').select('*').in('department', allowed).limit(2000);
+    if (req.query.department && allowed.includes(req.query.department)) q = q.eq('department', req.query.department);
+    if (req.query.status) q = q.eq('status', req.query.status);
+    if (req.query.archived !== 'true') q = q.eq('archived', false);
+    const { data, error } = await q;
+    const missing = sopErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+
+    const today = ctDateStr(0);
+    // Search and excerpting happen here rather than in the browser: the bodies
+    // run to 50 KB and shipping 450 of them to filter client-side would be
+    // megabytes per keystroke.
+    const rows = (data || [])
+      .filter(d => sopLib.matches(d, req.query.q))
+      .map(d => ({
+        id: d.id, slug: d.slug, title: d.title, department: d.department, category: d.category,
+        tags: d.tags || [], status: d.status, owner: d.owner, author: d.author,
+        review_interval_days: d.review_interval_days,
+        last_reviewed_at: d.last_reviewed_at, last_reviewed_by: d.last_reviewed_by,
+        next_review_at: d.next_review_at, source: d.source, source_path: d.source_path,
+        updated_at: d.updated_at, updated_by: d.updated_by,
+        excerpt: sopLib.excerpt(d.body_md),
+        review: sopLib.reviewState(d, today),
+        canEdit: sopLib.canEdit(role, d.department, departments),
+      }))
+      .sort((a, b) => (b.review.overdue - a.review.overdue)
+        || (a.department || '').localeCompare(b.department || '')
+        || (a.title || '').localeCompare(b.title || ''));
+
+    res.json({
+      documents: rows,
+      total: rows.length,
+      today,
+      readable: allowed,
+      departments: departments.map(d => ({ name: d.name, canEdit: sopLib.canEdit(role, d.name, departments) })),
+      statuses: sopLib.STATUSES,
+      intervals: sopLib.REVIEW_INTERVALS,
+    });
+  } catch (err) {
+    const missing = sopErr(err);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// One article, rendered. The markdown is turned into HTML on the SERVER, by the
+// same escaping renderer the tests cover — these documents came from an export
+// nobody has audited and are readable by every employee.
+app.get('/api/sop/documents/:id', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const departments = await sopDepartments(db);
+    const { data, error } = await db.from('sop_documents').select('*').eq('id', req.params.id).limit(1);
+    const missing = sopErr(error);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (error) throw new Error(error.message);
+    if (!data || !data.length) return res.status(404).json({ error: 'No such document.' });
+
+    const doc = data[0];
+    if (!sopLib.canRead(req.user?.role, doc.department, departments)) {
+      return res.status(403).json({ error: 'That document belongs to a department you do not have access to.' });
+    }
+    const { data: versions } = await db.from('sop_versions')
+      .select('version,title,changed_by,changed_at,note').eq('document_id', doc.id)
+      .order('version', { ascending: false }).limit(20);
+
+    res.json({
+      ...doc,
+      html: sopLib.renderMarkdown(doc.body_md),
+      review: sopLib.reviewState(doc, ctDateStr(0)),
+      canEdit: sopLib.canEdit(req.user?.role, doc.department, departments),
+      versions: versions || [],
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Edit. Every change writes the PREVIOUS body to sop_versions first — a version
+// written after the fact is a copy of the new text, not a record of the old.
+app.patch('/api/sop/documents/:id', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const departments = await sopDepartments(db);
+    const { data: rows, error: readErr } = await db.from('sop_documents').select('*').eq('id', req.params.id).limit(1);
+    const missing = sopErr(readErr);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (readErr) throw new Error(readErr.message);
+    if (!rows || !rows.length) return res.status(404).json({ error: 'No such document.' });
+    const doc = rows[0];
+
+    if (!sopLib.canEdit(req.user?.role, doc.department, departments)) {
+      return res.status(403).json({ error: 'You can read this department but not edit it.' });
+    }
+
+    const b = req.body || {};
+    const now = new Date().toISOString();
+    const patch = { updated_at: now, updated_by: actorName(req) };
+
+    if (b.title !== undefined) {
+      const title = String(b.title || '').trim();
+      if (!title) return res.status(400).json({ error: 'A title is required.' });
+      patch.title = title;
+    }
+    if (b.body_md !== undefined) {
+      patch.body_md = String(b.body_md || '');
+      patch.content_hash = sopCrypto.createHash('sha1').update(patch.body_md.trim()).digest('hex');
+    }
+    if (b.department !== undefined) {
+      if (!departments.some(d => d.name === b.department)) {
+        return res.status(400).json({ error: 'Unknown department.' });
+      }
+      // Moving a document out of a department you can edit and into one you
+      // cannot would be a way to edit that department by proxy.
+      if (!sopLib.canEdit(req.user?.role, b.department, departments)) {
+        return res.status(403).json({ error: 'You cannot move a document into a department you cannot edit.' });
+      }
+      patch.department = b.department;
+    }
+    if (b.category !== undefined) patch.category = String(b.category || '').trim() || null;
+    if (b.owner !== undefined) patch.owner = String(b.owner || '').trim() || null;
+    if (b.tags !== undefined) {
+      patch.tags = (Array.isArray(b.tags) ? b.tags : String(b.tags || '').split(','))
+        .map(x => String(x).trim()).filter(Boolean).slice(0, 25);
+    }
+    if (b.status !== undefined) {
+      if (!sopLib.STATUSES.includes(b.status)) return res.status(400).json({ error: 'Unknown status.' });
+      patch.status = b.status;
+      patch.archived = b.status === 'Archived';
+    }
+    if (b.review_interval_days !== undefined) {
+      const n = b.review_interval_days === null || b.review_interval_days === '' ? null : Number(b.review_interval_days);
+      if (n !== null && (!isFinite(n) || n <= 0)) return res.status(400).json({ error: 'Review interval must be a positive number of days, or empty.' });
+      patch.review_interval_days = n;
+      // Changing the interval re-dates the next review from the LAST review,
+      // not from today — otherwise shortening an interval would push the next
+      // review further away, which is the opposite of what was asked for.
+      patch.next_review_at = sopLib.nextReviewDate(doc.last_reviewed_at, n);
+    }
+
+    // The old body, before it is replaced.
+    if (patch.body_md !== undefined && patch.body_md !== doc.body_md) {
+      const { data: last } = await db.from('sop_versions')
+        .select('version').eq('document_id', doc.id).order('version', { ascending: false }).limit(1);
+      const next = ((last && last[0] && last[0].version) || 0) + 1;
+      const { error: vErr } = await db.from('sop_versions').insert({
+        document_id: doc.id, version: next, title: doc.title, body_md: doc.body_md,
+        changed_by: actorName(req), changed_at: now, note: String(b.note || '').trim() || null,
+      });
+      // A failure here stops the edit. Losing the previous text is worse than
+      // refusing the change.
+      if (vErr) throw new Error('could not record the previous version: ' + vErr.message);
+    }
+
+    const { data, error } = await db.from('sop_documents').update(patch).eq('id', doc.id).select();
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, document: data && data[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Mark as Reviewed.
+app.post('/api/sop/documents/:id/reviewed', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const departments = await sopDepartments(db);
+    const { data: rows, error: readErr } = await db.from('sop_documents').select('*').eq('id', req.params.id).limit(1);
+    const missing = sopErr(readErr);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (readErr) throw new Error(readErr.message);
+    if (!rows || !rows.length) return res.status(404).json({ error: 'No such document.' });
+    const doc = rows[0];
+    // Reviewing is asserting the procedure is correct, which is an edit-level
+    // act even though it changes no text.
+    if (!sopLib.canEdit(req.user?.role, doc.department, departments)) {
+      return res.status(403).json({ error: 'You can read this department but not sign off on its procedures.' });
+    }
+    const patch = sopLib.markReviewed(doc, { by: actorName(req) });
+    const { data, error } = await db.from('sop_documents').update(patch).eq('id', doc.id).select();
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, document: data && data[0], review: sopLib.reviewState(data && data[0], ctDateStr(0)) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Rehosted images. Served from DATA_DIR, behind auth like everything else.
+app.get('/api/sop/assets/:name', requireAuth, (req, res) => {
+  // basename() so a name cannot climb out of the asset directory.
+  const name = path.basename(String(req.params.name || ''));
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).end();
+  res.sendFile(path.join(SOP_ASSET_DIR, name), err => { if (err) res.status(404).end(); });
+});
+
+// =====================================================================
 // SOP REVIEW — Lyndsay's SOP Review Tracker (sop_review table)
 // =====================================================================
 // The operational SOP library (89 records). SEPARATE from the file-based 'sops'

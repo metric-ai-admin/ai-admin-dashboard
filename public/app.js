@@ -1539,10 +1539,14 @@ async function loadSops() {
 function soprSetSubtab(t) {
   soprState.subtab = t;
   $$('#tab-sops .sopr-subtab').forEach(b => b.classList.toggle('active', b.dataset.soprTab === t));
-  ['readme', 'structure', 'tracker'].forEach(p => $('#sopr-' + p)?.classList.toggle('hidden', p !== t));
+  ['readme', 'structure', 'tracker', 'library'].forEach(p => $('#sopr-' + p)?.classList.toggle('hidden', p !== t));
   if (t === 'readme') soprRenderReadme();
   if (t === 'structure') soprRenderStructure();
   if (t === 'tracker') soprRenderTracker();
+  // The v2 library. The three panes above are the 2026 review PROJECT over
+  // sop_review; this one is the library that replaces Slab. They share a tab
+  // deliberately — the project's output is what seeded the library.
+  if (t === 'library') loadSopLibrary();
 }
 
 // ---- Read Me -------------------------------------------------------------
@@ -5857,6 +5861,271 @@ function blRender() {
     const section = b.dataset.blExport;
     window.location = `/api/billable/export/${section}?period=${encodeURIComponent(blPeriod)}`;
   }));
+}
+
+
+// =====================================================================
+// SOP LIBRARY v2
+// =====================================================================
+// Replaces Slab. Access is decided on the SERVER from the sop_departments
+// table — this file renders what it is given and never filters for secrecy,
+// because a row that reaches the browser is one the reader was entitled to.
+//
+// The article body arrives as HTML that the server rendered and escaped. It is
+// not re-rendered here: two markdown renderers would eventually disagree, and
+// the one that matters for safety is the one furthest from the browser.
+
+let slData = null;
+let slFilters = { q: '', department: '', status: '', overdue: false };
+let slCurrent = null;
+let slWired = false;
+
+const slEsc = t => String(t == null ? '' : t)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const slDay = d => {
+  if (!d) return '—';
+  const x = new Date(String(d).slice(0, 10) + 'T00:00:00');
+  return isNaN(x) ? '—' : x.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+// Overdue is red, due soon amber, unscheduled grey and stated rather than
+// blank — "nobody has put this on a schedule" is a finding, not an absence.
+function slBadge(review) {
+  if (!review) return '';
+  if (review.overdue) return `<span class="sl-badge bad">Overdue ${Math.abs(review.days)}d</span>`;
+  if (review.dueSoon) return `<span class="sl-badge warn">Due in ${review.days}d</span>`;
+  if (review.state === 'unscheduled') return '<span class="sl-badge muted">No review schedule</span>';
+  return `<span class="sl-badge ok">Reviewed · next in ${review.days}d</span>`;
+}
+
+async function loadSopLibrary() {
+  slWireOnce();
+  const list = document.getElementById('sl-list');
+  if (!list) return;
+  list.innerHTML = '<p class="muted">Loading…</p>';
+  const qs = new URLSearchParams();
+  if (slFilters.q) qs.set('q', slFilters.q);
+  if (slFilters.department) qs.set('department', slFilters.department);
+  if (slFilters.status) qs.set('status', slFilters.status);
+  try {
+    slData = await api('/api/sop/documents' + (qs.toString() ? '?' + qs : ''));
+  } catch (err) {
+    list.innerHTML = `<div class="alert-box bad">${slEsc(err.message)}</div>`;
+    return;
+  }
+  slFillFilters();
+  slRender();
+}
+
+function slFillFilters() {
+  const dept = document.getElementById('sl-dept');
+  if (dept && dept.options.length <= 1) {
+    (slData.departments || []).forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.name; o.textContent = d.name;
+      dept.appendChild(o);
+    });
+  }
+  const st = document.getElementById('sl-status');
+  if (st && st.options.length <= 1) {
+    (slData.statuses || []).forEach(x => {
+      const o = document.createElement('option');
+      o.value = x; o.textContent = x;
+      st.appendChild(o);
+    });
+  }
+}
+
+function slRender() {
+  const list = document.getElementById('sl-list');
+  const article = document.getElementById('sl-article');
+  if (!list || !slData) return;
+  article.classList.add('hidden');
+  list.classList.remove('hidden');
+
+  let docs = slData.documents || [];
+  if (slFilters.overdue) docs = docs.filter(d => d.review && d.review.overdue);
+
+  const overdue = (slData.documents || []).filter(d => d.review && d.review.overdue).length;
+  const count = document.getElementById('sl-count');
+  if (count) {
+    count.innerHTML = `${docs.length} of ${slData.total} shown`
+      + (overdue ? ` · <span class="sl-count-bad">${overdue} overdue</span>` : '');
+  }
+
+  if (!docs.length) {
+    list.innerHTML = (slData.total
+      ? '<p class="mb-empty">Nothing matches these filters.</p>'
+      : '<p class="mb-empty">No SOPs yet. Run scripts/import-sop-review.js to bring the 89 across.</p>');
+    return;
+  }
+
+  list.innerHTML = `<div class="sl-rows">${docs.map(d => `
+    <article class="sl-row${d.review && d.review.overdue ? ' sl-row-overdue' : ''}" data-sl-open="${slEsc(d.id)}">
+      <div class="sl-row-head">
+        <span class="sl-row-title">${slEsc(d.title)}</span>
+        ${slBadge(d.review)}
+      </div>
+      <div class="sl-row-meta">
+        <span class="sl-dept">${slEsc(d.department)}</span>
+        ${d.category ? ` · ${slEsc(d.category)}` : ''}
+        · <span class="sl-status sl-status-${slEsc(String(d.status).toLowerCase().replace(/\s+/g, '-'))}">${slEsc(d.status)}</span>
+        ${d.last_reviewed_at ? ` · reviewed ${slEsc(slDay(d.last_reviewed_at))} by ${slEsc(d.last_reviewed_by || '—')}` : ' · never reviewed'}
+      </div>
+      ${d.excerpt ? `<div class="sl-row-excerpt">${slEsc(d.excerpt)}</div>` : '<div class="sl-row-excerpt muted">This SOP has no content.</div>'}
+    </article>`).join('')}</div>`;
+
+  list.querySelectorAll('[data-sl-open]').forEach(el =>
+    el.addEventListener('click', () => slOpen(el.dataset.slOpen)));
+}
+
+async function slOpen(id) {
+  const list = document.getElementById('sl-list');
+  const article = document.getElementById('sl-article');
+  if (!article) return;
+  article.classList.remove('hidden');
+  list.classList.add('hidden');
+  article.innerHTML = '<p class="muted">Loading…</p>';
+  try { slCurrent = await api('/api/sop/documents/' + encodeURIComponent(id)); }
+  catch (err) { article.innerHTML = `<div class="alert-box bad">${slEsc(err.message)}</div>`; return; }
+  slRenderArticle();
+}
+
+function slRenderArticle() {
+  const el = document.getElementById('sl-article');
+  const d = slCurrent;
+  if (!el || !d) return;
+  const slab = d.source_path && /^https?:/i.test(d.source_path)
+    ? `<div class="sl-meta-row"><span>Slab</span><a href="${slEsc(d.source_path)}" target="_blank" rel="noopener noreferrer">original article</a></div>` : '';
+
+  el.innerHTML = `
+    <button class="btn btn-ghost sl-back" id="sl-back">← All SOPs</button>
+    <div class="sl-article-wrap">
+      <div class="sl-article-body">
+        <h2 class="sl-article-title">${slEsc(d.title)}</h2>
+        ${d.body_md ? d.html : '<p class="muted">This SOP has no content yet.</p>'}
+      </div>
+      <aside class="sl-side">
+        ${slBadge(d.review)}
+        <div class="sl-meta-row"><span>Department</span>${slEsc(d.department)}</div>
+        <div class="sl-meta-row"><span>Category</span>${slEsc(d.category || '—')}</div>
+        <div class="sl-meta-row"><span>Status</span>${slEsc(d.status)}</div>
+        <div class="sl-meta-row"><span>Owner</span>${slEsc(d.owner || '—')}</div>
+        <div class="sl-meta-row"><span>Last reviewed</span>${slEsc(slDay(d.last_reviewed_at))}${d.last_reviewed_by ? ' · ' + slEsc(d.last_reviewed_by) : ''}</div>
+        <div class="sl-meta-row"><span>Next review</span>${d.next_review_at ? slEsc(slDay(d.next_review_at)) : 'not scheduled'}</div>
+        <div class="sl-meta-row"><span>Interval</span>${d.review_interval_days ? d.review_interval_days + ' days' : 'none'}</div>
+        <div class="sl-meta-row"><span>Source</span>${slEsc(d.source || '—')}</div>
+        ${slab}
+        ${d.canEdit ? `<div class="sl-side-actions">
+          <button class="btn" id="sl-reviewed">Mark as Reviewed</button>
+          <button class="btn btn-ghost" id="sl-edit">Edit</button>
+        </div>` : '<p class="muted sl-readonly">You have read access to this department.</p>'}
+        ${(d.versions || []).length ? `<div class="sl-versions"><b>History</b>${
+    d.versions.slice(0, 6).map(v => `<div>v${v.version} · ${slEsc(slDay(v.changed_at))} · ${slEsc(v.changed_by || '—')}</div>`).join('')}</div>` : ''}
+      </aside>
+    </div>`;
+
+  document.getElementById('sl-back')?.addEventListener('click', () => {
+    // Re-fetch rather than re-render: a review or an edit has just changed the
+    // badge and the status this list is showing.
+    slCurrent = null;
+    loadSopLibrary();
+  });
+  document.getElementById('sl-reviewed')?.addEventListener('click', slMarkReviewed);
+  document.getElementById('sl-edit')?.addEventListener('click', slEditForm);
+}
+
+async function slMarkReviewed() {
+  const btn = document.getElementById('sl-reviewed');
+  if (!confirm('Mark "' + slCurrent.title + '" as reviewed and correct as written?')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    await api('/api/sop/documents/' + encodeURIComponent(slCurrent.id) + '/reviewed', { method: 'POST', body: {} });
+    toast('Marked as reviewed', 'success');
+    await slOpen(slCurrent.id);
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Mark as Reviewed'; }
+    toast(e.message, 'error');
+  }
+}
+
+function slEditForm() {
+  const d = slCurrent;
+  const el = document.getElementById('sl-article');
+  // Defensive: the article can be opened directly, without the list ever
+  // having been fetched, and a form that throws is worse than one missing a
+  // dropdown option.
+  const meta = slData || {};
+  const depts = (meta.departments || []).filter(x => x.canEdit);
+  const statuses = meta.statuses || ['Current', 'Needs Review', 'Outdated', 'Archived'];
+  const intervals = meta.intervals || [90, 180, 365];
+  el.innerHTML = `
+    <button class="btn btn-ghost sl-back" id="sl-cancel">← Cancel</button>
+    <form id="sl-form" class="sl-form">
+      <label>Title<input name="title" value="${slEsc(d.title)}" required></label>
+      <div class="sl-form-row">
+        <label>Department<select name="department">${(depts.length ? depts : [{ name: d.department }]).map(x =>
+    `<option value="${slEsc(x.name)}"${x.name === d.department ? ' selected' : ''}>${slEsc(x.name)}</option>`).join('')}</select></label>
+        <label>Category<input name="category" value="${slEsc(d.category || '')}"></label>
+      </div>
+      <div class="sl-form-row">
+        <label>Status<select name="status">${statuses.map(x =>
+    `<option value="${slEsc(x)}"${x === d.status ? ' selected' : ''}>${slEsc(x)}</option>`).join('')}</select></label>
+        <label>Review every<select name="review_interval_days">
+          <option value=""${!d.review_interval_days ? ' selected' : ''}>not scheduled</option>
+          ${intervals.map(n =>
+    `<option value="${n}"${Number(d.review_interval_days) === n ? ' selected' : ''}>${n} days</option>`).join('')}
+        </select></label>
+        <label>Owner<input name="owner" value="${slEsc(d.owner || '')}"></label>
+      </div>
+      <label>Body (markdown)<textarea name="body_md" rows="22" spellcheck="true">${slEsc(d.body_md || '')}</textarea></label>
+      <label>What changed (optional)<input name="note" placeholder="kept with the previous version"></label>
+      <div class="sl-form-actions">
+        <button type="button" class="btn btn-ghost" id="sl-cancel2">Cancel</button>
+        <button type="submit" class="btn">Save</button>
+      </div>
+    </form>`;
+
+  const back = () => slOpen(d.id);
+  document.getElementById('sl-cancel')?.addEventListener('click', back);
+  document.getElementById('sl-cancel2')?.addEventListener('click', back);
+  document.getElementById('sl-form')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const body = {
+      title: f.get('title'), department: f.get('department'), category: f.get('category'),
+      status: f.get('status'), owner: f.get('owner'), body_md: f.get('body_md'),
+      review_interval_days: f.get('review_interval_days') === '' ? null : Number(f.get('review_interval_days')),
+      note: f.get('note'),
+    };
+    const btn = e.target.querySelector('button[type=submit]');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await api('/api/sop/documents/' + encodeURIComponent(d.id), { method: 'PATCH', body });
+      toast('Saved', 'success');
+      await slOpen(d.id);
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Save';
+      toast(err.message, 'error');
+    }
+  });
+}
+
+function slWireOnce() {
+  if (slWired) return;
+  slWired = true;
+  let timer = null;
+  document.getElementById('sl-q')?.addEventListener('input', e => {
+    // Debounced: the server searches 50 KB bodies, and a request per keystroke
+    // is what makes a search feel broken.
+    clearTimeout(timer);
+    const v = e.target.value;
+    timer = setTimeout(() => { slFilters.q = v; loadSopLibrary(); }, 250);
+  });
+  document.getElementById('sl-dept')?.addEventListener('change', e => { slFilters.department = e.target.value; loadSopLibrary(); });
+  document.getElementById('sl-status')?.addEventListener('change', e => { slFilters.status = e.target.value; loadSopLibrary(); });
+  document.getElementById('sl-overdue')?.addEventListener('change', e => { slFilters.overdue = e.target.checked; slRender(); });
 }
 
 async function loadMaintenance() {
