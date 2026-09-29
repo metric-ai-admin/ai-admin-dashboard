@@ -12620,34 +12620,50 @@ function eodRenderHtml(data) {
   const ls = S.leasingSync;
   if (ls) {
     const stale = ls.at && (Date.now() - Date.parse(ls.at)) > 36 * 3600 * 1000;
-    // "Has not run yet" is not a failure, and printing it in red sent Lyndsay
-    // an EOD that looked broken on the day the cron shipped.
+
+    // Three independent facts, stacked, never substituting for one another.
     //
-    // Whether it SHOULD have run is answered by comparing the process start to
-    // the last scheduled 05:30, not by a fixed window: if this service came up
-    // after today's 05:30, the job has not had its turn and there is nothing
-    // wrong. If it was already running when 05:30 passed and still wrote no
-    // state, that IS a failure and stays red.
-    const neverRan = !ls.at;
-    P.push(eodSectionHtml('🔄', 'Leasing sync (05:30)',
-      neverRan && !ls.missedItsSlot
-        ? `<span style="color:${EOD.muted}">First run scheduled ${eodEsc(ls.nextRunLabel || 'tomorrow')} 05:30 CT.</span>`
-        : (ls.deleted && ls.deleted.length)
-          ? eodErr(`${ls.deleted.length} lead(s) DELETED from leasing_leads since yesterday `
-            + `(${eodEsc(ls.deleted.map(d => d.id).slice(0, 3).join(', '))}${ls.deleted.length > 3 ? '…' : ''}) — `
-            + 'nothing in this code deletes leads. Check Supabase.')
-          : ls.error ? eodErr(ls.error)
-          : stale ? eodErr(`Last ran ${eodEsc(String(ls.at).slice(0, 16).replace('T', ' '))} — over a day ago. The cron may not be running.`)
-            : `${ls.received} received, <b>${ls.in_range}</b> in range for ${eodEsc(ls.date_from)} → ${eodEsc(ls.date_to)}`
-              + (ls.out_of_range ? ` · ${ls.out_of_range} outside it` : '')
-              // Not red: AppFolio correcting a date moves a lead between weeks,
-              // which changes a count for a good reason and is worth seeing.
-              + ((ls.moved && ls.moved.length)
-                ? `<br><span style="color:${EOD.muted}">${ls.moved.length} lead(s) moved week: `
-                  + eodEsc(ls.moved.slice(0, 3).map(m => `${m.from} → ${m.to}`).join(', '))
-                  + `${ls.moved.length > 3 ? '…' : ''}</span>`
-                : ''),
-      ''));
+    // The deletion warning USED to replace the sync line, which meant a day
+    // with both a failed sync and a deleted lead showed only the deletion —
+    // the failure, the thing that would still be broken tomorrow, vanished.
+    // Each line now answers its own question:
+    //
+    //   1. did the sync run, and what did it do
+    //   2. did any lead change week            (routine, grey)
+    //   3. did any lead stop existing          (nothing here can do that, red)
+    const lines = [];
+
+    // 1 — the run itself. "Has not run yet" is NOT a failure, and printing it
+    // in red sent Lyndsay an EOD that looked broken on the day the cron
+    // shipped. Whether it SHOULD have run is answered by comparing the process
+    // start to the last scheduled 05:30, not by a fixed window.
+    if (!ls.at && !ls.missedItsSlot) {
+      lines.push(`<span style="color:${EOD.muted}">First run scheduled ${eodEsc(ls.nextRunLabel || 'tomorrow')} 05:30 CT.</span>`);
+    } else if (ls.error) {
+      lines.push(eodErr(ls.error));
+    } else if (stale) {
+      lines.push(eodErr(`Last ran ${eodEsc(String(ls.at).slice(0, 16).replace('T', ' '))} — over a day ago. The cron may not be running.`));
+    } else {
+      lines.push(`${ls.received} received, <b>${ls.in_range}</b> in range for ${eodEsc(ls.date_from)} → ${eodEsc(ls.date_to)}`
+        + (ls.out_of_range ? ` · ${ls.out_of_range} outside it` : ''));
+    }
+
+    // 2 — grey: AppFolio correcting a date moves a lead between weeks, which
+    // changes a count for a good reason and is worth seeing without alarm.
+    if (ls.moved && ls.moved.length) {
+      lines.push(`<span style="color:${EOD.muted}">${ls.moved.length} lead(s) moved week: `
+        + eodEsc(ls.moved.slice(0, 3).map(m => `${m.from} → ${m.to}`).join(', '))
+        + `${ls.moved.length > 3 ? '…' : ''}</span>`);
+    }
+
+    // 3 — red, and LAST so it is the line the eye stops on.
+    if (ls.deleted && ls.deleted.length) {
+      lines.push(eodErr(`${ls.deleted.length} lead(s) DELETED from leasing_leads since yesterday `
+        + `(${eodEsc(ls.deleted.map(d => d.id).slice(0, 3).join(', '))}${ls.deleted.length > 3 ? '…' : ''}) — `
+        + 'nothing in this code deletes leads. Check Supabase.'));
+    }
+
+    P.push(eodSectionHtml('🔄', 'Leasing sync (05:30)', lines.join('<br>'), ''));
   }
 
   P.push(eodSectionHtml('📞', 'Call Analyzer',
