@@ -54,6 +54,7 @@ const { registerAllTools } = require('./mcp-tools.cjs');
 // The browser is served this same file at /lib/week.js — not a copy.
 const WEEK = require('./lib/week.js');
 const followups = require('./email-followups.js');
+const kpiRecap = require('./kpi-recap.js');
 const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, identifyCaller } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
@@ -10594,6 +10595,197 @@ async function leasingWeeklyRollup(db) {
   totals.avg_occ = totals.units > 0 ? Math.round((totals.occupied / totals.units) * 1000) / 10 : null;
   return { weekStart, weekEnd, rows, totals };
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// KPI RR AUTOMATION — DRAFT MODE
+// ═════════════════════════════════════════════════════════════════════════════
+// After each Round Rock KPI meeting (ICRR / ICDT) the recording and transcript
+// are prepared for the Round Rock partners — as a DRAFT Arturo approves in the
+// dashboard. The rules live in kpi-recap.js; this is the I/O around them.
+//
+// NOTHING IS SENT. There is no send path in this file: approving sets a status,
+// and kpiRecap.AUTO_SEND is false. Wiring delivery is a later, reviewed change,
+// after Lyndsay has confirmed the recipient list against a real draft.
+//
+// WHAT THE TENANT DOES, verified 2026-09-29 once the two permissions landed:
+// the recurring series shares ONE onlineMeeting, so /transcripts and
+// /recordings return all twenty past occurrences at once, and
+// contentCorrelationId is what pairs a transcript with its own recording. The
+// organizer is officecalendar@, not Lyndsay, which is why this needed its own
+// Teams application access policy grant.
+const KPI_RR_SERIES_IDS = (process.env.KPI_RR_SERIES_IDS || '')
+  .split(',').map(x => x.trim()).filter(Boolean);
+const KPI_LOOKBACK_DAYS = parseInt(process.env.KPI_LOOKBACK_DAYS || '45', 10);
+
+// Past Round Rock occurrences from Lyndsay's calendar, using the DELEGATED
+// token: the app-only one has no Calendars.Read. That is also why the attendee
+// list comes from here and not from the cached meetings file, which stores
+// display names only and would lose every address.
+async function kpiFindMeetings() {
+  const token = await graphAccessToken();
+  const from = new Date(Date.now() - KPI_LOOKBACK_DAYS * 86400000).toISOString();
+  const to = new Date().toISOString();
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX_LYNDSAY)}/calendarView`
+    + `?startDateTime=${from}&endDateTime=${to}&$top=250`
+    + `&$select=id,subject,start,end,organizer,attendees,onlineMeeting,seriesMasterId,isCancelled`;
+  const events = await graphFetchAllPages(url, token);
+  return events.filter(e => !e.isCancelled
+    && e.onlineMeeting && e.onlineMeeting.joinUrl
+    && kpiRecap.isRoundRockMeeting(e, KPI_RR_SERIES_IDS));
+}
+
+// The organizer's Object ID, read out of the join URL's own context rather than
+// looked up: GET /users/{upn} needs User.Read.All, which this app does not have
+// and does not need for anything else.
+function kpiOrganizerIdFromJoinUrl(joinUrl) {
+  const raw = String(joinUrl || '');
+  const m = /%22Oid%22%3a%22([0-9a-f-]{36})%22/i.exec(raw);
+  if (m) return m[1];
+  try {
+    const m2 = /"Oid"\s*:\s*"([0-9a-f-]{36})"/i.exec(decodeURIComponent(raw));
+    return m2 ? m2[1] : null;
+  } catch { return null; }
+}
+
+async function kpiRecapScan() {
+  if (!GRAPH_CONFIGURED || !CRM_CONFIGURED) return null;
+  const db = supabaseAdmin || supabasePublic;
+  try {
+    const meetings = await kpiFindMeetings();
+    if (!meetings.length) return { meetings: 0, drafted: 0 };
+    // One series, one onlineMeeting — so the newest occurrence carries the join
+    // URL for all of them, and its attendee list is the series' list.
+    const event = meetings.sort((a, b) =>
+      String(b.start && b.start.dateTime).localeCompare(String(a.start && a.start.dateTime)))[0];
+    const organizerId = kpiOrganizerIdFromJoinUrl(event.onlineMeeting.joinUrl);
+    if (!organizerId) throw new Error('could not read the organizer id out of the join URL');
+
+    const appToken = await graphMailToken();
+    const om = await teams.resolveOnlineMeeting(fetchFn, appToken, organizerId, event.onlineMeeting.joinUrl);
+    if (!om) throw new Error('the online meeting did not resolve — check the Teams application access policy');
+
+    const base = `https://graph.microsoft.com/v1.0/users/${organizerId}/onlineMeetings/${om.id}`;
+    const hdr = { Authorization: 'Bearer ' + appToken };
+    const listOf = async (kind) => {
+      const r = await fetchFn(`${base}/${kind}`, { headers: hdr });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(`${kind}: ${(j.error && j.error.message) || r.status}`);
+      return j.value || [];
+    };
+    const [transcripts, recordings] = await Promise.all([listOf('transcripts'), listOf('recordings')]);
+
+    const { data: existing } = await db.from('kpi_meeting_recaps').select('content_correlation_id');
+    const pending = kpiRecap.pendingOccurrences(
+      transcripts, (existing || []).map(r => r.content_correlation_id));
+    if (!pending.length) return { meetings: meetings.length, transcripts: transcripts.length, drafted: 0 };
+
+    const { proposed, excluded } = kpiRecap.recipientsFrom(event);
+    let drafted = 0;
+    for (const occ of pending) {
+      const paired = kpiRecap.artifactsFor([occ], recordings);
+      const transcript = paired.transcript;
+      const recording = paired.recording;
+      let text = '';
+      let speakers = [];
+      try {
+        const vtt = await teams.fetchTranscriptVtt(fetchFn, appToken, organizerId, om.id, transcript.id);
+        text = teams.redactConfidential(teams.parseVtt(vtt));
+        speakers = teams.speakersFromVtt(vtt);
+      } catch (e) { logLine(`[kpi-recap] transcript ${transcript.id} unavailable: ${e.message}`); }
+
+      let summary = null;
+      if (text) {
+        try {
+          const s = await summarizeMeetingTranscript(
+            { subject: event.subject, date: kpiRecap.fmtDate(transcript.createdDateTime) }, text);
+          summary = s && s.summary ? String(s.summary) : null;
+        } catch (e) { logLine(`[kpi-recap] summary failed: ${e.message}`); }
+      }
+
+      const draft = kpiRecap.composeDraft({
+        subject: event.subject,
+        meetingDate: transcript.createdDateTime,
+        summary,
+        recordingUrl: recording ? recording.recordingContentUrl : null,
+        transcriptAttached: !!text,
+      });
+
+      const { error } = await db.from('kpi_meeting_recaps').upsert({
+        content_correlation_id: transcript.contentCorrelationId,
+        online_meeting_id: om.id,
+        organizer_id: organizerId,
+        transcript_id: transcript.id,
+        recording_id: recording ? recording.id : null,
+        subject: event.subject,
+        meeting_date: kpiRecap.fmtDate(transcript.createdDateTime),
+        started_at: transcript.createdDateTime,
+        ended_at: transcript.endDateTime || null,
+        proposed_to: proposed.map(p => p.address),
+        excluded: excluded.map(e => `${e.name} <${e.address}>`),
+        final_to: [],
+        summary,
+        transcript_text: text || null,
+        speakers,
+        recording_url: recording ? recording.recordingContentUrl : null,
+        email_subject: draft.subject,
+        email_body: draft.body,
+        status: 'draft',
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'content_correlation_id' });
+      if (error) { logLine(`[kpi-recap] upsert failed: ${error.message}`); continue; }
+      drafted++;
+    }
+    logLine(`[kpi-recap] ${meetings.length} meeting(s) · ${transcripts.length} transcript(s) · ${drafted} draft(s)`);
+    return { meetings: meetings.length, transcripts: transcripts.length, drafted };
+  } catch (e) {
+    logLine(`[kpi-recap] ERROR: ${e.message}`);
+    return { error: e.message };
+  }
+}
+
+// ---- the dashboard's side ---------------------------------------------------
+
+app.get('/api/kpi-recaps', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('kpi_meeting_recaps')
+      .select('id,subject,meeting_date,status,proposed_to,excluded,final_to,summary,email_subject,email_body,recording_url,speakers,approved_by,approved_at,sent_at,error')
+      .order('meeting_date', { ascending: false }).limit(50);
+    if (error) throw new Error(error.message);
+    res.json({ autoSend: kpiRecap.AUTO_SEND, recaps: data || [] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/kpi-recaps/run-now', requireAuth, requireRole('admin'), async (req, res) => {
+  const r = await kpiRecapScan();
+  if (r && r.error) return res.status(500).json(r);
+  res.json({ ok: true, ...(r || {}) });
+});
+
+// Approve MARKS the draft. It does not send: there is no send path yet, and
+// adding one is a separate reviewed change. The response says so, so nobody
+// clicks it expecting mail to leave.
+app.post('/api/kpi-recaps/:id/approve', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const finalTo = Array.isArray(req.body && req.body.final_to) ? req.body.final_to : null;
+    const { data: row, error: rErr } = await db.from('kpi_meeting_recaps')
+      .select('proposed_to').eq('id', req.params.id).single();
+    if (rErr || !row) return res.status(404).json({ error: 'Recap not found' });
+    const { data, error } = await db.from('kpi_meeting_recaps').update({
+      status: 'approved',
+      final_to: finalTo || row.proposed_to || [],
+      approved_by: actorName(req),
+      approved_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).eq('id', req.params.id).select().single();
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, recap: data, sent: false,
+      note: 'Approved. Nothing was sent — automatic delivery is off until the recipient list is confirmed.' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // Accounting summary: task counts, bills due within 7 days (unpaid), W9 issues.
 async function accountingSummary(db) {
