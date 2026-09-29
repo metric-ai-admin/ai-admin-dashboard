@@ -10423,9 +10423,20 @@ function svcAddDays(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d
 async function leasingWeeklyRollup(db) {
   const today = svcTodayCT();
   const weekStart = WEEK.weekStartYMD(today, WEEK.SUN_SAT);
+  const weekEnd = WEEK.weekEndYMD(today, WEEK.SUN_SAT);
   const [occR, leadsR, showR, appR, lhR] = await Promise.all([
     db.from('leasing_occupancy').select('property_name,occupancy_pct,total_units,occupied_units'),
-    db.from('leasing_leads').select('property,week_ending').gte('week_ending', weekStart),
+    // ONE week, not "this week and every week after it". This was
+    // `.gte('week_ending', weekStart)`, which is open-ended: for the week
+    // ending 2026-09-26 it returned 88 rather than the 68 the Goal Board
+    // shows, by adding the following week on top. It read correctly only
+    // because no lead happened to be dated past the current week — and
+    // AppFolio lets a first contact date be in the future.
+    //
+    // An equality, not a range: week_ending is a stored Saturday, so the week
+    // IS the value. A range on a bucket column invites exactly the off-by-one
+    // this is fixing.
+    db.from('leasing_leads').select('property,week_ending').eq('week_ending', weekEnd),
     db.from('leasing_showings').select('property_name,showing_date,status').gte('showing_date', weekStart),
     db.from('leasing_applications').select('property_name,application_date,status').gte('application_date', weekStart),
     db.from('leasing_lease_history').select('property_name,move_in_date').gte('move_in_date', weekStart),
@@ -10447,7 +10458,7 @@ async function leasingWeeklyRollup(db) {
     return t;
   }, { traffic: 0, tours: 0, apps: 0, approved: 0, moveins: 0, units: 0, occupied: 0 });
   totals.avg_occ = totals.units > 0 ? Math.round((totals.occupied / totals.units) * 1000) / 10 : null;
-  return { weekStart, rows, totals };
+  return { weekStart, weekEnd, rows, totals };
 }
 
 // Accounting summary: task counts, bills due within 7 days (unpaid), W9 issues.
@@ -10482,14 +10493,19 @@ async function reportLeasingSection() {
   const base = { key: 'leasing_board', icon: '🎯', title: 'Weekly Leasing Board', owner: 'Katie',
     status: 'auto', last_updated: new Date().toISOString() };
   try {
-    const { rows, totals, weekStart } = await leasingWeeklyRollup(client);
+    const { rows, totals, weekStart, weekEnd } = await leasingWeeklyRollup(client);
     const severity = totals.avg_occ == null ? 'amber' : (totals.avg_occ < 80 ? 'red' : (totals.avg_occ < 90 ? 'amber' : 'green'));
     return { ...base, content: {
       leasing_board: true, severity,
-      message: `Live from AppFolio — week of ${weekStart}`,
+      // Both ends, because "week of 09/27" next to a Goal Board labelled
+      // 10/03 is two names for one week and reads as two different weeks.
+      message: `Live from AppFolio — week of ${weekStart} to ${weekEnd}`,
       // Back-compat fields the existing card reads, now from live occupancy.
       latest: {
-        week_ending: weekStart,
+        // The SATURDAY that closes the week. This held weekStart, so a field
+        // named week_ending carried the week's first day — and the Goal Board
+        // beside it keys on the Saturday, so the two never agreed.
+        week_ending: weekEnd,
         submitted_by: 'Auto (Supabase)',
         status: 'live',
         occupancy_pct: totals.avg_occ,

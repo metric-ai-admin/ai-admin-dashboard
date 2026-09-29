@@ -216,6 +216,32 @@ t('the leasing roll-up asks for SUN_SAT by name, not DASHBOARD', () => {
     'leasingWeeklyRollup follows DASHBOARD again, so Phase 3 will silently move it');
 });
 
+t('the roll-up counts ONE week of leads, not every week from here on', () => {
+  // `.gte('week_ending', weekStart)` returned the week AND everything after it:
+  // 88 for the week ending 2026-09-26 where the Goal Board shows 68. It looked
+  // right only because no lead was dated past the current week.
+  const src = read('server.js');
+  const i = src.indexOf('async function leasingWeeklyRollup(');
+  const body = src.slice(i, i + 2200);
+  assert.ok(/\.eq\('week_ending',\s*weekEnd\)/.test(body),
+    'the leads query no longer pins week_ending to the closing Saturday');
+  assert.ok(!/from\('leasing_leads'\)[\s\S]{0,120}\.gte\('week_ending'/.test(body),
+    'the open-ended week_ending filter is back — it counts future weeks too');
+});
+
+t('the Daily Report card labels week_ending with the closing Saturday', () => {
+  // A field called week_ending held the week's FIRST day, so the card and the
+  // Goal Board next to it named the same week differently.
+  const src = read('server.js');
+  const i = src.indexOf('async function reportLeasingSection(');
+  assert.ok(i > 0, 'reportLeasingSection is gone — update this test');
+  const body = src.slice(i, i + 1600);
+  assert.ok(/week_ending:\s*weekEnd\b/.test(body),
+    'the card is labelling week_ending with something other than weekEnd');
+  assert.ok(!/week_ending:\s*weekStart\b/.test(body),
+    'the card is back to calling the first day of the week its ending');
+});
+
 t('the browser is served the module before app.js runs', () => {
   const html = read('public/index.html');
   const week = html.indexOf('/lib/week.js');
