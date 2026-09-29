@@ -12632,13 +12632,21 @@ function eodRenderHtml(data) {
     P.push(eodSectionHtml('🔄', 'Leasing sync (05:30)',
       neverRan && !ls.missedItsSlot
         ? `<span style="color:${EOD.muted}">First run scheduled ${eodEsc(ls.nextRunLabel || 'tomorrow')} 05:30 CT.</span>`
-        : (ls.vanished && ls.vanished.length)
-          ? eodErr(`${ls.vanished.reduce((n, v) => n + v.gone.length, 0)} lead(s) disappeared from `
-            + `week ${eodEsc(ls.vanished.map(v => v.week_ending).join(', '))} since yesterday — nothing in the code deletes leads.`)
+        : (ls.deleted && ls.deleted.length)
+          ? eodErr(`${ls.deleted.length} lead(s) DELETED from leasing_leads since yesterday `
+            + `(${eodEsc(ls.deleted.map(d => d.id).slice(0, 3).join(', '))}${ls.deleted.length > 3 ? '…' : ''}) — `
+            + 'nothing in this code deletes leads. Check Supabase.')
           : ls.error ? eodErr(ls.error)
           : stale ? eodErr(`Last ran ${eodEsc(String(ls.at).slice(0, 16).replace('T', ' '))} — over a day ago. The cron may not be running.`)
             : `${ls.received} received, <b>${ls.in_range}</b> in range for ${eodEsc(ls.date_from)} → ${eodEsc(ls.date_to)}`
-              + (ls.out_of_range ? ` · ${ls.out_of_range} outside it` : ''),
+              + (ls.out_of_range ? ` · ${ls.out_of_range} outside it` : '')
+              // Not red: AppFolio correcting a date moves a lead between weeks,
+              // which changes a count for a good reason and is worth seeing.
+              + ((ls.moved && ls.moved.length)
+                ? `<br><span style="color:${EOD.muted}">${ls.moved.length} lead(s) moved week: `
+                  + eodEsc(ls.moved.slice(0, 3).map(m => `${m.from} → ${m.to}`).join(', '))
+                  + `${ls.moved.length > 3 ? '…' : ''}</span>`
+                : ''),
       ''));
   }
 
@@ -12960,10 +12968,16 @@ async function leasingWeekSnapshot(db, todayCT) {
   }
 
   const byWeek = new Map();
+  // Where every id lives NOW. An id that leaves a week has either moved to
+  // another one or stopped existing, and those mean opposite things: AppFolio
+  // correcting a first_contact_date moves a lead and is routine, while a lead
+  // ceasing to exist cannot be done by any code here.
+  const weekOf = new Map();
   rows.forEach(r => {
     if (!r.week_ending || !r.appfolio_id) return;
     if (!byWeek.has(r.week_ending)) byWeek.set(r.week_ending, []);
     byWeek.get(r.week_ending).push(r.appfolio_id);
+    weekOf.set(r.appfolio_id, r.week_ending);
   });
   const weeks = [...byWeek.keys()].sort().slice(-LEASING_SNAPSHOT_WEEKS);
 
@@ -13001,18 +13015,32 @@ async function leasingWeekSnapshot(db, todayCT) {
   // What LEFT a week since yesterday. An upsert cannot remove a row, so this
   // should always be empty; when it is not, the ids are in the log the same
   // morning instead of being unrecoverable a day later.
-  const vanished = [];
+  const moved = [];      // still in the table, under another week — routine
+  const deleted = [];    // not in the table at all — nothing here can do that
   payload.forEach(p => {
     const before = priorBy.get(p.week_ending);
     if (!before) return;                      // no snapshot yesterday: nothing to compare
     const now = new Set(p.appfolio_ids);
-    const gone = [...before].filter(id => !now.has(id));
-    if (gone.length) vanished.push({ week_ending: p.week_ending, gone });
+    [...before].filter(id => !now.has(id)).forEach(id => {
+      const to = weekOf.get(id);
+      if (to) moved.push({ id, from: p.week_ending, to });
+      else deleted.push({ id, from: p.week_ending });
+    });
   });
-  vanished.forEach(v => logLine(`[leasing-sync] ${v.gone.length} lead(s) LEFT week ${v.week_ending} `
-    + `since yesterday — no code deletes leasing_leads, so check Supabase: ${v.gone.join(', ')}`));
 
-  return { weeks: payload.length, vanished };
+  // Logged apart, because they warrant different reactions. A move is worth
+  // knowing about — it changes a week's count — but it is the system working.
+  if (moved.length) {
+    logLine(`[leasing-sync] ${moved.length} lead(s) moved week: `
+      + moved.map(m => `${m.id} ${m.from} -> ${m.to}`).join(', '));
+  }
+  if (deleted.length) {
+    logLine(`[leasing-sync] ${deleted.length} lead(s) DELETED from leasing_leads — `
+      + `nothing in this code deletes leads, so check Supabase: `
+      + deleted.map(d => `${d.id} (was ${d.from})`).join(', '));
+  }
+
+  return { weeks: payload.length, moved, deleted };
 }
 
 async function leasingCronSync() {
@@ -13027,7 +13055,7 @@ async function leasingCronSync() {
   // After the sync, so the snapshot reflects what the day's pull left behind.
   // A failure here must not fail the run: the sync has already succeeded and
   // its numbers are what matter.
-  let snapshot = { weeks: 0, vanished: [] };
+  let snapshot = { weeks: 0, moved: [], deleted: [] };
   try {
     snapshot = await leasingWeekSnapshot(supabaseAdmin || supabasePublic, todayCT);
   } catch (e) {
@@ -13044,9 +13072,10 @@ async function leasingCronSync() {
     seen: r.seen ?? null,
     source: r.source || null,
     snapshot_weeks: snapshot.weeks,
-    // Surfaced on the summary so the EOD can say it out loud rather than
-    // leaving it in a log nobody opens.
-    vanished: snapshot.vanished,
+    // Both surfaced so the EOD can say them out loud rather than leaving them
+    // in a log nobody opens — and say them DIFFERENTLY, since one is routine.
+    moved: snapshot.moved,
+    deleted: snapshot.deleted,
     error: null,
   };
   // Written where the EOD can read it. A cron whose only trace is a log line
