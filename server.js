@@ -10795,6 +10795,20 @@ const ctDateOf = (iso) => {
   catch { return null; }
 };
 
+// The calendar date of an ALL-DAY event, taken from the string as written.
+//
+// Graph reports an all-day event as naive midnight-to-midnight ("2026-09-28
+// T00:00:00") and labels the zone UTC. Those are floating dates, not instants:
+// the conference is on the 28th wherever you read it from. Running them
+// through ctDateOf converts midnight UTC to 7pm Central the evening BEFORE,
+// which moved a three-day conference a day early at both ends — it showed on
+// Sunday the 27th and was gone by Wednesday the 30th. So: slice the date off,
+// convert nothing. Timed meetings keep ctDateOf, where the instant is real.
+const allDayYMD = (iso) => {
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(iso || ''));
+  return m ? m[1] : null;
+};
+
 // Summarize one transcript. Returns { attendees, key_decisions, action_items, summary }.
 async function summarizeMeetingTranscript(meta, transcriptText) {
   const system = 'You summarize an internal team meeting at Metric Property Management (a property '
@@ -11607,9 +11621,12 @@ async function mrMeetings() {
       // Graph gives all-day events an EXCLUSIVE end (a one-day event on the
       // 29th ends on the 30th), hence the strict <.
       if (m.allDay) {
-        const from = ctDateOf(m.startIso);
-        const to = m.endIso ? ctDateOf(m.endIso) : from;
-        if (!(from <= todayCT && todayCT < to) && from !== todayCT) return false;
+        const from = allDayYMD(m.startIso);
+        if (!from) return false;
+        const to = m.endIso ? allDayYMD(m.endIso) : null;
+        // No end, or an end that is not after the start: treat it as one day.
+        if (to && to > from) { if (!(from <= todayCT && todayCT < to)) return false; }
+        else if (from !== todayCT) return false;
       } else if (ctDateOf(m.startIso) !== todayCT) return false;
       // Personal/private events: subject markers, "free" (not a real commitment),
       // or organized from a personal (non-Metric consumer) email account.
