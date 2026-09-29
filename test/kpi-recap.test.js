@@ -33,6 +33,13 @@ const REAL_EVENT = {
 };
 
 console.log('draft mode is not optional');
+t('the AI summary is OFF — Lyndsay asked for recording and transcript', () => {
+  // The 2026-09-23 summary discussed a cash shortfall, the balance on hand
+  // against a tax bill, and an investor look-back — model-written text going
+  // verbatim to people outside the company. Whether that is wanted is hers.
+  assert.strictEqual(K.INCLUDE_SUMMARY, false,
+    'INCLUDE_SUMMARY is on. That is for Lyndsay to decide, not a default.');
+});
 t('automatic sending is OFF', () => {
   assert.strictEqual(K.AUTO_SEND, false,
     'AUTO_SEND is on. It stays off until Lyndsay has confirmed the recipients against a real draft.');
@@ -153,16 +160,28 @@ t('the recording is offered on request, never as a link or an attachment', () =>
   // which nobody has asked for.
   const d = K.composeDraft({ subject: 'KPI ICRR & ICDT + Metric', meetingDate: '2026-09-23T17:59:00Z',
     summary: '<p>Occupancy discussed.</p>', recordingUrl: 'https://graph.microsoft.com/v1.0/users/x/rec', transcriptAttached: true });
-  assert.ok(/available on request/i.test(d.body), 'the draft does not offer the recording on request');
+  assert.strictEqual(
+    /The transcript is attached and the recording is available on request\./.test(d.body), true,
+    'the agreed sentence is not in the body');
+  assert.ok(!/are below/i.test(d.body),
+    'the body still announces the recording "below" and then offers it on request');
   assert.ok(!/graph\.microsoft\.com/.test(d.body), 'a Graph URL leaked into the email body');
   assert.ok(!/<a /i.test(d.body), 'the body still contains a link');
   assert.ok(/transcript is attached/i.test(d.body));
   assert.strictEqual(d.subject, 'KPI ICRR & ICDT + Metric — recording & transcript (2026-09-23)');
 });
-t('a missing recording is stated, not quietly dropped', () => {
-  const d = K.composeDraft({ subject: 'X', meetingDate: '2026-09-23T00:00:00Z', transcriptAttached: false });
-  assert.ok(/not available/i.test(d.body), 'the draft hides that there is no recording');
-  assert.ok(/transcript is not available/i.test(d.body));
+t('each missing piece is stated, not quietly dropped', () => {
+  const none = K.composeDraft({ subject: 'X', meetingDate: '2026-09-23T00:00:00Z', transcriptAttached: false });
+  assert.ok(/Neither a recording nor a transcript/i.test(none.body));
+  const noRec = K.composeDraft({ subject: 'X', meetingDate: '2026-09-23T00:00:00Z', transcriptAttached: true });
+  assert.ok(/No recording is available/i.test(noRec.body));
+  const noTr = K.composeDraft({ subject: 'X', meetingDate: '2026-09-23T00:00:00Z', recordingUrl: 'u', transcriptAttached: false });
+  assert.ok(/No transcript is available/i.test(noTr.body));
+});
+t('with the summary off, the draft carries no Summary section', () => {
+  const d = K.composeDraft({ subject: 'X', meetingDate: '2026-09-23T00:00:00Z',
+    recordingUrl: 'u', transcriptAttached: true });
+  assert.ok(!/Summary/i.test(d.body), 'a Summary heading appeared without a summary');
 });
 t('the subject carries the meeting date, not today', () => {
   assert.ok(K.composeDraft({ subject: 'X', meetingDate: '2026-08-26T17:57:00Z' }).subject.endsWith('(2026-08-26)'));

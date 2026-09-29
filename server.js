@@ -10647,7 +10647,7 @@ function kpiOrganizerIdFromJoinUrl(joinUrl) {
   } catch { return null; }
 }
 
-async function kpiRecapScan() {
+async function kpiRecapScan(force) {
   if (!GRAPH_CONFIGURED || !CRM_CONFIGURED) return null;
   const db = supabaseAdmin || supabasePublic;
   try {
@@ -10674,9 +10674,16 @@ async function kpiRecapScan() {
     };
     const [transcripts, recordings] = await Promise.all([listOf('transcripts'), listOf('recordings')]);
 
-    const { data: existing } = await db.from('kpi_meeting_recaps').select('content_correlation_id');
-    const pending = kpiRecap.pendingOccurrences(
-      transcripts, (existing || []).map(r => r.content_correlation_id));
+    // `force` re-drafts the most recent occurrence even though it already has a
+    // row — for when the template changed, not for routine runs. It overwrites
+    // a DRAFT; an approved or sent one is left alone, because rewriting what
+    // someone already signed off is not a refresh.
+    const { data: existing } = await db.from('kpi_meeting_recaps')
+      .select('content_correlation_id,status');
+    const locked = (existing || [])
+      .filter(r => !force || r.status !== 'draft')
+      .map(r => r.content_correlation_id);
+    const pending = kpiRecap.pendingOccurrences(transcripts, locked);
     if (!pending.length) return { meetings: meetings.length, transcripts: transcripts.length, drafted: 0 };
 
     const { proposed, excluded } = kpiRecap.recipientsFrom(event);
@@ -10693,8 +10700,10 @@ async function kpiRecapScan() {
         speakers = teams.speakersFromVtt(vtt);
       } catch (e) { logLine(`[kpi-recap] transcript ${transcript.id} unavailable: ${e.message}`); }
 
+      // Off by default — see INCLUDE_SUMMARY in kpi-recap.js. Skipping it also
+      // skips the model call, so a run costs nothing extra to leave off.
       let summary = null;
-      if (text) {
+      if (text && kpiRecap.INCLUDE_SUMMARY) {
         try {
           const s = await summarizeMeetingTranscript(
             { subject: event.subject, date: kpiRecap.fmtDate(transcript.createdDateTime) }, text);
@@ -10758,7 +10767,7 @@ app.get('/api/kpi-recaps', requireMetricAdmin, async (req, res) => {
 });
 
 app.post('/api/kpi-recaps/run-now', requireMetricAdmin, async (req, res) => {
-  const r = await kpiRecapScan();
+  const r = await kpiRecapScan(!!(req.body && req.body.force));
   if (r && r.error) return res.status(500).json(r);
   res.json({ ok: true, ...(r || {}) });
 });

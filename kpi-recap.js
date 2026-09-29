@@ -27,6 +27,17 @@
 // commit someone reviews, not a value someone types into a dashboard at 6pm.
 const AUTO_SEND = false;
 
+// The AI summary is OFF.
+//
+// Lyndsay asked for the recording and the transcript. The summary was my
+// addition, and it is not a neutral one: the 2026-09-23 recap it produced
+// discussed a cash shortfall, the balance on hand against an upcoming tax bill,
+// and an investor look-back document — accurate, and written by a model, going
+// verbatim to people outside the company. Whether that is wanted is hers to
+// decide, not a default to inherit. Turning it on is a one-line change here,
+// reviewed, and the draft is unaffected other than losing the section.
+const INCLUDE_SUMMARY = false;
+
 // Held back pending Lyndsay's confirmation.
 //
 // Both appear as display names in the invitation, neither is in dashboard_users,
@@ -142,8 +153,7 @@ function composeDraft(o) {
 
   const lines = [];
   lines.push('<p>Hi all,</p>');
-  lines.push(`<p>Thank you for joining the ${esc(o.subject || 'KPI meeting')} on ${esc(date)}. `
-    + 'The recording and transcript are below.</p>');
+  lines.push(`<p>Thank you for joining the ${esc(o.subject || 'KPI meeting')} on ${esc(date)}.</p>`);
 
   if (o.summary) {
     lines.push('<p><b>Summary</b></p>');
@@ -157,19 +167,24 @@ function composeDraft(o) {
   // a tenant setting nobody has asked to change. So the draft says what is
   // true: the recording exists and they can ask for it. The Graph URL is still
   // stored on the row, for whoever fetches it.
-  lines.push(o.recordingUrl
-    ? '<p><b>Recording:</b> available on request.</p>'
-    : '<p><b>Recording:</b> not available for this meeting.</p>');
-  lines.push(o.transcriptAttached
-    ? '<p>The full transcript is attached.</p>'
-    : '<p>The transcript is not available for this meeting.</p>');
+  // One sentence covering both, so the email does not announce a recording
+  // "below" and then offer it on request two lines later.
+  if (o.transcriptAttached && o.recordingUrl) {
+    lines.push('<p>The transcript is attached and the recording is available on request.</p>');
+  } else if (o.transcriptAttached) {
+    lines.push('<p>The transcript is attached. No recording is available for this meeting.</p>');
+  } else if (o.recordingUrl) {
+    lines.push('<p>The recording is available on request. No transcript is available for this meeting.</p>');
+  } else {
+    lines.push('<p>Neither a recording nor a transcript is available for this meeting.</p>');
+  }
   lines.push('<p>Best regards,<br>Metric Property Management</p>');
 
   return { subject, body: lines.join('\n') };
 }
 
 module.exports = {
-  AUTO_SEND, PENDING_CONFIRMATION, INTERNAL_DOMAINS, RR_SUBJECT_RE,
+  AUTO_SEND, INCLUDE_SUMMARY, PENDING_CONFIRMATION, INTERNAL_DOMAINS, RR_SUBJECT_RE,
   isRoundRockMeeting, isInternal, domainOf,
   recipientsFrom, artifactsFor, pendingOccurrences,
   composeDraft, fmtDate,
