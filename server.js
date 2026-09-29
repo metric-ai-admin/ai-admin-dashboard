@@ -13183,9 +13183,17 @@ cron.schedule('0 18 * * *', () => {
 registerMetricRoutes(app, supabaseAdmin || supabasePublic);
 
 // ---- Boot -------------------------------------------------------------------
-app.listen(PORT, () => {
-  logLine(`AI Admin Dashboard listening on http://localhost:${PORT}`);
-  console.log(`AI Admin Dashboard running at http://localhost:${PORT}`);
+// Bind to loopback ONLY off Render. On 2026-09-29 a stray local process ran for
+// 22 minutes on 0.0.0.0 holding the production Supabase service-role key, the
+// Graph credentials and the AppFolio keys — reachable from any machine on the
+// same WiFi. Crons were correctly off, so nothing fired, but the HTTP surface
+// was open to the network. A laptop has no reason to serve this to anyone but
+// itself. Render sets RENDER=true itself, so production keeps listening on all
+// interfaces, which is how its proxy reaches the process.
+const HOST = process.env.RENDER ? '0.0.0.0' : '127.0.0.1';
+app.listen(PORT, HOST, () => {
+  logLine(`AI Admin Dashboard listening on http://${HOST}:${PORT}`);
+  console.log(`AI Admin Dashboard running at http://${HOST}:${PORT}`);
 });
 
 // Keep-alive self-ping every 10 minutes. Only in production against the public
