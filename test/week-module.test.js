@@ -200,6 +200,22 @@ t('the Goal Board does not decide which day closes a week', () => {
     'the Goal Board no longer asks the module which day closes a week');
 });
 
+t('the leasing roll-up asks for SUN_SAT by name, not DASHBOARD', () => {
+  // leasingWeeklyRollup feeds the Daily Report's "Weekly Leasing Board" (Katie)
+  // and the EOD leasing section (Lyndsay). It ran Mon–Sun until 2026-09-29, a
+  // day out from the Goal Board it is read next to. Following DASHBOARD would
+  // fix it today and break it again the moment Phase 3 flips — so it names the
+  // convention, and this is the check that keeps it named.
+  const src = read('server.js');
+  const i = src.indexOf('async function leasingWeeklyRollup(');
+  assert.ok(i > 0, 'leasingWeeklyRollup is gone — update this test');
+  const body = src.slice(i, i + 900);
+  assert.ok(/weekStartYMD\([^)]*WEEK\.SUN_SAT\)/.test(body),
+    'leasingWeeklyRollup no longer asks for SUN_SAT — a leasing number on a non-leasing week');
+  assert.ok(!/WEEK\.DASHBOARD/.test(body),
+    'leasingWeeklyRollup follows DASHBOARD again, so Phase 3 will silently move it');
+});
+
 t('the browser is served the module before app.js runs', () => {
   const html = read('public/index.html');
   const week = html.indexOf('/lib/week.js');

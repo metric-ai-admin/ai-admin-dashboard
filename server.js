@@ -10401,16 +10401,28 @@ function svcAddDays(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d
 // Returns { weekStart, rows:[{property,occ,total_units,occupied_units,traffic,
 // tours,apps,approved,moveins}], totals }.
 //
-// NOTE, and it is a real one: this is called "leasing" but it is NOT on the
-// leasing week. It is Mon–Sun (WEEK.DASHBOARD) while leasing_leads.week_ending
-// is Sun–Sat, so this roll-up and the Leads panel describe different seven-day
-// windows for the same properties. That predates Phase 2 — the old comment
-// justified it with "matching Postgres date_trunc('week')", which is true of
-// date_trunc but was never a reason for this. Left as-is here because Phase 2
-// changes nothing visible; Phase 3 closes the gap by flipping DASHBOARD.
+// SUN_SAT BY NAME, not WEEK.DASHBOARD.
+//
+// This is a leasing roll-up, and leasing weeks are Sun–Sat (migration 064). It
+// ran on Mon–Sun until 2026-09-29, so it and the Leads panel described
+// different seven-day windows for the same properties — the Daily Report card
+// Katie owns and the EOD section Lyndsay reads were a day out from the Goal
+// Board. The old comment justified Monday with "matching Postgres
+// date_trunc('week')", which is true OF date_trunc and was never a reason for
+// this.
+//
+// Asking for SUN_SAT by name rather than following DASHBOARD is deliberate:
+// this must not move again when Phase 3 flips the rest of the dashboard, for
+// the same reason leasing_leads must not — its numbers are compared against
+// rows keyed on a Saturday.
+//
+// What this changed in practice, measured on 2026-09-29: traffic not at all,
+// and it cannot — week_ending is always a Saturday, and the only day between
+// the Sunday start and the Monday start is a Sunday, so no row can fall in the
+// gap. Tours, applications and move-ins gain the Sunday, which is the point.
 async function leasingWeeklyRollup(db) {
   const today = svcTodayCT();
-  const weekStart = WEEK.weekStartYMD(today, WEEK.DASHBOARD);
+  const weekStart = WEEK.weekStartYMD(today, WEEK.SUN_SAT);
   const [occR, leadsR, showR, appR, lhR] = await Promise.all([
     db.from('leasing_occupancy').select('property_name,occupancy_pct,total_units,occupied_units'),
     db.from('leasing_leads').select('property,week_ending').gte('week_ending', weekStart),
