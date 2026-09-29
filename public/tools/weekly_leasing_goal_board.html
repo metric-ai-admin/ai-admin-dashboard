@@ -7,6 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Archivo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<!-- The same week module the server and the dashboard use, served from /lib.
+     This page has renamed its week helper on every boundary change; now it
+     asks instead of deciding. -->
+<script src="/lib/week.js"></script>
 <style>
 :root{
   --bg:#EDF0F6; --card:#FFFFFF; --card2:#F7F9FC;
@@ -996,8 +1000,8 @@ function weekEndDate(weekIdx){
   if(LIVE_MODE && LIVE_COL!==null && weekIdx===LIVE_COL && LIVE_WEEK_ENDING){
     return new Date(LIVE_WEEK_ENDING+"T00:00:00");
   }
-  // +6 from Sunday = the Saturday that closes the week.
-  const d=sundayOf(weekIdx); d.setDate(d.getDate()+6); return d;
+  // Which day closes the week is lib/week.js's to decide, not this file's.
+  return new Date(MetricWeek.leasingWeekEnding(isoOf(sundayOf(weekIdx)))+"T00:00:00");
 }
 function weekEndMD(weekIdx){ return fmtMD(weekEndDate(weekIdx)); }
 function isoOf(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,"0"), day=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}`; }
@@ -2010,7 +2014,10 @@ window.getLeasingPayload = function(){
    Everything referenced is in scope inside this IIFE. */
 function weekIdxForEnding(weekEndingISO){
   var end=new Date(weekEndingISO+"T00:00:00");
-  var w0=sundayOf(0); w0.setDate(w0.getDate()+6); // native SUNDAY closing week 0 (Mon + 6)
+  // The day that closes week 0. The comment here used to say "SUNDAY closing
+  // week 0 (Mon + 6)", left over from the Mon–Sun spell; it is the SATURDAY,
+  // and lib/week.js is what says so.
+  var w0=new Date(MetricWeek.leasingWeekEnding(isoOf(sundayOf(0)))+"T00:00:00");
   return Math.round((end - w0)/(7*24*3600*1000));
 }
 function liveNarrative(){

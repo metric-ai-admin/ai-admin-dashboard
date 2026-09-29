@@ -685,21 +685,14 @@ async function leasingLoadGoalBoard(week, range) {
 // "Last Week" = the last COMPLETE Sun–Sat week. On Monday 2026-09-28 that is
 // 09/20 (Sunday) through 09/26 (Saturday).
 //
-// Sun–Sat by Lyndsay's decision; AppFolio has no fixed week either way. Note
-// that leasing is the only module here on a Sunday start — everything else
-// computes -((getDay() + 6) % 7) — so a week-over-week comparison across
-// modules is comparing different seven-day windows.
+// Sun–Sat by Lyndsay's decision; AppFolio has no fixed week either way. Leasing
+// is still the only module on a Sunday start — everything else uses
+// WEEK.DASHBOARD, which is Mon–Sun until Phase 3 — so a week-over-week
+// comparison ACROSS modules is still comparing different seven-day windows.
 //
-// Must agree with leasingLastCompleteWeekEnding in server.js.
+// This no longer has to "agree with the server": both call the same file.
 function leasingDefaultRange() {
-  const now = new Date();
-  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  // Days back to the last Saturday that has actually finished. On a Saturday go
-  // back a full week rather than counting today, which is still in progress.
-  const back = d.getDay() === 6 ? 7 : d.getDay() + 1;   // 0=Sun..6=Sat
-  const lastSat = new Date(d); lastSat.setDate(d.getDate() - back);
-  const lastSun = new Date(lastSat); lastSun.setDate(lastSat.getDate() - 6);
-  return { from: lastSun.toLocaleDateString('en-CA'), to: lastSat.toLocaleDateString('en-CA') };
+  return MetricWeek.lastCompleteWeekRange(todayStr(), MetricWeek.SUN_SAT);
 }
 function leasingApplyPreset(preset) {
   const base = leasingDefaultRange();
@@ -767,13 +760,11 @@ async function leasingLoadWeeks(selectWeek) {
 // 2026-09-21, and is back here with the return to Sun–Sat. A helper whose name
 // disagrees with its result is worse than no helper.
 //
-// Must stay identical to leasingWeekEnding in server.js. The two bucket the
-// same days for different callers, and if they drift the Roll-Up jumps to a
-// different week than the one it just synced.
+// The same function the server calls, from the same file — so "the two drifted
+// apart and the Roll-Up jumped to a week nobody synced" is no longer a thing
+// that can happen.
 function leasingSaturdayOf(iso) {
-  const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() + ((6 - d.getDay()) % 7)); // 0=Sun..6=Sat -> forward to Saturday
-  return d.toLocaleDateString('en-CA');
+  return MetricWeek.leasingWeekEnding(iso);
 }
 
 // Which week the Roll-Up should jump to after syncing a From–To range.
@@ -1333,12 +1324,9 @@ function renderTaskCard(t) {
 function renderTasks() {
   const ft = $('#task-type-filter').value;
   const today = todayStr();
-  // Current Mon–Sun week (local/CT), so "This Week" is the calendar week.
-  const now = new Date();
-  const dow = now.getDay();                    // 0=Sun..6=Sat
-  const monday = new Date(now); monday.setDate(now.getDate() + (dow === 0 ? -6 : 1 - dow));
-  const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
-  const weekStart = localDateStr(monday), weekEnd = localDateStr(sunday);
+  // "This Week" is the calendar week, in WEEK.DASHBOARD's convention (Mon–Sun
+  // today, Sun–Sat after Phase 3).
+  const { from: weekStart, to: weekEnd } = MetricWeek.weekRange(today, MetricWeek.DASHBOARD);
 
   let baseList = taskCache.filter(t => !ft || t.type === ft);
   // A task is in [start,end] when its due date OR its created date falls in range
@@ -6799,10 +6787,8 @@ function svComputeRange() {
   const today = todayStr();
   const clamp = iso => (iso > today ? today : iso);
   if (svRange === 'week') {
-    const d = new Date(anchor + 'T00:00:00'); const back = (d.getDay() + 6) % 7; // Mon start
-    const mon = new Date(d); mon.setDate(d.getDate() - back);
-    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
-    return { from: svIso(mon), to: clamp(svIso(sun)), label: 'Week of ' + svIso(mon) };
+    const { from, to } = MetricWeek.weekRange(anchor, MetricWeek.DASHBOARD);
+    return { from: from, to: clamp(to), label: 'Week of ' + from };
   }
   if (svRange === 'month') {
     const d = new Date(anchor + 'T00:00:00');
@@ -7382,7 +7368,7 @@ const svgState = { grades: [], filters: { agent: 'All', grade: 'All', direction:
 function svgPeriodStart(period) {
   const d = new Date(); d.setHours(0, 0, 0, 0);
   if (period === 'today') return d.toLocaleDateString('en-CA');
-  if (period === 'week') { d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toLocaleDateString('en-CA'); } // Monday
+  if (period === 'week') return MetricWeek.weekStartYMD(d.toLocaleDateString('en-CA'), MetricWeek.DASHBOARD);
   if (period === 'month') { d.setDate(1); return d.toLocaleDateString('en-CA'); }
   return null;
 }
@@ -9546,11 +9532,9 @@ function sixpmSummaryInRange(dateStr) {
   const today = todayStr();
   if (r === 'today') return dateStr === today;
   if (r === 'last7') { const d = new Date(); d.setDate(d.getDate() - 6); return dateStr >= localDateStr(d) && dateStr <= today; }
-  if (r === 'week') { // current Mon–Sun
-    const now = new Date(), dow = now.getDay();
-    const mon = new Date(now); mon.setDate(now.getDate() + (dow === 0 ? -6 : 1 - dow));
-    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
-    return dateStr >= localDateStr(mon) && dateStr <= localDateStr(sun);
+  if (r === 'week') {
+    const { from, to } = MetricWeek.weekRange(today, MetricWeek.DASHBOARD);
+    return dateStr >= from && dateStr <= to;
   }
   return true;
 }

@@ -733,7 +733,12 @@ const ccYmd = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, 
 const ccFmtD = d => d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
 const ccRound1 = x => Math.round(x * 10) / 10;
 const ccMoney = x => '$' + Math.round(x).toLocaleString();
-function ccWeekStart(d) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+// Mon–Sun via lib/week.js (WEEK.DASHBOARD). Returns a Date, because the two
+// callers compare it against Date objects parsed out of the labor lines.
+function ccWeekStart(d) {
+  const [y, m, day] = MetricWeek.weekStartYMD(ccYmd(d), MetricWeek.DASHBOARD).split('-').map(Number);
+  return new Date(y, m - 1, day);
+}
 const ccMonthStart = d => new Date(d.getFullYear(), d.getMonth(), 1);
 function ccPrevBusinessDay(d) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); do { x.setDate(x.getDate() - 1); } while (x.getDay() === 0 || x.getDay() === 6); return x; }
 function ccPropName(pn) { if (!pn) return ''; const x = String(pn), i = x.indexOf(' - '); return (i > 0 ? x.slice(0, i) : x).trim(); }

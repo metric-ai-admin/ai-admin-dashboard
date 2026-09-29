@@ -39,6 +39,7 @@ const ALLOWED = new Map([
   ['GET /auth/login',             'starts the Microsoft OAuth redirect'],
   ['GET /auth/callback',          'Azure redirects here; the code is validated by Azure'],
   ['ALL /mcp',                    'validates a Bearer token against MCP_AUTH_TOKEN inside the handler'],
+  ['USE /lib',                    'static shared browser code (lib/week.js), fetched before login like app.js and styles.css — keep lib/ free of anything that is not public client code'],
 ]);
 
 const FILES = ['server.js', 'metric-routes.js'];

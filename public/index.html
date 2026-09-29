@@ -2247,6 +2247,9 @@
   </div>
 </div>
 
+<!-- One definition of a week, shared with the server: the SAME file, not a
+     copy. Must load before app.js, which calls MetricWeek at render time. -->
+<script src="/lib/week.js"></script>
 <script src="app.js"></script>
 <!-- AppFolio module. Order matters: reports-sync.js defines rsAgo(), which
      appfolio-views.js uses; both rely on $ / esc / api / toast from app.js. -->

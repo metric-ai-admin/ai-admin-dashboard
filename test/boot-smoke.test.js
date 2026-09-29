@@ -118,7 +118,12 @@ function boot({ user = { userId: 'u1', email: 'arturo@metric.internal', username
   // ---- Run the scripts, one at a time ----
   const ran = [];
   for (const src of scripts) {
-    const file = path.join(PUBLIC, src);
+    // /lib/* is shared code served by its own express route, not a page asset
+    // under public/ — see the "one file, not a copy" note in lib/week.js. The
+    // browser resolves it from the site root, so the bundle has to as well.
+    const file = src.startsWith('/lib/')
+      ? path.join(__dirname, '..', src.replace(/^\//, ''))
+      : path.join(PUBLIC, src);
     if (!fs.existsSync(file)) { errors.push({ kind: 'missing', message: `index.html loads ${src}, which does not exist` }); continue; }
     const el = window.document.createElement('script');
     el.textContent = fs.readFileSync(file, 'utf8');

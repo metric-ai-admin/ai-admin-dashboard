@@ -50,6 +50,9 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
+// One definition of a week for the server, the browser and the Goal Board.
+// The browser is served this same file at /lib/week.js — not a copy.
+const WEEK = require('./lib/week.js');
 const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, identifyCaller } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
@@ -347,7 +350,7 @@ app.use(express.json({ limit: '5mb' }));
 // also gives every restart a fresh stamp, which is what you want while editing.
 const BUILD_HASH = (process.env.RENDER_GIT_COMMIT || '').trim().slice(0, 7) || String(Date.now());
 const INDEX_FILE = path.join(__dirname, 'public', 'index.html');
-const STAMPED = /\b(src|href)="((?:app|reports-sync|appfolio-views|command-center)\.js|styles\.css)"/g;
+const STAMPED = /\b(src|href)="((?:app|reports-sync|appfolio-views|command-center)\.js|styles\.css|\/lib\/week\.js)"/g;
 let indexHtml = null;
 
 function renderIndex() {
@@ -406,6 +409,10 @@ app.get('/tools/weekly_leasing_goal_board.html', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'tools', 'weekly_leasing_goal_board.html'));
 });
 
+// lib/ is served so the browser runs the SAME week module the server does.
+// It lives outside public/ on purpose: it is shared code, not a page asset,
+// and a copy under public/ is exactly the drift this module exists to stop.
+app.use('/lib', express.static(path.join(__dirname, 'lib')));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---- Health check ----------------------------------------------------------
@@ -2896,11 +2903,10 @@ app.get('/api/triage/summary', requireMetricAccess, async (req, res) => {
   // Weekly corrections trend: group by ISO week
   const weeklyMap = {};
   for (const s of sessions) {
-    const d = new Date(s.session_date);
-    // ISO week number
-    const jan4 = new Date(d.getFullYear(), 0, 4);
-    const week = Math.ceil(((d - jan4) / 86400000 + jan4.getDay() + 1) / 7);
-    const key = `${d.getFullYear()}-W${String(week).padStart(2, '0')}`;
+    // NOT ISO 8601, despite the label it prints — see legacyWeekNumberKey in
+    // lib/week.js. Kept bug-for-bug so the trend's existing "2026-W39" buckets
+    // do not silently relabel themselves; worth fixing on its own.
+    const key = WEEK.legacyWeekNumberKey(s.session_date);
     if (!weeklyMap[key]) weeklyMap[key] = { week: key, sessions: 0, emails: 0, corrections: 0 };
     weeklyMap[key].sessions    += 1;
     weeklyMap[key].emails      += (s.emails_processed || 0);
@@ -3734,10 +3740,9 @@ app.get('/api/email/auto-move/log', requireMetricAdmin, async (req, res) => {
     if (sErr) throw new Error(sErr.message);
     const ctDate = d => new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date(d));
     const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date());
-    // Monday-based week start, in Central time.
-    const nowCt = new Date(new Date().toLocaleString('en-US', { timeZone: LYNDSAY_TIMEZONE }));
-    const weekStart = new Date(nowCt); weekStart.setDate(nowCt.getDate() - ((nowCt.getDay() + 6) % 7)); weekStart.setHours(0, 0, 0, 0);
-    const weekStartStr = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(weekStart);
+    // Mon–Sun, in Central time. WEEK.DASHBOARD is the convention every
+    // non-leasing surface uses; Phase 3 flips it in one place.
+    const weekStartStr = WEEK.weekStartYMD(todayStr, WEEK.DASHBOARD);
     for (const r of (moved || [])) {
       const d = ctDate(r.executed_at);
       summary.month++;
@@ -5035,13 +5040,12 @@ app.get('/api/regional/performance', requireAuth, requireRole(...DECISION_QUEUE_
       return all;
     };
 
-    // Mon–Sun weeks, matching the leasing convention agreed on 2026-09-21.
-    const todayCT = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
-    const d = new Date(todayCT + 'T00:00:00');
-    const back = (d.getDay() + 6) % 7;                 // Monday = 0
-    const monday = new Date(d); monday.setDate(d.getDate() - back);
-    const iso = x => x.toLocaleDateString('en-CA');
-    const addDays = (x, n) => { const y = new Date(x); y.setDate(y.getDate() + n); return y; };
+    // Mon–Sun weeks. The comment here used to claim this matched "the leasing
+    // convention agreed on 2026-09-21" — it did once, but leasing moved to
+    // Sun–Sat on 2026-09-28 (migration 064) and this did not follow. It is
+    // Mon–Sun because WEEK.DASHBOARD is, and Phase 3 moves both together.
+    const todayCT = WEEK.toChicagoYMD(new Date());
+    const monday = WEEK.weekStartYMD(todayCT, WEEK.DASHBOARD);
 
     const [vac, del, wos, leads, showings, applications, moveIns] = await Promise.all([
       af.readReportData('unit_vacancy'),
@@ -5060,8 +5064,8 @@ app.get('/api/regional/performance', requireAuth, requireRole(...DECISION_QUEUE_
     }, {
       today: todayCT,
       isExcludedProperty: propertyIsExcluded,
-      weekStart: iso(monday), weekEnd: iso(addDays(monday, 6)),
-      prevStart: iso(addDays(monday, -7)), prevEnd: iso(addDays(monday, -1)),
+      weekStart: monday, weekEnd: WEEK.addDaysYMD(monday, 6),
+      prevStart: WEEK.addDaysYMD(monday, -7), prevEnd: WEEK.addDaysYMD(monday, -1),
     });
 
     res.json({
@@ -5616,109 +5620,15 @@ const leasingVal = (row, key) => {
 
 // ---- Central-time date helpers ---------------------------------------------
 //
-// Every date in this module is a BUSINESS date in America/Chicago, not an
-// instant. Render runs UTC, so after 7pm Central `new Date()` is already
-// tomorrow there — enough to roll a week over a day early every week. These
-// four keep the arithmetic on YYYY-MM-DD strings, where a day is a day and no
-// timezone can shift one.
-
-// An instant (Date or ISO string) as the calendar date it falls on in Chicago.
-function toChicagoYMD(value) {
-  const d = (value instanceof Date) ? value : new Date(value);
-  if (isNaN(d.getTime())) return null;
-  return d.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
-}
-
-// Day of week of a YYYY-MM-DD, 0 = Sunday .. 6 = Saturday.
-// Read through UTC deliberately: `new Date('2026-09-20T00:00:00')` is local
-// midnight, and on a machine behind UTC that is the 19th.
-function dowYMD(ymd) {
-  const d = ymdToUTC(ymd);
-  return d ? d.getUTCDay() : null;
-}
-
-// A YYYY-MM-DD to a UTC Date, or null if it is not a real calendar date.
+// These used to be written out here. They now live in lib/week.js, which the
+// browser loads as the same file rather than a copy — see the header there for
+// why the dashboard has one definition of a week and not eleven.
 //
-// The shape check alone is not enough: "2026-13-45" matches \d{4}-\d{2}-\d{2},
-// and Date.UTC(2026, 12, 45) rolls over into a perfectly valid day in 2027 —
-// so a typo would have produced a confident, wrong week instead of nothing.
-// Comparing the parts back is what catches it.
-function ymdToUTC(ymd) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
-  if (!m) return null;
-  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
-  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3]) return null;
-  return d;
-}
-
-// Add (or subtract) whole days to a YYYY-MM-DD and get a YYYY-MM-DD back.
-function addDaysYMD(ymd, n) {
-  const d = ymdToUTC(ymd);
-  if (!d) return null;
-  d.setUTCDate(d.getUTCDate() + Number(n || 0));
-  return d.toISOString().slice(0, 10);
-}
-
-// The instant midnight Central begins on a given calendar date, as an ISO
-// string — for querying timestamptz columns by a Central day.
-//
-// The offset is DERIVED for that date rather than assumed: Chicago is UTC-5 in
-// summer and UTC-6 in winter, and hardcoding either puts an hour of leads in
-// the wrong week twice a year.
-function chicagoStartOfDayISO(ymd) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
-  if (!m || !ymdToUTC(ymd)) return null;
-  const guess = Date.UTC(+m[1], +m[2] - 1, +m[3], 12, 0, 0);   // midday avoids the DST edge
-  const asChicago = new Date(guess).toLocaleString('en-US', { timeZone: 'America/Chicago', hour12: false });
-  const asUTC = new Date(guess).toLocaleString('en-US', { timeZone: 'UTC', hour12: false });
-  const offsetMs = Date.parse(asUTC) - Date.parse(asChicago);   // +5h or +6h
-  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 0, 0, 0) + offsetMs).toISOString();
-}
-
-// ---- Leasing weeks: Sunday–Saturday ----------------------------------------
-//
-// week_ending = the SATURDAY closing the Sun–Sat week a date falls in.
-//
-// This is the THIRD labelling of these weeks. They were Mon–Sun, moved to
-// Sun–Sat on a claim that it matched AppFolio's convention, moved back to
-// Mon–Sun on 2026-09-21 when that claim turned out to be wrong, and return to
-// Sun–Sat here by Lyndsay's decision. AppFolio still has no fixed week — its
-// leasing reports are arbitrary ranges — so this is a choice about how the
-// leasing team works, not a technical constraint.
-//
-// Worth knowing: leasing is now the only module here on a Sunday start. The
-// 6 PM report, End of Day, tasks and call analytics all compute
-// -((getDay() + 6) % 7), a Monday start. A week-over-week comparison between
-// leasing and any of those is comparing different seven-day windows.
-//
-// (6 - dow) leaves a Saturday on itself and pushes Sun–Fri forward to the
-// Saturday that closes their week.
-function leasingWeekEnding(d) {
-  const ymd = (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) ? d : toChicagoYMD(d);
-  if (!ymd) return null;
-  const dow = dowYMD(ymd);
-  return addDaysYMD(ymd, (6 - dow) % 7);
-}
-
-// week_ending of the most recent COMPLETE Sun–Sat week: the latest Saturday
-// strictly before today.
-//
-// On a Saturday this deliberately returns the PREVIOUS week rather than the one
-// ending today: at 9am Saturday the week is not over, and a roll-up counting a
-// partial day looks like a collapse in performance. The week selector still
-// reaches any week, including the one in progress.
-//
-// The original bug this guards, reported by Katie on Monday 2026-09-21: the
-// Portfolio Roll-Up used the week we are CURRENTLY IN, so the table was
-// near-empty for most of every week until it filled in.
-function leasingLastCompleteWeekEnding(nowIso) {
-  const today = nowIso || ctDateStr(0);            // YYYY-MM-DD in America/Chicago
-  const dow = dowYMD(today);
-  if (dow === null) return null;
-  // Sat (6) -> back a full week; otherwise back to the Saturday just gone.
-  const back = dow === 6 ? 7 : dow + 1;
-  return addDaysYMD(today, -back);
-}
+// Imported by name so every existing call site below is unchanged.
+const {
+  toChicagoYMD, dowYMD, ymdToUTC, addDaysYMD, chicagoStartOfDayISO,
+  leasingWeekEnding, leasingLastCompleteWeekEnding,
+} = WEEK;
 
 const leasingTruthy = v => v === true || v === 'true' || v === 'Yes' || v === 'yes' || v === 'Y' || v === 1 || v === '1';
 const leasingDateOnly = v => { if (v === '' || v == null) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-CA'); };
@@ -10487,14 +10397,20 @@ function svcTodayCT() { return new Intl.DateTimeFormat('en-CA', { timeZone: LYND
 function svcAddDays(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
 
 // This week's leasing roll-up from the live tables (occupancy + leads + showings
-// + applications + lease history), with LEASING_EXCLUDED_FRAGMENTS removed. Week
-// starts Monday (matching Postgres date_trunc('week')). Returns { weekStart,
-// rows:[{property,occ,total_units,occupied_units,traffic,tours,apps,approved,
-// moveins}], totals }.
+// + applications + lease history), with LEASING_EXCLUDED_FRAGMENTS removed.
+// Returns { weekStart, rows:[{property,occ,total_units,occupied_units,traffic,
+// tours,apps,approved,moveins}], totals }.
+//
+// NOTE, and it is a real one: this is called "leasing" but it is NOT on the
+// leasing week. It is Mon–Sun (WEEK.DASHBOARD) while leasing_leads.week_ending
+// is Sun–Sat, so this roll-up and the Leads panel describe different seven-day
+// windows for the same properties. That predates Phase 2 — the old comment
+// justified it with "matching Postgres date_trunc('week')", which is true of
+// date_trunc but was never a reason for this. Left as-is here because Phase 2
+// changes nothing visible; Phase 3 closes the gap by flipping DASHBOARD.
 async function leasingWeeklyRollup(db) {
   const today = svcTodayCT();
-  const now = new Date(today + 'T00:00:00');
-  const weekStart = svcAddDays(today, -((now.getDay() + 6) % 7)); // back to Monday
+  const weekStart = WEEK.weekStartYMD(today, WEEK.DASHBOARD);
   const [occR, leadsR, showR, appR, lhR] = await Promise.all([
     db.from('leasing_occupancy').select('property_name,occupancy_pct,total_units,occupied_units'),
     db.from('leasing_leads').select('property,week_ending').gte('week_ending', weekStart),
@@ -12616,11 +12532,11 @@ async function eodGather() {
     };
   } catch (e) { S.maintenance = { error: e.message }; }
 
-  // 6 — BD CRM: (1) weekly activity by agent (this Mon–Sun, by created_at),
-  // (2) hot properties (top score, no contact in 7+ days), (3) overdue tasks.
+  // 6 — BD CRM: (1) weekly activity by agent (this week per WEEK.DASHBOARD,
+  // Mon–Sun today, by created_at), (2) hot properties (top score, no contact in
+  // 7+ days), (3) overdue tasks.
   try {
-    const now = new Date(today + 'T00:00:00');
-    const weekStart = eodAddDays(today, -((now.getDay() + 6) % 7)); // back to Monday
+    const weekStart = WEEK.weekStartYMD(today, WEEK.DASHBOARD);
     const cutoff7 = eodAddDays(today, -7);
     const dstr = v => String(v || '').slice(0, 10);
     const [propsR, psR, osR, dmR, fuR, apptR, inspR] = await Promise.all([

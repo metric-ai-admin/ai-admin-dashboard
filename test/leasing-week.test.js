@@ -2,17 +2,22 @@
 //
 // This boundary has moved three times — Mon–Sun, Sun–Sat on a mistaken claim
 // about AppFolio, Mon–Sun again (migration 056), and Sun–Sat now by Lyndsay's
-// decision. Each move has to change the same rule in three places: server.js,
-// public/app.js and the Goal Board. The point of this file is that they cannot
-// drift apart silently again — if the server buckets a day into one week and
-// the client into another, the Roll-Up jumps to a week the user did not sync.
+// decision. Each move had to change the same rule in three places: server.js,
+// public/app.js and the Goal Board.
 //
-// The helpers are not exported from either file, so they are pulled out of the
-// real source. That is deliberate: a copy here would pass while the shipped
-// code was wrong.
+// It no longer does. All three call lib/week.js, and test/week-module.test.js
+// fails the build if one of them grows a private copy again. So what is left
+// here is what that module cannot check on its own: that the CLIENT's wrappers
+// still bucket days the way leasing needs, and that the Goal Board's fixed
+// START still lands on the weeks Lyndsay asked for.
+//
+// The client helpers are pulled out of public/app.js rather than copied, for
+// the same reason as before: a copy here would pass while the shipped page was
+// wrong.
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const MetricWeek = require('../lib/week.js');
 
 let pass = 0;
 const t = (name, fn) => { fn(); pass++; console.log('  ok  ' + name); };
@@ -36,17 +41,21 @@ function extract(file, markers, returns, args = {}) {
     ...names.map(n => args[n]));
 }
 
-const S = extract('server.js', [
-  'function toChicagoYMD(', 'function dowYMD(', 'function ymdToUTC(', 'function addDaysYMD(',
-  'function chicagoStartOfDayISO(', 'function leasingWeekEnding(',
-  'function leasingLastCompleteWeekEnding(',
-], ['toChicagoYMD', 'dowYMD', 'ymdToUTC', 'addDaysYMD', 'chicagoStartOfDayISO',
-  'leasingWeekEnding', 'leasingLastCompleteWeekEnding'],
-{ ctDateStr: () => '2026-09-28' });
+// The server side is now just the module.
+const S = {
+  leasingWeekEnding: MetricWeek.leasingWeekEnding,
+  leasingLastCompleteWeekEnding: MetricWeek.leasingLastCompleteWeekEnding,
+  toChicagoYMD: MetricWeek.toChicagoYMD,
+  dowYMD: MetricWeek.dowYMD,
+  addDaysYMD: MetricWeek.addDaysYMD,
+  chicagoStartOfDayISO: MetricWeek.chicagoStartOfDayISO,
+};
 
+// The client side, lifted out of the shipped file with the globals it expects.
 const C = extract('public/app.js', [
   'function leasingSaturdayOf(', 'function leasingWeekForRange(', 'function leasingDefaultRange(',
-], ['leasingSaturdayOf', 'leasingWeekForRange', 'leasingDefaultRange']);
+], ['leasingSaturdayOf', 'leasingWeekForRange', 'leasingDefaultRange'],
+{ MetricWeek, todayStr: () => MetricWeek.toChicagoYMD(new Date()) });
 
 const dowName = ymd => new Date(ymd + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short' });
 
