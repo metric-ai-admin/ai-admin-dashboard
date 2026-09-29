@@ -132,16 +132,30 @@ t('occurrences already drafted are skipped', () => {
 t('with everything drafted, nothing is pending', () => {
   assert.strictEqual(K.pendingOccurrences(TRANSCRIPTS, ['CALL-0923', 'CALL-0916', 'CALL-0826']).length, 0);
 });
-t('pending comes back newest first and capped', () => {
-  const p = K.pendingOccurrences(TRANSCRIPTS, [], 2);
-  assert.deepStrictEqual(p.map(x => x.id), ['T-0923', 'T-0916']);
+t('a first run against an empty table drafts ONE meeting, not twenty', () => {
+  // The series returns every past occurrence at once. Without this the first
+  // run would put twenty months of meetings in front of Arturo at once.
+  const p = K.pendingOccurrences(TRANSCRIPTS, []);
+  assert.strictEqual(p.length, 1, 'more than one draft from a single run');
+  assert.strictEqual(p[0].id, 'T-0923', 'not the most recent meeting');
+});
+t('a backfill has to ask for one, explicitly', () => {
+  assert.deepStrictEqual(K.pendingOccurrences(TRANSCRIPTS, [], 2).map(x => x.id), ['T-0923', 'T-0916']);
+});
+t('after the newest is drafted, the next run takes the one before it', () => {
+  assert.deepStrictEqual(K.pendingOccurrences(TRANSCRIPTS, ['CALL-0923']).map(x => x.id), ['T-0916']);
 });
 
 console.log('\nthe draft email');
-t('the recording is a link, never an attachment', () => {
+t('the recording is offered on request, never as a link or an attachment', () => {
+  // The Graph URL needs an access token: a partner clicking it gets a 401, not
+  // a video. Making it openable means changing SharePoint's external sharing,
+  // which nobody has asked for.
   const d = K.composeDraft({ subject: 'KPI ICRR & ICDT + Metric', meetingDate: '2026-09-23T17:59:00Z',
-    summary: '<p>Occupancy discussed.</p>', recordingUrl: 'https://example/rec', transcriptAttached: true });
-  assert.ok(/href="https:\/\/example\/rec"/.test(d.body));
+    summary: '<p>Occupancy discussed.</p>', recordingUrl: 'https://graph.microsoft.com/v1.0/users/x/rec', transcriptAttached: true });
+  assert.ok(/available on request/i.test(d.body), 'the draft does not offer the recording on request');
+  assert.ok(!/graph\.microsoft\.com/.test(d.body), 'a Graph URL leaked into the email body');
+  assert.ok(!/<a /i.test(d.body), 'the body still contains a link');
   assert.ok(/transcript is attached/i.test(d.body));
   assert.strictEqual(d.subject, 'KPI ICRR & ICDT + Metric — recording & transcript (2026-09-23)');
 });

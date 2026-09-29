@@ -100,15 +100,20 @@ function artifactsFor(transcripts, recordings, onOrBefore) {
   return { transcript, recording };
 }
 
-// The occurrences a scan has not drafted yet, newest first. `existingKeys` is
-// the set of contentCorrelationIds already in the table, so re-running the scan
-// updates nothing and creates nothing twice.
+// The occurrences a scan has not drafted yet, newest first.
+//
+// ONE BY DEFAULT, and that matters: the series returns all twenty past
+// occurrences at once, so a first run against an empty table would otherwise
+// draft twenty months of meetings and put them all in front of Arturo. The
+// feature is "after each meeting", so the default is the most recent one that
+// has no draft yet. The limit is a parameter for a deliberate backfill, not
+// something a routine run reaches for.
 function pendingOccurrences(transcripts, existingKeys, limit) {
   const have = new Set(existingKeys || []);
   return (transcripts || [])
     .filter(t => t && t.contentCorrelationId && !have.has(t.contentCorrelationId))
     .sort((a, b) => String(b.createdDateTime || '').localeCompare(String(a.createdDateTime || '')))
-    .slice(0, limit === undefined ? 5 : limit);
+    .slice(0, limit === undefined ? 1 : limit);
 }
 
 // ---- the draft -------------------------------------------------------------
@@ -144,13 +149,17 @@ function composeDraft(o) {
     lines.push('<p><b>Summary</b></p>');
     lines.push(`<div>${o.summary}</div>`);
   }
-  if (o.recordingUrl) {
-    lines.push(`<p><b>Recording:</b> <a href="${esc(o.recordingUrl)}">${esc(o.recordingUrl)}</a></p>`);
-  } else {
-    // Said plainly rather than papered over: a missing recording is worth
-    // noticing, and a draft that quietly omits it hides that.
-    lines.push('<p><b>Recording:</b> not available for this meeting.</p>');
-  }
+  // "Available on request", not a link.
+  //
+  // What Graph returns is a Graph API URL, which needs an access token — a
+  // partner clicking it gets a 401, not a video. Turning it into something they
+  // can open means creating an external sharing link in SharePoint, and that is
+  // a tenant setting nobody has asked to change. So the draft says what is
+  // true: the recording exists and they can ask for it. The Graph URL is still
+  // stored on the row, for whoever fetches it.
+  lines.push(o.recordingUrl
+    ? '<p><b>Recording:</b> available on request.</p>'
+    : '<p><b>Recording:</b> not available for this meeting.</p>');
   lines.push(o.transcriptAttached
     ? '<p>The full transcript is attached.</p>'
     : '<p>The transcript is not available for this meeting.</p>');

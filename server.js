@@ -10745,7 +10745,7 @@ async function kpiRecapScan() {
 
 // ---- the dashboard's side ---------------------------------------------------
 
-app.get('/api/kpi-recaps', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/kpi-recaps', requireMetricAdmin, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -10757,7 +10757,7 @@ app.get('/api/kpi-recaps', requireAuth, requireRole('admin'), async (req, res) =
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/kpi-recaps/run-now', requireAuth, requireRole('admin'), async (req, res) => {
+app.post('/api/kpi-recaps/run-now', requireMetricAdmin, async (req, res) => {
   const r = await kpiRecapScan();
   if (r && r.error) return res.status(500).json(r);
   res.json({ ok: true, ...(r || {}) });
@@ -10766,7 +10766,7 @@ app.post('/api/kpi-recaps/run-now', requireAuth, requireRole('admin'), async (re
 // Approve MARKS the draft. It does not send: there is no send path yet, and
 // adding one is a separate reviewed change. The response says so, so nobody
 // clicks it expecting mail to leave.
-app.post('/api/kpi-recaps/:id/approve', requireAuth, requireRole('admin'), async (req, res) => {
+app.post('/api/kpi-recaps/:id/approve', requireMetricAdmin, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const db = supabaseAdmin || supabasePublic;
