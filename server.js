@@ -53,6 +53,7 @@ const { registerAllTools } = require('./mcp-tools.cjs');
 // One definition of a week for the server, the browser and the Goal Board.
 // The browser is served this same file at /lib/week.js — not a copy.
 const WEEK = require('./lib/week.js');
+const followups = require('./email-followups.js');
 const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, identifyCaller } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
@@ -1892,6 +1893,127 @@ async function generateLyndsayReminders(lyndsayMeetings) {
 
 // Pulls new/unread mail + today's calendar for both mailboxes and stores
 // results locally. No-ops (logs a warning) until Graph credentials are set.
+// ═════════════════════════════════════════════════════════════════════════════
+// EMAIL FOLLOW-UP TRACKER
+// ═════════════════════════════════════════════════════════════════════════════
+// Lyndsay tags something she sends with "*follow up needed"; it stays on her EOD
+// until someone replies or she writes in the thread without the tag. The rules
+// are in email-followups.js, which is pure; this is the I/O around them.
+//
+// READ ONLY against the mailbox. It lists and it reads. It never moves a
+// message, marks one read, or sends anything — the app registration happens to
+// hold Mail.ReadWrite and Mail.Send, and nothing here uses either.
+//
+// Runs inside the existing email refresh rather than as its own cron. With
+// three tagged messages in two years the work is one list call plus one call
+// per open row, and a new cron would be a new thing to watch for no gain.
+const FOLLOWUP_MAILBOX = MAILBOX_LYNDSAY;
+
+async function followupsScan(db) {
+  const token = await graphMailToken();
+  const headers = { Authorization: `Bearer ${token}` };
+  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(FOLLOWUP_MAILBOX)}`;
+
+  // 30 days on the first run so the backlog is picked up, 14 after. "First run"
+  // is "no rows for this mailbox", which is why resolved rows are kept.
+  const { count, error: cErr } = await db.from('email_followups')
+    .select('*', { count: 'exact', head: true }).eq('mailbox', FOLLOWUP_MAILBOX);
+  if (cErr) throw new Error('email_followups count: ' + cErr.message);
+  const days = followups.scanWindowDays(count || 0);
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+
+  // contains(subject,…) works but cannot be combined with $orderby — Graph
+  // answers InefficientFilter. A date window plus a local regex is cheaper and
+  // does not depend on Graph's idea of what the subject contains.
+  const url = `${base}/mailFolders/SentItems/messages`
+    + `?$filter=sentDateTime ge ${since}`
+    + `&$orderby=sentDateTime desc&$top=100`
+    + `&$select=id,subject,conversationId,sentDateTime,from,toRecipients,ccRecipients`;
+  const sent = await graphFetchAllPages(url, token);
+  const rows = followups.taggedFromSent(sent, FOLLOWUP_MAILBOX);
+  logLine(`[followups] scanned ${sent.length} sent message(s) over ${days}d — ${rows.length} tagged`);
+  if (!rows.length) return { scanned: sent.length, days, found: 0 };
+
+  // Re-tagging a thread restarts the clock, so an existing row is updated
+  // rather than left alone — and a row that had been resolved reopens, which
+  // is what tagging it again means.
+  const { error } = await db.from('email_followups').upsert(rows.map(r => ({
+    mailbox: FOLLOWUP_MAILBOX, ...r,
+    status: 'open', resolved_at: null, resolved_reason: null, resolved_by: null,
+  })), { onConflict: 'mailbox,conversation_id' });
+  if (error) throw new Error('email_followups upsert: ' + error.message);
+  return { scanned: sent.length, days, found: rows.length };
+}
+
+async function followupsResolve(db) {
+  const { data: open, error } = await db.from('email_followups')
+    .select('id,conversation_id,sent_at').eq('mailbox', FOLLOWUP_MAILBOX).eq('status', 'open');
+  if (error) throw new Error('email_followups open: ' + error.message);
+  if (!open || !open.length) return { checked: 0, closed: 0 };
+
+  const token = await graphMailToken();
+  const base = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(FOLLOWUP_MAILBOX)}`;
+  let closed = 0;
+  for (const row of open) {
+    // internetMessageHeaders comes back in the list itself, so spotting an
+    // out-of-office costs no extra call.
+    const url = `${base}/messages?$filter=conversationId eq '${String(row.conversation_id).replace(/'/g, "''")}'`
+      + `&$top=50&$select=id,subject,from,sentDateTime,receivedDateTime,internetMessageHeaders`;
+    let thread;
+    try { thread = await graphFetchAllPages(url, token); }
+    catch (e) { logLine(`[followups] thread fetch failed for ${row.id}: ${e.message}`); continue; }
+
+    const verdict = followups.classifyThread({
+      mailbox: FOLLOWUP_MAILBOX, taggedAt: row.sent_at, messages: thread,
+    });
+    const patch = verdict.status === 'open'
+      ? { last_checked_at: new Date().toISOString() }
+      : { status: verdict.status, resolved_at: verdict.at, resolved_reason: verdict.reason,
+          resolved_by: verdict.by, last_checked_at: new Date().toISOString() };
+    const { error: uErr } = await db.from('email_followups').update(patch).eq('id', row.id);
+    if (uErr) { logLine(`[followups] update failed for ${row.id}: ${uErr.message}`); continue; }
+    if (verdict.status !== 'open') closed++;
+  }
+  return { checked: open.length, closed };
+}
+
+// One call for both halves. Failure is logged, never thrown: the email refresh
+// that hosts this has its own job and must not stop because a follow-up scan
+// could not reach Graph.
+async function followupsSync() {
+  if (!GRAPH_CONFIGURED || !CRM_CONFIGURED) return null;
+  const db = supabaseAdmin || supabasePublic;
+  try {
+    const scanned = await followupsScan(db);
+    const resolved = await followupsResolve(db);
+    logLine(`[followups] ${scanned.found} tagged · ${resolved.checked} open checked · ${resolved.closed} closed`);
+    return { ...scanned, ...resolved };
+  } catch (e) {
+    logLine(`[followups] ERROR: ${e.message}`);
+    return { error: e.message };
+  }
+}
+
+// Open follow-ups for the EOD, oldest first — the one read this feature exists
+// for. Recipients are shown with their real names: the EOD goes to Lyndsay
+// alone, unlike the Morning Report, which goes to the High Ops group chat and
+// therefore does NOT carry this section.
+async function followupsForReport(db) {
+  const { data, error } = await db.from('email_followups')
+    .select('subject,sent_at,recipients,tag_matched')
+    .eq('mailbox', FOLLOWUP_MAILBOX).eq('status', 'open')
+    .order('sent_at', { ascending: true });
+  if (error) throw new Error(error.message);
+  const now = Date.now();
+  return (data || []).map(r => ({
+    subject: r.subject,
+    sent_at: r.sent_at,
+    recipients: r.recipients || [],
+    days: followups.daysWaiting(r.sent_at, now),
+    severity: followups.severityFor(followups.daysWaiting(r.sent_at, now)),
+  }));
+}
+
 async function refreshEmailAndCalendar() {
   refreshState.running = true;
   if (!GRAPH_CONFIGURED) {
@@ -2026,6 +2148,10 @@ async function refreshEmailAndCalendar() {
     } catch (err) {
       logLine(`[email-refresh] inbox tracking fetch ERROR: ${err.message}`);
     }
+
+    // Follow-up tracker. Last, and inside its own try in followupsSync(), so a
+    // Graph hiccup here cannot cost the refresh the work it already did.
+    await followupsSync();
 
     logLine('[email-refresh] completed');
   } catch (err) {
@@ -12290,6 +12416,11 @@ async function eodGather() {
   try { S.leasing = await leasingWeeklyRollup(db); }
   catch (e) { S.leasing = { error: e.message }; }
 
+  // Follow-ups she is still waiting on. EOD only — the Morning Report goes to
+  // the High Ops group chat, and these carry her correspondents' real names.
+  try { S.followups = { rows: await followupsForReport(db) }; }
+  catch (e) { S.followups = { error: e.message }; }
+
   // 4 — COLLECTIONS (from the latest eviction/delinquency session blob), split
   // into 3 sections: high-balance-no-contact, critical accounts, portfolio summary.
   try {
@@ -12781,6 +12912,22 @@ function eodRenderHtml(data) {
         + (c2.fViol.length > 10 ? `<div style="margin-top:4px;font-size:11px;font-style:italic;color:${EOD.muted}">+ ${c2.fViol.length - 10} more — see the Call Analyzer tab</div>` : '')
         + '</div>'
       : '')));
+  // Follow-ups waiting on a reply. Omitted entirely when there are none: a
+  // section that says "0" every day is one more thing to scroll past, and this
+  // list is empty most days by design.
+  const fu = S.followups || {};
+  if (fu.error || (fu.rows && fu.rows.length)) {
+    const colour = sev => sev === 'red' ? EOD.bad : (sev === 'amber' ? '#b7791f' : EOD.muted);
+    P.push(eodSectionHtml('📬', 'Follow-ups waiting on a reply',
+      fu.error ? eodErr(fu.error) : `${fu.rows.length} waiting${fu.rows.length ? ` · oldest ${fu.rows[0].days}d` : ''}`,
+      fu.error ? '' : eodTable(['Waiting', 'Subject', 'Sent to'], fu.rows.map(r => [
+        `<b style="color:${colour(r.severity)}">${r.days == null ? '—' : r.days + 'd'}</b>`,
+        eodEsc(r.subject),
+        // Real names, unmasked: this report reaches Lyndsay and no one else.
+        eodEsc((r.recipients || []).join(', ') || '—'),
+      ]))));
+  }
+
   const l3 = S.leasing || {}; const lt = l3.totals || {};
   P.push(eodSectionHtml('🏢', 'Leasing',
     l3.error ? eodErr(l3.error) : `${lt.traffic || 0} traffic · ${lt.tours || 0} tours · ${lt.apps || 0} apps · ${lt.approved || 0} approved · ${lt.moveins || 0} move-ins · ${lt.avg_occ == null ? '—' : lt.avg_occ + '%'} avg occupancy`,
