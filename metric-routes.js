@@ -116,6 +116,43 @@ function requireMetricAdmin(req, res, next) {
   return res.status(403).json({ error: 'Admin access required' });
 }
 
+// Who is calling the two endpoints with no caller in this codebase?
+//
+// POST /api/triage/log-session and POST /api/lyndsay/import were both open
+// until 2026-09-29 and neither appears anywhere in the front end, the scripts
+// or the MCP tools — something external calls them and we do not know what.
+// Guarding them will start returning 401 to that caller, so this records who it
+// was: enough to recognise a Power Automate flow, a Copilot connector or a
+// scheduled script, and nothing more.
+//
+// Deliberately NOT logged: the request body. These carry triage counts and
+// Lyndsay's task snapshots, and a rejected request is exactly the one whose
+// contents we have least reason to keep.
+//
+// The wrapper works because both guards decide synchronously — they either call
+// next() or answer on the spot, with no await in between. A guard that went
+// async would break this, so it is asserted at boot rather than left to drift.
+function identifyCaller(label, guard) {
+  return (req, res, next) => {
+    let passed = false;
+    guard(req, res, () => { passed = true; next(); });
+    if (!passed) {
+      console.log(`[caller-probe] ${label} REJECTED · ip=${req.ip}`
+        + ` · xff=${req.get('x-forwarded-for') || '-'}`
+        + ` · ua=${(req.get('user-agent') || '-').slice(0, 120)}`
+        + ` · referer=${req.get('referer') || '-'}`
+        + ` · at=${new Date().toISOString()}`);
+    }
+  };
+}
+// If either guard ever becomes async, every rejection would be logged as a pass
+// and the probe would go quiet without anyone noticing.
+[requireMetricAccess, requireMetricAdmin].forEach(g => {
+  if (g.constructor.name === 'AsyncFunction') {
+    throw new Error(`identifyCaller assumes ${g.name} is synchronous — it is not any more`);
+  }
+});
+
 // ── CSV parser (minimal, handles quotes/commas) ───────────────────────────────
 function parseCSV(text) {
   const rows = [];
@@ -557,7 +594,7 @@ function registerMetricRoutes(app, db) {
 
   // ── MODULE: Property Assignments ──────────────────────────────────────────
 
-  app.get('/api/assignments', async (req, res) => {
+  app.get('/api/assignments', requireMetricAccess, async (req, res) => {
     try {
       const { data, error } = await db.from('property_assignments').select('*').order('property');
       if (error) throw error;
@@ -565,7 +602,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.post('/api/assignments', async (req, res) => {
+  app.post('/api/assignments', requireMetricAccess, async (req, res) => {
     if (!Array.isArray(req.body)) return res.status(400).json({ error: 'Expected an array' });
     try {
       const { error } = await db.from('property_assignments').upsert(req.body.map(assignmentToSnake), { onConflict: 'property' });
@@ -574,7 +611,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.post('/api/assignments/upload', csvMemUpload.single('csv'), async (req, res) => {
+  app.post('/api/assignments/upload', requireMetricAccess, csvMemUpload.single('csv'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const rows = parseCSV(req.file.buffer.toString('utf8'));
     if (rows.length < 2) return res.status(400).json({ error: 'CSV has no data rows' });
@@ -588,7 +625,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.put('/api/assignments/:property', async (req, res) => {
+  app.put('/api/assignments/:property', requireMetricAccess, async (req, res) => {
     try {
       const { data: existing } = await db.from('property_assignments').select('property').eq('property', req.params.property).single();
       if (!existing) return res.status(404).json({ error: 'Property not found' });
@@ -601,7 +638,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.delete('/api/assignments/:property', async (req, res) => {
+  app.delete('/api/assignments/:property', requireMetricAdmin, async (req, res) => {
     try {
       const { data: existing } = await db.from('property_assignments').select('property').eq('property', req.params.property).single();
       if (!existing) return res.status(404).json({ error: 'Property not found' });
@@ -730,7 +767,7 @@ function registerMetricRoutes(app, db) {
 
   // ── MODULE: Lyndsay Command Center snapshots ──────────────────────────────
 
-  app.post('/api/lyndsay/import', async (req, res) => {
+  app.post('/api/lyndsay/import', identifyCaller('lyndsay/import', requireMetricAdmin), async (req, res) => {
     const { tasks, checks, date, exportedAt } = req.body;
     if (!Array.isArray(tasks)) return res.status(400).json({ error: 'tasks[] array required' });
     try {
@@ -742,7 +779,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.get('/api/lyndsay/tasks', async (req, res) => {
+  app.get('/api/lyndsay/tasks', requireMetricAccess, async (req, res) => {
     try {
       const snap = await lyndsayLatest(db);
       const checks = snap.checks || {};
@@ -754,7 +791,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.post('/api/lyndsay/tasks/:id/done', async (req, res) => {
+  app.post('/api/lyndsay/tasks/:id/done', requireMetricAccess, async (req, res) => {
     try {
       const snap = await lyndsayLatest(db);
       if (!snap.id) return res.status(404).json({ error: 'No snapshot found' });
@@ -767,7 +804,7 @@ function registerMetricRoutes(app, db) {
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.delete('/api/lyndsay/tasks/:id/done', async (req, res) => {
+  app.delete('/api/lyndsay/tasks/:id/done', requireMetricAccess, async (req, res) => {
     try {
       const snap = await lyndsayLatest(db);
       if (!snap.id) return res.status(404).json({ error: 'No snapshot found' });
@@ -1005,26 +1042,26 @@ function registerMetricRoutes(app, db) {
 
   // ── MODULE: Erick's EOD Summary (prefixed — avoids /api/summary collision) ─
 
-  app.get('/api/maintenance/summary', async (req, res) => {
+  app.get('/api/maintenance/summary', requireMetricAccess, async (req, res) => {
     try { res.json(await buildMaintenanceSummary(db)); }
     catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   // ── MODULE: Erick's Daily Work Report ────────────────────────────────────
 
-  app.get('/api/report', async (req, res) => {
+  app.get('/api/report', requireMetricAccess, async (req, res) => {
     try { res.json(await buildDailyWorkReport(db)); }
     catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   // ── MODULE: Maintenance SOPs (prefixed — avoids /api/sops collision) ──────
 
-  app.get('/api/maintenance/sops', async (req, res) => {
+  app.get('/api/maintenance/sops', requireMetricAccess, async (req, res) => {
     const index = await mSopsReadIndex();
     res.json(index.map(s => ({ id: s.id, title: s.title, uploadedAt: s.uploadedAt, chars: s.chars })));
   });
 
-  app.get('/api/maintenance/sops/search/:q', async (req, res) => {
+  app.get('/api/maintenance/sops/search/:q', requireMetricAccess, async (req, res) => {
     const q = (req.params.q || '').toLowerCase();
     if (!q) return res.json({ results: [] });
     const index = await mSopsReadIndex();
@@ -1040,14 +1077,14 @@ function registerMetricRoutes(app, db) {
     res.json({ results });
   });
 
-  app.get('/api/maintenance/sops/:id', async (req, res) => {
+  app.get('/api/maintenance/sops/:id', requireMetricAccess, async (req, res) => {
     const index = await mSopsReadIndex();
     const sop = index.find(s => s.id === req.params.id);
     if (!sop) return res.status(404).json({ error: 'SOP not found' });
     res.json(sop);
   });
 
-  app.delete('/api/maintenance/sops/:id', async (req, res) => {
+  app.delete('/api/maintenance/sops/:id', requireMetricAdmin, async (req, res) => {
     let index = await mSopsReadIndex();
     const sop = index.find(s => s.id === req.params.id);
     if (!sop) return res.status(404).json({ error: 'SOP not found' });
@@ -1240,4 +1277,4 @@ function registerMetricRoutes(app, db) {
 // email routes that serve Lyndsay's mailbox. They need session-or-key for the
 // same reason /api/operational does: the MCP tools read them over HTTP with no
 // cookie, sending x-metric-key instead.
-module.exports = { registerMetricRoutes, requireMetricAccess, requireMetricAdmin };
+module.exports = { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, identifyCaller };

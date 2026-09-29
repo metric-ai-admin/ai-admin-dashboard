@@ -198,9 +198,20 @@ async function importChunked(endpoint, table, rows) {
   for (let i = 0; i < rows.length; i += CHUNK) {
     const chunk = rows.slice(i, i + CHUNK);
     const body = JSON.stringify({ [table]: chunk });
+    // /api/crm/bulk-import went behind requireMetricAdmin on 2026-09-29 — it was
+    // an unauthenticated upsert into five production tables. This script has no
+    // browser session, so it presents the shared key instead.
+    if (!process.env.METRIC_API_KEY) {
+      throw new Error('METRIC_API_KEY is not set. The bulk-import endpoint now requires it — '
+        + 'set it in .env (the same value the dashboard has on Render).');
+    }
     const r = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        'x-metric-key': process.env.METRIC_API_KEY,
+      },
       body,
     });
     const json = await r.json();

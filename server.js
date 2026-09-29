@@ -50,7 +50,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const { registerAllTools } = require('./mcp-tools.cjs');
-const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin } = require('./metric-routes.js');
+const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, identifyCaller } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
 const gradeExport = require('./call-grades-export.js');
@@ -450,11 +450,40 @@ app.get('/api/auth/me', (req, res) => {
 // ---- POST /api/auth/reset-password -----------------------------------------
 // Sends a Supabase password-reset email. Accepts username; constructs
 // the fictional @metric.internal email used in Supabase Auth.
+// Rate limit: unauthenticated, and it makes Supabase Auth send mail. Keyed on
+// IP and on username separately, so one caller cannot grind through accounts
+// and one account cannot be flooded from many IPs. The window is deliberately
+// coarse — a person who genuinely forgot their password tries once or twice.
+//
+// In-memory on purpose: a restart clearing the counters is acceptable for a
+// throttle (the alternative is a table write on every anonymous request), and
+// this runs as a single instance. Entries are swept on write, so the map cannot
+// grow without bound.
+const RESET_WINDOW_MS = 15 * 60 * 1000;
+const RESET_MAX = 3;
+const resetHits = new Map();
+function resetLimited(key) {
+  const now = Date.now();
+  for (const [k, v] of resetHits) if (now - v.first > RESET_WINDOW_MS) resetHits.delete(k);
+  const e = resetHits.get(key);
+  if (!e || now - e.first > RESET_WINDOW_MS) { resetHits.set(key, { first: now, n: 1 }); return false; }
+  e.n++;
+  return e.n > RESET_MAX;
+}
+
 app.post('/api/auth/reset-password', async (req, res) => {
   const { username } = req.body || {};
   if (!username) return res.status(400).json({ error: 'Username required' });
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Auth not configured' });
-  const fictionalEmail = `${username.toLowerCase().trim()}@metric.internal`;
+  const uname = username.toLowerCase().trim();
+  // Both keys are checked, and both are counted, so neither axis is a way round
+  // the other.
+  const tooMany = [resetLimited(`ip:${req.ip}`), resetLimited(`user:${uname}`)].some(Boolean);
+  if (tooMany) {
+    logLine(`[WARN] reset-password rate-limited: ip=${req.ip} user=${uname}`);
+    return res.status(429).json({ error: 'Too many reset requests. Try again in 15 minutes.' });
+  }
+  const fictionalEmail = `${uname}@metric.internal`;
   try {
     const { error } = await supabasePublic.auth.resetPasswordForEmail(fictionalEmail, {
       redirectTo: `${process.env.APP_BASE_URL || 'https://ai-admin-dashboard-jkde.onrender.com'}/login.html`,
@@ -724,7 +753,7 @@ function migrateNotes(task) {
   }
 }
 
-app.get('/api/tasks', async (req, res) => {
+app.get('/api/tasks', requireMetricAccess, async (req, res) => {
   const tasks = await readJSON(TASKS_FILE, []);
   let dirty = false;
   tasks.forEach(t => { if (!t.noteHistory) { migrateNotes(t); dirty = true; } });
@@ -732,7 +761,7 @@ app.get('/api/tasks', async (req, res) => {
   res.json(tasks);
 });
 
-app.post('/api/tasks', async (req, res) => {
+app.post('/api/tasks', requireMetricAccess, async (req, res) => {
   const tasks = await readJSON(TASKS_FILE, []);
   const { title, type, source, priority, notes, due_on } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: 'Title required' });
@@ -763,7 +792,7 @@ app.post('/api/tasks', async (req, res) => {
   res.json(task);
 });
 
-app.put('/api/tasks/:id', async (req, res) => {
+app.put('/api/tasks/:id', requireMetricAccess, async (req, res) => {
   const tasks = await readJSON(TASKS_FILE, []);
   const idx = tasks.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Task not found' });
@@ -811,7 +840,7 @@ app.put('/api/tasks/:id', async (req, res) => {
   res.json(tasks[idx]);
 });
 
-app.post('/api/tasks/:id/done', async (req, res) => {
+app.post('/api/tasks/:id/done', requireMetricAccess, async (req, res) => {
   const tasks = await readJSON(TASKS_FILE, []);
   const idx = tasks.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Task not found' });
@@ -827,7 +856,7 @@ app.post('/api/tasks/:id/done', async (req, res) => {
   res.json(tasks[idx]);
 });
 
-app.post('/api/tasks/:id/notes', async (req, res) => {
+app.post('/api/tasks/:id/notes', requireMetricAccess, async (req, res) => {
   const tasks = await readJSON(TASKS_FILE, []);
   const idx = tasks.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Task not found' });
@@ -845,7 +874,7 @@ app.post('/api/tasks/:id/notes', async (req, res) => {
   res.json(tasks[idx]);
 });
 
-app.delete('/api/tasks/:id', async (req, res) => {
+app.delete('/api/tasks/:id', requireMetricAccess, async (req, res) => {
   let tasks = await readJSON(TASKS_FILE, []);
   const before = tasks.length;
   tasks = tasks.filter(t => t.id !== req.params.id);
@@ -950,7 +979,7 @@ if (process.env.SOP_TASK_DONE_ON_BOOT !== '0') {
 // Bulk import preserving exact ids/timestamps — for migrating data between
 // instances (e.g. local -> cloud). Unlike POST /api/tasks (which always
 // mints a fresh id/created_at), this upserts by id so it's safe to re-run.
-app.post('/api/tasks/bulk-import', async (req, res) => {
+app.post('/api/tasks/bulk-import', requireMetricAdmin, async (req, res) => {
   const incoming = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
   if (!incoming.length) return res.status(400).json({ error: '"tasks" array required' });
   const tasks = await readJSON(TASKS_FILE, []);
@@ -1045,7 +1074,7 @@ app.delete('/api/sops/:id', requireMetricAdmin, async (req, res) => {
 
 // Bulk import preserving exact ids/uploadedAt — see /api/tasks/bulk-import
 // for why (migrating between instances without minting fresh ids).
-app.post('/api/sops/bulk-import', async (req, res) => {
+app.post('/api/sops/bulk-import', requireMetricAdmin, async (req, res) => {
   const incoming = Array.isArray(req.body?.sops) ? req.body.sops : [];
   if (!incoming.length) return res.status(400).json({ error: '"sops" array required' });
   const index = await readJSON(SOPS_INDEX, []);
@@ -1120,7 +1149,7 @@ function shapeTask(t, projectLabel) {
   };
 }
 
-app.get('/api/asana/me', async (req, res) => {
+app.get('/api/asana/me', requireMetricAccess, async (req, res) => {
   try {
     res.json(await getMe());
   } catch (err) {
@@ -1130,7 +1159,7 @@ app.get('/api/asana/me', async (req, res) => {
 
 // Setup helper: list the projects in Arturo's workspace so the right
 // ASANA_PROJECT_GID can be found and set on Render. Flags the configured one.
-app.get('/api/asana/projects', async (req, res) => {
+app.get('/api/asana/projects', requireMetricAccess, async (req, res) => {
   try {
     if (!ASANA_TOKEN) return res.json({ configured: false, projects: [], message: 'ASANA_TOKEN is not set.' });
     const me = await getMe();
@@ -1193,7 +1222,7 @@ app.get('/api/asana/diagnostic', requireAuth, requireRole('admin'), async (req, 
   res.json({ configuredProjects: ASANA_PROJECTS, extraProjectsEnvSet: !!process.env.ASANA_EXTRA_PROJECTS, owners: out });
 });
 
-app.get('/api/asana/tasks', async (req, res) => {
+app.get('/api/asana/tasks', requireMetricAccess, async (req, res) => {
   const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
   const completedSince = encodeURIComponent(midnight.toISOString());
 
@@ -1361,7 +1390,7 @@ app.post('/api/asana/tasks/:gid/comments', requireAuth, async (req, res) => {
 // Import tasks from a given Asana project's live list into the Task Manager,
 // so they show up alongside everything else in one place. Skips tasks
 // already imported (matched by asanaGid).
-app.post('/api/asana/import', async (req, res) => {
+app.post('/api/asana/import', requireMetricAdmin, async (req, res) => {
   const { projectGid } = req.body || {};
   if (!projectGid) return res.status(400).json({ error: 'projectGid required' });
   try {
@@ -1903,7 +1932,7 @@ async function refreshEmailAndCalendar() {
   }
 }
 
-app.get('/api/email/refresh-status', (req, res) => {
+app.get('/api/email/refresh-status', requireMetricAccess, (req, res) => {
   res.json({ configured: GRAPH_CONFIGURED, intervalMinutes: EMAIL_REFRESH_MINUTES, authUrl: '/auth/login', ...refreshState });
 });
 
@@ -2055,7 +2084,7 @@ async function convertSopsToPdf({ limit, names } = {}) {
 
 // POST /api/tools/convert-sops  body: { limit?: number }
 // Pass `limit` to test on the first N files before running the full batch.
-app.post('/api/tools/convert-sops', async (req, res) => {
+app.post('/api/tools/convert-sops', requireMetricAdmin, async (req, res) => {
   try {
     const limit = req.body?.limit ? parseInt(req.body.limit, 10) : undefined;
     const names = Array.isArray(req.body?.names) ? req.body.names : undefined;
@@ -2688,7 +2717,7 @@ app.get('/api/copilot/export', requireCopilotApiKey, async (req, res) => {
 // than insert means logging the same day twice updates the existing row instead
 // of creating a duplicate or silently failing — so the 6PM report always finds
 // today's counts. Requires the unique constraint on session_date (migration 045).
-app.post('/api/triage/log-session', async (req, res) => {
+app.post('/api/triage/log-session', identifyCaller('triage/log-session', requireMetricAccess), async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   const db = supabaseAdmin || supabasePublic;
   const {
@@ -2725,7 +2754,7 @@ app.post('/api/triage/log-session', async (req, res) => {
 
 // ---- GET /api/triage/summary ----------------------------------------------------
 // Returns cumulative stats across all triage sessions.
-app.get('/api/triage/summary', async (req, res) => {
+app.get('/api/triage/summary', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   const db = supabaseAdmin || supabasePublic;
 
@@ -2961,7 +2990,7 @@ app.post('/api/email/:id/handled', requireMetricAccess, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/calendar/today', async (req, res) => {
+app.get('/api/calendar/today', requireMetricAccess, async (req, res) => {
   const { mailbox } = req.query;
   const meetings = await readJSON(MEETINGS_FILE, { lastUpdated: null, date: null, arturo: [], lyndsay: [] });
   if (!GRAPH_CONFIGURED) {
@@ -2973,11 +3002,11 @@ app.get('/api/calendar/today', async (req, res) => {
 });
 
 // Ready-to-send reminder queue — copy/paste text, never auto-sent.
-app.get('/api/lyndsay-queue', async (req, res) => {
+app.get('/api/lyndsay-queue', requireMetricAccess, async (req, res) => {
   res.json(await readLyndsayQueue());
 });
 
-app.post('/api/lyndsay-queue', async (req, res) => {
+app.post('/api/lyndsay-queue', requireMetricAccess, async (req, res) => {
   const { text: msgText, reason } = req.body;
   if (!msgText || !msgText.trim()) return res.status(400).json({ error: 'text required' });
   const queue = await readLyndsayQueue();
@@ -2996,7 +3025,7 @@ app.post('/api/lyndsay-queue', async (req, res) => {
 // Bulk import preserving exact ids/createdAt/sent state — see
 // /api/tasks/bulk-import for why. Goes through readLyndsayQueue() so the
 // normal 24h-sent-item purge still applies on the next read.
-app.post('/api/lyndsay-queue/bulk-import', async (req, res) => {
+app.post('/api/lyndsay-queue/bulk-import', requireMetricAdmin, async (req, res) => {
   const incoming = Array.isArray(req.body?.queue) ? req.body.queue : [];
   if (!incoming.length) return res.status(400).json({ error: '"queue" array required' });
   const queue = await readLyndsayQueue();
@@ -3010,7 +3039,7 @@ app.post('/api/lyndsay-queue/bulk-import', async (req, res) => {
   res.json({ ok: true, added, updated, total: queue.length });
 });
 
-app.post('/api/lyndsay-queue/:id/sent', async (req, res) => {
+app.post('/api/lyndsay-queue/:id/sent', requireMetricAccess, async (req, res) => {
   const queue = await readLyndsayQueue();
   const idx = queue.findIndex(m => m.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Message not found' });
@@ -3023,7 +3052,7 @@ app.post('/api/lyndsay-queue/:id/sent', async (req, res) => {
 // Manual "+ Add Reminder" button on a meeting card — generates the reminder
 // immediately regardless of how far away the meeting is. Dedupes against any
 // still-pending (not yet sent) reminder already queued for the same event.
-app.post('/api/lyndsay-queue/from-meeting', async (req, res) => {
+app.post('/api/lyndsay-queue/from-meeting', requireMetricAccess, async (req, res) => {
   const { meeting } = req.body || {};
   if (!meeting || !meeting.subject || !meeting.start) return res.status(400).json({ error: 'meeting {subject, start, platform, attendees, joinUrl, id, day} required' });
   const reminderType = meeting.day === 'tomorrow' ? 'tomorrow' : 'today';
@@ -3098,7 +3127,7 @@ async function buildSummary() {
   };
 }
 
-app.get('/api/summary', async (req, res) => {
+app.get('/api/summary', requireMetricAccess, async (req, res) => {
   res.json(await buildSummary());
 });
 
@@ -3131,7 +3160,7 @@ function summaryToText(s) {
   return L.join('\n');
 }
 
-app.get('/api/summary/export', async (req, res) => {
+app.get('/api/summary/export', requireMetricAccess, async (req, res) => {
   const s = await buildSummary();
   res.setHeader('Content-Disposition', `attachment; filename="eod_summary_${s.date}.txt"`);
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -3139,7 +3168,7 @@ app.get('/api/summary/export', async (req, res) => {
 });
 
 // Plain text for the "Copy as plain text" button — same content, no download.
-app.get('/api/summary/text', async (req, res) => {
+app.get('/api/summary/text', requireMetricAccess, async (req, res) => {
   const s = await buildSummary();
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.send(summaryToText(s));
@@ -8767,7 +8796,7 @@ const crmAgentShops = (p, agent) =>
   p.phone_assignee === agent || p.phone_assignee3 === agent || p.online_dm_assignee === agent;
 
 // ---- GET /api/crm/status -------------------------------------------------------
-app.get('/api/crm/status', (req, res) => {
+app.get('/api/crm/status', requireMetricAccess, (req, res) => {
   res.json({ configured: CRM_CONFIGURED, hasAdmin: !!supabaseAdmin });
 });
 
@@ -10116,7 +10145,7 @@ app.get('/api/crm/team-performance', requireCRM, requireAuth, requireRole('admin
 // ---- POST /api/crm/bulk-import -------------------------------------------------
 // Bulk upsert for data migration. Requires SUPABASE_SERVICE_ROLE_KEY.
 // Accepts { properties: [...], phone_shops: [...], ... }
-app.post('/api/crm/bulk-import', async (req, res) => {
+app.post('/api/crm/bulk-import', requireMetricAdmin, async (req, res) => {
   if (!supabaseAdmin) {
     return res.status(503).json({ error: 'Bulk import requires SUPABASE_SERVICE_ROLE_KEY' });
   }
