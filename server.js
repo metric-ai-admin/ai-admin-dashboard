@@ -11445,7 +11445,45 @@ const MR_FOLDERS = [
   { label: 'MPM Team',       match: ['mpm team', 'mpm'], recentOnly: true },
 ];
 // Personal / automated noise that should never surface in the morning report.
-const MR_EMAIL_EXCLUDE_DOMAINS = ['georgetownisd.org', 'parentsquare.com'];
+// This report is read in English. A task written in Spanish is not wrong, it is
+// just not readable here — so it is skipped rather than machine-translated,
+// which would put words in somebody's mouth on a report that drives the day.
+//
+// Two independent signals, because either alone is wrong: accented characters
+// and inverted punctuation are conclusive, and two or more common Spanish
+// function words catch the unaccented case ("no puedo entrar con la llave").
+// One word is not enough — "la" and "no" both appear in English text.
+const MR_SPANISH_WORDS = [' el ', ' la ', ' los ', ' las ', ' del ', ' con ', ' por ',
+  ' para ', ' una ', ' que ', ' con ', ' pero ', ' sobre ', ' hasta ', ' desde ',
+  'necesito', 'revisar', 'pendiente', 'reunion', 'reunión', 'llamar', 'enviar',
+  'cliente', 'factura', 'pago', 'mañana', 'correo'];
+function mrLooksSpanish(text) {
+  const t = ' ' + String(text || '').toLowerCase().replace(/\s+/g, ' ') + ' ';
+  if (t.trim().length < 4) return false;
+  if (/[ñ¿¡]/.test(t)) return true;
+  // Accented vowels: conclusive here, but only when they are not just a name
+  // ("José") — so they count as one signal rather than a verdict.
+  const accents = /[áéíóúü]/.test(t);
+  const hits = MR_SPANISH_WORDS.filter(w => t.includes(w)).length;
+  // Boolean, not the number 0 that `accents && …` would return: this value is
+  // compared and serialised, not only used in an if.
+  return hits >= 2 || (accents && hits >= 1);
+}
+
+// An email that is FOR Arturo, sitting in Lyndsay's folders. Two signals, both
+// observed on real mail: the body opens by greeting him, or it was sent to the
+// shared support address rather than to her.
+const MR_SUPPORT_ADDRESSES = ['support@livewithmetric.com', 'support@metricpropertymanagement.com'];
+function mrAddressedToArturo(m) {
+  const body = String(m.bodyPreview || '').replace(/\s+/g, ' ').trim();
+  if (/^(hi|hello|hey|good (morning|afternoon|evening)|buenos días|hola)[\s,]+arturo\b/i.test(body)) return true;
+  const to = (m.toRecipients || []).map(r => String(r?.emailAddress?.address || '').toLowerCase());
+  if (to.length && to.every(a => MR_SUPPORT_ADDRESSES.includes(a))) return true;
+  return false;
+}
+
+// connecting2self.com — a community newsletter that keeps landing in Review.
+const MR_EMAIL_EXCLUDE_DOMAINS = ['georgetownisd.org', 'parentsquare.com', 'connecting2self.com'];
 const MR_EMAIL_EXCLUDE_SUBJECTS = ['grading notification', 'digest', 'holiday party', 'jingle', 'yearbook', 'shipment', 'shipped:'];
 // Known-resolved threads that keep resurfacing because the email still sits in the
 // folder. Substring match on the subject. '4260729334' — ACH form completed 09/10.
@@ -11459,6 +11497,10 @@ function mrEmailExcluded(m) {
     const local = addr.split('@')[0] || '';
     if (local === 'noreply' || local === 'no-reply' || local.startsWith('noreply') || local.startsWith('no-reply')) return true;
   }
+  // Addressed to Arturo, not to Lyndsay — his to answer, noise on her morning
+  // report. Checked before the subject rules so it applies everywhere.
+  if (mrAddressedToArturo(m)) return true;
+
   const subj = (m.subject || '').toLowerCase();
   if (MR_EMAIL_EXCLUDE_SUBJECTS.some(k => subj.includes(k))) return true;
   if (MR_EMAIL_RESOLVED_SUBJECTS.some(k => subj.includes(k.toLowerCase()))) return true;
@@ -11550,17 +11592,33 @@ async function mrMeetings() {
         showAs: e.showAs || '',
         format: platform,
         startIso,
+        // Needed for two things: deciding whether a multi-day all-day event
+        // covers today, and finding overlaps between timed meetings.
+        endIso: normalizeGraphDateTime(e.end?.dateTime),
         allDay: !!e.isAllDay,
         cancelled: !!e.isCancelled || /^cancel(l)?ed:/i.test(e.subject || ''),
       };
     })
     .filter(m => {
-      if (!m.startIso || m.cancelled || ctDateOf(m.startIso) !== todayCT) return false;
+      if (!m.startIso || m.cancelled) return false;
+      // An all-day event spans days, so "starts today" is the wrong test: a
+      // three-day conference starting Monday would vanish from Tuesday's
+      // report, which is exactly the day you most need to know about it.
+      // Graph gives all-day events an EXCLUSIVE end (a one-day event on the
+      // 29th ends on the 30th), hence the strict <.
+      if (m.allDay) {
+        const from = ctDateOf(m.startIso);
+        const to = m.endIso ? ctDateOf(m.endIso) : from;
+        if (!(from <= todayCT && todayCT < to) && from !== todayCT) return false;
+      } else if (ctDateOf(m.startIso) !== todayCT) return false;
       // Personal/private events: subject markers, "free" (not a real commitment),
       // or organized from a personal (non-Metric consumer) email account.
       const s = (m.subject || '').toLowerCase();
       if (MR_MEETING_EXCLUDE_SUBJECTS.some(k => s.includes(k))) return false;
-      if (String(m.showAs).toLowerCase() === 'free') return false;
+      // "Free" means no commitment for a timed meeting — but conferences and
+      // travel are routinely marked free while being the single biggest thing
+      // about the day, so it does not disqualify an all-day event.
+      if (!m.allDay && String(m.showAs).toLowerCase() === 'free') return false;
       const od = (m.organizerEmail.split('@')[1] || '').toLowerCase();
       if (od && MR_PERSONAL_EMAIL_DOMAINS.includes(od)) return false;
       return true;
@@ -11573,7 +11631,9 @@ async function mrEmails() {
   const token = await graphMailboxToken('lyndsay');
   const folders = await listMailFolders('lyndsay', token);
   const headers = { Authorization: `Bearer ${token}` };
-  const select = 'id,subject,sender,from,receivedDateTime,isRead,bodyPreview,flag';
+  // toRecipients is needed by mrAddressedToArturo: without it that check can
+  // only see the greeting, and mail sent to support@ would slip through.
+  const select = 'id,subject,sender,from,toRecipients,receivedDateTime,isRead,bodyPreview,flag';
   const norm = s => String(s || '').toLowerCase();
   const out = {};
   for (const def of MR_FOLDERS) {
@@ -11607,6 +11667,7 @@ async function mrEmails() {
     // invitation:/Canceled: — so "Invitation: X" and "Updated invitation: X"
     // (Ramp calendar invites) collapse to one. Applied to every section.
     const subjSeen = new Set();
+    const threadCount = {};
     const stripPfx = /^\s*(re|fwd|fw|invitation|updated invitation|canceled|cancelled)\s*:\s*/i;
     const normSubj = s => { let x = String(s || '').toLowerCase().trim(), prev; do { prev = x; x = x.replace(stripPfx, '').trim(); } while (x !== prev); return x; };
     out[def.label] = collected
@@ -11614,15 +11675,21 @@ async function mrEmails() {
       .filter(m => !mrEmailExcluded(m))                          // drop personal/automated/resolved noise
       .filter(m => !cutoffCT || (recvCT(m.receivedDateTime) && recvCT(m.receivedDateTime) >= cutoffCT))
       .sort((a, b) => String(b.receivedDateTime || '').localeCompare(String(a.receivedDateTime || '')))
-      .filter(m => {                                             // subject de-dupe — keep newest per event
+      // Thread grouping. This used to DROP the older messages of a thread, which
+      // hid the fact that a conversation had five unanswered mails in it — the
+      // count is precisely what makes one urgent. Now the newest is kept and
+      // carries the tally.
+      .filter(m => {
         const k = normSubj(m.subject);
         if (!k) return true;                                     // empty normalized subject: don't collapse
-        if (subjSeen.has(k)) return false;
+        if (subjSeen.has(k)) { threadCount[k] = (threadCount[k] || 1) + 1; return false; }
         subjSeen.add(k);
+        threadCount[k] = 1;
         return true;
       })
       .slice(0, 10)
       .map(m => ({
+        threadCount: threadCount[normSubj(m.subject)] || 1,
         sender: m.sender?.emailAddress?.name || m.from?.emailAddress?.name || m.sender?.emailAddress?.address || '(unknown)',
         date: mrDateShort(m.receivedDateTime),
         subject: m.subject || '(no subject)',
@@ -11877,10 +11944,33 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   L.push(`📋 *Lyndsay's Daily Activity Report — ${date}*`);
   L.push('');
 
+  // All-day events first, as a header line: a conference or a travel day frames
+  // everything under it, and a line buried among the 9am/11am entries reads as
+  // one more meeting rather than as the shape of the day.
+  const allDayEvents = meetings.filter(m => m.allDay);
+  const timed = meetings.filter(m => !m.allDay);
+  if (allDayEvents.length) {
+    allDayEvents.forEach(m => L.push(`  📅 ALL DAY — ${m.subject}${m.organizer && m.organizer !== '—' ? `  (${m.organizer})` : ''}`));
+    L.push('');
+  }
+
   L.push(`*TODAY'S MEETINGS*`);
   if (errors.meetings) L.push(`  ⚠ ${errors.meetings}`);
-  else if (!meetings.length) L.push('  No meetings on the calendar today.');
-  else meetings.forEach(m => L.push(`  ${mrTimeCT(m.startIso).padEnd(9)}| ${m.subject}  —  ${m.organizer}  [${m.format}]`));
+  else if (!timed.length) L.push(allDayEvents.length ? '  No timed meetings today.' : '  No meetings on the calendar today.');
+  else {
+    // Double-booking is the thing a morning report should catch, and the
+    // calendar will not tell you: two meetings at 10:00 look like two lines.
+    // Compared against every other meeting rather than only the previous one,
+    // since a long meeting can swallow several later ones.
+    const overlapsOf = m => timed.filter(o => o !== m
+      && o.startIso && m.startIso && o.endIso && m.endIso
+      && o.startIso < m.endIso && m.startIso < o.endIso).map(o => o.subject);
+    timed.forEach(m => {
+      const clash = overlapsOf(m);
+      L.push(`  ${mrTimeCT(m.startIso).padEnd(9)}| ${m.subject}  —  ${m.organizer}  [${m.format}]`
+        + (clash.length ? `\n            ⚠️ Overlaps with ${clash.join(', ')}` : ''));
+    });
+  }
   L.push('❓ Let me know if you will NOT be attending any meetings. Any critical meetings you need me to repeatedly call you to attend?');
   L.push('');
 
@@ -11888,7 +11978,8 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   const crit = [...(emails['Lyndsay Review'] || []), ...(emails['Clients'] || [])];
   if (errors.emails) L.push(`  ⚠ ${errors.emails}`);
   else if (!crit.length) L.push('  No unread or flagged critical emails.');
-  else crit.slice(0, 10).forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}  |  ${e.summary}  [${e.status}]`));
+  else crit.slice(0, 10).forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}`
+    + `${e.threadCount > 1 ? ` (${e.threadCount} messages)` : ''}  |  ${e.summary}  [${e.status}]`));
   L.push('');
 
   L.push('*EMAIL REMINDERS — Might need attention*');
@@ -11896,7 +11987,8 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   if (errors.emails) L.push(`  ⚠ ${errors.emails}`);
   else if (!team.length) L.push('  Nothing new from MPM Team.');
   else {
-    team.slice(0, 5).forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}  |  ${(e.summary || '').slice(0, 150)}`));
+    team.slice(0, 5).forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}`
+      + `${e.threadCount > 1 ? ` (${e.threadCount} messages)` : ''}  |  ${(e.summary || '').slice(0, 150)}`));
     if (team.length > 5) L.push(`  + ${team.length - 5} more reminder${team.length - 5 === 1 ? '' : 's'} — check MPM Team folder`);
   }
   L.push('');
@@ -11906,7 +11998,18 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   else if (!asana.configured) L.push('  Asana not configured.');
   else if (!asana.tasks.length) L.push('  No critical Asana tasks pending.');
   else {
-    asana.tasks.forEach(t => L.push(`  ${t.name}  |  Due: ${t.due_on || '—'}  |  ${mrClean(t.notes_preview) || '—'}  [Open]`));
+    // English only. A Spanish TITLE means the task is skipped — there is no
+    // English version to fall back on, and translating it here would put words
+    // in somebody's mouth on the report that drives Lyndsay's day. Spanish
+    // NOTES against an English title lose the notes, not the task.
+    const readable = asana.tasks.filter(t => !mrLooksSpanish(t.name));
+    const skipped = asana.tasks.length - readable.length;
+    readable.forEach(t => {
+      const notes = mrClean(t.notes_preview);
+      L.push(`  ${t.name}  |  Due: ${t.due_on || '—'}  |  ${(notes && !mrLooksSpanish(notes)) ? notes : '—'}  [Open]`);
+    });
+    if (!readable.length) L.push('  No critical Asana tasks pending.');
+    if (skipped) L.push(`  + ${skipped} task${skipped === 1 ? '' : 's'} not shown (written in Spanish) — see dashboard`);
     if (asana.more > 0) L.push(`  + ${asana.more} more task${asana.more === 1 ? '' : 's'} — see dashboard`);
   }
   L.push('');
@@ -11927,8 +12030,13 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   if (errors.ops) L.push(`  ⚠ ${errors.ops}`);
   else if (!ops.length) L.push('  No 🔴/🟡/🟢 items pending.');
   else {
-    ops.slice(0, 10).forEach(o => L.push(`  ${o.priority}  ${o.item}  —  ${o.pending}`));
-    if (ops.length > 10) L.push(`  + ${ops.length - 10} more task${ops.length - 10 === 1 ? '' : 's'} — see dashboard`);
+    const opsEn = ops.filter(o => !mrLooksSpanish(o.item));
+    const opsSkipped = ops.length - opsEn.length;
+    opsEn.slice(0, 10).forEach(o => L.push(`  ${o.priority}  ${o.item}  —  `
+      + `${o.pending && !mrLooksSpanish(o.pending) ? o.pending : '—'}`));
+    if (!opsEn.length) L.push('  No 🔴/🟡/🟢 items pending.');
+    if (opsSkipped) L.push(`  + ${opsSkipped} item${opsSkipped === 1 ? '' : 's'} not shown (written in Spanish) — see dashboard`);
+    if (opsEn.length > 10) L.push(`  + ${opsEn.length - 10} more task${opsEn.length - 10 === 1 ? '' : 's'} — see dashboard`);
   }
 
   return L.join('\n');
