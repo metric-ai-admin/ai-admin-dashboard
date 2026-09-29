@@ -229,6 +229,25 @@ t('the roll-up counts ONE week of leads, not every week from here on', () => {
     'the open-ended week_ending filter is back — it counts future weeks too');
 });
 
+t('every roll-up window is closed at the top, not just the leads one', () => {
+  // All four were open upwards. Leads were fixed first; these three were left
+  // for a separate call because bounding move-ins changes a number Lyndsay and
+  // Katie read — on 2026-09-29 it went from 9 to 5, four of them scheduled for
+  // later weeks and counted as though they had already happened.
+  const src = read('server.js');
+  const i = src.indexOf('async function leasingWeeklyRollup(');
+  const body = src.slice(i, i + 2600);
+  [
+    ['leasing_showings', 'showing_date'],
+    ['leasing_applications', 'application_date'],
+    ['leasing_lease_history', 'move_in_date'],
+  ].forEach(([table, col]) => {
+    const q = new RegExp(`from\\('${table}'\\)[\\s\\S]{0,220}?\\.lte\\('${col}',\\s*weekEnd\\)`);
+    assert.ok(q.test(body),
+      `${table} is filtered from weekStart with no upper bound — it counts rows dated after the week as if they were in it`);
+  });
+});
+
 t('the Daily Report card labels week_ending with the closing Saturday', () => {
   // A field called week_ending held the week's FIRST day, so the card and the
   // Goal Board next to it named the same week differently.

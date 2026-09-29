@@ -10437,9 +10437,17 @@ async function leasingWeeklyRollup(db) {
     // IS the value. A range on a bucket column invites exactly the off-by-one
     // this is fixing.
     db.from('leasing_leads').select('property,week_ending').eq('week_ending', weekEnd),
-    db.from('leasing_showings').select('property_name,showing_date,status').gte('showing_date', weekStart),
-    db.from('leasing_applications').select('property_name,application_date,status').gte('application_date', weekStart),
-    db.from('leasing_lease_history').select('property_name,move_in_date').gte('move_in_date', weekStart),
+    // Bounded at BOTH ends, same as the leads query above. These were open
+    // upwards, and on 2026-09-29 four rows in leasing_lease_history were dated
+    // past the current week — so the card and the EOD reported 9 move-ins for a
+    // week that held 5. A scheduled move-in is real data, it just is not this
+    // week's; showing it here counts the future as though it had happened.
+    //
+    // Ranges rather than the equality the leads query uses, because these are
+    // real event dates, not a stored week bucket.
+    db.from('leasing_showings').select('property_name,showing_date,status').gte('showing_date', weekStart).lte('showing_date', weekEnd),
+    db.from('leasing_applications').select('property_name,application_date,status').gte('application_date', weekStart).lte('application_date', weekEnd),
+    db.from('leasing_lease_history').select('property_name,move_in_date').gte('move_in_date', weekStart).lte('move_in_date', weekEnd),
   ]);
   const clean = full => { const t = String(full || '').trim(); const i = t.indexOf(' - '); return i > 0 ? t.slice(0, i).trim() : t; };
   const bump = (m, k) => { if (k) m[k] = (m[k] || 0) + 1; };
