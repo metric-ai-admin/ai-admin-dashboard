@@ -12632,7 +12632,10 @@ function eodRenderHtml(data) {
     P.push(eodSectionHtml('🔄', 'Leasing sync (05:30)',
       neverRan && !ls.missedItsSlot
         ? `<span style="color:${EOD.muted}">First run scheduled ${eodEsc(ls.nextRunLabel || 'tomorrow')} 05:30 CT.</span>`
-        : ls.error ? eodErr(ls.error)
+        : (ls.vanished && ls.vanished.length)
+          ? eodErr(`${ls.vanished.reduce((n, v) => n + v.gone.length, 0)} lead(s) disappeared from `
+            + `week ${eodEsc(ls.vanished.map(v => v.week_ending).join(', '))} since yesterday — nothing in the code deletes leads.`)
+          : ls.error ? eodErr(ls.error)
           : stale ? eodErr(`Last ran ${eodEsc(String(ls.at).slice(0, 16).replace('T', ' '))} — over a day ago. The cron may not be running.`)
             : `${ls.received} received, <b>${ls.in_range}</b> in range for ${eodEsc(ls.date_from)} → ${eodEsc(ls.date_to)}`
               + (ls.out_of_range ? ` · ${ls.out_of_range} outside it` : ''),
@@ -12935,6 +12938,83 @@ const LEASING_SYNC_WINDOW_DAYS = 7;
 // Where the last run is recorded, so the EOD can report it.
 const LEASING_SYNC_STATE = path.join(DATA_DIR, 'leasing_sync_state.json');
 
+// A daily record of WHICH leads are in each week, taken after the sync.
+//
+// The week ending 09/26 went from 68 leads to 67 overnight on 2026-09-29, and
+// the row could not be identified: yesterday's count had been verified and
+// thrown away. A number says something moved; only the ids say what. Narrowing
+// it to one property took a screenshot of the dashboard, which is not a method.
+//
+// Last 8 weeks only — about 20 KB a day. Older weeks do not change, and a
+// snapshot of a settled week answers nothing.
+const LEASING_SNAPSHOT_WEEKS = 8;
+
+async function leasingWeekSnapshot(db, todayCT) {
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await db.from('leasing_leads')
+      .select('appfolio_id,week_ending').range(from, from + 999);
+    if (error) throw new Error('leasing_leads: ' + error.message);
+    rows.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+
+  const byWeek = new Map();
+  rows.forEach(r => {
+    if (!r.week_ending || !r.appfolio_id) return;
+    if (!byWeek.has(r.week_ending)) byWeek.set(r.week_ending, []);
+    byWeek.get(r.week_ending).push(r.appfolio_id);
+  });
+  const weeks = [...byWeek.keys()].sort().slice(-LEASING_SNAPSHOT_WEEKS);
+
+  // Yesterday's snapshot, read BEFORE writing today's, so the comparison is
+  // against the previous day rather than against what we are about to store.
+  const yesterday = addDaysYMD(todayCT, -1);
+  const { data: prior } = await db.from('leasing_week_snapshots')
+    .select('week_ending,appfolio_ids').eq('snapshot_date', yesterday);
+  const priorBy = new Map((prior || []).map(r => [String(r.week_ending).slice(0, 10), new Set(r.appfolio_ids || [])]));
+
+  const payload = weeks.map(w => ({
+    snapshot_date: todayCT,
+    week_ending: w,
+    lead_count: byWeek.get(w).length,
+    // Sorted so two snapshots of an unchanged week are byte-identical and a
+    // diff shows nothing rather than a reordering.
+    appfolio_ids: byWeek.get(w).slice().sort(),
+    captured_at: new Date().toISOString(),
+  }));
+
+  const { error } = await db.from('leasing_week_snapshots')
+    .upsert(payload, { onConflict: 'snapshot_date,week_ending' });
+  if (error) {
+    // A missing table means migration 066 has not run. Say so and carry on —
+    // the sync is correct without the snapshot, and failing the pull over
+    // bookkeeping would be worse than losing a day of it.
+    if (/leasing_week_snapshots/.test(error.message)) {
+      console.warn('[leasing-sync] snapshot not written — run '
+        + 'supabase/migrations/066_leasing_week_snapshots.sql');
+      return { weeks: 0, vanished: [] };
+    }
+    throw new Error('leasing_week_snapshots: ' + error.message);
+  }
+
+  // What LEFT a week since yesterday. An upsert cannot remove a row, so this
+  // should always be empty; when it is not, the ids are in the log the same
+  // morning instead of being unrecoverable a day later.
+  const vanished = [];
+  payload.forEach(p => {
+    const before = priorBy.get(p.week_ending);
+    if (!before) return;                      // no snapshot yesterday: nothing to compare
+    const now = new Set(p.appfolio_ids);
+    const gone = [...before].filter(id => !now.has(id));
+    if (gone.length) vanished.push({ week_ending: p.week_ending, gone });
+  });
+  vanished.forEach(v => logLine(`[leasing-sync] ${v.gone.length} lead(s) LEFT week ${v.week_ending} `
+    + `since yesterday — no code deletes leasing_leads, so check Supabase: ${v.gone.join(', ')}`));
+
+  return { weeks: payload.length, vanished };
+}
+
 async function leasingCronSync() {
   const todayCT = ctDateStr(0);
   const fromCT = (() => {
@@ -12943,6 +13023,17 @@ async function leasingCronSync() {
     return d.toISOString().slice(0, 10);
   })();
   const r = await callOwnRoute('/api/leasing/sync', { date_from: fromCT, date_to: todayCT });
+
+  // After the sync, so the snapshot reflects what the day's pull left behind.
+  // A failure here must not fail the run: the sync has already succeeded and
+  // its numbers are what matter.
+  let snapshot = { weeks: 0, vanished: [] };
+  try {
+    snapshot = await leasingWeekSnapshot(supabaseAdmin || supabasePublic, todayCT);
+  } catch (e) {
+    logLine(`[leasing-sync] snapshot failed: ${e.message}`);
+  }
+
   const summary = {
     at: new Date().toISOString(),
     date_from: fromCT,
@@ -12952,6 +13043,10 @@ async function leasingCronSync() {
     out_of_range: r.out_of_range ?? null,
     seen: r.seen ?? null,
     source: r.source || null,
+    snapshot_weeks: snapshot.weeks,
+    // Surfaced on the summary so the EOD can say it out loud rather than
+    // leaving it in a log nobody opens.
+    vanished: snapshot.vanished,
     error: null,
   };
   // Written where the EOD can read it. A cron whose only trace is a log line
