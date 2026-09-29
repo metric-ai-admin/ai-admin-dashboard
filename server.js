@@ -66,8 +66,23 @@ const cookieParser = require('cookie-parser');
 const JWT_SECRET = process.env.JWT_SECRET || '';
 if (!JWT_SECRET) logLine('[WARN] JWT_SECRET not set — dashboard auth will not work');
 
+// ---- Paths -------------------------------------------------------------------
+// DATA_DIR is overridable so a persistent disk can be mounted somewhere other
+// than the app's own folder in production (Render's filesystem is ephemeral
+// otherwise — every deploy/restart would wipe tasks, the Lyndsay queue, the
+// Graph token cache, etc.). Defaults to the local ./data folder, unchanged for
+// local dev.
+//
+// Declared here, far above the other paths, because the crash logger below now
+// writes into it and a const cannot be read before its declaration runs.
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+
 // ---- Crash logging ----------------------------------------------------------
-const LOG_FILE = path.join(__dirname, 'dashboard.log');
+// On the disk, not in __dirname. Until 2026-09-29 this sat next to the source,
+// which on Render means it was destroyed by every deploy — so the one log you
+// would want after an incident was always the one that had just been wiped.
+const LOG_FILE = path.join(DATA_DIR, 'dashboard.log');
 function logLine(msg) {
   const line = `[${new Date().toISOString()}] ${msg}`;
   try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch {}
@@ -187,12 +202,8 @@ const GRAPH_SCOPES = [
 ];
 
 // ---- Paths -----------------------------------------------------------------
-// DATA_DIR is overridable so a persistent disk can be mounted somewhere
-// other than the app's own folder in production (Render's filesystem is
-// ephemeral otherwise — every deploy/restart would wipe tasks, the Lyndsay
-// queue, the Graph token cache, etc.). Defaults to the local ./data folder,
-// unchanged for local dev.
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+// DATA_DIR is declared near the top of the file, above the crash logger that
+// writes into it.
 const TASKS_FILE = path.join(DATA_DIR, 'tasks.json');
 const ASANA_CACHE_FILE = path.join(DATA_DIR, 'asana_cache.json');
 const ACTIVITY_FILE = path.join(DATA_DIR, 'activity_log.json');
@@ -220,11 +231,103 @@ if (!fs.existsSync(LYNDSAY_QUEUE_FILE)) fs.writeFileSync(LYNDSAY_QUEUE_FILE, '[]
 if (!fs.existsSync(MEETINGS_FILE)) fs.writeFileSync(MEETINGS_FILE, JSON.stringify({ lastUpdated: null, date: null, arturo: [], lyndsay: [] }));
 
 // ---- Middleware ------------------------------------------------------------
+// CORS, narrowed from "*" on 2026-09-29.
+//
+// A wildcard origin let ANY web page read every endpoint from the browser of
+// whoever visited it. While 51 routes were unauthenticated that meant a page
+// could pull Lyndsay's calendar or the task list from a visitor's machine, with
+// nothing in the logs. The guards close that on their own, but a wildcard is
+// still the wrong default for an internal tool.
+//
+// Who actually needs CORS: nobody, today. The dashboard and the standalone tool
+// pages are served from this same origin, and same-origin requests are not
+// subject to CORS at all. metric-mcp, Copilot and Power Automate call this
+// server to server, where CORS does not apply — a non-browser client never
+// checks these headers. So the allowlist exists for a future browser client and
+// is empty of anything exotic on purpose.
+//
+// An origin that is not on the list simply gets no CORS header back, which is
+// what makes the browser refuse to hand over the response.
+const CORS_ALLOWED_ORIGINS = [
+  APP_BASE_URL,
+  ...String(process.env.CORS_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()),
+].filter(Boolean).map(o => o.replace(/\/+$/, '').toLowerCase());
+
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  const origin = req.get('origin');
+  if (origin && CORS_ALLOWED_ORIGINS.includes(origin.replace(/\/+$/, '').toLowerCase())) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    // x-metric-key is how a non-cookie client authenticates, so a cross-origin
+    // preflight that omitted it would fail on exactly the requests that matter.
+    res.header('Access-Control-Allow-Headers', 'Content-Type, x-metric-key');
+  }
+  // Caches must not serve one origin's response to another.
+  res.header('Vary', 'Origin');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+// ---- Access log --------------------------------------------------------------
+// Who called what, when, from where.
+//
+// Added 2026-09-29, after an audit found 51 endpoints open on the public URL and
+// the follow-up question — did anyone actually hit them? — turned out to be
+// unanswerable. The app had never logged a request in its life. That is the gap
+// this closes: not detection, just a record, so the next incident has evidence
+// instead of a shrug.
+//
+// Status comes from the 'finish' event because it is not known when the request
+// arrives. /health and /ping are skipped: the keep-alive ping alone would be
+// thousands of lines a day and would bury everything worth reading.
+//
+// NOT LOGGED: request bodies, query strings, cookies and the Authorization or
+// x-metric-key headers. A log that captures a resident's details or a token is
+// a new liability, not a safeguard. The path is logged as routed, and query
+// strings are dropped because ours carry dates, ids and search terms.
+const ACCESS_LOG_KEEP_DAYS = 30;
+const accessLogPath = ymd => path.join(DATA_DIR, `access-${ymd}.log`);
+
+// Swept once a day rather than on every request: at a few hundred KB a day this
+// is housekeeping, not pressure.
+let accessLogSweptOn = null;
+function sweepAccessLogs(todayYMD) {
+  if (accessLogSweptOn === todayYMD) return;
+  accessLogSweptOn = todayYMD;
+  const cutoff = new Date(Date.now() - ACCESS_LOG_KEEP_DAYS * 86400000)
+    .toISOString().slice(0, 10);
+  try {
+    for (const f of fs.readdirSync(DATA_DIR)) {
+      const m = /^access-(\d{4}-\d{2}-\d{2})\.log$/.exec(f);
+      if (m && m[1] < cutoff) fs.unlinkSync(path.join(DATA_DIR, f));
+    }
+  } catch { /* housekeeping must never break a request */ }
+}
+
+app.use((req, res, next) => {
+  if (req.path === '/health' || req.path === '/ping') return next();
+  const started = Date.now();
+  res.on('finish', () => {
+    try {
+      const now = new Date();
+      const ymd = now.toISOString().slice(0, 10);
+      sweepAccessLogs(ymd);
+      // Tabs and newlines out: they are the field and record separators, and a
+      // user-agent is attacker-controlled text that could otherwise forge a row.
+      const clean = v => String(v || '-').replace(/[\r\n\t]/g, ' ').slice(0, 200);
+      fs.appendFileSync(accessLogPath(ymd), [
+        now.toISOString(),
+        req.method,
+        clean(req.path),
+        res.statusCode,
+        `${Date.now() - started}ms`,
+        `ip=${clean(req.ip)}`,
+        `xff=${clean(req.get('x-forwarded-for'))}`,
+        `ua=${clean(req.get('user-agent'))}`,
+      ].join('\t') + '\n');
+    } catch { /* a failed log must never fail the response */ }
+  });
   next();
 });
 app.use(cookieParser());
