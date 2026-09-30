@@ -11961,6 +11961,11 @@ function mrAddressedToArturo(m) {
 // is checked too — a shared or delegated calendar does not always come back
 // with the response set, and being the organizer is not something to infer from
 // a field that might be missing.
+// What the last run decided about each all-day event, and why. Read by the
+// morning-report route so "why is that on my report?" is answerable without a
+// deploy — the question that cost one here on 2026-09-30.
+let mrAllDayDiagnostic = [];
+
 function mrOwnsAllDay(m) {
   const org = String(m.organizerEmail || '').toLowerCase();
   if (org && org === String(MAILBOX_LYNDSAY).toLowerCase()) return true;
@@ -12079,6 +12084,7 @@ async function mrMeetings() {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j?.error?.message || `calendar returned ${r.status}`);
   const todayCT = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date());
+  mrAllDayDiagnostic = [];
   return (j.value || [])
     .map(e => {
       const startIso = normalizeGraphDateTime(e.start?.dateTime);
@@ -12118,7 +12124,12 @@ async function mrMeetings() {
         // Deliberately strict: tentative and unanswered are dropped too. An
         // all-day event she has not accepted is not yet a commitment, and the
         // point of this section is the things that ARE.
-        if (!mrOwnsAllDay(m)) return false;
+        const owns = mrOwnsAllDay(m);
+        mrAllDayDiagnostic.push({
+          subject: m.subject, organizer: m.organizerEmail || m.organizer,
+          response: m.response || '(none returned)', kept: owns,
+        });
+        if (!owns) return false;
         const from = allDayYMD(m.startIso);
         if (!from) return false;
         const to = m.endIso ? allDayYMD(m.endIso) : null;
@@ -12573,6 +12584,7 @@ app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
   ]);
 
   const meetings = mR.status === 'fulfilled' ? mR.value : (errors.meetings = mrReason(mR.reason), []);
+  const allDayDiagnostic = mrAllDayDiagnostic.slice();
   const emails   = eR.status === 'fulfilled' ? eR.value : (errors.emails   = mrReason(eR.reason), {});
   const asana    = aR.status === 'fulfilled' ? aR.value : (errors.asana    = mrReason(aR.reason), { configured: true, tasks: [] });
   const ops      = oR.status === 'fulfilled' ? oR.value : (errors.ops      = mrReason(oR.reason), []);
@@ -12582,7 +12594,7 @@ app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
   if (!GRAPH_CONFIGURED) { errors.meetings = errors.emails = 'Microsoft Graph is not configured.'; }
 
   const report = mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, sopReview, errors });
-  res.json({ report, generatedAt: new Date().toISOString(), date, errors });
+  res.json({ report, generatedAt: new Date().toISOString(), date, errors, allDay: allDayDiagnostic });
 });
 
 // =====================================================================
