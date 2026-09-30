@@ -1228,6 +1228,10 @@ function registerMetricRoutes(app, db) {
           call_date: date, recording_id: c.recording_id, caller: c.caller,
           duration: c.duration, transcript: text,
           user_name: u.name, call_direction: c.direction || null,
+          // The far side of the call, ten digits, never ours — see
+          // counterpartyNumber in simplevoip.js. Null when the direction is
+          // unknown, because the alternative is storing our own line.
+          counterparty_number: simplevoip.counterpartyNumber(c),
           fetched_at: new Date().toISOString(),
         }, { onConflict: 'recording_id' });
         if (error) console.error('[simplevoip] store failed', c.recording_id, error.message);
@@ -1242,6 +1246,54 @@ function registerMetricRoutes(app, db) {
       .then(r => console.log('[simplevoip] archive:', JSON.stringify(r)))
       .catch(err => console.error('[simplevoip] archive failed:', err.message));
   }, { timezone: 'America/Chicago' });
+
+  // Fill counterparty_number on rows that already exist, for ONE date.
+  //
+  // Deliberately NOT archiveCallsForDate: that re-fetches every transcript,
+  // which is one API call per call on top of the listing. Nothing about the
+  // transcripts changed — only the number is missing — so this reads the CDR
+  // listing per roster user and UPDATEs, touching no other column.
+  //
+  // Rows the listing does not mention are left alone rather than nulled: the
+  // CDR stops serving older dates, and "not returned today" is not "no number".
+  async function fillNumbersForDate(date) {
+    if (!simplevoip.isConfigured()) return { skipped: 'not configured' };
+    const users = await archiveRosterUsers();
+    const done = new Set();
+    let seen = 0, updated = 0, noNumber = 0;
+    for (const u of users) {
+      const { calls } = await simplevoip.fetchCallsForDate(u.user_id, date);
+      for (const c of simplevoip.shapeCalls(calls)) {
+        if (!c.recording_id || done.has(c.recording_id)) continue;
+        done.add(c.recording_id);
+        seen++;
+        const num = simplevoip.counterpartyNumber(c);
+        if (!num) { noNumber++; continue; }
+        const { error, count } = await db.from('simplevoip_daily_calls')
+          .update({ counterparty_number: num }, { count: 'exact' })
+          .eq('recording_id', c.recording_id);
+        if (error) console.error('[simplevoip] number update failed', c.recording_id, error.message);
+        else updated += count || 0;
+      }
+    }
+    return { date, users: users.length, seen, updated, noNumber };
+  }
+
+  // POST /api/sv/archive/numbers?date=YYYY-MM-DD — fill counterparty_number for
+  // one date from the CDR listing alone. One listing call per roster user, no
+  // transcript fetches. Admin or the shared key.
+  app.post('/api/sv/archive/numbers', requireMetricAdmin, async (req, res) => {
+    if (!simplevoip.isConfigured()) return res.status(400).json({ ok: false, error: 'SimpleVOIP is not configured.' });
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? req.query.date : null;
+    if (!date) return res.status(400).json({ ok: false, error: 'date=YYYY-MM-DD is required' });
+    try {
+      const r = await fillNumbersForDate(date);
+      console.log('[simplevoip] numbers ' + date + ': ' + JSON.stringify(r));
+      res.json({ ok: true, ...r });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
 
   // POST /api/sv/archive/backfill?days=N — re-run the archive for the last N days
   // (default 7, max 30) so existing rows pick up the user_name + call_direction

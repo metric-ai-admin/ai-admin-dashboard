@@ -291,7 +291,44 @@ function shapeTranscript(d, recordingId) {
   };
 }
 
+// The OTHER party's number, normalised — never Metric's own.
+//
+// For a collections report to say "Karla called Vasquez Jose (Unit 202)" it has
+// to know which number was on the far end of the call. simplevoip_daily_calls
+// stored no number at all until 2026-09-30: `caller` holds from_name when there
+// is one, so it carried the AGENT's name on every outbound call, and outbound
+// is 65% of the week's traffic and the whole of the use case.
+//
+// WHICH SIDE IS THEIRS. Inbound, they called us: from_number. Outbound, we
+// called them: to_number. That is how Metric's own numbers stay out of the
+// table — not by keeping a list of ours to exclude, which would be one more
+// thing to maintain and to get wrong, but by only ever taking the far side.
+//
+// An unknown direction returns null rather than a guess. Storing the wrong side
+// would put our own line in a resident directory and match every call to it.
+//
+// NORMALISED TO TEN DIGITS. The same number arrives as "(512) 673-9783",
+// "+1 512-673-9783" and "5126739783", and AppFolio's phone_numbers column
+// spells it its own way again. Ten digits is what both sides can agree on; it
+// is all Texas, and the leading 1 is inconsistent on both sides. Anything
+// shorter is an internal extension and is dropped — three digits would match
+// half the directory.
+function normalizeNumber(v) {
+  const d = String(v == null ? '' : v).replace(/\D/g, '');
+  if (d.length < 10) return null;          // extensions, short codes, junk
+  return d.slice(-10);
+}
+
+function counterpartyNumber(call) {
+  if (!call) return null;
+  const dir = String(call.direction || '').toLowerCase();
+  if (dir === 'inbound') return normalizeNumber(call.caller_number);
+  if (dir === 'outbound') return normalizeNumber(call.to_number);
+  return null;                             // unknown direction: do not guess
+}
+
 module.exports = {
+  normalizeNumber, counterpartyNumber,
   isConfigured, defaultUserId, dayBounds,
   fetchCDRList, fetchTodaysCalls, fetchCallsForDate, fetchCallTranscript,
   shapeCalls, shapeTranscript, detectOfficeRedirect,
