@@ -11966,6 +11966,12 @@ function mrAddressedToArturo(m) {
 // deploy — the question that cost one here on 2026-09-30.
 let mrAllDayDiagnostic = [];
 
+// Every email the greeting rule dropped on the last run, with the greeting it
+// read. Returned by the morning-report route as well as logged: "is anything
+// being dropped that should not be?" should not require shell access to the
+// server to answer.
+let mrDroppedByGreeting = [];
+
 // Metric's own domains. An all-day event organized from one of these is a
 // company event; anything else belongs to an outside party.
 const MR_INTERNAL_DOMAINS = ['metricpropertymanagement.com', 'livewithmetric.com'];
@@ -12021,8 +12027,16 @@ function mrEmailExcluded(m) {
     // she has to answer disappear from the report with no trace — so the
     // subject and the greeting it read go in the log, and "is anything being
     // dropped that should not be?" becomes a grep instead of a guess.
-    logLine(`[morning-report] dropped, greets someone else: subject="${String(m.subject || '').slice(0, 90)}" `
-      + `greeting=${JSON.stringify(mrGreetedNames(m.bodyPreview))}`);
+    const entry = {
+      from: m.sender?.emailAddress?.name || m.from?.emailAddress?.name
+        || m.sender?.emailAddress?.address || '(unknown)',
+      subject: String(m.subject || '').slice(0, 120),
+      greeting: mrGreetedNames(m.bodyPreview),
+      received: m.receivedDateTime || null,
+    };
+    mrDroppedByGreeting.push(entry);
+    logLine(`[morning-report] dropped, greets someone else: from="${entry.from}" `
+      + `subject="${entry.subject.slice(0, 80)}" greeting=${JSON.stringify(entry.greeting)}`);
     return true;
   }
 
@@ -12176,6 +12190,7 @@ async function mrMeetings() {
 
 // 2 — Unread/flagged emails in Lyndsay's Review / Clients / MPM Team folders.
 async function mrEmails() {
+  mrDroppedByGreeting = [];
   const token = await graphMailboxToken('lyndsay');
   const folders = await listMailFolders('lyndsay', token);
   const headers = { Authorization: `Bearer ${token}` };
@@ -12607,6 +12622,7 @@ app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
 
   const meetings = mR.status === 'fulfilled' ? mR.value : (errors.meetings = mrReason(mR.reason), []);
   const allDayDiagnostic = mrAllDayDiagnostic.slice();
+  const droppedByGreeting = mrDroppedByGreeting.slice();
   const emails   = eR.status === 'fulfilled' ? eR.value : (errors.emails   = mrReason(eR.reason), {});
   const asana    = aR.status === 'fulfilled' ? aR.value : (errors.asana    = mrReason(aR.reason), { configured: true, tasks: [] });
   const ops      = oR.status === 'fulfilled' ? oR.value : (errors.ops      = mrReason(oR.reason), []);
@@ -12616,7 +12632,8 @@ app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
   if (!GRAPH_CONFIGURED) { errors.meetings = errors.emails = 'Microsoft Graph is not configured.'; }
 
   const report = mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, sopReview, errors });
-  res.json({ report, generatedAt: new Date().toISOString(), date, errors, allDay: allDayDiagnostic });
+  res.json({ report, generatedAt: new Date().toISOString(), date, errors,
+    allDay: allDayDiagnostic, droppedByGreeting });
 });
 
 // =====================================================================
