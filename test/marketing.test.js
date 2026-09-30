@@ -186,6 +186,22 @@ t('the two kinds are told apart by more than colour', () => {
   assert.ok(/\.mkt-note-warn/.test(css) && /\.mkt-note-info/.test(css), 'the classes are unstyled');
   assert.ok(renderNote({ note: 'x', note_kind: 'warn' }, esc) !== renderNote({ note: 'x' }, esc));
 });
+t('the migration matches what production actually has', () => {
+  // note_kind was added by hand in production before 071 described it. A fresh
+  // database built from this file has to come out the same shape, or the next
+  // environment behaves differently from the one people are using.
+  // Statements only. The comments above them say "NOT NULL was tried first",
+  // which a naive read of the file matches.
+  const sql = read('supabase/migrations/071_marketing_note_and_role.sql')
+    .split('\n').filter(l => !/^\s*--/.test(l)).join('\n');
+  const block = sql.slice(sql.indexOf('note_kind'), sql.indexOf('dashboard_users'));
+  assert.ok(!/note_kind[^;]*not null/i.test(block),
+    'note_kind is NOT NULL — the seed writes null for every row without a note');
+  assert.ok(/alter column note_kind set default 'info'/.test(block),
+    "re-running 071 would leave production without the 'info' default");
+  assert.ok(/check \(note_kind is null or note_kind in \('info', 'warn'\)\)/.test(block),
+    'the check either rejects null or allows a third kind the UI cannot render');
+});
 t('the server defaults a new note to info and rejects anything else', () => {
   const i = server.indexOf("app.put('/api/marketing/:property'");
   const body = server.slice(i, i + 3200);

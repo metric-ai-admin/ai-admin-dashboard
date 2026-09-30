@@ -22,8 +22,23 @@ alter table property_marketing add column if not exists note text;
 -- corporate row holds the company accounts) and only Ascent is asking anyone
 -- to do anything. note_kind is what the ⚠️ / ℹ️ distinction reads.
 --
--- 'info' is the default: a note added later cannot raise an alarm by accident.
-alter table property_marketing add column if not exists note_kind text;
+-- NULLABLE, with 'info' as the default. Both halves matter and this is what
+-- production actually has:
+--
+--   * nullable, because a row with no note has no kind either, and the seed
+--     writes an explicit null for those. NOT NULL was tried first in
+--     production and rejected exactly those rows.
+--   * default 'info', so a note inserted without a kind — by hand, by the API,
+--     by a later script — cannot come out as a warning nobody meant to raise.
+--
+-- Null and 'info' read the same in the UI: no warning. Only 'warn' does.
+alter table property_marketing add column if not exists note_kind text default 'info';
+-- Separately, because "add column if not exists" is a no-op where the column
+-- already exists — and in production it does: it was added by hand on
+-- 2026-09-30 before this file described it, so it carries no default yet.
+-- This line is what makes re-running 071 leave production identical to a
+-- database built from this file. It backfills nothing; existing nulls stay.
+alter table property_marketing alter column note_kind set default 'info';
 alter table property_marketing drop constraint if exists property_marketing_note_kind_check;
 alter table property_marketing add constraint property_marketing_note_kind_check
   check (note_kind is null or note_kind in ('info', 'warn'));
