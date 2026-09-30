@@ -149,7 +149,11 @@ function esc(s) {
  */
 function composeDraft(o) {
   const date = fmtDate(o.meetingDate);
-  const subject = `${o.subject || 'KPI meeting'} — recording & transcript (${date})`;
+  // "transcript", not "recording & transcript". The transcript is the thing
+  // actually delivered; the recording is offered on request, and a subject line
+  // promising it would be read as "it is in here" before the body says it is
+  // not.
+  const subject = `${o.subject || 'KPI meeting'} — transcript (${date})`;
 
   const lines = [];
   lines.push('<p>Hi all,</p>');

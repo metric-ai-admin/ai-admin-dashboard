@@ -168,7 +168,20 @@ t('the recording is offered on request, never as a link or an attachment', () =>
   assert.ok(!/graph\.microsoft\.com/.test(d.body), 'a Graph URL leaked into the email body');
   assert.ok(!/<a /i.test(d.body), 'the body still contains a link');
   assert.ok(/transcript is attached/i.test(d.body));
-  assert.strictEqual(d.subject, 'KPI ICRR & ICDT + Metric — recording & transcript (2026-09-23)');
+  // The subject names only what is delivered. It used to promise the recording
+  // too, which reads as "it is in here" until the body says it is not.
+  assert.strictEqual(d.subject, 'KPI ICRR & ICDT + Metric — transcript (2026-09-23)');
+  assert.ok(!/recording/i.test(d.subject), 'the subject still promises a recording');
+});
+t('the subject never promises a recording, whatever is available', () => {
+  // Including the case where there IS a recording and no transcript — the
+  // subject is about what is attached, and nothing ever attaches a recording.
+  [{ transcriptAttached: true, recordingUrl: 'u' }, { transcriptAttached: true },
+   { recordingUrl: 'u' }, {}].forEach(o => {
+    const s = K.composeDraft(Object.assign({ subject: 'X', meetingDate: '2026-09-30T18:00:00Z' }, o)).subject;
+    assert.ok(!/recording/i.test(s), `subject promises a recording: ${s}`);
+    assert.ok(/— transcript \(/.test(s), `subject lost its shape: ${s}`);
+  });
 });
 t('each missing piece is stated, not quietly dropped', () => {
   const none = K.composeDraft({ subject: 'X', meetingDate: '2026-09-23T00:00:00Z', transcriptAttached: false });
