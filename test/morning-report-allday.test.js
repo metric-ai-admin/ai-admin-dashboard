@@ -43,7 +43,9 @@ assert.ok(!/ctDateOf\(m\.(start|end)Iso\)[\s\S]{0,40}allDay/.test(branch),
 // separately — otherwise every date case would be re-testing the same check.
 // eslint-disable-next-line no-new-func
 const shows = new Function('m', 'todayCT', 'mrOwnsAllDay',
-  `mrOwnsAllDay = mrOwnsAllDay || (() => true);\n${helper}\n${branch}\nreturn true;`);
+  'mrOwnsAllDay = mrOwnsAllDay || (() => true);\n'
+  + 'const mrAllDayDiagnostic = [];\n'   // the route's "why was this kept?" record
+  + `${helper}\n${branch}\nreturn true;`);
 
 // Graph hands these over after normalizeGraphDateTime has appended the Z. Both
 // are Lyndsay's own events, which is why they belong on her report at all.
