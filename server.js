@@ -12205,9 +12205,21 @@ async function mrEmails() {
     for (const f of matched) {
       // isRead eq false OR flagged — Graph can't OR across properties in one
       // $filter cleanly, so pull unread (the common case) and flagged separately.
+      //
+      // FETCH WIDE, FILTER AFTER. This was $top=10, and the list is filtered and
+      // then cut to ten for display — so the fetch budget was being spent on
+      // mail that the rules were about to throw away. On 2026-09-30, Lyndsay
+      // Review held 40 unread; five of the top eleven were one repeated
+      // "Jennifer Content Director" thread, two of which the greeting rule
+      // dropped anyway. A solicitor's email about live litigation sat at #12 and
+      // never reached the report at all, and neither did two from Senate
+      // Eskridge at #14 and #21.
+      //
+      // A hard limit ahead of the filters means noise at the top starves real
+      // mail below it, silently. Fifty is one request either way.
       for (const filter of ['isRead eq false', "flag/flagStatus eq 'flagged'"]) {
         const url = `${graphMailboxBase('lyndsay')}/mailFolders/${encodeURIComponent(f.id)}/messages`
-          + `?$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime desc&$top=10&$select=${select}`;
+          + `?$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime desc&$top=50&$select=${select}`;
         try {
           const rr = await fetchFn(url, { headers });
           const jj = await rr.json().catch(() => ({}));

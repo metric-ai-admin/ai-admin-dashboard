@@ -155,4 +155,25 @@ t('mrEmailExcluded calls it', () => {
   assert.ok(/mrAddressedToArturo\(m\)/.test(body));
 });
 
+
+
+console.log('\nthe fetch is wider than the display cap');
+t('unread mail is pulled 50 deep, not 10', () => {
+  // The list is filtered and THEN cut to ten, so a limit of ten on the fetch
+  // meant the budget was spent on mail the rules were about to discard. On
+  // 2026-09-30 five of the top eleven unread were one repeated thread, two of
+  // which the greeting rule dropped — and a solicitor's email about live
+  // litigation sat at #12 and never reached the report.
+  // Comments stripped first: the comment explaining this fix says "$top=10",
+  // and matching that would fail on the very text that documents it.
+  const body = block('async function mrEmails(')
+    .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  const tops = [...body.matchAll(/\$top=(\d+)/g)].map(m => Number(m[1]));
+  assert.ok(tops.length, 'no $top found in mrEmails — the query changed shape');
+  tops.forEach(n => assert.ok(n >= 50,
+    `mrEmails fetches only ${n} messages before filtering; real mail below the noise is dropped silently`));
+  assert.ok(/\.slice\(0, 10\)/.test(body),
+    'the display cap is gone — the point is a wide fetch and a narrow display');
+});
+
 console.log(`\n${pass} passing`);
