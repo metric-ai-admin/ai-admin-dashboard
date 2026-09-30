@@ -1301,8 +1301,12 @@ function fmtDueShort(due) {
 function renderTaskCard(t) {
   const today = todayStr();
   const isDone = t.priority === '✅ Done';
-  const overdue = t.due_on && t.due_on < today && !isDone;
-  const dueToday = t.due_on === today && !isDone;
+  // Same module the server validates with, served from /lib — not a second
+  // copy of the rule. "soon" is today OR tomorrow: the colour is there to say
+  // "before you close the laptop", and something due tomorrow morning is.
+  const dueState = MetricDue.dueState(t.due_on, today, isDone);
+  const overdue = dueState === 'overdue';
+  const dueSoon = dueState === 'soon';
   return `
     <div class="card ${PRIO_CLASS[t.priority] || ''} ${isDone ? 'completed' : ''}" data-id="${t.id}">
       <div class="card-meta" style="justify-content:space-between">
@@ -1312,7 +1316,7 @@ function renderTaskCard(t) {
       <div class="card-title">${esc(t.title)}</div>
       <div class="card-meta">
         ${t.source ? `<span>👤 <b>${esc(t.source)}</b></span>` : ''}
-        ${t.due_on ? `<span class="${overdue ? 'badge badge-red' : dueToday ? 'badge badge-amber' : ''}">${overdue ? '⚠ overdue ' : '📅 '}${t.due_on}</span>` : `<span class="muted small">Created ${new Date(t.created_at).toLocaleDateString()}</span>`}
+        ${t.due_on ? `<span class="${overdue ? 'badge badge-red' : dueSoon ? 'badge badge-amber' : ''}">${overdue ? '⚠ overdue ' : '📅 '}${t.due_on}</span>` : `<span class="muted small">Created ${new Date(t.created_at).toLocaleDateString()}</span>`}
       </div>
       ${t.notes ? `<div class="card-notes">${esc(t.notes.length > 100 ? t.notes.slice(0, 100) + '…' : t.notes)}</div>` : ''}
       <div class="card-due" data-due-wrap>

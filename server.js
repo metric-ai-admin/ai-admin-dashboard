@@ -53,6 +53,7 @@ const { registerAllTools } = require('./mcp-tools.cjs');
 // One definition of a week for the server, the browser and the Goal Board.
 // The browser is served this same file at /lib/week.js — not a copy.
 const WEEK = require('./lib/week.js');
+const DUE = require('./lib/due-date.js');
 const followups = require('./email-followups.js');
 const kpiRecap = require('./kpi-recap.js');
 const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, identifyCaller } = require('./metric-routes.js');
@@ -352,7 +353,7 @@ app.use(express.json({ limit: '5mb' }));
 // also gives every restart a fresh stamp, which is what you want while editing.
 const BUILD_HASH = (process.env.RENDER_GIT_COMMIT || '').trim().slice(0, 7) || String(Date.now());
 const INDEX_FILE = path.join(__dirname, 'public', 'index.html');
-const STAMPED = /\b(src|href)="((?:app|reports-sync|appfolio-views|command-center)\.js|styles\.css|\/lib\/week\.js)"/g;
+const STAMPED = /\b(src|href)="((?:app|reports-sync|appfolio-views|command-center)\.js|styles\.css|\/lib\/(?:week|due-date)\.js)"/g;
 let indexHtml = null;
 
 function renderIndex() {
@@ -877,6 +878,11 @@ app.post('/api/tasks', requireMetricAccess, async (req, res) => {
   const tasks = await readJSON(TASKS_FILE, []);
   const { title, type, source, priority, notes, due_on } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: 'Title required' });
+  // Checked rather than trusted. An unparseable date used to go straight into
+  // tasks.json and on to Asana, which drops it without a word — so the task
+  // ended up with a due date here and none there, and nobody could see why.
+  const due = DUE.parseDueOn(due_on);
+  if (!due.ok) return res.status(400).json({ error: due.error });
 
   const now = new Date().toISOString();
   const task = {
@@ -885,7 +891,7 @@ app.post('/api/tasks', requireMetricAccess, async (req, res) => {
     type: TASK_TYPES.includes(type) ? type : 'Other',
     source: source || '',
     priority: TASK_PRIORITIES.includes(priority) ? priority : '🟢 In Progress',
-    due_on: due_on || null,
+    due_on: due.value === undefined ? null : due.value,
     notes: notes || '',
     noteHistory: (notes && notes.trim()) ? [{ text: notes.trim(), createdAt: now }] : [],
     created_at: now,
@@ -912,10 +918,19 @@ app.put('/api/tasks/:id', requireMetricAccess, async (req, res) => {
   // Snapshot what Asana currently believes, so only real changes are pushed.
   const before = { title: tasks[idx].title, due_on: tasks[idx].due_on || null, priority: tasks[idx].priority };
 
-  const allowed = ['title', 'type', 'source', 'priority', 'due_on'];
+  // Validated before anything is written, so a bad date changes nothing at all
+  // rather than leaving the title updated and the date rejected.
+  const due = DUE.parseDueOn('due_on' in req.body ? req.body.due_on : undefined);
+  if (!due.ok) return res.status(400).json({ error: due.error });
+
+  const allowed = ['title', 'type', 'source', 'priority'];
   for (const k of allowed) {
     if (k in req.body) tasks[idx][k] = req.body[k];
   }
+  // undefined means the caller did not mention due_on — leave it alone. null
+  // means they are clearing it. The MCP edit tool sends a partial patch on
+  // every call, so conflating the two would wipe dates at random.
+  if (due.value !== undefined) tasks[idx].due_on = due.value;
   let newNote = null;
   if ('notes' in req.body && req.body.notes && req.body.notes.trim()) {
     migrateNotes(tasks[idx]);

@@ -332,7 +332,15 @@ t('the Goal Board loads it too', () => {
 t('the server serves /lib and cache-busts the file', () => {
   const src = read('server.js');
   assert.ok(/app\.use\(\s*'\/lib'/.test(src), 'nothing serves /lib, so the browser gets a 404');
-  assert.ok(/lib\\\/week\\\.js/.test(src), '/lib/week.js is not in STAMPED, so a deploy leaves stale copies cached');
+  // The EFFECT, not the spelling: the pattern must actually match the tag.
+  // It grew to cover /lib/due-date.js too, and a literal-text assertion broke
+  // on a change that was entirely correct.
+  const stamped = /const STAMPED = (\/.*\/[a-z]*);/.exec(src);
+  assert.ok(stamped, 'STAMPED is gone — update this test');
+  // eslint-disable-next-line no-eval
+  const re = eval(stamped[1]);
+  assert.ok(re.test('<script src="/lib/week.js"></script>'),
+    '/lib/week.js is not cache-busted, so a deploy leaves stale copies cached');
 });
 t('the module is one file, not a copy under public/', () => {
   assert.ok(!fs.existsSync(path.join(__dirname, '..', 'public', 'lib', 'week.js')),

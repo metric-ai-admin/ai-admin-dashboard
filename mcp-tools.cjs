@@ -32,6 +32,10 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       source: z.string().optional().describe('Where it came from (e.g. "Lyndsay", "Roxanne", email, WhatsApp)'),
       priority: z.enum(['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '⚪ Backlog', '✅ Done']).optional(),
       notes: z.string().optional().describe('Notes or extra context'),
+      // Mirrored to Asana when the task is created there, so a date set here is
+      // the same date the Asana card shows.
+      due_on: z.string().optional()
+        .describe('Due date as YYYY-MM-DD, e.g. "2026-10-03". Anything else is rejected — do not send "tomorrow" or "10/03/2026".'),
     },
   }, async (params) => {
     try {
@@ -56,6 +60,11 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
       source: z.string().optional(),
       priority: z.enum(['🔴 Critical', '🟡 Follow-up', '🟢 In Progress', '⚪ Backlog', '✅ Done']).optional().describe('Set to "✅ Done" to mark it complete, or "⚪ Backlog" to park it without deleting it.'),
       notes: z.string().optional(),
+      // nullable, and the distinction matters: omitting it leaves the existing
+      // date alone, sending null clears it. The dashboard pushes either to
+      // Asana, so clearing here clears the Asana card too.
+      due_on: z.string().nullable().optional()
+        .describe('Due date as YYYY-MM-DD. Send null to remove the due date; omit it to leave the current one unchanged.'),
     },
   }, async ({ id, ...fields }) => {
     try {
