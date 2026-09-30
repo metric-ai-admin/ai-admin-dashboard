@@ -21,12 +21,22 @@ const SITE_ICONIC = 'https://liveaticonicroundrock.com/';
 // Google links as the sites wrote them, with the HTML entity decoded. The long
 // google.com/maps URLs carry the address in the path, which is what made it
 // possible to tell the two iConic listings apart.
+//
+// Four sites used a maps.app.goo.gl shortener. Those are resolved here to the
+// full URL they redirect to — SAME LISTING, spelled out. A short link hides the
+// address, which is exactly the thing this table exists to let someone check,
+// and it dies if Google retires the shortener. Each was followed on 2026-09-30
+// and the address it landed on is written beside it.
 const G = {
   ascent: 'https://www.google.com/maps/place/1830+W+Rundberg+Ln,+Austin,+TX+78758,+USA/@30.3720342,-97.717256,17z',
-  hyde: 'https://maps.app.goo.gl/SuD8jKcqQuLhoETy8',
-  sunset: 'https://maps.app.goo.gl/vWN74GggcGpvgWbi6',
-  chateau: 'https://maps.app.goo.gl/Lx9KTHtoy2oFjKDs9',
-  highlander: 'https://maps.app.goo.gl/BcHUt2RwLF448ajn7',
+  // was https://maps.app.goo.gl/SuD8jKcqQuLhoETy8
+  hyde: 'https://www.google.com/maps/place/206+W+38th+St,+Austin,+TX+78705,+USA/@30.3015689,-97.7372584,17z',
+  // was https://maps.app.goo.gl/vWN74GggcGpvgWbi6
+  sunset: 'https://www.google.com/maps/place/902+Romeria+Dr,+Austin,+TX+78757,+USA/@30.3311579,-97.7275091,17z',
+  // was https://maps.app.goo.gl/Lx9KTHtoy2oFjKDs9
+  chateau: 'https://www.google.com/maps/place/1211+W+8th+St,+Austin,+TX+78703,+USA/@30.2747355,-97.756878,17z',
+  // was https://maps.app.goo.gl/BcHUt2RwLF448ajn7
+  highlander: 'https://www.google.com/maps/place/803+Tirado+St,+Austin,+TX+78752,+USA/@30.323141,-97.711793,17z',
   windy: 'https://www.google.com/maps/place/1049+Windy+Hill+Rd,+Kyle,+TX+78640,+USA/@30.0327286,-97.8334518,17z',
   burnet: 'https://www.google.com/maps/place/301+S+Burnet+St,+Round+Rock,+TX+78664,+USA/@30.5073564,-97.6767913,17z',
   gattis: 'https://www.google.com/maps/place/105+Gattis+School+Rd,+Round+Rock,+TX+78664,+USA/@30.4933985,-97.6774964,17z',
@@ -41,6 +51,8 @@ const ROWS = [
     // Unverified on purpose: the site links Rundberg, AppFolio and the bank
     // both say Northgate Blvd. Stated, not resolved.
     google_verified: false,
+    // The only row that is asking someone to do something.
+    note_kind: 'warn',
     note: 'address mismatch — site links 1830 W Rundberg Ln, AppFolio has 9315 Northgate Blvd. Confirm with Katrina.',
   },
   { property: 'Hyde Park Square', website: 'https://liveathydeparksquare.com/',
@@ -93,6 +105,10 @@ function toRow(r) {
     tiktok: r.tiktok || null,
     google: r.google || null,
     note: r.note || null,
+    // 'info' explains something; 'warn' means a person still has to act. The
+    // default is 'info' so a note added later cannot accidentally raise an
+    // alarm nobody meant to raise.
+    note_kind: r.note ? (r.note_kind || 'info') : null,
     source: 'footer scrape',
     updated_by: 'seed 2026-09-30',
     updated_at: new Date().toISOString(),

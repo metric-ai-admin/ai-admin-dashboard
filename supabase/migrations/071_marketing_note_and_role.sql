@@ -16,6 +16,18 @@
 -- written down rather than resolved by guessing which source is right.
 alter table property_marketing add column if not exists note text;
 
+-- A note that needs action and a note that explains something looked identical
+-- in the UI, so every row with a note wore a warning sign. Three of the four
+-- seeded notes are just context (the two iConic rows share a site; the
+-- corporate row holds the company accounts) and only Ascent is asking anyone
+-- to do anything. note_kind is what the ⚠️ / ℹ️ distinction reads.
+--
+-- 'info' is the default: a note added later cannot raise an alarm by accident.
+alter table property_marketing add column if not exists note_kind text;
+alter table property_marketing drop constraint if exists property_marketing_note_kind_check;
+alter table property_marketing add constraint property_marketing_note_kind_check
+  check (note_kind is null or note_kind in ('info', 'warn'));
+
 -- ── 2. The new role ─────────────────────────────────────────────────────────
 --
 -- dashboard_users.role carries a CHECK constraint, so a role the code knows
@@ -51,7 +63,8 @@ alter table dashboard_users add constraint dashboard_users_role_check
 -- Verify:
 --
 --   select column_name from information_schema.columns
---    where table_name = 'property_marketing' and column_name = 'note';
+--    where table_name = 'property_marketing'
+--      and column_name in ('note', 'note_kind');   -- expect both
 --
 --   update dashboard_users set role = 'marketing_bd_agent'
 --    where email = 'katrina@metric.internal';

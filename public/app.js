@@ -9547,8 +9547,15 @@ function renderMarketing(rows) {
   const head = ['Property', ...MKT_LINKS.map(l => l[2])]
     .map(h => `<th>${esc(h)}</th>`).join('');
   const body = rows.map(r => {
+    // ⚠️ is for a row that is asking someone to do something — today only
+    // Ascent, whose Google listing disagrees with AppFolio. The iConic and
+    // corporate notes explain a shared page or a shared account; wearing the
+    // same warning sign made the one row that needs a person invisible among
+    // the three that do not. Anything without note_kind reads as ℹ️.
+    const warn = r.note_kind === 'warn';
     const note = r.note
-      ? `<div class="muted small" style="margin-top:4px">⚠ ${esc(r.note)}</div>` : '';
+      ? `<div class="mkt-note ${warn ? 'mkt-note-warn' : 'mkt-note-info'}">`
+        + `${warn ? '⚠️' : 'ℹ️'} ${esc(r.note)}</div>` : '';
     const missing = r._missing
       ? ' <span class="badge badge-gray" title="No row in the directory yet">not set up</span>' : '';
     return `<tr><td><b>${esc(r.property)}</b>${missing}${note}</td>`

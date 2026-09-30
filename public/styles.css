@@ -2904,3 +2904,11 @@ tr.ca-sel { background: var(--accent-glow); }
 .bl-workbook-head { display: flex; flex-direction: column; gap: 2px; margin-right: auto; }
 .bl-workbook-head strong { font-size: 13px; }
 .bl-workbook-head .muted { font-size: 12px; }
+
+/* Marketing notes. A note that needs action and a note that explains something
+   used to look identical, so the one row anybody had to act on (Ascent) sat in
+   a column of identical warning signs. Colour carries the same distinction as
+   the glyph, never on its own. */
+.mkt-note { margin-top: 4px; font-size: 12px; line-height: 1.35; max-width: 34ch; }
+.mkt-note-info { color: var(--text-secondary); }
+.mkt-note-warn { color: var(--warning); font-weight: 500; }

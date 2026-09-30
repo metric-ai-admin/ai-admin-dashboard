@@ -135,8 +135,19 @@
       <div class="nav-group">
         <div class="nav-group-label">BD &amp; Performance</div>
         <button data-tab="crm"><span class="nav-ico">🎯</span>BD CRM</button>
-        <button data-tab="marketing"><span class="nav-ico">📣</span>Marketing</button>
         <button data-tab="calls"><span class="nav-ico">📞</span>Call Analyzer</button>
+      </div>
+      <!--
+        Marketing has its own group even though it holds one tab, because it is
+        one tab today and a section later. It is the only group whose label can
+        disappear entirely: applyTabAccess hides a nav-group with no visible
+        tabs, and everyone except admin, ceo and marketing_bd_agent sees nothing
+        here. That is intended — unlike the Operations group, which must survive
+        for the Ops Dashboard link.
+      -->
+      <div class="nav-group">
+        <div class="nav-group-label">Marketing</div>
+        <button data-tab="marketing"><span class="nav-ico">📣</span>Marketing</button>
       </div>
     </nav>
     <div class="sidebar-foot">

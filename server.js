@@ -10906,6 +10906,20 @@ app.put('/api/marketing/:property', requireAuth, requireRole('admin'), async (re
       if (f in req.body) patch[f] = !!req.body[f];
     }
     if ('note' in req.body) patch.note = req.body.note ? String(req.body.note).slice(0, 400) : null;
+    // 'warn' means a person still has to act on this row; 'info' just explains
+    // something. Default 'info', so a note written later cannot raise an alarm
+    // by accident — and a bad value is rejected rather than silently stored,
+    // since the CHECK constraint would fail the whole upsert anyway.
+    if ('note_kind' in req.body) {
+      const kind = req.body.note_kind == null || req.body.note_kind === '' ? null : String(req.body.note_kind);
+      if (kind !== null && kind !== 'info' && kind !== 'warn') {
+        return res.status(400).json({ error: "note_kind must be 'info' or 'warn'" });
+      }
+      patch.note_kind = kind;
+    } else if ('note' in req.body && patch.note) {
+      patch.note_kind = 'info';
+    }
+    if ('note' in req.body && !patch.note) patch.note_kind = null;
     if (MARKETING_FLAGS.some(f => f in req.body)) {
       patch.verified_by = actorName(req);
       patch.verified_at = new Date().toISOString();
