@@ -11947,7 +11947,7 @@ const MR_TITLE_RE = /\b(mr|mrs|ms|dr|prof|sr|sra)\./gi;
 // Space, hyphen, dot or nothing between the words, and it may sit anywhere in
 // the name or address: "(Do Not Reply)", "donotreply@", "no-reply@", "noreply@",
 // "mailer-daemon@".
-const MR_NOREPLY_RE = /(do[\s._-]*not[\s._-]*reply|no[\s._-]*reply|mailer[\s._-]*daemon|postmaster)/i;
+const MR_NOREPLY_RE = /\b(do[\s._-]*not[\s._-]*reply|no[\s._-]*reply|mailer[\s._-]*daemon|postmaster)\b/i;
 const MR_LYNDSAY_NAMES = ['lyndsay', 'lyndsey', 'lindsay', 'lindsey', 'linsay', 'hanes'];
 // Not a person: a greeting to the room is a greeting to her as well.
 const MR_GREETING_GROUPS = ['all', 'team', 'everyone', 'everybody', 'there', 'folks', 'both',
@@ -12027,14 +12027,14 @@ function mrAddressedToArturo(m) {
 function mrCleanOpsNote(text) {
   let t = String(text || '');
   t = t.replace(/\((?:commit\s+)?[0-9a-f]{7,40}(?:[^)]*)\)/gi, ' ');   // (commit 541ba88, deployed…)
-  t = t.replace(/commit\s+[0-9a-f]{7,40}/gi, ' ');
-  t = t.replace(/[0-9a-f]{7,40}(?=[\s,;.)]|$)/g, m => (/^\d+$/.test(m) ? m : ' '));  // bare hashes, not plain numbers
-  t = t.replace(/\d+\s*suites?[^,.;)]*/gi, ' ');                  // 22 suites / 637 assertions
-  t = t.replace(/\d+\s*assertions?/gi, ' ');
-  t = t.replace(/\d+\s*tests?\s*(?:passing|green|ok)/gi, ' ');
+  t = t.replace(/\bcommit\s+[0-9a-f]{7,40}\b/gi, ' ');
+  t = t.replace(/\b[0-9a-f]{7,40}\b(?=[\s,;.)]|$)/g, m => (/^\d+$/.test(m) ? m : ' '));  // bare hashes, not plain numbers
+  t = t.replace(/\b\d+\s*suites?\b[^,.;)]*/gi, ' ');                  // 22 suites / 637 assertions
+  t = t.replace(/\b\d+\s*assertions?\b/gi, ' ');
+  t = t.replace(/\b\d+\s*tests?\s*(?:passing|green|ok)\b/gi, ' ');
   t = t.replace(/(?:^|[\s(\[])\/?(?:var\/data|supabase\/migrations|public|scripts|lib|test)\/[^\s,;)\]]+/gi, ' ');  // paths
-  t = t.replace(/[\w.-]+\.(?:js|cjs|sql|json|html|ts)/gi, ' ');   // bare filenames
-  t = t.replace(/migration\s+\d{3}/gi, ' ');
+  t = t.replace(/\b[\w.-]+\.(?:js|cjs|sql|json|html|ts)\b/gi, ' ');   // bare filenames
+  t = t.replace(/\bmigration\s+\d{3}\b/gi, ' ');
   t = t.replace(/\s*[—-]\s*$/, '');
   t = t.replace(/\s{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1').trim();
   t = t.replace(/^[\s,;:.\-—(]+/, '').replace(/[\s,;:(]+$/, '').trim();
