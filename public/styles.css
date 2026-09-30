@@ -134,12 +134,17 @@ code, .mono { font-family: 'JetBrains Mono', monospace; font-size: 0.85em; }
 }
 
 .sidebar-nav { display: flex; flex-direction: column; gap: 2px; padding: 12px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-.sidebar-nav button {
+/* a.nav-link is a link OUT of the dashboard (Jay's Ops Dashboard), styled
+   identically to a tab button so the sidebar reads as one list. It is an <a>
+   and not a button because it opens another site in a new tab — the tab
+   machinery in app.js only touches [data-tab], so it is left alone. */
+.sidebar-nav button, .sidebar-nav a.nav-link {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: none; border-left: 2px solid transparent;
   background: transparent; color: var(--text-secondary); border-radius: 8px; cursor: pointer;
   font-size: 13.5px; font-weight: 500; text-align: left; width: 100%; transition: background .15s, color .15s;
 }
-.sidebar-nav button:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.sidebar-nav a.nav-link { text-decoration: none; box-sizing: border-box; }
+.sidebar-nav button:hover, .sidebar-nav a.nav-link:hover { background: var(--bg-elevated); color: var(--text-primary); }
 .sidebar-nav button.active { background: var(--accent-glow); color: var(--text-primary); border-left-color: var(--accent); }
 .nav-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border-accent); flex-shrink: 0; }
 .sidebar-nav button.active .nav-dot { background: var(--accent); }

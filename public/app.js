@@ -135,6 +135,23 @@ const MAINT_VIEW_ONLY_ROLES = ['regional_director', 'resident_success'];
 
 let currentUser = null;
 
+// Jay's Ops Dashboard. The one place this address is written: the sidebar
+// anchor gets its href from here, so moving the dashboard is a one-line change
+// and there is no second copy to forget.
+//
+// Opened in a new tab, never framed. It is a separate site with its own login;
+// an iframe would either break on his session or pull us into his auth, and
+// nothing on his side should have to change for this link to work.
+const OPS_DASHBOARD_URL = 'https://mpm-dashboard-server.onrender.com/';
+
+// Visible to every role until the Friday meeting with Jay decides otherwise —
+// deliberately outside the TAB_ACCESS gate, which governs tabs, not links out.
+function wireOpsDashboardLink() {
+  const a = document.getElementById('ops-dashboard-link');
+  if (a) a.href = OPS_DASHBOARD_URL;
+}
+wireOpsDashboardLink();
+
 async function initAuth() {
   try {
     const data = await fetch('/api/auth/me', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : null);
@@ -195,8 +212,13 @@ async function initAuth() {
 
   // Hide a category section (label + wrapper) when every item in it is hidden for
   // this role, so a lone header never floats over an empty group.
+  // a.nav-link counts as visible content. Without it, a role whose Operations
+  // tabs are all hidden — maintenance, accounting, leasing, bd_agent,
+  // collections_agent — would lose the whole group, taking the Ops Dashboard
+  // link with it, and that link is meant to be there for everyone.
   $$('#tabs .nav-group').forEach(group => {
-    const anyVisible = [...group.querySelectorAll('button[data-tab]')].some(b => b.style.display !== 'none');
+    const anyVisible = [...group.querySelectorAll('button[data-tab], a.nav-link')]
+      .some(b => b.style.display !== 'none');
     group.style.display = anyVisible ? '' : 'none';
   });
 

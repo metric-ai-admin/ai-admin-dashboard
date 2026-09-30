@@ -73,6 +73,12 @@
         <button data-tab="tasks" class="active"><span class="nav-ico">✅</span>Tasks</button>
         <button data-tab="platform"><span class="nav-ico">📁</span>Projects</button>
         <button data-tab="sops"><span class="nav-ico">📖</span>SOP Review</button>
+        <!-- Jay's Ops Dashboard. A link OUT, not a tab: it is a separate site
+             with its own login, and an iframe would either break on his
+             session or drag us into his auth. The href is set from
+             OPS_DASHBOARD_URL in app.js so the address lives in one place. -->
+        <a class="nav-link" id="ops-dashboard-link" target="_blank" rel="noopener noreferrer"
+           ><span class="nav-ico">🗂️</span>Ops Dashboard (Jay)</a>
       </div>
       <div class="nav-group">
         <div class="nav-group-label">Reports</div>
