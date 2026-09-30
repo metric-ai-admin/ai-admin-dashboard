@@ -98,6 +98,16 @@ t('a word that merely starts like a greeting is not one', () => {
   assert.strictEqual(drops('Heads up on the invoice'), false);
 });
 
+t('a period does not hide the rest of the greeting, nor split a title', () => {
+  // The capture used to stop at the first comma, which lost her name in
+  // "Hi Jay, Lyndsay and Kara"; stopping at a period instead turned
+  // "Dear Ms. Hanes" into a greeting to "Ms". It now reads past both.
+  assert.strictEqual(drops('Hi Katrina. Please see attached.'), true);
+  assert.strictEqual(drops('Hi Jay, Katrina and Erick — see below.'), true);
+  assert.strictEqual(drops('Hi Jay, Lyndsay and Kara — see below.'), false);
+  assert.strictEqual(drops('Estimada Sra. Hanes, le escribo por'), false);
+});
+
 console.log('\nthe Arturo rule still works, now on the same machinery');
 t('a greeting to Arturo is still dropped', () => {
   assert.strictEqual(F.mrAddressedToArturo({ bodyPreview: 'Hi Arturo, can you check this?' }), true);
