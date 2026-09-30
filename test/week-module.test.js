@@ -124,7 +124,7 @@ t('a surface on DASHBOARD now runs Sunday to Saturday', () => {
   assert.strictEqual(W.dowYMD(r.to), 6, 'the week does not close on a Saturday');
 });
 
-console.log('\nthree things do NOT follow DASHBOARD, and each says so by name');
+console.log('\ntwo things do NOT follow DASHBOARD, and each says so by name');
 t('the Monday Morning Brief stays Mon-Sun', () => {
   // A "Monday brief" that opens on Sunday is a product decision, not a
   // consequence of standardising week arithmetic.
@@ -136,12 +136,6 @@ t('the Monday Morning Brief stays Mon-Sun', () => {
   assert.deepStrictEqual(require('../weekly-brief.js').weekOf('2026-09-30'),
     { start: '2026-09-28', end: '2026-10-04' });
 });
-t('the WO schedule calendar stays Mon-Sun', () => {
-  // It is a grid: the one change a user would see as the page redrawing.
-  const wo = stripComments(read('public/wo-schedule-calendar.js'));
-  assert.ok(/MetricWeek\.MON_SUN/.test(wo), 'wo-schedule-calendar.js no longer pins its convention by name');
-  assert.ok(!/MetricWeek\.DASHBOARD/.test(wo), 'the WO calendar follows DASHBOARD and has moved to Sunday');
-});
 t('leasing stays Sun-Sat by name, not by coincidence', () => {
   // It reads the same as DASHBOARD today, which is exactly why it must be asked
   // for explicitly: a future flip must not drag rows keyed on a Saturday.
@@ -149,6 +143,44 @@ t('leasing stays Sun-Sat by name, not by coincidence', () => {
   const i = s.indexOf('async function leasingWeeklyRollup(');
   assert.ok(/WEEK\.SUN_SAT/.test(s.slice(i, i + 900)));
   assert.strictEqual(W.leasingWeekEnding('2026-09-30'), '2026-10-03');
+});
+
+console.log('\nthe WO schedule calendar now follows DASHBOARD');
+// It was the last surface pinned to MON_SUN for a reason other than the
+// document it produces: a grid redrawing under someone mid-week. Erick was told
+// on 2026-09-30, so the reason expired and the pin came out.
+const woCal = stripComments(read('public/wo-schedule-calendar.js'));
+t('it asks for DASHBOARD, and no longer names MON_SUN', () => {
+  assert.ok(/MetricWeek\.DASHBOARD/.test(woCal), 'the calendar does not follow DASHBOARD');
+  assert.ok(!/MetricWeek\.MON_SUN/.test(woCal), 'the calendar is still pinned to Mon-Sun');
+});
+t("this week's grid runs Sunday 09/27 to Saturday 10/03", () => {
+  // The whole visible consequence. Every day of the week has to land on the
+  // same grid, or someone opening it on Friday sees a different week.
+  const days = d => Array.from({ length: 7 }, (_, i) => W.addDaysYMD(W.weekStartYMD(d, W.DASHBOARD), i));
+  ['2026-09-27', '2026-09-30', '2026-10-01', '2026-10-03'].forEach(d => {
+    const g = days(d);
+    assert.strictEqual(g[0], '2026-09-27', `grid opened on ${g[0]} for ${d}`);
+    assert.strictEqual(g[6], '2026-10-03', `grid closed on ${g[6]} for ${d}`);
+    assert.strictEqual(W.dowYMD(g[0]), 0, 'the first column is not a Sunday');
+    assert.strictEqual(W.dowYMD(g[6]), 6, 'the last column is not a Saturday');
+  });
+});
+t('a scheduled WO keeps its day — only the column order moves', () => {
+  // A card is placed by matching scheduled_date to a column's own date, so the
+  // day a WO sits on cannot depend on where the week starts. This is the part
+  // Erick would notice if it were wrong.
+  assert.ok(/r\.scheduled_date === iso/.test(woCal),
+    'cards are no longer placed by date — check what they are keyed on now');
+  const onDay = (ymd, conv) =>
+    Array.from({ length: 7 }, (_, i) => W.addDaysYMD(W.weekStartYMD(ymd, conv), i)).indexOf(ymd);
+  // Wednesday 09/30 was column 2 of a Mon-Sun grid and is column 3 of a Sun-Sat
+  // one. Different column, same date, same card.
+  assert.strictEqual(onDay('2026-09-30', W.MON_SUN), 2);
+  assert.strictEqual(onDay('2026-09-30', W.DASHBOARD), 3);
+  ['2026-09-27', '2026-09-28', '2026-09-30', '2026-10-02', '2026-10-03'].forEach(d => {
+    assert.ok(onDay(d, W.DASHBOARD) >= 0, `${d} fell outside this week's grid entirely`);
+  });
 });
 
 console.log('\nthe triage trend groups Sun-Sat and is labelled by range');

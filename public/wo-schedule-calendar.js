@@ -14,18 +14,26 @@
 
 let woSchedRows = [];      // wo_schedule rows for the visible week
 let woSchedByWo = {};      // same, keyed by work_order_number
-let woWeekStart = null;    // Monday of the displayed week
+let woWeekStart = null;    // first day of the displayed week (Sunday)
 let woDragWo = null;
 const WO_DEFAULT_HOURS = 2;
 
 // ---- date helpers ----
-// PINNED TO MON_SUN BY NAME, and deliberately not following MetricWeek.DASHBOARD.
-// Phase 3 moved the rest of the dashboard to Sun-Sat on 2026-09-30; this grid is
-// the one change a user would see as the page redrawing under them, so it moves
-// when Erick has been told, not when a constant flips.
-function woMonday(d) {
+// FOLLOWS MetricWeek.DASHBOARD, which is Sun-Sat. It was pinned to MON_SUN
+// through Phase 3 because this grid is the one change a user would see as the
+// page redrawing under them, and it was to move when Erick had been told rather
+// than when a constant flipped. Erick was told on 2026-09-30, so it moves.
+//
+// Nothing about a scheduled work order changes: a card is placed by matching
+// scheduled_date to a column's own date, so every WO stays on the day it was
+// dropped on. Only which day the grid opens with, and therefore the column
+// order, is different.
+//
+// The Monday Morning Brief stays on MON_SUN, still pinned by name — a Monday
+// brief that opens on Sunday is a different document.
+function woWeekStartFor(d) {
   const [y, m, day] = MetricWeek
-    .weekStartYMD(woISO(d), MetricWeek.MON_SUN).split('-').map(Number);
+    .weekStartYMD(woISO(d), MetricWeek.DASHBOARD).split('-').map(Number);
   return new Date(y, m - 1, day);
 }
 // Local calendar date. NOT toISOString(), which converts to UTC and in US
@@ -36,7 +44,7 @@ function woISO(d) {
 }
 function woAddDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function woWeekDays() {
-  if (!woWeekStart) woWeekStart = woMonday(new Date());
+  if (!woWeekStart) woWeekStart = woWeekStartFor(new Date());
   return Array.from({ length: 7 }, (_, i) => woAddDays(woWeekStart, i));
 }
 
@@ -191,7 +199,7 @@ function wireCalendarEvents() {
   const reload = async fn => { fn(); await loadWoSchedule(); renderCalendar(); };
   $('#woWeekPrev')?.addEventListener('click',  () => reload(() => { woWeekStart = woAddDays(woWeekStart, -7); }));
   $('#woWeekNext')?.addEventListener('click',  () => reload(() => { woWeekStart = woAddDays(woWeekStart, 7); }));
-  $('#woWeekToday')?.addEventListener('click', () => reload(() => { woWeekStart = woMonday(new Date()); }));
+  $('#woWeekToday')?.addEventListener('click', () => reload(() => { woWeekStart = woWeekStartFor(new Date()); }));
 
   $$('.wo-card').forEach(function (card) {
     card.addEventListener('dragstart', function (e) {
