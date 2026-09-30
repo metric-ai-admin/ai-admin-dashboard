@@ -28,7 +28,8 @@ function block(marker) {
   }
   throw new Error('unbalanced: ' + marker);
 }
-const consts = src.slice(src.indexOf('const MR_SUPPORT_ADDRESSES'), src.indexOf('function mrGreetedNames'));
+const consts = src.slice(src.indexOf('const MR_SUPPORT_ADDRESSES'), src.indexOf('function mrGreetedNames'))
+  + src.slice(src.indexOf('const MR_NOT_A_NAME'), src.indexOf('function mrAddressedToSomeoneElse'));
 // eslint-disable-next-line no-new-func
 const F = new Function(consts
   + block('function mrGreetedNames(')
@@ -193,6 +194,65 @@ t('each email carries a sortable timestamp, not just "Sep 29"', () => {
   const body = block('async function mrEmails(');
   assert.ok(/receivedIso: m\.receivedDateTime/.test(body),
     'receivedIso is gone, so the merge sorts on a string that cannot order across months');
+});
+
+
+
+console.log('\nonly a NAME counts against an email');
+t('ordinary words after a greeting are not people', () => {
+  // "Hi, the attached report is ready" was being read as mail for someone
+  // called "the". Dropping a real email because a sentence started with an
+  // ordinary word is the failure this whole rule exists to avoid.
+  ['Hi, the attached report is ready for review.',
+   'Interesting, thanks for sending that over.',
+   'Hi, please find the signed lease.',
+   'Hello, attached is the statement.',
+   'Hi, just confirming the wire went out.',
+   'Hola, adjunto el estado de cuenta.',
+  ].forEach(b => assert.strictEqual(drops(b), false, b));
+});
+t('a real name still counts', () => {
+  assert.strictEqual(drops('Hi Katrina, please see the attached invoice.'), true);
+  assert.strictEqual(drops('Hi Rebekah, the violation was cleared.'), true);
+});
+t('a two-word phrase of ordinary words is not a name', () => {
+  assert.strictEqual(drops('Hi, see below for the numbers'), false);
+  assert.strictEqual(drops('Hi, quick update on the wire'), false);
+});
+
+console.log('\nautomated senders never reach Pending Critical');
+const excluded = m => {
+  const body = block('function mrEmailExcluded(');
+  return body;
+};
+t('"do not reply" is matched in the display name and the address', () => {
+  // "Metric Property Management of Texas LLC (Do Not Reply)" reached her list,
+  // and nobody can answer it. AppFolio puts it in the NAME and sends from an
+  // ordinary-looking address, so the name has to be checked too.
+  const re = /\b(do[\s._-]*not[\s._-]*reply|no[\s._-]*reply|mailer[\s._-]*daemon|postmaster)\b/i;
+  ['Metric Property Management of Texas LLC (Do Not Reply)',
+   'donotreply@appfolio.com', 'no-reply@ramp.com', 'noreply@calendar.google.com',
+   'mailer-daemon@example.com', 'MAILER-DAEMON', 'postmaster@example.com',
+  ].forEach(v => assert.ok(re.test(v), v));
+});
+t('real support addresses are NOT automated senders', () => {
+  // SimpleVOIP and Sonetel write from support@ and a human answers.
+  const re = /\b(do[\s._-]*not[\s._-]*reply|no[\s._-]*reply|mailer[\s._-]*daemon|postmaster)\b/i;
+  ['support@sonetel.com', 'Sonetel Notifications', 'support@simplevoip.us',
+   'support@livewithmetric.com', 'Jennifer Content Director',
+  ].forEach(v => assert.strictEqual(re.test(v), false, v));
+});
+t('the rule is wired in, on the name as well as the address', () => {
+  const body = block('function mrEmailExcluded(');
+  assert.ok(/MR_NOREPLY_RE\.test\(senderName\)/.test(body), 'the display name is not checked');
+  assert.ok(/MR_NOREPLY_RE\.test\(addr\)/.test(body), 'the address is not checked');
+});
+
+console.log('\nengineering detail stays out of her list');
+t('the ops notes are cleaned before they are shown', () => {
+  const render = src.slice(src.indexOf("ARTURO'S PENDING ITEMS LIST"), src.indexOf("ARTURO'S PENDING ITEMS LIST") + 900);
+  assert.ok(/mrCleanOpsNote\(o\.pending\)/.test(render), 'notes are printed raw again');
+  assert.ok(/note \?/.test(render), 'an empty note still prints a trailing dash');
 });
 
 console.log(`\n${pass} passing`);

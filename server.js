@@ -11944,6 +11944,10 @@ const MR_GREETING_RE = /^(?:hi|hii|hello|hey|dear|good (?:morning|afternoon|even
 const MR_TITLE_RE = /\b(mr|mrs|ms|dr|prof|sr|sra)\./gi;
 // Names that mean her. Outsiders misspell it constantly, and a misspelling is
 // still addressed to her.
+// Space, hyphen, dot or nothing between the words, and it may sit anywhere in
+// the name or address: "(Do Not Reply)", "donotreply@", "no-reply@", "noreply@",
+// "mailer-daemon@".
+const MR_NOREPLY_RE = /(do[\s._-]*not[\s._-]*reply|no[\s._-]*reply|mailer[\s._-]*daemon|postmaster)/i;
 const MR_LYNDSAY_NAMES = ['lyndsay', 'lyndsey', 'lindsay', 'lindsey', 'linsay', 'hanes'];
 // Not a person: a greeting to the room is a greeting to her as well.
 const MR_GREETING_GROUPS = ['all', 'team', 'everyone', 'everybody', 'there', 'folks', 'both',
@@ -11963,9 +11967,41 @@ function mrGreetedNames(body) {
     .filter(part => part.split(/\s+/).length <= 2 || MR_GREETING_GROUPS.includes(part));
 }
 
+// Words that follow a greeting comma without being anybody's name.
+//
+// "Hi, the attached report is ready" and "Interesting, thanks for sending" were
+// both being read as mail for someone called "the" and "interesting". Dropping
+// a real email because a sentence started with an ordinary word is the failure
+// this whole rule is supposed to avoid, so a token has to look like a NAME
+// before it counts against anyone.
+const MR_NOT_A_NAME = new Set([
+  'the', 'a', 'an', 'this', 'that', 'these', 'those', 'it', 'i', 'we', 'you', 'they',
+  'thanks', 'thank', 'thankyou', 'please', 'attached', 'attaching', 'per', 'as', 'just',
+  'following', 'follow', 'quick', 'sorry', 'apologies', 'good', 'great', 'interesting',
+  'confirming', 'confirmed', 'noted', 'understood', 'sure', 'yes', 'no', 'ok', 'okay',
+  'hope', 'hoping', 'wanted', 'want', 'here', 'below', 'above', 'see', 'fyi', 'update',
+  'updated', 'reminder', 'regarding', 're', 'and', 'but', 'so', 'if', 'when', 'what',
+  'gracias', 'por', 'favor', 'adjunto', 'buenos', 'buenas', 'saludos', 'hola',
+]);
+
+// Does this token look like a person's name rather than the start of a
+// sentence? Conservative on purpose: anything it is unsure about is NOT a name,
+// so the email is kept.
+function mrLooksLikeName(token) {
+  const t = String(token || '').trim();
+  if (!t) return false;
+  const words = t.split(/\s+/);
+  if (words.length > 2) return false;                       // a phrase, not a name
+  return words.every(w => {
+    const bare = w.replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ'’.-]/g, '').replace(/\.$/, '');
+    if (bare.length < 2) return false;                      // initials, stray letters
+    return !MR_NOT_A_NAME.has(bare.toLowerCase());
+  });
+}
+
 function mrAddressedToSomeoneElse(m) {
-  const names = mrGreetedNames(m.bodyPreview);
-  if (!names.length) return false;                                   // no greeting: keep
+  const names = mrGreetedNames(m.bodyPreview).filter(mrLooksLikeName);
+  if (!names.length) return false;                                   // no greeting, or no name: keep
   if (names.some(n => MR_GREETING_GROUPS.includes(n))) return false; // to the room: keep
   // endsWith as well as startsWith, so "Ms. Hanes" and "Mrs Lyndsay" both count.
   if (names.some(n => MR_LYNDSAY_NAMES.some(l => n === l || n.startsWith(l) || n.endsWith(l)))) return false;
@@ -11976,6 +12012,35 @@ function mrAddressedToArturo(m) {
   const to = (m.toRecipients || []).map(r => String(r?.emailAddress?.address || '').toLowerCase());
   if (to.length && to.every(a => MR_SUPPORT_ADDRESSES.includes(a))) return true;
   return mrGreetedNames(m.bodyPreview).some(n => n === 'arturo');
+}
+
+// Engineering detail out of Lyndsay's list.
+//
+// These notes are Arturo's working log, so they carry commit hashes, file
+// paths, migration names and test counts — "(commit 541ba88, deployed, 22
+// suites / 637 assertions)". None of that tells her anything about whether the
+// thing is done, and it crowds out the sentence that does.
+//
+// Removed, not summarised: a note is either readable by her or it is noise, and
+// guessing at a shorter version of someone's log risks changing what it says.
+// If nothing survives, the title stands alone.
+function mrCleanOpsNote(text) {
+  let t = String(text || '');
+  t = t.replace(/\((?:commit\s+)?[0-9a-f]{7,40}(?:[^)]*)\)/gi, ' ');   // (commit 541ba88, deployed…)
+  t = t.replace(/commit\s+[0-9a-f]{7,40}/gi, ' ');
+  t = t.replace(/[0-9a-f]{7,40}(?=[\s,;.)]|$)/g, m => (/^\d+$/.test(m) ? m : ' '));  // bare hashes, not plain numbers
+  t = t.replace(/\d+\s*suites?[^,.;)]*/gi, ' ');                  // 22 suites / 637 assertions
+  t = t.replace(/\d+\s*assertions?/gi, ' ');
+  t = t.replace(/\d+\s*tests?\s*(?:passing|green|ok)/gi, ' ');
+  t = t.replace(/(?:^|[\s(\[])\/?(?:var\/data|supabase\/migrations|public|scripts|lib|test)\/[^\s,;)\]]+/gi, ' ');  // paths
+  t = t.replace(/[\w.-]+\.(?:js|cjs|sql|json|html|ts)/gi, ' ');   // bare filenames
+  t = t.replace(/migration\s+\d{3}/gi, ' ');
+  t = t.replace(/\s*[—-]\s*$/, '');
+  t = t.replace(/\s{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1').trim();
+  t = t.replace(/^[\s,;:.\-—(]+/, '').replace(/[\s,;:(]+$/, '').trim();
+  // A leftover date stamp with nothing after it says nothing.
+  if (/^\d{1,2}\/\d{1,2}(\s*[—-])?$/.test(t)) return '';
+  return t;
 }
 
 // Is this all-day event Lyndsay's own?
@@ -12073,6 +12138,16 @@ function mrEmailExcluded(m) {
   if (addr.includes('rtuckner@metricpropertymanagement.com')) return true;   // Rebekah — internal ops
   if (['end of day report', 'eod report', 'metric eod', 'asana task tracking'].some(k => subj.includes(k))) return true;
   const senderName = (m.sender?.emailAddress?.name || m.from?.emailAddress?.name || '').toLowerCase();
+  // Automated senders: "do not reply" in the display name or the address.
+  //
+  // "Metric Property Management of Texas LLC (Do Not Reply)" reached her
+  // Pending Critical list, and nobody can reply to it. Matched on the NAME as
+  // well as the address, because AppFolio puts it in the name and sends from an
+  // ordinary-looking address.
+  //
+  // Deliberately NOT a match on "support@": SimpleVOIP and Sonetel write from
+  // real support addresses that a human reads and answers.
+  if (MR_NOREPLY_RE.test(senderName) || MR_NOREPLY_RE.test(addr)) return true;
   if (senderName.includes('metric accounting') && subj.includes('bill audit')) return true;
   if (senderName.includes('maintenance coordinator') && subj.includes('reports')) return true;
   // Internal reply threads: a "Re:" from one of our own domains isn't a reminder.
@@ -12641,8 +12716,11 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   else {
     const opsEn = ops.filter(o => !mrLooksSpanish(o.item));
     const opsSkipped = ops.length - opsEn.length;
-    opsEn.slice(0, 10).forEach(o => L.push(`  ${o.priority}  ${o.item}  —  `
-      + `${o.pending && !mrLooksSpanish(o.pending) ? o.pending : '—'}`));
+    opsEn.slice(0, 10).forEach(o => {
+      const note = o.pending && !mrLooksSpanish(o.pending) ? mrCleanOpsNote(o.pending) : '';
+      // A title on its own beats a title followed by an em dash and nothing.
+      L.push(note ? `  ${o.priority}  ${o.item}  —  ${note}` : `  ${o.priority}  ${o.item}`);
+    });
     if (!opsEn.length) L.push('  No 🔴/🟡/🟢 items pending.');
     if (opsSkipped) L.push(`  + ${opsSkipped} item${opsSkipped === 1 ? '' : 's'} not shown (written in Spanish) — see dashboard`);
     if (opsEn.length > 10) L.push(`  + ${opsEn.length - 10} more task${opsEn.length - 10 === 1 ? '' : 's'} — see dashboard`);
