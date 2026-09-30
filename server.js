@@ -11895,16 +11895,77 @@ function mrLooksSpanish(text) {
   return hits >= 2 || (accents && hits >= 1);
 }
 
-// An email that is FOR Arturo, sitting in Lyndsay's folders. Two signals, both
-// observed on real mail: the body opens by greeting him, or it was sent to the
-// shared support address rather than to her.
+// An email that is FOR someone else, sitting in Lyndsay's folders.
+//
+// This started as "addressed to Arturo" and generalised on 2026-09-30: mail
+// opening "Hi Katrina" was reaching her Pending Critical Emails exactly the way
+// his did. The rule is the same either way — a greeting that names somebody who
+// is not her.
+//
+// WHAT IS KEPT, which is the part worth being careful about:
+//   * no greeting at all — most real mail
+//   * a greeting that names HER, however it is spelled
+//   * a greeting to the room: "Hi all", "Hi team", "Hello everyone"
+//   * a greeting naming her AND someone else: "Hi Lyndsay and Katrina"
+// Dropping any of those would hide mail she has to answer, which is a worse
+// failure than leaving one extra line on the report.
 const MR_SUPPORT_ADDRESSES = ['support@livewithmetric.com', 'support@metricpropertymanagement.com'];
+// The capture runs past commas and periods and the parts are separated after,
+// because stopping at either loses something real: at a comma, "Hi Jay,
+// Lyndsay and Kara" drops her name; at a period, "Dear Ms. Hanes" becomes a
+// greeting to "Ms". A sentence that runs on instead of naming anyone is caught
+// by the word-count filter below.
+const MR_GREETING_RE = /^(?:hi|hii|hello|hey|dear|good (?:morning|afternoon|evening)|buenos días|buenas|hola|estimad[oa]s?)\b[\s,:-]*([^!?\n]{0,80})/i;
+// Titles keep their period through the split, so "Ms. Hanes" stays one name.
+const MR_TITLE_RE = /\b(mr|mrs|ms|dr|prof|sr|sra)\./gi;
+// Names that mean her. Outsiders misspell it constantly, and a misspelling is
+// still addressed to her.
+const MR_LYNDSAY_NAMES = ['lyndsay', 'lyndsey', 'lindsay', 'lindsey', 'linsay', 'hanes'];
+// Not a person: a greeting to the room is a greeting to her as well.
+const MR_GREETING_GROUPS = ['all', 'team', 'everyone', 'everybody', 'there', 'folks', 'both',
+  'partners', 'friends', 'ladies', 'gentlemen', 'sir', 'madam', 'group'];
+
+// The names a greeting addresses, lowercased. [] when there is no greeting, or
+// when it names nobody in particular.
+function mrGreetedNames(body) {
+  const m = MR_GREETING_RE.exec(String(body || '').replace(/\s+/g, ' ').trim());
+  if (!m) return [];
+  return String(m[1] || '').replace(MR_TITLE_RE, '$1')
+    .split(/\s*(?:[.,&]|\band\b|\by\b)\s*/i)
+    .map(part => part.trim().replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ'’.\s-].*$/, '').trim().toLowerCase())
+    .filter(Boolean)
+    // A "name" of several words is the sentence running on past the greeting,
+    // not a person: "Hi I hope this finds you well".
+    .filter(part => part.split(/\s+/).length <= 2 || MR_GREETING_GROUPS.includes(part));
+}
+
+function mrAddressedToSomeoneElse(m) {
+  const names = mrGreetedNames(m.bodyPreview);
+  if (!names.length) return false;                                   // no greeting: keep
+  if (names.some(n => MR_GREETING_GROUPS.includes(n))) return false; // to the room: keep
+  // endsWith as well as startsWith, so "Ms. Hanes" and "Mrs Lyndsay" both count.
+  if (names.some(n => MR_LYNDSAY_NAMES.some(l => n === l || n.startsWith(l) || n.endsWith(l)))) return false;
+  return true;                                                       // names only other people
+}
+
 function mrAddressedToArturo(m) {
-  const body = String(m.bodyPreview || '').replace(/\s+/g, ' ').trim();
-  if (/^(hi|hello|hey|good (morning|afternoon|evening)|buenos días|hola)[\s,]+arturo\b/i.test(body)) return true;
   const to = (m.toRecipients || []).map(r => String(r?.emailAddress?.address || '').toLowerCase());
   if (to.length && to.every(a => MR_SUPPORT_ADDRESSES.includes(a))) return true;
-  return false;
+  return mrGreetedNames(m.bodyPreview).some(n => n === 'arturo');
+}
+
+// Is this all-day event Lyndsay's own?
+//
+// Two ways it can be: she organized it, or she accepted it. Graph says
+// 'organizer' in responseStatus for her own events, but the organizer address
+// is checked too — a shared or delegated calendar does not always come back
+// with the response set, and being the organizer is not something to infer from
+// a field that might be missing.
+function mrOwnsAllDay(m) {
+  const org = String(m.organizerEmail || '').toLowerCase();
+  if (org && org === String(MAILBOX_LYNDSAY).toLowerCase()) return true;
+  const r = String(m.response || '').toLowerCase();
+  return r === 'organizer' || r === 'accepted';
 }
 
 // connecting2self.com — a community newsletter that keeps landing in Review.
@@ -11922,9 +11983,10 @@ function mrEmailExcluded(m) {
     const local = addr.split('@')[0] || '';
     if (local === 'noreply' || local === 'no-reply' || local.startsWith('noreply') || local.startsWith('no-reply')) return true;
   }
-  // Addressed to Arturo, not to Lyndsay — his to answer, noise on her morning
-  // report. Checked before the subject rules so it applies everywhere.
+  // Addressed to someone who is not her — theirs to answer, noise on her
+  // morning report. Checked before the subject rules so it applies everywhere.
   if (mrAddressedToArturo(m)) return true;
+  if (mrAddressedToSomeoneElse(m)) return true;
 
   const subj = (m.subject || '').toLowerCase();
   if (MR_EMAIL_EXCLUDE_SUBJECTS.some(k => subj.includes(k))) return true;
@@ -12000,7 +12062,7 @@ async function mrMeetings() {
   const end   = new Date(now + 36 * 3600e3);
   const url = `https://graph.microsoft.com/v1.0/users/${MAILBOX_LYNDSAY}/calendarView`
     + `?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
-    + '&$select=subject,start,end,location,onlineMeeting,bodyPreview,organizer,isAllDay,isCancelled,showAs'
+    + '&$select=subject,start,end,location,onlineMeeting,bodyPreview,organizer,isAllDay,isCancelled,showAs,responseStatus'
     + '&$orderby=start/dateTime&$top=100';
   const r = await fetchFn(url, { headers: { Authorization: `Bearer ${token}` } });
   const j = await r.json().catch(() => ({}));
@@ -12015,6 +12077,9 @@ async function mrMeetings() {
         organizer: e.organizer?.emailAddress?.name || e.organizer?.emailAddress?.address || '—',
         organizerEmail: e.organizer?.emailAddress?.address || '',
         showAs: e.showAs || '',
+        // 'organizer' when it is hers, otherwise how she replied: accepted,
+        // tentativelyAccepted, declined, notResponded, none.
+        response: String(e.responseStatus?.response || ''),
         format: platform,
         startIso,
         // Needed for two things: deciding whether a multi-day all-day event
@@ -12032,6 +12097,17 @@ async function mrMeetings() {
       // Graph gives all-day events an EXCLUSIVE end (a one-day event on the
       // 29th ends on the 30th), hence the strict <.
       if (m.allDay) {
+        // Hers, or one she said yes to — nothing else.
+        //
+        // An all-day event on her calendar is not necessarily her day: "Dora
+        // Morocco", organized by Rocco Sirizzotti, sat on the report as though
+        // she were travelling to Morocco. Someone else's trip invited to her
+        // calendar is not an item on her morning.
+        //
+        // Deliberately strict: tentative and unanswered are dropped too. An
+        // all-day event she has not accepted is not yet a commitment, and the
+        // point of this section is the things that ARE.
+        if (!mrOwnsAllDay(m)) return false;
         const from = allDayYMD(m.startIso);
         if (!from) return false;
         const to = m.endIso ? allDayYMD(m.endIso) : null;

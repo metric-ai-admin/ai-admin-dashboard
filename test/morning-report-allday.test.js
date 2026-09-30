@@ -38,12 +38,18 @@ assert.ok(/allDayYMD\(m\.startIso\)/.test(branch), 'the all-day branch no longer
 assert.ok(!/ctDateOf\(m\.(start|end)Iso\)[\s\S]{0,40}allDay/.test(branch),
   'the all-day branch converts to Central again');
 
+// The branch also asks whose event it is (see "Whose day is it?" below). These
+// date tests are about the WINDOW, so ownership is stubbed true and tested
+// separately — otherwise every date case would be re-testing the same check.
 // eslint-disable-next-line no-new-func
-const shows = new Function('m', 'todayCT', `${helper}\n${branch}\nreturn true;`);
+const shows = new Function('m', 'todayCT', 'mrOwnsAllDay',
+  `mrOwnsAllDay = mrOwnsAllDay || (() => true);\n${helper}\n${branch}\nreturn true;`);
 
-// Graph hands these over after normalizeGraphDateTime has appended the Z.
-const CONFERENCE = { allDay: true, startIso: '2026-09-28T00:00:00.0000000Z', endIso: '2026-10-01T00:00:00.0000000Z' };
-const SAN_DIEGO  = { allDay: true, startIso: '2026-09-25T00:00:00.0000000Z', endIso: '2026-10-01T00:00:00.0000000Z' };
+// Graph hands these over after normalizeGraphDateTime has appended the Z. Both
+// are Lyndsay's own events, which is why they belong on her report at all.
+const OWN = { organizerEmail: 'lyndsay@metricpropertymanagement.com', response: 'organizer' };
+const CONFERENCE = { ...OWN, allDay: true, startIso: '2026-09-28T00:00:00.0000000Z', endIso: '2026-10-01T00:00:00.0000000Z' };
+const SAN_DIEGO  = { ...OWN, allDay: true, startIso: '2026-09-25T00:00:00.0000000Z', endIso: '2026-10-01T00:00:00.0000000Z' };
 
 const days = (from, to) => { const out = []; const d = new Date(from + 'T12:00:00Z');
   const end = new Date(to + 'T12:00:00Z');
@@ -111,6 +117,48 @@ t('an offset-bearing stamp is read by its own date, not shifted', () => {
   const e = { allDay: true, startIso: '2026-09-28T00:00:00-05:00', endIso: '2026-10-01T00:00:00-05:00' };
   expect(e, 'offset', '2026-09-26', '2026-10-02',
     ['2026-09-28', '2026-09-29', '2026-09-30']);
+});
+
+
+// ---------------------------------------------------------------------------
+// Whose day is it? (2026-09-30)
+//
+// "Dora Morocco" — organized by Rocco Sirizzotti, 09/22 to 10/07 — sat on the
+// report as though Lyndsay were travelling to Morocco. An all-day event on her
+// calendar is not necessarily her day.
+const own = block('function mrOwnsAllDay(');
+// eslint-disable-next-line no-new-func
+const mrOwnsAllDay = new Function('MAILBOX_LYNDSAY',
+  own + '\nreturn mrOwnsAllDay;')('lyndsay@metricpropertymanagement.com');
+
+const LY = 'lyndsay@metricpropertymanagement.com';
+
+console.log('\nall-day events: hers, or ones she accepted');
+t('the real 09/29 events sort correctly', () => {
+  // Read from her calendar the day this was written.
+  assert.ok(mrOwnsAllDay({ subject: 'San Diego Trip', organizerEmail: LY, response: 'organizer' }));
+  assert.ok(mrOwnsAllDay({ subject: 'Appfolio Future Conference', organizerEmail: LY, response: 'organizer' }));
+  assert.strictEqual(
+    mrOwnsAllDay({ subject: 'Dora Morocco', organizerEmail: 'rocco@gratefulinvestmentgroup.com', response: 'notResponded' }),
+    false, "someone else's trip is still on the report");
+});
+t('an event she accepted from someone else IS hers', () => {
+  assert.ok(mrOwnsAllDay({ organizerEmail: 'partner@example.com', response: 'accepted' }));
+});
+t('tentative, declined and unanswered are not commitments', () => {
+  ['tentativelyAccepted', 'declined', 'notResponded', 'none', ''].forEach(r =>
+    assert.strictEqual(mrOwnsAllDay({ organizerEmail: 'partner@example.com', response: r }), false, r));
+});
+t('being the organizer counts even when responseStatus is missing', () => {
+  // A delegated or shared calendar does not always return the response, and
+  // organizing something is not a fact to infer from a field that may be absent.
+  assert.ok(mrOwnsAllDay({ organizerEmail: LY }));
+  assert.ok(mrOwnsAllDay({ organizerEmail: LY.toUpperCase(), response: '' }));
+});
+t('the filter actually calls it', () => {
+  assert.ok(/mrOwnsAllDay\(m\)/.test(block('      if (m.allDay) {')),
+    'the all-day branch no longer checks whose event it is');
+  assert.ok(/responseStatus/.test(src), 'responseStatus is not requested from Graph, so the check is blind');
 });
 
 console.log(`\n${pass} passing`);
