@@ -12061,6 +12061,13 @@ let mrAllDayDiagnostic = [];
 // server to answer.
 let mrDroppedByGreeting = [];
 
+// What mrEmailExcluded actually saw for each message it judged.
+//
+// "(Do Not Reply)" kept reaching Pending Critical although the rule matched
+// that exact string when tested on its own. Reading the code could not settle
+// it; the strings the filter really compares can.
+let mrSenderDiagnostic = [];
+
 // Metric's own domains. An all-day event organized from one of these is a
 // company event; anything else belongs to an outside party.
 const MR_INTERNAL_DOMAINS = ['metricpropertymanagement.com', 'livewithmetric.com'];
@@ -12147,7 +12154,17 @@ function mrEmailExcluded(m) {
   //
   // Deliberately NOT a match on "support@": SimpleVOIP and Sonetel write from
   // real support addresses that a human reads and answers.
-  if (MR_NOREPLY_RE.test(senderName) || MR_NOREPLY_RE.test(addr)) return true;
+  const noreplyHit = MR_NOREPLY_RE.test(senderName) || MR_NOREPLY_RE.test(addr);
+  mrSenderDiagnostic.push({
+    subject: String(m.subject || '').slice(0, 60),
+    senderName, addr,
+    // The raw values before lowercasing, in case something invisible lives in
+    // them — a non-breaking space reads identically and matches nothing.
+    rawName: m.sender?.emailAddress?.name || m.from?.emailAddress?.name || null,
+    nameCodes: [...String(m.sender?.emailAddress?.name || '')].map(c => c.charCodeAt(0)).slice(0, 60),
+    noreplyHit,
+  });
+  if (noreplyHit) return true;
   if (senderName.includes('metric accounting') && subj.includes('bill audit')) return true;
   if (senderName.includes('maintenance coordinator') && subj.includes('reports')) return true;
   // Internal reply threads: a "Re:" from one of our own domains isn't a reminder.
@@ -12290,6 +12307,7 @@ async function mrMeetings() {
 // 2 — Unread/flagged emails in Lyndsay's Review / Clients / MPM Team folders.
 async function mrEmails() {
   mrDroppedByGreeting = [];
+  mrSenderDiagnostic = [];
   const token = await graphMailboxToken('lyndsay');
   const folders = await listMailFolders('lyndsay', token);
   const headers = { Authorization: `Bearer ${token}` };
@@ -12747,6 +12765,7 @@ app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
   const meetings = mR.status === 'fulfilled' ? mR.value : (errors.meetings = mrReason(mR.reason), []);
   const allDayDiagnostic = mrAllDayDiagnostic.slice();
   const droppedByGreeting = mrDroppedByGreeting.slice();
+  const senderDiagnostic = mrSenderDiagnostic.slice();
   const emails   = eR.status === 'fulfilled' ? eR.value : (errors.emails   = mrReason(eR.reason), {});
   const asana    = aR.status === 'fulfilled' ? aR.value : (errors.asana    = mrReason(aR.reason), { configured: true, tasks: [] });
   const ops      = oR.status === 'fulfilled' ? oR.value : (errors.ops      = mrReason(oR.reason), []);
@@ -12757,7 +12776,7 @@ app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
 
   const report = mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, sopReview, errors });
   res.json({ report, generatedAt: new Date().toISOString(), date, errors,
-    allDay: allDayDiagnostic, droppedByGreeting });
+    allDay: allDayDiagnostic, droppedByGreeting, senderDiagnostic });
 });
 
 // =====================================================================
