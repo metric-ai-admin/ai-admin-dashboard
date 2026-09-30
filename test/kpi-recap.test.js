@@ -127,6 +127,32 @@ t('a transcript with no recording yields one, not a crash', () => {
 t('an occurrence can be picked by date', () => {
   assert.strictEqual(K.artifactsFor(TRANSCRIPTS, RECORDINGS, '2026-09-20T00:00:00Z').transcript.id, 'T-0916');
 });
+t('an older occurrence is reachable, not just the newest', () => {
+  // force alone always lands on the most recent meeting, so after a template
+  // change an older draft could not be regenerated — the one job force has.
+  // run-now takes a `date` that narrows to that day.
+  const all = K.pendingOccurrences(TRANSCRIPTS, [], 200);
+  assert.ok(all.length > 1, 'the fixture no longer has more than one occurrence');
+  const pick = day => all.filter(t => String(t.createdDateTime || '').slice(0, 10) === day).slice(0, 1);
+  const older = pick('2026-09-16');
+  assert.strictEqual(older.length, 1, 'an older day cannot be selected');
+  assert.notStrictEqual(older[0].contentCorrelationId, all[0].contentCorrelationId,
+    'the date filter still returned the newest occurrence');
+  assert.strictEqual(pick('2026-01-01').length, 0, 'a day with no meeting drafts something anyway');
+});
+t('the server passes the date through and still drafts one at a time', () => {
+  const s = require('fs').readFileSync(require('path').join(__dirname, '..', 'server.js'), 'utf8');
+  const i = s.indexOf('async function kpiRecapScan(');
+  // To the end of the occurrence-selection block, not a guessed byte count —
+  // a short window silently passes by never reaching the lines it checks.
+  const body = s.slice(i, s.indexOf('const { proposed, excluded }', i));
+  assert.ok(body.length > 500 && body.length < 4000, `selection block looks wrong: ${body.length} chars`);
+  assert.ok(/kpiRecapScan\(force, dateISO\)/.test(s.slice(i, i + 60)), 'the scan takes no date');
+  assert.ok(/\.slice\(0, 1\)/.test(body), 'a dated run could draft more than one occurrence');
+  assert.ok(/pendingOccurrences\(transcripts, locked/.test(body),
+    'the date path skips `locked`, so it could rewrite an approved recap');
+  assert.ok(/req\.body && req\.body\.date/.test(s), 'run-now does not accept a date');
+});
 t('no transcripts at all is null, not an exception', () => {
   assert.deepStrictEqual(K.artifactsFor([], []), { transcript: null, recording: null });
 });

@@ -10686,7 +10686,7 @@ function kpiOrganizerIdFromJoinUrl(joinUrl) {
   } catch { return null; }
 }
 
-async function kpiRecapScan(force) {
+async function kpiRecapScan(force, dateISO) {
   if (!GRAPH_CONFIGURED || !CRM_CONFIGURED) return null;
   const db = supabaseAdmin || supabasePublic;
   try {
@@ -10722,7 +10722,16 @@ async function kpiRecapScan(force) {
     const locked = (existing || [])
       .filter(r => !force || r.status !== 'draft')
       .map(r => r.content_correlation_id);
-    const pending = kpiRecap.pendingOccurrences(transcripts, locked);
+    // `date` names ONE occurrence instead of taking the newest. Without it,
+    // force can only ever reach the most recent meeting, so an older draft
+    // could not be regenerated after a template change — which is the one job
+    // force exists for. Still one occurrence per run, and still subject to
+    // `locked`, so it cannot rewrite an approved or sent recap.
+    let pending = kpiRecap.pendingOccurrences(transcripts, locked, dateISO ? 200 : undefined);
+    if (dateISO) {
+      const day = String(dateISO).slice(0, 10);
+      pending = pending.filter(t => String(t.createdDateTime || '').slice(0, 10) === day).slice(0, 1);
+    }
     if (!pending.length) return { meetings: meetings.length, transcripts: transcripts.length, drafted: 0 };
 
     const { proposed, excluded } = kpiRecap.recipientsFrom(event);
@@ -10806,7 +10815,7 @@ app.get('/api/kpi-recaps', requireMetricAdmin, async (req, res) => {
 });
 
 app.post('/api/kpi-recaps/run-now', requireMetricAdmin, async (req, res) => {
-  const r = await kpiRecapScan(!!(req.body && req.body.force));
+  const r = await kpiRecapScan(!!(req.body && req.body.force), req.body && req.body.date);
   if (r && r.error) return res.status(500).json(r);
   res.json({ ok: true, ...(r || {}) });
 });
