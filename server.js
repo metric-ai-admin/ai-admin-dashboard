@@ -10835,6 +10835,91 @@ app.post('/api/kpi-recaps/:id/approve', requireMetricAdmin, async (req, res) => 
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// MARKETING — the social directory
+// ═════════════════════════════════════════════════════════════════════════════
+// One row per property, plus a "(corporate)" row for the company accounts.
+// Phase 1 is a directory: it stores links and who confirmed them, and posts
+// nothing anywhere.
+//
+// EVERY LINK STARTS UNVERIFIED. They were read out of property-site footers,
+// and a footer can be stale or point at the wrong branch — Ascent's links a
+// Google listing for an address AppFolio disagrees with. "Unverified" is the
+// honest default and a human clears it one link at a time.
+const MARKETING_ROLES = ['admin', 'ceo', 'marketing_bd_agent'];
+const MARKETING_LINKS = ['website', 'facebook', 'instagram', 'tiktok', 'google'];
+const MARKETING_FLAGS = MARKETING_LINKS.map(k => k + '_verified');
+
+// Only http(s), and nothing else — a stored link is rendered as an anchor, so
+// javascript: or data: here would be a script someone clicks on.
+function marketingCleanUrl(v) {
+  if (v === null || v === undefined || String(v).trim() === '') return null;
+  const s = String(v).trim();
+  try {
+    const u = new URL(s);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return undefined;  // rejected
+    return u.toString();
+  } catch { return undefined; }
+}
+
+app.get('/api/marketing', requireAuth, requireRole(...MARKETING_ROLES), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('property_marketing').select('*').order('property');
+    if (error) throw new Error(error.message);
+    // The properties the dashboard manages, so a property with no row yet still
+    // appears — an empty row is a prompt, a missing one is invisible.
+    const { data: props } = await db.from('property_assignments').select('property').order('property');
+    const have = new Set((data || []).map(r => r.property));
+    const rows = [...(data || [])];
+    (props || []).forEach(p => {
+      if (!have.has(p.property)) rows.push({ property: p.property, _missing: true });
+    });
+    rows.sort((a, b) => String(a.property).localeCompare(String(b.property)));
+    res.json({ rows, canEdit: req.user?.role === 'admin', links: MARKETING_LINKS });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin only. Katrina can read the directory and Lyndsay can read it; changing
+// what a link points at is a different thing from looking at it, and until the
+// Friday meeting settles who owns that, it stays with Arturo.
+app.put('/api/marketing/:property', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const property = String(req.params.property || '').trim();
+  if (!property) return res.status(400).json({ error: 'property is required' });
+  try {
+    const patch = { property, updated_by: actorName(req), updated_at: new Date().toISOString() };
+    for (const k of MARKETING_LINKS) {
+      if (!(k in req.body)) continue;
+      const clean = marketingCleanUrl(req.body[k]);
+      if (clean === undefined) {
+        return res.status(400).json({ error: `${k} must be an http(s) URL (got ${JSON.stringify(req.body[k])})` });
+      }
+      patch[k] = clean;
+      // Changing a link un-verifies it. A confirmation belongs to the URL that
+      // was confirmed, not to the row — carrying the tick across an edit would
+      // mark something nobody has looked at as checked.
+      if (!(k + '_verified' in req.body)) patch[k + '_verified'] = false;
+    }
+    for (const f of MARKETING_FLAGS) {
+      if (f in req.body) patch[f] = !!req.body[f];
+    }
+    if ('note' in req.body) patch.note = req.body.note ? String(req.body.note).slice(0, 400) : null;
+    if (MARKETING_FLAGS.some(f => f in req.body)) {
+      patch.verified_by = actorName(req);
+      patch.verified_at = new Date().toISOString();
+    }
+    if ('source' in req.body) patch.source = 'manual';
+
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('property_marketing')
+      .upsert(patch, { onConflict: 'property' }).select().single();
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, row: data });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Accounting summary: task counts, bills due within 7 days (unpaid), W9 issues.
 async function accountingSummary(db) {
   const today = svcTodayCT();

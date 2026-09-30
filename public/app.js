@@ -81,8 +81,8 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy'],
-  ceo:         ['crm', 'platform', 'eod', 'reports'],
+  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy', 'marketing'],
+  ceo:         ['crm', 'platform', 'eod', 'reports', 'marketing'],
   // 'calls' (Call Analyzer) removed 2026-09-18: call transcripts and grades are
   // employee performance data about named staff, alongside resident PII, so the
   // tab is admin-only — Arturo and Lyndsay. Widening it later is a role change
@@ -92,6 +92,10 @@ const TAB_ACCESS = {
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
   maintenance: ['maintenance'],
   bd_agent:    ['crm'],
+  // Katrina owns the marketing directory as well as her BD CRM work. A new role
+  // rather than widening bd_agent: Katie and Rhoxie are bd_agent too and the
+  // directory is not theirs to edit.
+  marketing_bd_agent: ['crm', 'marketing'],
   // Confirmed by Jay 2026-08-27. None of these three exist in dashboard_users
   // yet — Arturo creates the accounts once passwords are agreed — so the entries
   // sit here inert until then rather than needing a deploy on the day.
@@ -331,6 +335,7 @@ function loadTab(tab) {
   if (tab === 'kpi') { loadRegional(); loadBrief(); }
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
+  if (tab === 'marketing') loadMarketing();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -9477,6 +9482,105 @@ $('#report-generate')?.addEventListener('click', async () => {
   finally { btn.disabled = false; }
 });
 
+
+
+// ============================================================================
+// MARKETING — social directory
+// ============================================================================
+// A directory, not a publisher: it shows where each property's accounts are and
+// who has confirmed them. Links open in a new tab, never in a frame.
+//
+// UNVERIFIED IS THE DEFAULT AND IT IS VISIBLE. These came out of site footers,
+// and a footer can be stale or point at the wrong branch — Ascent's Google link
+// disagrees with the address AppFolio has. A grey "unverified" chip next to a
+// link is the whole point of the phase: it says "somebody still has to look".
+
+const MKT_LINKS = [
+  ['website', '🌐', 'Website'],
+  ['facebook', 'f', 'Facebook'],
+  ['instagram', '◙', 'Instagram'],
+  ['tiktok', '♪', 'TikTok'],
+  ['google', '📍', 'Google'],
+];
+
+let mktCanEdit = false;
+
+async function loadMarketing() {
+  const box = $('#mkt-body');
+  box.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const d = await api('/api/marketing');
+    mktCanEdit = !!d.canEdit;
+    renderMarketing(d.rows || []);
+  } catch (e) {
+    box.innerHTML = `<p class="muted">Could not load the directory: ${esc(e.message)}</p>`;
+  }
+}
+
+// One cell per network: the link if there is one, the verified state, and for
+// an admin an input to change it. A missing link is an empty cell rather than a
+// dash, so the gaps read as gaps.
+function mktCell(row, key) {
+  const url = row[key];
+  const verified = row[key + '_verified'];
+  if (!url) {
+    return mktCanEdit
+      ? `<input class="mkt-input" data-prop="${esc(row.property)}" data-key="${key}" placeholder="add link" value="">`
+      : '<span class="muted small">—</span>';
+  }
+  const chip = verified
+    ? '<span class="badge badge-green" title="Confirmed by a person">verified</span>'
+    : '<span class="badge badge-gray" title="Read from the site footer, nobody has confirmed it">unverified</span>';
+  // rel is not optional: these are third-party pages opened from an internal tool.
+  const link = `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="${esc(url)}">open</a>`;
+  const tick = mktCanEdit && !verified
+    ? ` <button class="btn-xs" data-verify="${key}" data-prop="${esc(row.property)}" title="Mark this link confirmed">✓</button>`
+    : '';
+  const edit = mktCanEdit
+    ? `<br><input class="mkt-input" data-prop="${esc(row.property)}" data-key="${key}" value="${esc(url)}">`
+    : '';
+  return `${link} ${chip}${tick}${edit}`;
+}
+
+function renderMarketing(rows) {
+  if (!rows.length) { $('#mkt-body').innerHTML = '<p class="muted">No properties yet.</p>'; return; }
+  const head = ['Property', ...MKT_LINKS.map(l => l[2])]
+    .map(h => `<th>${esc(h)}</th>`).join('');
+  const body = rows.map(r => {
+    const note = r.note
+      ? `<div class="muted small" style="margin-top:4px">⚠ ${esc(r.note)}</div>` : '';
+    const missing = r._missing
+      ? ' <span class="badge badge-gray" title="No row in the directory yet">not set up</span>' : '';
+    return `<tr><td><b>${esc(r.property)}</b>${missing}${note}</td>`
+      + MKT_LINKS.map(([k]) => `<td>${mktCell(r, k)}</td>`).join('')
+      + '</tr>';
+  }).join('');
+  $('#mkt-body').innerHTML =
+    `<div style="overflow-x:auto"><table class="crm-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`
+    + (mktCanEdit ? '' : '<p class="muted small" style="margin-top:8px">Read-only — links are edited by an admin.</p>');
+}
+
+async function mktSave(property, patch) {
+  try {
+    await api(`/api/marketing/${encodeURIComponent(property)}`, { method: 'PUT', body: patch });
+    toast('Saved', 'success');
+    loadMarketing();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// Editing a link clears its verified tick server-side — a confirmation belongs
+// to the URL that was confirmed, not to the row.
+document.addEventListener('change', e => {
+  const input = e.target.closest?.('.mkt-input');
+  if (!input) return;
+  mktSave(input.dataset.prop, { [input.dataset.key]: input.value.trim() || null });
+});
+document.addEventListener('click', e => {
+  const btn = e.target.closest?.('[data-verify]');
+  if (!btn) return;
+  mktSave(btn.dataset.prop, { [btn.dataset.verify + '_verified']: true });
+});
+$('#mkt-refresh')?.addEventListener('click', loadMarketing);
 
 // ============================================================================
 // DAILY 6 PM REPORT

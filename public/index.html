@@ -135,6 +135,7 @@
       <div class="nav-group">
         <div class="nav-group-label">BD &amp; Performance</div>
         <button data-tab="crm"><span class="nav-ico">🎯</span>BD CRM</button>
+        <button data-tab="marketing"><span class="nav-ico">📣</span>Marketing</button>
         <button data-tab="calls"><span class="nav-ico">📞</span>Call Analyzer</button>
       </div>
     </nav>
@@ -2096,6 +2097,25 @@
   </section>
 
   <!-- ============ ACCOUNTING / BILLING (Claudia) ============ -->
+  <section id="tab-marketing" class="tab">
+    <div class="view-head">
+      <h2>Marketing</h2>
+      <p class="muted small">Social directory by property · links open in a new tab</p>
+    </div>
+    <div class="card">
+      <div class="view-head" style="margin:0 0 8px">
+        <h3 style="margin:0">Property social accounts</h3>
+        <div class="view-actions"><button class="btn-sm" id="mkt-refresh">Refresh</button></div>
+      </div>
+      <p class="muted small" style="margin:0 0 10px">
+        Every link was read from the property's own site footer. Nothing here was
+        searched for or guessed, and a link stays <b>unverified</b> until someone
+        opens it and confirms it is the right account.
+      </p>
+      <div id="mkt-body"><p class="muted">Loading…</p></div>
+    </div>
+  </section>
+
   <section id="tab-accounting" class="tab">
     <div class="view-head"><h2>Accounting</h2><p class="muted small">Vendor billing · Work-order QC · Payment tracking</p></div>
 
