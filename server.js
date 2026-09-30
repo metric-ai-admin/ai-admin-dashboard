@@ -11986,7 +11986,18 @@ function mrEmailExcluded(m) {
   // Addressed to someone who is not her — theirs to answer, noise on her
   // morning report. Checked before the subject rules so it applies everywhere.
   if (mrAddressedToArturo(m)) return true;
-  if (mrAddressedToSomeoneElse(m)) return true;
+  if (mrAddressedToSomeoneElse(m)) {
+    // Logged, because this is the rule most likely to be silently wrong.
+    //
+    // It works off a finite list of ways her name gets spelled, and people
+    // outside the company are creative. A variant nobody thought of makes mail
+    // she has to answer disappear from the report with no trace — so the
+    // subject and the greeting it read go in the log, and "is anything being
+    // dropped that should not be?" becomes a grep instead of a guess.
+    logLine(`[morning-report] dropped, greets someone else: subject="${String(m.subject || '').slice(0, 90)}" `
+      + `greeting=${JSON.stringify(mrGreetedNames(m.bodyPreview))}`);
+    return true;
+  }
 
   const subj = (m.subject || '').toLowerCase();
   if (MR_EMAIL_EXCLUDE_SUBJECTS.some(k => subj.includes(k))) return true;
@@ -12546,7 +12557,7 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   return L.join('\n');
 }
 
-app.get('/api/morning-report', requireAuth, requireRole('admin'), async (req, res) => {
+app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
   const date = new Date().toLocaleDateString('en-US', {
     timeZone: LYNDSAY_TIMEZONE, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });

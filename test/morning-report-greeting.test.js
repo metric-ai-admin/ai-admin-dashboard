@@ -108,6 +108,25 @@ t('a period does not hide the rest of the greeting, nor split a title', () => {
   assert.strictEqual(drops('Estimada Sra. Hanes, le escribo por'), false);
 });
 
+console.log('\nthe real mail in her folders on 2026-09-30');
+t('the six Arturo checked before the report went to High Ops', () => {
+  // Named senders, real openings. The two that look like greetings but are not
+  // are the ones that matter: "Metric Team," addresses the room, and
+  // "Lyndsay, Connecting you..." has no greeting word at all — neither may be
+  // read as mail for somebody else.
+  const cases = [
+    ['Jennifer',         'Hi Katrina, attached is the branding proposal.',                        true],
+    ['Beth Obillo',      'Hi Rebekah, please see the updated violation list.',                    true],
+    ['Andrew Dellinger', 'Metric Team, Please confirm the occupancy numbers for Ascent.',         false],
+    ['J.R. Ellis',       'Lyndsay, Connecting you with our lender contact as discussed.',         false],
+    ['Kabani',           'Hi Lyndsay, the audit draft is ready for your review.',                 false],
+    ['Senate Eskridge',  'Please find the signed documents attached for the Round Rock transfer.', false],
+  ];
+  cases.forEach(([who, body, shouldDrop]) =>
+    assert.strictEqual(drops(body), shouldDrop,
+      `${who}: expected ${shouldDrop ? 'dropped' : 'kept'} — ${JSON.stringify(F.mrGreetedNames(body))}`));
+});
+
 console.log('\nthe Arturo rule still works, now on the same machinery');
 t('a greeting to Arturo is still dropped', () => {
   assert.strictEqual(F.mrAddressedToArturo({ bodyPreview: 'Hi Arturo, can you check this?' }), true);
