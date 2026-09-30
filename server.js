@@ -12267,6 +12267,10 @@ async function mrEmails() {
         threadCount: threadCount[normSubj(m.subject)] || 1,
         sender: m.sender?.emailAddress?.name || m.from?.emailAddress?.name || m.sender?.emailAddress?.address || '(unknown)',
         date: mrDateShort(m.receivedDateTime),
+        // The sortable original. `date` is "Sep 29", which cannot be ordered
+        // across a month boundary — and the Critical section merges two folders
+        // by date before capping them.
+        receivedIso: m.receivedDateTime || '',
         subject: m.subject || '(no subject)',
         // Kept generous here (200) for the Critical section; the Reminders
         // section slices it to 150 at render time.
@@ -12550,7 +12554,13 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   L.push('');
 
   L.push('*PENDING CRITICAL EMAILS*');
-  const crit = [...(emails['Lyndsay Review'] || []), ...(emails['Clients'] || [])];
+  // Merged by date, not concatenated. The two folders were joined end to end and
+  // then cut to ten, so whichever came first could fill the whole list: once the
+  // unread fetch widened on 2026-09-30, Lyndsay Review supplied all ten and
+  // Clients vanished entirely, taking a funding-request email with it. The cap
+  // belongs on the merged list, applied to the ten most recent of both.
+  const crit = [...(emails['Lyndsay Review'] || []), ...(emails['Clients'] || [])]
+    .sort((a, b) => String(b.receivedIso || b.date || '').localeCompare(String(a.receivedIso || a.date || '')));
   if (errors.emails) L.push(`  ⚠ ${errors.emails}`);
   else if (!crit.length) L.push('  No unread or flagged critical emails.');
   else crit.slice(0, 10).forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}`

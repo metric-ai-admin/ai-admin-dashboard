@@ -176,4 +176,23 @@ t('unread mail is pulled 50 deep, not 10', () => {
     'the display cap is gone — the point is a wide fetch and a narrow display');
 });
 
+
+
+console.log('\nthe two critical folders are merged by date, not stacked');
+t('Lyndsay Review cannot starve Clients', () => {
+  // They were joined end to end and then cut to ten, so whichever came first
+  // could fill the list. Widening the fetch made Lyndsay Review supply all ten
+  // and Clients disappeared, taking a funding-request email with it.
+  const i = src.indexOf("const crit = [...(emails['Lyndsay Review']");
+  assert.ok(i > 0, 'the Critical section no longer builds `crit` — update this test');
+  const line = src.slice(i, i + 400);
+  assert.ok(/\.sort\(/.test(line), 'the two folders are concatenated and capped without sorting');
+  assert.ok(/receivedIso/.test(line), 'the sort is not using a sortable date');
+});
+t('each email carries a sortable timestamp, not just "Sep 29"', () => {
+  const body = block('async function mrEmails(');
+  assert.ok(/receivedIso: m\.receivedDateTime/.test(body),
+    'receivedIso is gone, so the merge sorts on a string that cannot order across months');
+});
+
 console.log(`\n${pass} passing`);
