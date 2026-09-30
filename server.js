@@ -3030,16 +3030,40 @@ app.get('/api/triage/summary', requireMetricAccess, async (req, res) => {
   // Weekly corrections trend: group by ISO week
   const weeklyMap = {};
   for (const s of sessions) {
-    // NOT ISO 8601, despite the label it prints — see legacyWeekNumberKey in
-    // lib/week.js. Kept bug-for-bug so the trend's existing "2026-W39" buckets
-    // do not silently relabel themselves; worth fixing on its own.
-    const key = WEEK.legacyWeekNumberKey(s.session_date);
-    if (!weeklyMap[key]) weeklyMap[key] = { week: key, sessions: 0, emails: 0, corrections: 0 };
+    // Sun–Sat, like everything else since Phase 3 (2026-09-30).
+    //
+    // This used to bucket by a week NUMBER — "2026-W39" — that was neither ISO
+    // 8601 nor Sunday-based: it counted from Jan 4 with a local-time getDay(),
+    // so it could be off by one around New Year, and it read a local year off a
+    // UTC midnight. It was the last thing in the dashboard still grouping
+    // Mon–Sun after Phase 3 moved everything else.
+    //
+    // The label is the RANGE, not a number. "2026-W39" requires the reader to
+    // know which numbering is meant and to go and look up the dates; "09/27 –
+    // 10/03" is the thing itself. week_start and week_ending stay ISO so the
+    // buckets sort properly across a year boundary, which the label cannot.
+    //
+    // Nothing is stored: session_date is the source and this is derived on
+    // every request, so there is no migration — only a relabelling.
+    const start = WEEK.weekStartYMD(WEEK.toChicagoYMD(s.session_date) || String(s.session_date).slice(0, 10), WEEK.DASHBOARD);
+    if (!start) continue;
+    const end = WEEK.addDaysYMD(start, 6);
+    const key = start;
+    if (!weeklyMap[key]) {
+      weeklyMap[key] = {
+        week: `${start.slice(5).replace('-', '/')} – ${end.slice(5).replace('-', '/')}`,
+        week_start: start, week_ending: end,
+        sessions: 0, emails: 0, corrections: 0,
+      };
+    }
     weeklyMap[key].sessions    += 1;
     weeklyMap[key].emails      += (s.emails_processed || 0);
     weeklyMap[key].corrections += (s.manual_corrections || 0);
   }
-  const weekly_trend = Object.values(weeklyMap).sort((a, b) => a.week.localeCompare(b.week));
+  // Sorted on the ISO start, not on the label: "09/27 – 10/03" cannot order
+  // itself against "01/03 – 01/09" of the following year.
+  const weekly_trend = Object.values(weeklyMap)
+    .sort((a, b) => a.week_start.localeCompare(b.week_start));
 
   res.json({
     ok: true,

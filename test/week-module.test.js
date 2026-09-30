@@ -151,17 +151,35 @@ t('leasing stays Sun-Sat by name, not by coincidence', () => {
   assert.strictEqual(W.leasingWeekEnding('2026-09-30'), '2026-10-03');
 });
 
-console.log('\nthe legacy triage week number is preserved bug and all');
-t('it reproduces the formula the trend has always printed', () => {
-  // Not ISO 8601. Relabelling these buckets is a visible change and belongs in
-  // its own commit, not smuggled in with a refactor.
-  for (let i = 0; i < 400; i++) {
-    const ymd = W.addDaysYMD('2026-01-01', i);
-    const d = new Date(ymd);
-    const jan4 = new Date(d.getFullYear(), 0, 4);
-    const wk = Math.ceil(((d - jan4) / 86400000 + jan4.getDay() + 1) / 7);
-    assert.strictEqual(W.legacyWeekNumberKey(ymd), `${d.getFullYear()}-W${String(wk).padStart(2, '0')}`, ymd);
-  }
+console.log('\nthe triage trend groups Sun-Sat and is labelled by range');
+t('the week NUMBER is gone from the codebase', () => {
+  // It was neither ISO 8601 nor Sunday-based, and it was the last thing still
+  // grouping Mon-Sun after Phase 3. It survived only to avoid relabelling the
+  // buckets; the relabelling has happened, so it has no reason to exist.
+  assert.strictEqual(W.legacyWeekNumberKey, undefined,
+    'legacyWeekNumberKey is back — nothing should bucket by week number');
+  assert.ok(!/legacyWeekNumberKey/.test(read('server.js')),
+    'server.js still buckets something by the old week number');
+});
+t('the trend buckets on the Sun-Sat week of session_date', () => {
+  const route = read('server.js');
+  const i = route.indexOf('const weeklyMap = {}');
+  assert.ok(i > 0, 'the triage trend no longer builds weeklyMap — update this test');
+  const body = route.slice(i, i + 3200);
+  assert.ok(/weekStartYMD\([\s\S]{0,140}WEEK\.DASHBOARD\)/.test(body),
+    'the trend does not bucket on the dashboard week');
+  assert.ok(/week_start\.localeCompare/.test(body),
+    'the trend sorts on the label, which cannot order across a year boundary');
+});
+t('the label is the range; the ISO dates are what it sorts on', () => {
+  // "09/27 – 10/03" is the thing itself. "2026-W39" asks the reader to know
+  // which numbering is meant and then go and look the dates up.
+  const start = W.weekStartYMD('2026-09-30', W.DASHBOARD);
+  const end = W.addDaysYMD(start, 6);
+  assert.strictEqual(start, '2026-09-27');
+  assert.strictEqual(end, '2026-10-03');
+  assert.strictEqual(`${start.slice(5).replace('-', '/')} – ${end.slice(5).replace('-', '/')}`,
+    '09/27 – 10/03');
 });
 
 // ---------------------------------------------------------------------------
