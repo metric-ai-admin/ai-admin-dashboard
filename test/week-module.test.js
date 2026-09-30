@@ -20,6 +20,11 @@ const W = require('../lib/week.js');
 let pass = 0;
 const t = (name, fn) => { fn(); pass++; console.log('  ok  ' + name); };
 const read = p => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
+// Comment lines out. Several checks below look for an identifier that the
+// comment explaining the rule also mentions, and matching that would fail on
+// the very text that documents the fix.
+const stripComments = src => src.split(String.fromCharCode(10))
+  .filter(l => !/^\s*(\/\/|\*|\/\*|<!--)/.test(l)).join(String.fromCharCode(10));
 
 console.log('the two conventions');
 t('Sun-Sat: every day of one week closes on the same Saturday', () => {
@@ -105,9 +110,45 @@ t('every week_ending leasing produces is a Saturday, for a year', () => {
 });
 
 console.log('\nDASHBOARD is Mon-Sun until Phase 3 flips it');
-t('DASHBOARD is still Mon-Sun - Phase 2 changes nothing visible', () => {
-  assert.strictEqual(W.DASHBOARD, W.MON_SUN,
-    'DASHBOARD moved. That is Phase 3, and it changes what users see - intended?');
+t('DASHBOARD is Sun-Sat', () => {
+  // Flipped 2026-09-30. Moving it back is a decision, not a refactor: it changes
+  // what Tasks, the 6PM Report, the Call Analyzer, SimpleVOIP, Regional
+  // Performance and the Command Center all show.
+  assert.strictEqual(W.DASHBOARD, W.SUN_SAT,
+    'DASHBOARD moved off Sun-Sat. That changes what users see - intended?');
+});
+t('a surface on DASHBOARD now runs Sunday to Saturday', () => {
+  const r = W.weekRange('2026-09-30', W.DASHBOARD);
+  assert.deepStrictEqual(r, { from: '2026-09-27', to: '2026-10-03' });
+  assert.strictEqual(W.dowYMD(r.from), 0, 'the week does not open on a Sunday');
+  assert.strictEqual(W.dowYMD(r.to), 6, 'the week does not close on a Saturday');
+});
+
+console.log('\nthree things do NOT follow DASHBOARD, and each says so by name');
+t('the Monday Morning Brief stays Mon-Sun', () => {
+  // A "Monday brief" that opens on Sunday is a product decision, not a
+  // consequence of standardising week arithmetic.
+  // Comments stripped: the note explaining the pin names DASHBOARD, and
+  // matching that would fail on the very text documenting it.
+  const brief = stripComments(read('weekly-brief.js'));
+  assert.ok(/WEEK\.MON_SUN/.test(brief), 'weekly-brief.js no longer pins its convention by name');
+  assert.ok(!/WEEK\.DASHBOARD/.test(brief), 'the Monday brief follows DASHBOARD and has moved to Sunday');
+  assert.deepStrictEqual(require('../weekly-brief.js').weekOf('2026-09-30'),
+    { start: '2026-09-28', end: '2026-10-04' });
+});
+t('the WO schedule calendar stays Mon-Sun', () => {
+  // It is a grid: the one change a user would see as the page redrawing.
+  const wo = stripComments(read('public/wo-schedule-calendar.js'));
+  assert.ok(/MetricWeek\.MON_SUN/.test(wo), 'wo-schedule-calendar.js no longer pins its convention by name');
+  assert.ok(!/MetricWeek\.DASHBOARD/.test(wo), 'the WO calendar follows DASHBOARD and has moved to Sunday');
+});
+t('leasing stays Sun-Sat by name, not by coincidence', () => {
+  // It reads the same as DASHBOARD today, which is exactly why it must be asked
+  // for explicitly: a future flip must not drag rows keyed on a Saturday.
+  const s = read('server.js');
+  const i = s.indexOf('async function leasingWeeklyRollup(');
+  assert.ok(/WEEK\.SUN_SAT/.test(s.slice(i, i + 900)));
+  assert.strictEqual(W.leasingWeekEnding('2026-09-30'), '2026-10-03');
 });
 
 console.log('\nthe legacy triage week number is preserved bug and all');
@@ -171,8 +212,6 @@ function undelegatingHelpers(code, file) {
 const GUARDED = ['server.js', 'public/app.js', 'public/command-center.js',
   'public/tools/weekly_leasing_goal_board.html'];
 
-const stripComments = src => src.split('\n')
-  .filter(l => !/^\s*(\/\/|\*|\/\*|<!--)/.test(l)).join('\n');
 
 GUARDED.forEach(file => {
   t(`${file} has no private week arithmetic`, () => {

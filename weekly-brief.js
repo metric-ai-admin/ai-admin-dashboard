@@ -58,10 +58,15 @@ const addDays = (isoDate, n) => {
 };
 
 // Monday of the week containing `today`, and the Sunday that closes it.
+//
+// PINNED TO MON_SUN BY NAME, and deliberately not following WEEK.DASHBOARD.
+// Phase 3 moved the rest of the dashboard to Sun-Sat on 2026-09-30; this is
+// the Monday Morning Brief, whose whole premise is the week a Monday opens.
+// Moving it would mean a "Monday brief" that starts on Sunday, and that is a
+// product decision, not a consequence of standardising week arithmetic.
+const WEEK = require('./lib/week.js');
 function weekOf(today) {
-  const d = new Date(today + 'T00:00:00');
-  const start = addDays(today, -((d.getDay() + 6) % 7));
-  return { start, end: addDays(start, 6) };
+  return { start: WEEK.weekStartYMD(today, WEEK.MON_SUN), end: WEEK.weekEndYMD(today, WEEK.MON_SUN) };
 }
 
 // Two properties are the same property if their names match once case and

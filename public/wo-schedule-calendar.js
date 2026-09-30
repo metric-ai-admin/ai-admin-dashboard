@@ -19,12 +19,14 @@ let woDragWo = null;
 const WO_DEFAULT_HOURS = 2;
 
 // ---- date helpers ----
+// PINNED TO MON_SUN BY NAME, and deliberately not following MetricWeek.DASHBOARD.
+// Phase 3 moved the rest of the dashboard to Sun-Sat on 2026-09-30; this grid is
+// the one change a user would see as the page redrawing under them, so it moves
+// when Erick has been told, not when a constant flips.
 function woMonday(d) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  // getDay() is 0 for Sunday, so shift the week to start on Monday.
-  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
-  return x;
+  const [y, m, day] = MetricWeek
+    .weekStartYMD(woISO(d), MetricWeek.MON_SUN).split('-').map(Number);
+  return new Date(y, m - 1, day);
 }
 // Local calendar date. NOT toISOString(), which converts to UTC and in US
 // timezones turns an evening date into the next day.
