@@ -133,4 +133,24 @@ t('mrCleanOpsNote strips what it claims to strip', () => {
   assert.strictEqual(clean('09/22'), '', 'a bare date stamp should leave the title standing alone');
 });
 
+console.log('\nthe cap says when it is hiding something');
+t('a truncated Critical list prints how many are left', () => {
+  // A silent cut is indistinguishable from a bug: the reader cannot tell
+  // "there were only these" from "there were more and you were shown ten".
+  // Chasing one missing email on 2026-09-30 cost two deploys, and the first
+  // question every time was whether the list had been truncated.
+  const i = src.indexOf("L.push('*PENDING CRITICAL EMAILS*')");
+  assert.ok(i > 0, 'the Critical section is gone — update this test');
+  const body = src.slice(i, i + 1800);
+  assert.ok(/crit\.length - MR_CRITICAL_SHOWN/.test(body), 'nothing counts what the cap dropped');
+  assert.ok(/more unread or flagged/.test(body), 'the extra line is not printed');
+  assert.ok(/if \(hidden > 0\)/.test(body), 'it would print "+ 0 more" on a short list');
+});
+t('the cap is a named constant, not a number in two places', () => {
+  assert.ok(/const MR_CRITICAL_SHOWN = 10;/.test(src));
+  const i = src.indexOf("L.push('*PENDING CRITICAL EMAILS*')");
+  assert.ok(!/\.slice\(0, 10\)/.test(src.slice(i, i + 1800)),
+    'the render still hardcodes 10, so the count and the cut can drift apart');
+});
+
 console.log(`\n${pass} passing`);

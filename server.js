@@ -11885,6 +11885,9 @@ app.post('/api/email/lyndsay/message-rules', requireAuth, requireRole('admin'), 
 // Admin-only: exposes Lyndsay's meetings + email senders/subjects, same as the
 // triage snapshot beside it. No writes.
 // =====================================================================
+// How many of the merged Critical list are printed. The fetch and the filters
+// run over everything; this is only what fits in a message someone reads.
+const MR_CRITICAL_SHOWN = 10;
 const MR_CRITICAL_MAX_AGE_DAYS = 7;   // Pending Critical Emails: nothing older than 7 days
 const MR_FOLDERS = [
   { label: 'Lyndsay Review', match: ['lyndsay review', 'lyndsay'], maxAgeDays: MR_CRITICAL_MAX_AGE_DAYS },
@@ -12680,8 +12683,19 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
     .sort((a, b) => String(b.receivedIso || b.date || '').localeCompare(String(a.receivedIso || a.date || '')));
   if (errors.emails) L.push(`  ⚠ ${errors.emails}`);
   else if (!crit.length) L.push('  No unread or flagged critical emails.');
-  else crit.slice(0, 10).forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}`
-    + `${e.threadCount > 1 ? ` (${e.threadCount} messages)` : ''}  |  ${e.summary}  [${e.status}]`));
+  else {
+    crit.slice(0, MR_CRITICAL_SHOWN).forEach(e => L.push(`  ${e.date.padEnd(7)}| ${e.sender}  |  ${e.subject}`
+      + `${e.threadCount > 1 ? ` (${e.threadCount} messages)` : ''}  |  ${e.summary}  [${e.status}]`));
+    // Say when the cap is hiding something.
+    //
+    // Chasing a missing email on 2026-09-30 took a diagnostic endpoint and two
+    // deploys, and the first question each time was whether the list had been
+    // truncated. A silent cut is indistinguishable from a bug: the reader
+    // cannot tell "there were only these" from "there were more and you were
+    // shown ten". Now it says which.
+    const hidden = crit.length - MR_CRITICAL_SHOWN;
+    if (hidden > 0) L.push(`  + ${hidden} more unread or flagged — see Lyndsay Review and Clients`);
+  }
   L.push('');
 
   L.push('*EMAIL REMINDERS — Might need attention*');
