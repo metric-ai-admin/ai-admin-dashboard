@@ -10802,7 +10802,29 @@ async function kpiRecapScan(force, dateISO) {
 
 // ---- the dashboard's side ---------------------------------------------------
 
-app.get('/api/kpi-recaps', requireMetricAdmin, async (req, res) => {
+// Admin and the CEO. requireMetricAdmin accepts a browser session only when
+// the role is exactly 'admin', so Lyndsay — who asked for these recaps and is
+// the person they are written for — would have got a 403 from her own review
+// screen. run-now keeps requireMetricAdmin: generating drafts is a scripted
+// operation, and widening it was not asked for.
+const KPI_RECAP_ROLES = ['admin', 'ceo'];
+
+// The list deliberately does NOT carry transcript_text. A transcript is tens of
+// kilobytes and the list returns up to 50 rows, so shipping them all to render
+// one collapsed panel would be megabytes per page load. This route returns one.
+app.get('/api/kpi-recaps/:id', requireAuth, requireRole(...KPI_RECAP_ROLES), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('kpi_meeting_recaps')
+      .select('id,subject,meeting_date,status,proposed_to,excluded,final_to,summary,email_subject,email_body,recording_url,speakers,transcript_text,approved_by,approved_at,sent_at,error')
+      .eq('id', req.params.id).single();
+    if (error || !data) return res.status(404).json({ error: 'Recap not found' });
+    res.json({ recap: data });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/kpi-recaps', requireAuth, requireRole(...KPI_RECAP_ROLES), async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -10823,7 +10845,7 @@ app.post('/api/kpi-recaps/run-now', requireMetricAdmin, async (req, res) => {
 // Approve MARKS the draft. It does not send: there is no send path yet, and
 // adding one is a separate reviewed change. The response says so, so nobody
 // clicks it expecting mail to leave.
-app.post('/api/kpi-recaps/:id/approve', requireMetricAdmin, async (req, res) => {
+app.post('/api/kpi-recaps/:id/approve', requireAuth, requireRole(...KPI_RECAP_ROLES), async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const db = supabaseAdmin || supabasePublic;

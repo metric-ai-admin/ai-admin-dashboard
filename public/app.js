@@ -81,8 +81,8 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy', 'marketing'],
-  ceo:         ['crm', 'platform', 'eod', 'reports', 'marketing'],
+  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy', 'marketing', 'kpirecaps'],
+  ceo:         ['crm', 'platform', 'eod', 'reports', 'marketing', 'kpirecaps'],
   // 'calls' (Call Analyzer) removed 2026-09-18: call transcripts and grades are
   // employee performance data about named staff, alongside resident PII, so the
   // tab is admin-only — Arturo and Lyndsay. Widening it later is a role change
@@ -336,6 +336,7 @@ function loadTab(tab) {
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
   if (tab === 'marketing') loadMarketing();
+  if (tab === 'kpirecaps') loadKpiRecaps();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -11379,3 +11380,157 @@ document.getElementById('sv-view-grades')?.addEventListener('click', e => {
   }
   if (e.target.closest('[data-cr-cancel]')) { svgRevisionOpen = null; svgRender(); }
 });
+
+// ============================================================================
+// KPI RECAPS — review the drafts
+// ============================================================================
+// A review screen, not a mail client. The drafts have existed in Supabase since
+// 2026-09-23 and nobody could see them, which is the worst version of "draft
+// mode": the safety was real but invisible, so it read as nothing happening.
+//
+// NOTHING HERE SENDS. Approve writes status/approved_by/approved_at and that is
+// all. There is no send path in the server either — not disabled, absent — and
+// the banner says so rather than leaving someone to infer it from a button that
+// does less than it looks like it does.
+
+const KRC_STATUS = {
+  draft:    ['badge-gray',  'draft'],
+  approved: ['badge-green', 'approved'],
+  sent:     ['badge-blue',  'sent'],
+  skipped:  ['badge-gray',  'skipped'],
+  failed:   ['badge-red',   'failed'],
+};
+
+async function loadKpiRecaps() {
+  const box = $('#krc-list');
+  box.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const d = await api('/api/kpi-recaps');
+    krcRenderList(d.recaps || [], d.autoSend);
+  } catch (e) {
+    box.innerHTML = `<p class="muted">Could not load the recaps: ${esc(e.message)}</p>`;
+  }
+}
+
+function krcBadge(status) {
+  const pair = KRC_STATUS[status] || ['badge-gray', status || 'unknown'];
+  return `<span class="badge ${pair[0]}">${esc(pair[1])}</span>`;
+}
+
+// Newest meeting first. The API already orders by meeting_date desc; sorting
+// again here means the list does not depend on that staying true.
+function krcRenderList(rows, autoSend) {
+  if (!rows.length) {
+    $('#krc-list').innerHTML = '<p class="muted">No recaps yet. They appear after a KPI meeting has a transcript.</p>';
+    return;
+  }
+  const sorted = rows.slice().sort((a, b) =>
+    String(b.meeting_date || '').localeCompare(String(a.meeting_date || '')));
+  const body = sorted.map(r => {
+    const held = (r.excluded || []).length;
+    const when = String(r.approved_at || '').slice(0, 16).replace('T', ' ');
+    return `<tr>
+      <td><b>${esc(String(r.meeting_date || '').slice(0, 10))}</b></td>
+      <td>${esc(r.subject || '')}</td>
+      <td>${krcBadge(r.status)}</td>
+      <td>${(r.proposed_to || []).length} recipient(s)${held ? ', ' + held + ' held back' : ''}</td>
+      <td>${r.approved_by
+        ? esc(r.approved_by) + '<br><span class="muted small">' + esc(when) + '</span>'
+        : '<span class="muted">—</span>'}</td>
+      <td><button class="btn-sm" data-krc-open="${esc(r.id)}">Open</button></td>
+    </tr>`;
+  }).join('');
+  $('#krc-list').innerHTML =
+    '<div style="overflow-x:auto"><table class="crm-table"><thead><tr>'
+    + '<th>Meeting</th><th>Subject</th><th>Status</th><th>Recipients</th><th>Approved by</th><th></th>'
+    + `</tr></thead><tbody>${body}</tbody></table></div>`
+    + (autoSend === false
+      ? '<p class="muted small" style="margin-top:8px">Automatic sending is off.</p>' : '');
+}
+
+async function krcOpen(id) {
+  const card = $('#krc-detail-card');
+  card.hidden = false;
+  $('#krc-detail').innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const d = await api('/api/kpi-recaps/' + encodeURIComponent(id));
+    krcRenderDetail(d.recap);
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    $('#krc-detail').innerHTML = `<p class="muted">Could not open it: ${esc(e.message)}</p>`;
+  }
+}
+
+function krcRenderDetail(r) {
+  if (!r) { $('#krc-detail').innerHTML = '<p class="muted">Not found.</p>'; return; }
+  const to = (r.final_to && r.final_to.length ? r.final_to : r.proposed_to) || [];
+
+  // The held-back names carry their reason with them. "Excluded" on its own
+  // reads as a rule; this is a pending confirmation from Lyndsay, which is a
+  // thing that gets resolved, not a permanent setting.
+  const excluded = (r.excluded || []).length
+    ? '<div class="card" style="background:var(--warning-bg);margin:0 0 14px">'
+      + "<b>Held back — pending Lyndsay's confirmation</b>"
+      + '<ul style="margin:6px 0 0;padding-left:20px">'
+      + (r.excluded || []).map(x => `<li>${esc(x)}</li>`).join('')
+      + '</ul></div>'
+    : '';
+
+  // The email as it would go out, framed so it is obvious this is the message
+  // rather than the page talking.
+  const email = '<div class="card" style="margin:0 0 14px">'
+    + '<div class="muted small" style="margin-bottom:6px">THE EMAIL, EXACTLY AS IT WOULD GO OUT</div>'
+    + '<table class="crm-table" style="margin-bottom:10px"><tbody>'
+    + `<tr><th style="width:90px">Subject</th><td><b>${esc(r.email_subject || '')}</b></td></tr>`
+    + `<tr><th>To</th><td>${to.length ? to.map(esc).join('<br>') : '<span class="muted">nobody</span>'}</td></tr>`
+    + `<tr><th>Attachment</th><td>${r.transcript_text ? 'transcript.txt' : '<span class="muted">none</span>'}</td></tr>`
+    + '</tbody></table>'
+    + '<div style="border:1px solid var(--line,#ddd);border-radius:6px;padding:12px">'
+    + (r.email_body || '<span class="muted">empty</span>')
+    + '</div></div>';
+
+  // Collapsed by default: it is the attachment, not the message, and it is long.
+  const speakers = (r.speakers || []).length ? ' · ' + (r.speakers || []).map(esc).join(', ') : '';
+  const transcript = '<details class="card" style="margin:0 0 14px">'
+    + '<summary style="cursor:pointer"><b>Transcript</b>'
+    + `<span class="muted small"> — the attachment${speakers}</span></summary>`
+    + '<pre style="white-space:pre-wrap;margin:10px 0 0;font-size:12px;max-height:420px;overflow:auto">'
+    + esc(r.transcript_text || 'No transcript stored for this meeting.')
+    + '</pre></details>';
+
+  const approve = '<div class="card" style="margin:0">'
+    + '<p class="muted small" style="margin:0 0 8px">'
+    + '<b>Approving does not send anything — sending is not enabled yet.</b> '
+    + 'It records that you signed off on this draft, and who and when.</p>'
+    + (r.status === 'draft'
+      ? `<button class="btn" data-krc-approve="${esc(r.id)}">Approve</button>`
+      : `<span class="muted">Already ${esc(r.status)}${r.approved_by ? ' by ' + esc(r.approved_by) : ''}.</span>`)
+    + '</div>';
+
+  $('#krc-detail').innerHTML =
+    '<div class="view-head" style="margin:0 0 10px">'
+    + `<h3 style="margin:0">${esc(r.subject || '')} — ${esc(String(r.meeting_date || '').slice(0, 10))}</h3>`
+    + `<div class="view-actions">${krcBadge(r.status)} <button class="btn-sm" id="krc-close">Close</button></div>`
+    + '</div>'
+    + excluded + email + transcript + approve;
+}
+
+async function krcApprove(id) {
+  try {
+    const d = await api('/api/kpi-recaps/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: {} });
+    // Repeat the server's own words rather than "Saved", so the confirmation
+    // cannot be read as "it went out".
+    toast(d.note || 'Approved. Nothing was sent.', 'success');
+    await loadKpiRecaps();
+    krcOpen(id);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+document.addEventListener('click', e => {
+  const open = e.target.closest?.('[data-krc-open]');
+  if (open) { krcOpen(open.dataset.krcOpen); return; }
+  const ok = e.target.closest?.('[data-krc-approve]');
+  if (ok) { krcApprove(ok.dataset.krcApprove); return; }
+  if (e.target.closest?.('#krc-close')) $('#krc-detail-card').hidden = true;
+});
+$('#krc-refresh')?.addEventListener('click', loadKpiRecaps);

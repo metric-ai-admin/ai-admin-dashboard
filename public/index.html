@@ -86,6 +86,12 @@
         <button data-tab="sixpm"><span class="nav-ico">📈</span>6PM Report</button>
         <button data-tab="reports"><span class="nav-ico">📋</span>Daily Report</button>
         <button data-tab="kpi"><span class="nav-ico">📊</span>KPI Report</button>
+        <!--
+          Reports, not a group of its own: both roles that can see it (admin,
+          ceo) already have tabs here, so nothing changes about which groups
+          collapse for whom.
+        -->
+        <button data-tab="kpirecaps"><span class="nav-ico">📝</span>KPI Recaps</button>
       </div>
       <div class="nav-group">
         <div class="nav-group-label">Departments</div>
@@ -2124,6 +2130,27 @@
         opens it and confirms it is the right account.
       </p>
       <div id="mkt-body"><p class="muted">Loading…</p></div>
+    </div>
+  </section>
+
+  <section id="tab-kpirecaps" class="tab">
+    <div class="view-head">
+      <h2>KPI Recaps</h2>
+      <p class="muted small">Round Rock KPI meetings · review the draft before anyone sends it</p>
+    </div>
+    <div class="banner banner-warn" style="margin-bottom:14px">
+      <b>Nothing here sends email.</b> Approving records who signed off and when.
+      Sending is not enabled yet — there is no send path in the dashboard at all.
+    </div>
+    <div class="card">
+      <div class="view-head" style="margin:0 0 8px">
+        <h3 style="margin:0">Drafts</h3>
+        <div class="view-actions"><button class="btn-sm" id="krc-refresh">Refresh</button></div>
+      </div>
+      <div id="krc-list"><p class="muted">Loading…</p></div>
+    </div>
+    <div class="card" id="krc-detail-card" hidden style="margin-top:16px">
+      <div id="krc-detail"></div>
     </div>
   </section>
 
