@@ -128,7 +128,8 @@ t('an offset-bearing stamp is read by its own date, not shifted', () => {
 // "Dora Morocco" — organized by Rocco Sirizzotti, 09/22 to 10/07 — sat on the
 // report as though Lyndsay were travelling to Morocco. An all-day event on her
 // calendar is not necessarily her day.
-const own = block('function mrOwnsAllDay(');
+// The helper plus the internal-domain list it leans on, taken as one slice.
+const own = src.slice(src.indexOf('const MR_INTERNAL_DOMAINS'), src.indexOf('// connecting2self.com'));
 // eslint-disable-next-line no-new-func
 const mrOwnsAllDay = new Function('MAILBOX_LYNDSAY',
   own + '\nreturn mrOwnsAllDay;')('lyndsay@metricpropertymanagement.com');
@@ -141,15 +142,33 @@ t('the real 09/29 events sort correctly', () => {
   assert.ok(mrOwnsAllDay({ subject: 'San Diego Trip', organizerEmail: LY, response: 'organizer' }));
   assert.ok(mrOwnsAllDay({ subject: 'Appfolio Future Conference', organizerEmail: LY, response: 'organizer' }));
   assert.strictEqual(
-    mrOwnsAllDay({ subject: 'Dora Morocco', organizerEmail: 'rocco@gratefulinvestmentgroup.com', response: 'notResponded' }),
+    // Her actual response, read from Graph on 2026-09-30: accepted.
+    mrOwnsAllDay({ subject: 'Dora Morocco', organizerEmail: 'rocco@gratefulinvestmentgroup.com', response: 'accepted' }),
     false, "someone else's trip is still on the report");
 });
-t('an event she accepted from someone else IS hers', () => {
-  assert.ok(mrOwnsAllDay({ organizerEmail: 'partner@example.com', response: 'accepted' }));
+t("accepting an OUTSIDER's all-day event does not make it her day", () => {
+  // The one that cost a round trip: "Dora Morocco", organized by Rocco
+  // Sirizzotti, came back response=accepted — so "organizer OR accepted" kept
+  // it and the report read as though she were travelling to Morocco.
+  assert.strictEqual(
+    mrOwnsAllDay({ organizerEmail: 'rocco@gratefulinvestmentgroup.com', response: 'accepted' }),
+    false, "an outsider's trip is on her report again");
+});
+t('an all-day event a COLLEAGUE organized and she accepted IS hers', () => {
+  // A company offsite or holiday party is her day; the distinction is who
+  // organized it, not whether she clicked accept.
+  assert.ok(mrOwnsAllDay({ organizerEmail: 'admin@metricpropertymanagement.com', response: 'accepted' }));
+  assert.ok(mrOwnsAllDay({ organizerEmail: 'hello@livewithmetric.com', response: 'accepted' }));
+});
+t('a lookalike domain is not Metric', () => {
+  assert.strictEqual(
+    mrOwnsAllDay({ organizerEmail: 'x@notmetricpropertymanagement.com', response: 'accepted' }), false);
 });
 t('tentative, declined and unanswered are not commitments', () => {
-  ['tentativelyAccepted', 'declined', 'notResponded', 'none', ''].forEach(r =>
-    assert.strictEqual(mrOwnsAllDay({ organizerEmail: 'partner@example.com', response: r }), false, r));
+  ['tentativelyAccepted', 'declined', 'notResponded', 'none', ''].forEach(r => {
+    assert.strictEqual(mrOwnsAllDay({ organizerEmail: 'partner@example.com', response: r }), false, r);
+    assert.strictEqual(mrOwnsAllDay({ organizerEmail: 'admin@metricpropertymanagement.com', response: r }), false, 'internal ' + r);
+  });
 });
 t('being the organizer counts even when responseStatus is missing', () => {
   // A delegated or shared calendar does not always return the response, and

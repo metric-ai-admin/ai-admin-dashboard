@@ -11966,11 +11966,33 @@ function mrAddressedToArturo(m) {
 // deploy — the question that cost one here on 2026-09-30.
 let mrAllDayDiagnostic = [];
 
+// Metric's own domains. An all-day event organized from one of these is a
+// company event; anything else belongs to an outside party.
+const MR_INTERNAL_DOMAINS = ['metricpropertymanagement.com', 'livewithmetric.com'];
+const mrIsInternalAddress = a => MR_INTERNAL_DOMAINS.includes(String(a || '').toLowerCase().split('@')[1] || '');
+
 function mrOwnsAllDay(m) {
   const org = String(m.organizerEmail || '').toLowerCase();
   if (org && org === String(MAILBOX_LYNDSAY).toLowerCase()) return true;
   const r = String(m.response || '').toLowerCase();
-  return r === 'organizer' || r === 'accepted';
+  if (r === 'organizer') return true;
+  // Accepted is not enough on its own.
+  //
+  // "Dora Morocco" — Rocco Sirizzotti's own trip, 09/22 to 10/07 — came back
+  // with response=accepted, so "organizer OR accepted" kept it and the report
+  // read as though Lyndsay were travelling to Morocco. Accepting an invitation
+  // to someone else's fortnight is a courtesy, not a commitment on her day.
+  //
+  // What separates it from San Diego Trip and the Appfolio conference is who
+  // organized it, so that is what is checked: an accepted all-day event counts
+  // when a colleague organized it — a company offsite, a holiday party — and
+  // not when an outside party did.
+  //
+  // The cost, stated rather than discovered later: an all-day event organized
+  // by someone outside Metric that she accepts and does intend to attend, a
+  // partner's conference say, will not appear. If that happens, the fix is to
+  // widen this — not to go back to trusting `accepted` alone.
+  return r === 'accepted' && mrIsInternalAddress(org);
 }
 
 // connecting2self.com — a community newsletter that keeps landing in Review.
