@@ -61,47 +61,51 @@ t('the drop is logged, not silent', () => {
     'a timed meeting can disappear with no record of why');
 });
 
-console.log('\n2 — the Asana section is for Lyndsay');
-// From the constants, not from the function — the names it reads are declared
-// above it.
-const mrIsArturosTask = new Function(
-  server.slice(server.indexOf('const MR_ARTURO_NAMES'), server.indexOf('const MR_OPS_PRIVATE_RE'))
-  + 'return mrIsArturosTask;')();
-t('tasks assigned to Arturo are his, however his name is written', () => {
-  ['Arturo', 'arturo', 'Arturo Mendoza', 'ARTURO MENDOZA', ' Mendoza '].forEach(a =>
-    assert.strictEqual(mrIsArturosTask({ assignee: a, name: 'Anything' }), true, a));
+console.log('\n2 — the Asana section is gone');
+// It was Lyndsay's section fed by ARTURO's Asana "My Tasks", so everything in
+// it was his and repeated verbatim two sections down. Rather than find a feed
+// of her tasks, the section was removed: she does not use Asana and is
+// replacing it, and what matters is already in his list.
+t('the section is not rendered, and nothing fetches it any more', () => {
+  assert.ok(!/PENDING CRITICAL ASANA TASKS/.test(server), 'the heading is back');
+  assert.ok(!/function mrAsana\(/.test(server), 'the Asana fetch still runs, for nobody');
+  assert.ok(!/mrIsArturosTask/.test(server), 'the filter it needed is still here');
+  assert.ok(!/errors\.asana/.test(server), 'an error key survives with nothing to set it');
 });
-t('the recurring report tasks are his too, by title', () => {
-  [`Lyndsay's Daily Morning Report — High Ops chat`,
-   'Lyndsays Daily Morning Report',
-   'Morning Report — Review and send to High Ops chat (10/01)',
-  ].forEach(n => assert.strictEqual(mrIsArturosTask({ assignee: null, name: n }), true, n));
+t('the gather is positional, and still lines up', () => {
+  // Promise.allSettled destructures by position. Dropping mrAsana() from the
+  // array while leaving aR in the names would have shifted every result after
+  // it — handing the ops list to appfolio and the SOP count to nobody. This is
+  // the one way this removal could break something silently.
+  // Anchored on the endpoint: server.js has several Promise.allSettled calls
+  // and the first one belongs to the EOD report.
+  const i = server.indexOf("app.get('/api/morning-report'");
+  assert.ok(i > 0, 'the morning-report endpoint is gone');
+  const block = server.slice(server.indexOf('const [', i), server.indexOf('const report = mrFormat', i));
+  const names = /const \[([^\]]+)\]/.exec(block)[1].split(',').map(x => x.trim());
+  // One promise per line inside the array. Not "ends with a comma" — mrOps()
+  // ends with a trailing comment, which an earlier version of this count
+  // missed, making it report a mismatch that was not there.
+  const arr = block.slice(block.indexOf('allSettled([') + 12, block.indexOf('\n  ]);'));
+  const calls = arr.split('\n').filter(l => /^ {4}\S/.test(l)).length;
+  assert.strictEqual(names.length, calls,
+    `${names.length} result names for ${calls} promises — the destructuring is off`);
+  assert.ok(!names.includes('aR'), 'aR is still destructured');
 });
-t('somebody else\'s task is NOT his — including one that mentions him', () => {
-  // The whole risk: a title-based rule that eats real work.
-  [{ assignee: 'Lyndsay Hanes', name: 'Approve the Greysteel rent roll' },
-   { assignee: 'Jay Manuel', name: 'Ops Dashboard integration' },
-   { assignee: null, name: 'Send Arturo the Q4 numbers' },
-   { assignee: 'Rocío Hunsberger', name: 'Report on morning collections calls' },
-  ].forEach(x => assert.strictEqual(mrIsArturosTask(x), false, x.name));
+t('mrFormat dropped it at the definition AND at the call', () => {
+  // Half a rename leaves `asana` undefined inside the formatter.
+  const def = /function mrFormat\(\{([^}]+)\}\)/.exec(server)[1];
+  const call = /mrFormat\(\{([^}]+)\}\)/.exec(server.slice(server.indexOf('const report = mrFormat')))[1];
+  assert.ok(!/\basana\b/.test(def), 'the formatter still declares an asana parameter');
+  assert.ok(!/\basana\b/.test(call), 'the caller still passes asana');
+  assert.deepStrictEqual(def.split(',').map(x => x.trim()).sort(),
+    call.split(',').map(x => x.trim()).sort(),
+    'the formatter and its caller disagree about the arguments');
 });
-t('an empty section says WHY it is empty', () => {
-  // The feed is Arturo's own My Tasks, so filtering his tasks empties it. A
-  // bare "none pending" would read as "Lyndsay has nothing", which is not what
-  // we know — we know we cannot see hers.
-  const i = server.indexOf("L.push('*PENDING CRITICAL ASANA TASKS*')");
-  const body = server.slice(i, i + 2200);
-  assert.ok(/Nothing here is waiting on Lyndsay/.test(body),
-    'the empty state claims Lyndsay has no pending tasks');
-  assert.ok(/see his list below/.test(body), 'it does not say where the tasks went');
-});
-t('the "+ N more" line cannot outlive the tasks it counts', () => {
-  // asana.more counts the unfiltered feed. Printing it beside an empty list
-  // would say "+ 17 more" under "nothing is waiting on Lyndsay".
-  const i = server.indexOf("L.push('*PENDING CRITICAL ASANA TASKS*')");
-  const body = server.slice(i, i + 2200);
-  assert.ok(/readable\.length && asana\.more > 0/.test(body),
-    'the more-count is printed even when everything was filtered out');
+t('every other section survived', () => {
+  ["*TODAY'S MEETINGS*", '*PENDING CRITICAL EMAILS*',
+   '*PENDING APPFOLIO TASKS — LYNDSAY*', "*ARTURO'S PENDING ITEMS LIST*",
+  ].forEach(h => assert.ok(server.includes(h), `the ${h} section went with it`));
 });
 
 console.log('\n3 — Security items stay out of the group chat');

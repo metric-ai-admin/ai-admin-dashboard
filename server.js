@@ -12241,18 +12241,6 @@ let mrSenderDiagnostic = [];
 const MR_INTERNAL_DOMAINS = ['metricpropertymanagement.com', 'livewithmetric.com'];
 const mrIsInternalAddress = a => MR_INTERNAL_DOMAINS.includes(String(a || '').toLowerCase().split('@')[1] || '');
 
-// Pending Critical Asana Tasks is Lyndsay's list, and the feed behind it is
-// Arturo's Asana "My Tasks" — so everything in it is his unless something says
-// otherwise. Assignee first; the title pattern catches the recurring report
-// tasks, which are about producing this very document.
-const MR_ARTURO_NAMES = ['arturo', 'arturo mendoza', 'mendoza'];
-const MR_ARTURO_TASK_RE = /^(?:lyndsay'?s daily morning report|morning report\b)/i;
-function mrIsArturosTask(t) {
-  const who = String(t?.assignee || '').trim().toLowerCase();
-  if (who && MR_ARTURO_NAMES.includes(who)) return true;
-  return MR_ARTURO_TASK_RE.test(String(t?.name || '').trim());
-}
-
 // Arturo's Pending Items goes into the High Ops group chat, so a line that
 // names an open security gap is read by the room. Start of the title only.
 const MR_OPS_PRIVATE_RE = /^security\b/i;
@@ -12611,31 +12599,6 @@ async function mrEmails() {
   return out;
 }
 
-// 3 — Arturo's incomplete Asana "My Tasks" (same pull as /api/asana/tasks).
-async function mrAsana() {
-  if (!ASANA_TOKEN) return { configured: false, tasks: [] };
-  const me = await getMe(ASANA_TOKEN);
-  if (!me.gid || !me.workspaceGid) return { configured: true, tasks: [] };
-  const list = await asanaRequest('GET', `/users/me/user_task_list?workspace=${me.workspaceGid}&opt_fields=gid`, null, ASANA_TOKEN);
-  if (!list?.gid) return { configured: true, tasks: [] };
-  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
-  const raw = await asanaGetAll(
-    `/user_task_lists/${list.gid}/tasks?opt_fields=${ASANA_OPT_FIELDS}&completed_since=${encodeURIComponent(midnight.toISOString())}`, ASANA_TOKEN);
-  const all = (raw || []).map(t => shapeTask(t, null)).filter(t => !t.completed)
-    // The Sidney tax litigation is handled externally (Monte James) — not an
-    // action item for this report, so drop any task naming both.
-    .filter(t => { const n = String(t.name || '').toLowerCase(); return !(n.includes('sidney') && n.includes('litigation')); })
-    // Most urgent first: soonest due date, tasks with no due date last.
-    .sort((a, b) => {
-      const ad = a.due_on || '', bd = b.due_on || '';
-      if (ad && bd) return ad.localeCompare(bd);
-      if (ad) return -1;
-      if (bd) return 1;
-      return 0;
-    });
-  return { configured: true, tasks: all.slice(0, 5), more: Math.max(0, all.length - 5) };
-}
-
 // 4 — Arturo's Task Manager items, open and flagged 🔴/🟡/🟢 (critical-first).
 //
 // SOURCE: data/tasks.json (TASKS_FILE) — the SAME store the Tasks tab (GET
@@ -12848,7 +12811,7 @@ async function mrAppFolioMentions() {
   return out.slice(0, 10);
 }
 
-function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, sopReview, errors }) {
+function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sopReview, errors }) {
   const L = [];
   L.push(`📋 *Lyndsay's Daily Activity Report — ${date}*`);
   L.push('');
@@ -12919,39 +12882,6 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   }
   L.push('');
 
-  L.push('*PENDING CRITICAL ASANA TASKS*');
-  if (errors.asana) L.push(`  ⚠ ${errors.asana}`);
-  else if (!asana.configured) L.push('  Asana not configured.');
-  else if (!asana.tasks.length) L.push('  No critical Asana tasks pending.');
-  else {
-    // English only. A Spanish TITLE means the task is skipped — there is no
-    // English version to fall back on, and translating it here would put words
-    // in somebody's mouth on the report that drives Lyndsay's day. Spanish
-    // NOTES against an English title lose the notes, not the task.
-    // This section is for what is waiting on LYNDSAY. Arturo's own tasks were
-    // filling it and then repeating verbatim in his list two sections down.
-    const hers = asana.tasks.filter(t => !mrIsArturosTask(t));
-    const mine = asana.tasks.length - hers.length;
-    const readable = hers.filter(t => !mrLooksSpanish(t.name));
-    const skipped = hers.length - readable.length;
-    readable.forEach(t => {
-      const notes = mrClean(t.notes_preview);
-      L.push(`  ${t.name}  |  Due: ${t.due_on || '—'}  |  ${(notes && !mrLooksSpanish(notes)) ? notes : '—'}  [Open]`);
-    });
-    // Why it is empty matters. The feed behind this section is Arturo's Asana
-    // "My Tasks", so once his tasks are filtered out there is nothing left to
-    // show — and printing a bare "none pending" would read as "Lyndsay has
-    // nothing", which is not what we know. We know we cannot see hers.
-    if (!readable.length) {
-      L.push(mine
-        ? `  Nothing here is waiting on Lyndsay — all ${mine} task${mine === 1 ? '' : 's'} in this feed are Arturo's (see his list below).`
-        : '  No critical Asana tasks pending.');
-    }
-    if (skipped) L.push(`  + ${skipped} task${skipped === 1 ? '' : 's'} not shown (written in Spanish) — see dashboard`);
-    if (readable.length && asana.more > 0) L.push(`  + ${asana.more} more task${asana.more === 1 ? '' : 's'} — see dashboard`);
-  }
-  L.push('');
-
   L.push('*PENDING APPFOLIO TASKS — LYNDSAY*');
   // @mention notifications first, then assigned-to-Lyndsay tasks.
   const mentions = appfolioMentions || [];
@@ -12998,10 +12928,9 @@ app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
     timeZone: LYNDSAY_TIMEZONE, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
   const errors = {};
-  const [mR, eR, aR, oR, fR, fmR, srR] = await Promise.allSettled([
+  const [mR, eR, oR, fR, fmR, srR] = await Promise.allSettled([
     GRAPH_CONFIGURED ? mrMeetings() : Promise.resolve([]),
     GRAPH_CONFIGURED ? mrEmails()   : Promise.resolve({}),
-    mrAsana(),
     mrOps(),   // reads data/tasks.json — no DB dependency
     mrAppFolio(),
     GRAPH_CONFIGURED ? mrAppFolioMentions() : Promise.resolve([]),
@@ -13013,14 +12942,13 @@ app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
   const droppedByGreeting = mrDroppedByGreeting.slice();
   const senderDiagnostic = mrSenderDiagnostic.slice();
   const emails   = eR.status === 'fulfilled' ? eR.value : (errors.emails   = mrReason(eR.reason), {});
-  const asana    = aR.status === 'fulfilled' ? aR.value : (errors.asana    = mrReason(aR.reason), { configured: true, tasks: [] });
   const ops      = oR.status === 'fulfilled' ? oR.value : (errors.ops      = mrReason(oR.reason), []);
   const appfolio = fR.status === 'fulfilled' ? fR.value : (errors.appfolio = mrReason(fR.reason), []);
   const appfolioMentions = fmR.status === 'fulfilled' ? fmR.value : (errors.appfolioMentions = mrReason(fmR.reason), []);
   const sopReview = srR.status === 'fulfilled' ? srR.value : (errors.sopReview = mrReason(srR.reason), null);
   if (!GRAPH_CONFIGURED) { errors.meetings = errors.emails = 'Microsoft Graph is not configured.'; }
 
-  const report = mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentions, sopReview, errors });
+  const report = mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sopReview, errors });
   res.json({ report, generatedAt: new Date().toISOString(), date, errors,
     allDay: allDayDiagnostic, droppedByGreeting, senderDiagnostic });
 });
