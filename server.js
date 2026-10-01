@@ -12101,10 +12101,24 @@ const MR_LYNDSAY_NAMES = ['lyndsay', 'lyndsey', 'lindsay', 'lindsey', 'linsay', 
 const MR_GREETING_GROUPS = ['all', 'team', 'everyone', 'everybody', 'there', 'folks', 'both',
   'partners', 'friends', 'ladies', 'gentlemen', 'sir', 'madam', 'group'];
 
+// A greeting with no "Hi": "Charles, Hope all is well!" — Andrew Dellinger's
+// usual opening, which read as no greeting at all and reached her list.
+//
+// Strict on purpose, because without a greeting word the only thing marking
+// this as a salutation is the shape: at the very start, one or two Capitalised
+// words, then a comma. "Thanks, the report is ready" is excluded by the
+// not-a-name list; "the attached, as discussed" fails the capital letter.
+//
+// "Lyndsay, ..." matches too, and that is correct — it is HER name, so the
+// caller keeps the email. The pattern finds who was greeted; it does not decide
+// anything on its own.
+const MR_BARE_NAME_RE = /^([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ'’-]+(?:\s+[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ'’-]+)?)\s*,/;
+
 // The names a greeting addresses, lowercased. [] when there is no greeting, or
 // when it names nobody in particular.
 function mrGreetedNames(body) {
-  const m = MR_GREETING_RE.exec(String(body || '').replace(/\s+/g, ' ').trim());
+  const clean = String(body || '').replace(/\s+/g, ' ').trim();
+  const m = MR_GREETING_RE.exec(clean) || MR_BARE_NAME_RE.exec(clean);
   if (!m) return [];
   return String(m[1] || '').replace(MR_TITLE_RE, '$1')
     .split(/\s*(?:[.,&]|\band\b|\by\b)\s*/i)
@@ -12150,7 +12164,13 @@ function mrLooksLikeName(token) {
 function mrAddressedToSomeoneElse(m) {
   const names = mrGreetedNames(m.bodyPreview).filter(mrLooksLikeName);
   if (!names.length) return false;                                   // no greeting, or no name: keep
-  if (names.some(n => MR_GREETING_GROUPS.includes(n))) return false; // to the room: keep
+  // To the room: keep. The last word is what decides, so "Metric Team" and
+  // "Ops Team" count the same as "Team" — the bare-name pattern makes these
+  // reachable, and "Metric Team, Please confirm receipt." (Andrew Dellinger) is
+  // addressed to everyone here, which includes her.
+  const isGroup = n => MR_GREETING_GROUPS.includes(n)
+    || MR_GREETING_GROUPS.includes(n.split(/\s+/).pop());
+  if (names.some(isGroup)) return false;
   // endsWith as well as startsWith, so "Ms. Hanes" and "Mrs Lyndsay" both count.
   if (names.some(n => MR_LYNDSAY_NAMES.some(l => n === l || n.startsWith(l) || n.endsWith(l)))) return false;
   return true;                                                       // names only other people
@@ -12220,6 +12240,40 @@ let mrSenderDiagnostic = [];
 // company event; anything else belongs to an outside party.
 const MR_INTERNAL_DOMAINS = ['metricpropertymanagement.com', 'livewithmetric.com'];
 const mrIsInternalAddress = a => MR_INTERNAL_DOMAINS.includes(String(a || '').toLowerCase().split('@')[1] || '');
+
+// Pending Critical Asana Tasks is Lyndsay's list, and the feed behind it is
+// Arturo's Asana "My Tasks" — so everything in it is his unless something says
+// otherwise. Assignee first; the title pattern catches the recurring report
+// tasks, which are about producing this very document.
+const MR_ARTURO_NAMES = ['arturo', 'arturo mendoza', 'mendoza'];
+const MR_ARTURO_TASK_RE = /^(?:lyndsay'?s daily morning report|morning report\b)/i;
+function mrIsArturosTask(t) {
+  const who = String(t?.assignee || '').trim().toLowerCase();
+  if (who && MR_ARTURO_NAMES.includes(who)) return true;
+  return MR_ARTURO_TASK_RE.test(String(t?.name || '').trim());
+}
+
+// Arturo's Pending Items goes into the High Ops group chat, so a line that
+// names an open security gap is read by the room. Start of the title only.
+const MR_OPS_PRIVATE_RE = /^security\b/i;
+
+// The same idea as mrOwnsAllDay, deliberately LOOSER.
+//
+// A timed meeting organized outside Metric that she has accepted IS on her day
+// — a partner's call at 2pm is a commitment in a way that accepting someone's
+// two-week trip is not. So accepted counts here whoever organized it, and only
+// tentative or unanswered external invitations are dropped. "Mexican Martinis w
+// Tanya", organized by Rocco Sirizzotti and never answered, is the case.
+//
+// Anything organized from a Metric address stays regardless of her reply: an
+// internal meeting she has not got round to answering is still her day.
+function mrOwnsTimed(m) {
+  const org = String(m.organizerEmail || '').toLowerCase();
+  if (org && org === String(MAILBOX_LYNDSAY).toLowerCase()) return true;
+  const r = String(m.response || '').toLowerCase();
+  if (r === 'organizer' || r === 'accepted') return true;
+  return mrIsInternalAddress(org);
+}
 
 function mrOwnsAllDay(m) {
   const org = String(m.organizerEmail || '').toLowerCase();
@@ -12437,6 +12491,17 @@ async function mrMeetings() {
         if (to && to > from) { if (!(from <= todayCT && todayCT < to)) return false; }
         else if (from !== todayCT) return false;
       } else if (ctDateOf(m.startIso) !== todayCT) return false;
+      else {
+        // Same question as the all-day rule asks, with a looser answer — see
+        // mrOwnsTimed. Logged either way, so a meeting that vanishes can be
+        // explained without reading the code.
+        const owns = mrOwnsTimed(m);
+        mrAllDayDiagnostic.push({
+          subject: m.subject, organizer: m.organizerEmail || m.organizer,
+          response: m.response || '(none returned)', kept: owns, timed: true,
+        });
+        if (!owns) return false;
+      }
       // Personal/private events: subject markers, "free" (not a real commitment),
       // or organized from a personal (non-Metric consumer) email account.
       const s = (m.subject || '').toLowerCase();
@@ -12863,15 +12928,27 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
     // English version to fall back on, and translating it here would put words
     // in somebody's mouth on the report that drives Lyndsay's day. Spanish
     // NOTES against an English title lose the notes, not the task.
-    const readable = asana.tasks.filter(t => !mrLooksSpanish(t.name));
-    const skipped = asana.tasks.length - readable.length;
+    // This section is for what is waiting on LYNDSAY. Arturo's own tasks were
+    // filling it and then repeating verbatim in his list two sections down.
+    const hers = asana.tasks.filter(t => !mrIsArturosTask(t));
+    const mine = asana.tasks.length - hers.length;
+    const readable = hers.filter(t => !mrLooksSpanish(t.name));
+    const skipped = hers.length - readable.length;
     readable.forEach(t => {
       const notes = mrClean(t.notes_preview);
       L.push(`  ${t.name}  |  Due: ${t.due_on || '—'}  |  ${(notes && !mrLooksSpanish(notes)) ? notes : '—'}  [Open]`);
     });
-    if (!readable.length) L.push('  No critical Asana tasks pending.');
+    // Why it is empty matters. The feed behind this section is Arturo's Asana
+    // "My Tasks", so once his tasks are filtered out there is nothing left to
+    // show — and printing a bare "none pending" would read as "Lyndsay has
+    // nothing", which is not what we know. We know we cannot see hers.
+    if (!readable.length) {
+      L.push(mine
+        ? `  Nothing here is waiting on Lyndsay — all ${mine} task${mine === 1 ? '' : 's'} in this feed are Arturo's (see his list below).`
+        : '  No critical Asana tasks pending.');
+    }
     if (skipped) L.push(`  + ${skipped} task${skipped === 1 ? '' : 's'} not shown (written in Spanish) — see dashboard`);
-    if (asana.more > 0) L.push(`  + ${asana.more} more task${asana.more === 1 ? '' : 's'} — see dashboard`);
+    if (readable.length && asana.more > 0) L.push(`  + ${asana.more} more task${asana.more === 1 ? '' : 's'} — see dashboard`);
   }
   L.push('');
 
@@ -12891,14 +12968,24 @@ function mrFormat({ date, meetings, emails, asana, ops, appfolio, appfolioMentio
   if (errors.ops) L.push(`  ⚠ ${errors.ops}`);
   else if (!ops.length) L.push('  No 🔴/🟡/🟢 items pending.');
   else {
-    const opsEn = ops.filter(o => !mrLooksSpanish(o.item));
-    const opsSkipped = ops.length - opsEn.length;
+    // The report is pasted into the High Ops group chat. A line beginning
+    // "Security —" tells a room of people which hole is still open and how it
+    // is worded in the backlog. The work stays on the dashboard; it just does
+    // not get announced. Title only, and only at the START — a task that
+    // merely mentions security in passing is unaffected.
+    const opsSafe = ops.filter(o => !MR_OPS_PRIVATE_RE.test(String(o.item || '').trim()));
+    const opsPrivate = ops.length - opsSafe.length;
+    const opsEn = opsSafe.filter(o => !mrLooksSpanish(o.item));
+    const opsSkipped = opsSafe.length - opsEn.length;
     opsEn.slice(0, 10).forEach(o => {
       const note = o.pending && !mrLooksSpanish(o.pending) ? mrCleanOpsNote(o.pending) : '';
       // A title on its own beats a title followed by an em dash and nothing.
       L.push(note ? `  ${o.priority}  ${o.item}  —  ${note}` : `  ${o.priority}  ${o.item}`);
     });
     if (!opsEn.length) L.push('  No 🔴/🟡/🟢 items pending.');
+    // Counted, not silent: the list says something is missing without saying
+    // what it is.
+    if (opsPrivate) L.push(`  + ${opsPrivate} security item${opsPrivate === 1 ? '' : 's'} not shown here — see dashboard`);
     if (opsSkipped) L.push(`  + ${opsSkipped} item${opsSkipped === 1 ? '' : 's'} not shown (written in Spanish) — see dashboard`);
     if (opsEn.length > 10) L.push(`  + ${opsEn.length - 10} more task${opsEn.length - 10 === 1 ? '' : 's'} — see dashboard`);
   }

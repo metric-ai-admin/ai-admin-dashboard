@@ -250,7 +250,11 @@ t('the rule is wired in, on the name as well as the address', () => {
 
 console.log('\nengineering detail stays out of her list');
 t('the ops notes are cleaned before they are shown', () => {
-  const render = src.slice(src.indexOf("ARTURO'S PENDING ITEMS LIST"), src.indexOf("ARTURO'S PENDING ITEMS LIST") + 900);
+  // To the end of the section, not a byte count: a fixed window silently stops
+  // covering the lines it checks as soon as anything is added above them.
+  const from = src.indexOf("ARTURO'S PENDING ITEMS LIST");
+  const render = src.slice(from, src.indexOf('return L.join', from));
+  assert.ok(render.length > 400 && render.length < 3000, `section looks wrong: ${render.length} chars`);
   assert.ok(/mrCleanOpsNote\(o\.pending\)/.test(render), 'notes are printed raw again');
   assert.ok(/note \?/.test(render), 'an empty note still prints a trailing dash');
 });
