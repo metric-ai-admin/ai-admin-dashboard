@@ -228,3 +228,36 @@ reporting week ends on the last Saturday of a month.
   that filter changes the occupancy projection.
 - **Deleting a tab removes its section** from the dashboard; some sections
   simply do not render rather than reporting the gap.
+
+## Appendix — where weekly move-outs come from (2026-10-01)
+
+`leasing_lease_history` is not the source. Probed on Render: 23 rows with
+`paginate_results` true *and* false, one page, **zero** `move_out` values. Not
+truncation — the report is lease-centric and does not populate that field.
+
+`unit_vacancy.last_move_out` is the source. For 09/20–09/26 it returns three
+move-outs and they are the same three the box score has, unit for unit:
+
+| Box score (Lyndsay's workbook) | `unit_vacancy.last_move_out` |
+|---|---|
+| Ascent at Northgate · 5-127 · 9/21 | Ascent at Northgate · 5-127 · 2026-09-21 |
+| Hyde Park Square · 107 · 9/23 | Hyde Park Square · 107 · 2026-09-23 |
+| iConic Round Rock · 106 · 9/25 | iConic Round Rock · 106 · 2026-09-25 |
+
+**The limit, and it is a real one.** `unit_vacancy` lists only units that are
+vacant or on notice *at the moment of the sync*. A unit that moves out and is
+re-occupied before the sync runs disappears from the report, and its move-out
+with it. All three above are still `Vacant-Unrented`, so nothing was lost this
+week — but the count is **move-outs still vacant**, not **move-outs**, and the
+two diverge exactly when leasing is doing well.
+
+Mitigations, in order of how much they cost: snapshot `unit_vacancy` weekly as
+we now do for occupancy, so a unit that re-rents later is still recorded;
+or keep the box score as the authority for this one number.
+
+**There is no box score in the Reports API.** `box_score`, `move_out` and
+`move_ins_move_outs` all answer "Id is not a valid report", and our catalogue
+in `appfolio-reports.js` has no alias for it. The workbook's box score sheet
+carries a saved-report id (`344b8651-11f1-11f1`), but the v2 API addresses
+reports by name, not by saved-report id, so that id is not a way in. Worth one
+more probe of a catalogue endpoint before concluding it is unreachable.
