@@ -14006,6 +14006,87 @@ async function leasingWeekSnapshot(db, todayCT) {
   return { weeks: payload.length, moved, deleted };
 }
 
+// ── Weekly occupancy snapshot ───────────────────────────────────────────────
+// leasing_occupancy is keyed on property_name and overwritten by its own sync,
+// so it only ever holds the day it last ran. The KPI comparison wanted 09/26
+// and the table held 09/16 and 09/28; four properties' occupied counts
+// differed from Lyndsay's report for that reason and no other.
+//
+// This copies it into leasing_occupancy_history once a week, filed under the
+// Saturday it describes.
+//
+// SUNDAY, NOT SATURDAY. The capture runs the morning after the week closes, so
+// it records a Saturday that is finished rather than one still in progress. The
+// row is still filed under the Saturday: as_of is the day being described, not
+// the day the writer ran, and keying it on the write date would file every
+// week one day late.
+const OCC_SNAPSHOT_TABLE = 'leasing_occupancy_history';
+
+// The Saturday that just ended, from a YYYY-MM-DD "today". Sunday -> yesterday;
+// any other day -> the most recent Saturday, so a manual run on a Tuesday still
+// captures the week that closed rather than refusing.
+function occSnapshotAsOf(todayYMD) {
+  const d = new Date(todayYMD + 'T00:00:00Z');
+  if (isNaN(d.getTime())) throw new Error('occSnapshotAsOf needs YYYY-MM-DD, got ' + todayYMD);
+  const back = (d.getUTCDay() + 1) % 7 || 7;   // Sun->1, Mon->2, ... Sat->7
+  d.setUTCDate(d.getUTCDate() - back);
+  return d.toISOString().slice(0, 10);
+}
+
+// Reads leasing_occupancy and writes one history row per property. Returns a
+// summary rather than throwing on a missing table: a snapshot that cannot be
+// taken must not take the leasing sync down with it.
+async function captureOccupancySnapshot(asOf) {
+  if (!CRM_CONFIGURED) return { skipped: 'supabase not configured' };
+  const db = supabaseAdmin || supabasePublic;
+  const { data: rows, error } = await db.from('leasing_occupancy')
+    .select('property_name,property_id,total_units,occupied_units,vacant_rented,notice_units,as_of');
+  if (error) return { error: 'read leasing_occupancy: ' + error.message };
+  if (!rows || !rows.length) return { captured: 0, note: 'leasing_occupancy is empty' };
+
+  // What the source says about itself. If its own as_of is not the Saturday
+  // being filed, the numbers are from another day and the row would be a
+  // quiet lie — recorded either way, so the discrepancy is visible later.
+  const sourceAsOf = [...new Set(rows.map(r => String(r.as_of || '').slice(0, 10)).filter(Boolean))].sort();
+
+  const now = new Date().toISOString();
+  const payload = rows
+    .filter(r => r.property_name)
+    .map(r => {
+      const units = Number(r.total_units) || 0;
+      const occ = Number(r.occupied_units) || 0;
+      return {
+        as_of: asOf,
+        property_name: r.property_name,
+        property_id: r.property_id == null ? null : String(r.property_id),
+        total_units: units,
+        occupied_units: occ,
+        vacant_rented: Number(r.vacant_rented) || 0,
+        notice_units: Number(r.notice_units) || 0,
+        // Stored per property for convenience. The PORTFOLIO percentage is
+        // never the average of these — it is sum(occupied)/sum(units), which
+        // is why both components are stored and not just the ratio.
+        occupancy_pct: units > 0 ? Number((occ / units).toFixed(4)) : null,
+        captured_at: now,
+      };
+    });
+
+  const { error: wErr } = await db.from(OCC_SNAPSHOT_TABLE)
+    .upsert(payload, { onConflict: 'as_of,property_name' });
+  if (wErr) {
+    if (/leasing_occupancy_history/.test(wErr.message)) {
+      return { error: 'table missing — run supabase/migrations/072_leasing_occupancy_history.sql' };
+    }
+    return { error: 'write: ' + wErr.message };
+  }
+  return {
+    captured: payload.length,
+    asOf,
+    sourceAsOf,
+    stale: sourceAsOf.length === 1 && sourceAsOf[0] !== asOf ? sourceAsOf[0] : null,
+  };
+}
+
 async function leasingCronSync() {
   const todayCT = ctDateStr(0);
   const fromCT = (() => {
@@ -14067,6 +14148,15 @@ app.post('/api/leasing/sync/run-now', requireMetricAccess, async (req, res) => {
 
 cron.schedule('30 5 * * *', () => {
   if (!CRM_CONFIGURED) return;
+  // Sunday only: capture the Saturday that just closed, before the sync below
+  // overwrites leasing_occupancy with today's numbers. Order matters — the
+  // snapshot reads what is there now, not what the sync is about to put there.
+  const todayCT = WEEK.toChicagoYMD(new Date());
+  if (new Date(todayCT + 'T00:00:00Z').getUTCDay() === 0) {
+    captureOccupancySnapshot(occSnapshotAsOf(todayCT))
+      .then(r => logLine('[occ-snapshot] ' + JSON.stringify(r)))
+      .catch(e => logLine('[occ-snapshot] FAILED: ' + e.message));
+  }
   leasingCronSync()
     .then(s => logLine(`[leasing-sync] ${s.received} received, ${s.in_range} in range, `
       + `${s.out_of_range} outside ${s.date_from}..${s.date_to}, ${s.seen} stamped (source=${s.source})`))
