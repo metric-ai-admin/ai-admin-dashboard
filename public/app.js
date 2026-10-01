@@ -10498,7 +10498,7 @@ async function loadRegional(force) {
 
 function renderRegional() {
   if (!rpData) return;
-  const { cards, totals, funnel, syncedAt } = rpData;
+  const { cards, totals, funnel, syncedAt, weekConvention } = rpData;
 
   document.getElementById('rp-sub').innerHTML =
     `${totals.properties} properties · data from AppFolio ${rpEsc(rpWhen(syncedAt && syncedAt.vacancy))}`
@@ -10524,7 +10524,14 @@ function renderRegional() {
         <thead><tr><th>Stage</th><th>This week</th><th>Last week</th><th>Change</th></tr></thead>
         <tbody>${row('Traffic', 'traffic', true)}${row('Tours', 'tours', true)}${row('Applications', 'applications', true)}${row('Approved', 'approved', true)}${row('Move-ins', 'moveIns', true)}</tbody>
       </table></div>
-      <p class="rp-note">This week is ${rpEsc(funnel.range.thisWeek[0])} to ${rpEsc(funnel.range.thisWeek[1])} (Mon–Sun) and is still in progress, so a lower count than last week is expected mid-week.</p>`;
+      <p class="rp-note">This week is ${rpEsc(funnel.range.thisWeek[0])} to ${rpEsc(funnel.range.thisWeek[1])}${
+        // The convention the server built those dates with, never typed here.
+        // It said "(Mon–Sun)" beside Sun–Sat dates for two days after Phase 3.
+        // MetricWeek.DASHBOARD.name is the fallback for a cached response from
+        // before the field existed; it is the same value by construction.
+        rpEsc(weekConvention || MetricWeek.DASHBOARD.name)
+          ? ` (${rpEsc(weekConvention || MetricWeek.DASHBOARD.name)})` : ''
+      } and is still in progress, so a lower count than last week is expected mid-week.</p>`;
   }
 
   document.getElementById('rp-cards').innerHTML = cards.length

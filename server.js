@@ -3936,8 +3936,9 @@ app.get('/api/email/auto-move/log', requireMetricAdmin, async (req, res) => {
     if (sErr) throw new Error(sErr.message);
     const ctDate = d => new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date(d));
     const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date());
-    // Mon–Sun, in Central time. WEEK.DASHBOARD is the convention every
-    // non-leasing surface uses; Phase 3 flips it in one place.
+    // WEEK.DASHBOARD, in Central time — Sun–Sat since Phase 3 (2026-09-30).
+    // Named rather than spelled out, so this cannot go stale the way the
+    // pipeline label did.
     const weekStartStr = WEEK.weekStartYMD(todayStr, WEEK.DASHBOARD);
     for (const r of (moved || [])) {
       const d = ctDate(r.executed_at);
@@ -5236,12 +5237,14 @@ app.get('/api/regional/performance', requireAuth, requireRole(...DECISION_QUEUE_
       return all;
     };
 
-    // Mon–Sun weeks. The comment here used to claim this matched "the leasing
-    // convention agreed on 2026-09-21" — it did once, but leasing moved to
-    // Sun–Sat on 2026-09-28 (migration 064) and this did not follow. It is
-    // Mon–Sun because WEEK.DASHBOARD is, and Phase 3 moves both together.
+    // Whatever WEEK.DASHBOARD says — Sun–Sat since Phase 3 (2026-09-30).
+    // This comment has been wrong twice: it claimed to match "the leasing
+    // convention agreed on 2026-09-21" after leasing had moved on without it,
+    // and it said Mon–Sun after Phase 3 moved this. The name is no longer
+    // written down anywhere a reader can see; the response carries
+    // WEEK.DASHBOARD.name so the label cannot drift from the dates again.
     const todayCT = WEEK.toChicagoYMD(new Date());
-    const monday = WEEK.weekStartYMD(todayCT, WEEK.DASHBOARD);
+    const weekStart = WEEK.weekStartYMD(todayCT, WEEK.DASHBOARD);
 
     const [vac, del, wos, leads, showings, applications, moveIns] = await Promise.all([
       af.readReportData('unit_vacancy'),
@@ -5260,12 +5263,19 @@ app.get('/api/regional/performance', requireAuth, requireRole(...DECISION_QUEUE_
     }, {
       today: todayCT,
       isExcludedProperty: propertyIsExcluded,
-      weekStart: monday, weekEnd: WEEK.addDaysYMD(monday, 6),
-      prevStart: WEEK.addDaysYMD(monday, -7), prevEnd: WEEK.addDaysYMD(monday, -1),
+      weekStart, weekEnd: WEEK.addDaysYMD(weekStart, 6),
+      prevStart: WEEK.addDaysYMD(weekStart, -7), prevEnd: WEEK.addDaysYMD(weekStart, -1),
     });
 
     res.json({
       ...result,
+      // The name of the convention the ranges above were actually built with,
+      // sent rather than looked up again in the browser. The pipeline note read
+      // "(Mon–Sun)" as a hand-typed string and stayed Mon–Sun after Phase 3
+      // moved the dates to Sun–Sat, so the label contradicted the dates beside
+      // it. Travelling with the data is the only version that cannot drift: if
+      // this week is ever pinned to a different convention, the label follows.
+      weekConvention: WEEK.DASHBOARD.name,
       // Per-source freshness, so a stale card is visibly stale rather than wrong.
       syncedAt: {
         vacancy: (vac && vac.fetchedAt) || null,
@@ -6205,8 +6215,11 @@ const leasingCentralDay = ts => {
 // occupancy. Powers the native Portfolio Roll-Up.
 //
 //   ?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD   any span of days, shown exactly
-//   ?week_ending=YYYY-MM-DD                    the Mon–Sun week ending that day
-//   (neither)                                  the last COMPLETE Mon–Sun week
+//   ?week_ending=YYYY-MM-DD                    the week ENDING that day
+//   (neither)                                  the last COMPLETE leasing week
+//
+// Leasing weeks are Sun–Sat, so week_ending is a SATURDAY — this came from
+// leasingLastCompleteWeekEnding() all along, and the comment said Mon–Sun.
 //
 // Leads are filtered on interest_received, the real event time, NOT on the
 // derived week_ending column — so an arbitrary range is exact rather than
@@ -13386,7 +13399,7 @@ async function eodGather() {
   } catch (e) { S.maintenance = { error: e.message }; }
 
   // 6 — BD CRM: (1) weekly activity by agent (this week per WEEK.DASHBOARD,
-  // Mon–Sun today, by created_at), (2) hot properties (top score, no contact in
+  // Sun–Sat since Phase 3, by created_at), (2) hot properties (top score, no contact in
   // 7+ days), (3) overdue tasks.
   try {
     const weekStart = WEEK.weekStartYMD(today, WEEK.DASHBOARD);
@@ -13750,7 +13763,7 @@ function eodRenderHtml(data) {
     b6.error ? eodErr(b6.error)
       : `This week — ${b6ag.phoneTotal || 0} phone · ${b6ag.onlineTotal || 0} online · ${b6ag.dmTotal || 0} DM reviews`,
     b6.error ? '' :
-      `<div style="font-weight:600;font-size:12px;margin:8px 0 2px;color:${EOD.text}">Weekly Activity by Agent (Mon–Sun)</div>`
+      `<div style="font-weight:600;font-size:12px;margin:8px 0 2px;color:${EOD.text}">Weekly Activity by Agent (${WEEK.DASHBOARD.name})</div>`
       + eodTable(['Type', 'By agent', 'Total'], [
           ['Phone shops', agLine(b6ag.phone), b6ag.phoneTotal || 0],
           ['Online shops', agLine(b6ag.online), b6ag.onlineTotal || 0],
