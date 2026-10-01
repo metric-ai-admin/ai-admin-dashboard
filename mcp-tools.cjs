@@ -343,7 +343,7 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
 
   server.registerTool('get_lyndsay_folders', {
     title: "List the folders in Lyndsay's mailbox",
-    description: "Lists every folder in Lyndsay's mailbox (or Arturo's) with its unread and total counts. Use it to discover which folders exist (Lyndsay Review, Need to File, Rhoxie To Do, Client Emails, and so on) before reading a specific one with get_lyndsay_folder_emails.",
+    description: "Lists every folder in Lyndsay's mailbox (or Arturo's) with its id, its parent folder, and its unread and total counts. Use it to discover which folders exist (Lyndsay Review, Need to File, Rhoxie To Do, Client Emails, and so on) before reading a specific one with get_lyndsay_folder_emails.\n\nNames are NOT unique — \"Unsubscribe Needed\" exists both at the root and under Inbox. The `parent` field tells them apart and `id` is what get_lyndsay_folder_emails needs to read exactly one of them.",
     inputSchema: {
       mailbox: z.enum(['lyndsay', 'arturo', 'both']).optional().describe('Which mailbox to list. Defaults to lyndsay'),
     },
@@ -351,16 +351,21 @@ function registerAllTools(server, { BASE, getJSON, doFetch, text }) {
 
   server.registerTool('get_lyndsay_folder_emails', {
     title: 'Read mail from a specific folder',
-    description: "Reads mail from one specific folder in Lyndsay's mailbox (or Arturo's) — not just the Inbox. Use the folder name exactly as get_lyndsay_folders returns it (e.g. \"Need to File\", \"Lyndsay Review\", \"Rhoxie To Do\"). Read-only.",
+    description: "Reads mail from one specific folder in Lyndsay's mailbox (or Arturo's) — not just the Inbox. Use the folder name exactly as get_lyndsay_folders returns it (e.g. \"Need to File\", \"Lyndsay Review\", \"Rhoxie To Do\"). Read-only.\n\nTwo folders can share a name: Lyndsay has \"Unsubscribe Needed\" at the root (empty) and again under Inbox (where the mail actually is). When a name is ambiguous this returns an error listing every candidate with its parent, its message count and its id — retry with folder_id, which get_lyndsay_folders gives you for every folder.",
     inputSchema: {
-      folder_name: z.string().describe('Exact folder name, e.g. "Need to File", "Lyndsay Review", "Rhoxie To Do"'),
+      folder_name: z.string().optional().describe('Exact folder name, e.g. "Need to File", "Lyndsay Review", "Rhoxie To Do". Ignored when folder_id is given'),
+      folder_id: z.string().optional().describe("The folder's id from get_lyndsay_folders. Exact, and the way to resolve two folders sharing a name"),
       mailbox: z.enum(['lyndsay', 'arturo']).optional().describe('Which mailbox the folder belongs to. Defaults to lyndsay'),
       limit: z.number().optional().describe('Maximum emails to return. Defaults to 25'),
       unread_only: z.boolean().optional().describe('If true, returns only unread mail. Defaults to false'),
     },
-  }, async ({ folder_name, mailbox, limit, unread_only } = {}) => {
+  }, async ({ folder_name, folder_id, mailbox, limit, unread_only } = {}) => {
+    if (!folder_name && !folder_id) {
+      return text({ error: 'Give folder_name or folder_id. get_lyndsay_folders lists both.' });
+    }
     const params = new URLSearchParams();
-    params.set('folder', folder_name);
+    if (folder_id) params.set('folder_id', folder_id);
+    if (folder_name) params.set('folder', folder_name);
     params.set('mailbox', mailbox || 'lyndsay');
     params.set('limit', String(limit || 25));
     if (unread_only) params.set('unread', 'true');

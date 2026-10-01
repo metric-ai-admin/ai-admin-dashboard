@@ -2689,12 +2689,36 @@ async function listMailFolders(mailboxKey, token) {
 // expects. "Inbox" is a well-known name Graph resolves on its own; any other
 // folder (Lyndsay Review, Need to File, Rhoxie To Do, ...) must be looked up
 // by displayName first since Graph won't resolve arbitrary names in the path.
-async function resolveFolderPath(mailboxKey, token, folderName) {
+// A folder id, when the caller has one, is the only unambiguous way to say
+// which folder it means — and it skips the whole tree walk.
+async function resolveFolderPath(mailboxKey, token, folderName, folderId) {
+  if (folderId) return String(folderId);
   if (!folderName || folderName.toLowerCase() === 'inbox') return 'inbox';
   const folders = await listMailFolders(mailboxKey, token);
-  const match = folders.find(f => (f.displayName || '').toLowerCase() === folderName.toLowerCase());
-  if (!match) throw new Error(`Folder "${folderName}" not found`);
-  return match.id;
+  const matches = folders.filter(f => (f.displayName || '').toLowerCase() === folderName.toLowerCase());
+  if (!matches.length) throw new Error(`Folder "${folderName}" not found`);
+  // Two folders can share a name. Lyndsay has "Unsubscribe Needed" twice — one
+  // at the root, empty, and one under Inbox with the 18 messages in it — and
+  // .find() returned whichever Graph listed first, so reading the folder gave
+  // an empty result that looked like an answer.
+  //
+  // Refusing to guess, rather than guessing better: picking the fuller one
+  // would be right today and wrong the first time the empty one fills up. The
+  // error carries every candidate with its parent, its count and its id, so
+  // the caller can retry with folder_id and get exactly what it asked for.
+  if (matches.length > 1) {
+    const e = new Error(
+      `Folder "${folderName}" is ambiguous — ${matches.length} folders share that name. `
+      + 'Retry with folder_id. Candidates: '
+      + matches.map(f => `"${f.parentName ? f.parentName + '/' : ''}${f.displayName}" `
+        + `(${f.totalItemCount ?? '?'} messages, ${f.unreadItemCount ?? '?'} unread, id ${f.id})`).join('; '));
+    e.ambiguous = matches.map(f => ({
+      id: f.id, name: f.displayName, parent: f.parentName || null,
+      totalCount: f.totalItemCount, unreadCount: f.unreadItemCount,
+    }));
+    throw e;
+  }
+  return matches[0].id;
 }
 
 // Lists all mail folders (with unread/total counts) for a mailbox — lets
@@ -2783,6 +2807,8 @@ app.get('/api/email/inbox', requireMetricAccess, async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
   const unreadOnly = req.query.unread === 'true';
   const folder = req.query.folder || 'Inbox';
+  // Wins over `folder` when both are given: an id is exact and a name is not.
+  const folderId = req.query.folder_id || '';
   const targets = mailboxParam === 'both' ? ['lyndsay', 'arturo'] : [mailboxParam];
   const select = 'id,subject,sender,from,receivedDateTime,isRead,hasAttachments,bodyPreview,importance';
 
@@ -2802,9 +2828,13 @@ app.get('/api/email/inbox', requireMetricAccess, async (req, res) => {
     const headers = { Authorization: `Bearer ${token}` };
     let folderPath;
     try {
-      folderPath = await resolveFolderPath(key, token, folder);
+      folderPath = await resolveFolderPath(key, token, folder, folderId);
     } catch (err) {
-      perMailbox[key] = { error: err.message };
+      // The candidate list travels with the error, so a caller hitting an
+      // ambiguous name gets the ids it needs to retry in the same response.
+      perMailbox[key] = err.ambiguous
+        ? { error: err.message, ambiguous: err.ambiguous }
+        : { error: err.message };
       continue;
     }
     const filterPart = unreadOnly ? '&$filter=isRead eq false' : '';
@@ -2814,7 +2844,7 @@ app.get('/api/email/inbox', requireMetricAccess, async (req, res) => {
       const json = await r.json().catch(() => ({}));
       if (!r.ok) { perMailbox[key] = { error: json.error?.message || `Graph error ${r.status}` }; continue; }
       const emails = (json.value || []).map(m => shapeInboxMessage(m, key));
-      perMailbox[key] = { count: emails.length, emails, folder };
+      perMailbox[key] = { count: emails.length, emails, folder, folderId: folderPath };
     } catch (err) {
       perMailbox[key] = { error: err.message };
     }
