@@ -57,8 +57,9 @@ const CRON = server.slice(server.indexOf("cron.schedule('30 5 * * *'"),
   server.indexOf("cron.schedule('30 5 * * *'") + 1200);
 t('it runs on Sundays only', () => {
   assert.ok(/getUTCDay\(\) === 0/.test(CRON), 'the Sunday guard is gone — it would run daily');
-  assert.ok(/captureOccupancySnapshot\(occSnapshotAsOf\(todayCT\)\)/.test(CRON),
+  assert.ok(/const satur = occSnapshotAsOf\(todayCT\);/.test(CRON),
     'the capture does not derive its date from today');
+  assert.ok(/captureOccupancySnapshot\(satur\)/.test(CRON));
 });
 t('it captures BEFORE the sync overwrites the source', () => {
   // leasingCronSync replaces leasing_occupancy. Snapshotting after it would
@@ -107,6 +108,55 @@ t('it says when the source was from another day', () => {
 t('a missing table is reported, not thrown', () => {
   assert.ok(/072_leasing_occupancy_history\.sql/.test(W),
     'a missing table gives no hint about which migration to run');
+});
+
+console.log('\nthe unit_vacancy snapshot');
+// unit_vacancy.last_move_out is the only source we have for weekly move-outs,
+// and the report drops a unit as soon as it is re-rented — so the week it
+// emptied has to be written down while it is still on the report.
+const UV = server.slice(server.indexOf('async function captureUnitVacancySnapshot('),
+  server.indexOf('async function leasingCronSync('));
+
+t('both snapshots share one Saturday', () => {
+  // Deriving it twice could disagree at a DST boundary and file the two halves
+  // of one week under different days.
+  assert.ok(/captureUnitVacancySnapshot\(satur\)/.test(CRON),
+    'the unit_vacancy capture is missing or uses its own date');
+});
+t('a failure in one does not cost the other', () => {
+  // Two promises, not a chain. If occupancy throws, the move-outs still get
+  // recorded — and this is the week they would otherwise be lost for.
+  const i = CRON.indexOf('captureOccupancySnapshot(satur)');
+  const j = CRON.indexOf('captureUnitVacancySnapshot(satur)');
+  assert.ok(i > 0 && j > i);
+  assert.ok(/\[uv-snapshot\] FAILED/.test(CRON), 'the unit_vacancy capture has no catch');
+});
+t('it reads the stored report, never triggers a fresh sync', () => {
+  // A Sunday-morning snapshot should record what the week ended with; a sync
+  // here would cost a round trip and race the one that runs next.
+  assert.ok(/readReportData\('unit_vacancy'\)/.test(UV), 'it does not read the saved report');
+  assert.ok(!/syncReport|appfolioReportsFetch/.test(UV), 'it triggers a sync of its own');
+});
+t('it de-duplicates by unit before writing', () => {
+  // The table is unique on (as_of, property, unit), and a duplicate inside one
+  // batch fails the WHOLE upsert rather than one row — losing the week.
+  assert.ok(/seen\.has\(key\)/.test(UV), 'a repeated unit would break the whole batch');
+  assert.ok(/onConflict: 'as_of,property_name,unit'/.test(UV), 'a re-run would duplicate the week');
+});
+t('it reports how many move-outs it captured for that week', () => {
+  // For 2026-09-26 this should read 3: Ascent 5-127, Hyde Park 107,
+  // iConic Round Rock 106 — the three in Lyndsay's box score.
+  assert.ok(/moveOutsThatWeek/.test(UV), 'the log says nothing about what was captured');
+  assert.ok(/WEEK\.addDaysYMD\(asOf, -6\)/.test(UV), 'the week window is not the Sunday before asOf');
+});
+t('only real dates are stored in last_move_out', () => {
+  // It is the column the whole table exists for; a malformed value kept as a
+  // string would make a week silently uncountable.
+  assert.ok(/ymd = v =>/.test(UV), 'dates are not validated');
+  assert.ok(/last_move_out: ymd\(r\.last_move_out\)/.test(UV));
+});
+t('a missing table names its migration instead of throwing', () => {
+  assert.ok(/074_unit_vacancy_history\.sql/.test(UV));
 });
 
 console.log('\nnothing user-facing changed');

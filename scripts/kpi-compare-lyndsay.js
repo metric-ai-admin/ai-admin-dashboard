@@ -42,11 +42,17 @@ const canon = K.canonicalProperty;
 // table made eleven of the forty-three "differences" noise that buried the ones
 // that matter. Excluded by name, with the reason, so adding one back is a
 // visible decision rather than a silent widening of scope.
-const NOT_IN_HER_REPORT = new Set(['Brazos Lofts', 'Cedar and Sage', '513 Wolf Ridge']);
+const NOT_IN_HER_REPORT = new Map([
+  ['Brazos Lofts',    'not in her workbook'],
+  ['Cedar and Sage',  'not in her workbook'],
+  ['513 Wolf Ridge',  'not in her workbook'],
+  ['Live With Metric', 'the corporate entity, not a managed property'],
+  ['The Sidney',      'under assignment'],
+]);
 const inScope = name => {
   if (NOT_IN_HER_REPORT.has(name)) return false;
   // "513 Wolf Ridge Georgetown, TX 78628" is one property under a long name.
-  for (const skip of NOT_IN_HER_REPORT) if (String(name).startsWith(skip)) return false;
+  for (const skip of NOT_IN_HER_REPORT.keys()) if (String(name).startsWith(skip)) return false;
   return true;
 };
 const rowsOf = (wb, name) => {
@@ -176,8 +182,15 @@ function explain(metric, h, o, ctx) {
   const all = [...new Set(Object.keys(H).concat(Object.keys(O.byProperty)))].sort();
   const props = all.filter(inScope);
   const skipped = all.filter(p => !inScope(p));
-  if (skipped.length) console.log(`Out of scope (not in her workbook): ${skipped.join(', ')}
-`);
+  if (skipped.length) {
+    console.log('Out of scope:');
+    skipped.forEach(p2 => {
+      const why = NOT_IN_HER_REPORT.get(p2)
+        || [...NOT_IN_HER_REPORT.entries()].find(([k]) => String(p2).startsWith(k))?.[1] || '';
+      console.log(`   ${p2}  —  ${why}`);
+    });
+    console.log('');
+  }
 
   const fmt = v => v === null || v === undefined ? '—'
     : (typeof v === 'number' && !Number.isInteger(v) ? (v * 100).toFixed(1) + '%' : String(v));

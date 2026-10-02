@@ -14171,6 +14171,82 @@ async function captureOccupancySnapshot(asOf) {
   };
 }
 
+// Weekly snapshot of unit_vacancy, for the move-outs it will stop reporting.
+//
+// unit_vacancy.last_move_out is the only source we have for weekly move-outs:
+// lease_history returns zero move_out values, and there is no box score in the
+// Reports API. Checked against Lyndsay's workbook for 09/20-09/26 it matched
+// unit for unit, all three.
+//
+// WHAT IT LOSES WITHOUT THIS. The report lists only units vacant or on notice
+// AT THE MOMENT OF THE SYNC. A unit that moves out and is re-occupied before
+// the next sync drops off the report and takes its move-out with it, so the
+// live report counts "move-outs still vacant" rather than "move-outs". The two
+// diverge exactly when leasing is going well.
+//
+// Same Saturday rule as the occupancy snapshot: as_of is the day described,
+// never the day the writer ran.
+const UV_SNAPSHOT_TABLE = 'unit_vacancy_history';
+
+async function captureUnitVacancySnapshot(asOf) {
+  if (!CRM_CONFIGURED) return { skipped: 'supabase not configured' };
+  // The saved-report store on disk, the same copy the Regional Performance
+  // card reads. Not a fresh AppFolio call: a snapshot taken at 5:30 on Sunday
+  // should record what the week ended with, and firing another sync here would
+  // both cost a round trip and race the one that runs next.
+  let rows;
+  try {
+    const af = require('./appfolio-reports.js');
+    const data = await af.readReportData('unit_vacancy');
+    rows = (data && data.rows) || (Array.isArray(data) ? data : null);
+  } catch (e) { return { error: 'read unit_vacancy: ' + e.message }; }
+  if (!rows || !rows.length) return { captured: 0, note: 'unit_vacancy store is empty' };
+
+  const ymd = v => {
+    const s = String(v || '').slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  };
+  const now = new Date().toISOString();
+  const seen = new Set();
+  const payload = [];
+  for (const r of rows) {
+    const property = r.property_name || r.property;
+    const unit = r.unit == null ? '' : String(r.unit).trim();
+    if (!property || !unit) continue;
+    // The table is unique on (as_of, property, unit); a duplicate inside one
+    // batch would make the whole upsert fail rather than one row.
+    const key = property + '|' + unit;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    payload.push({
+      as_of: asOf,
+      property_name: String(property),
+      property_id: r.property_id == null ? null : String(r.property_id),
+      unit: unit,
+      unit_status: r.unit_status == null ? null : String(r.unit_status),
+      last_move_out: ymd(r.last_move_out),
+      last_move_in: ymd(r.last_move_in),
+      days_vacant: Number.isFinite(Number(r.days_vacant)) ? Number(r.days_vacant) : null,
+      captured_at: now,
+    });
+  }
+
+  const db = supabaseAdmin || supabasePublic;
+  const { error } = await db.from(UV_SNAPSHOT_TABLE)
+    .upsert(payload, { onConflict: 'as_of,property_name,unit' });
+  if (error) {
+    if (/unit_vacancy_history/.test(error.message)) {
+      return { error: 'table missing — run supabase/migrations/074_unit_vacancy_history.sql' };
+    }
+    return { error: 'write: ' + error.message };
+  }
+  // The number worth reading in the log: how many of these actually moved out
+  // during the week being filed. For 2026-09-26 it should be 3.
+  const weekStart = WEEK.addDaysYMD(asOf, -6);
+  const moveOuts = payload.filter(p => p.last_move_out && p.last_move_out >= weekStart && p.last_move_out <= asOf);
+  return { captured: payload.length, asOf, moveOutsThatWeek: moveOuts.length };
+}
+
 async function leasingCronSync() {
   const todayCT = ctDateStr(0);
   const fromCT = (() => {
@@ -14237,9 +14313,15 @@ cron.schedule('30 5 * * *', () => {
   // snapshot reads what is there now, not what the sync is about to put there.
   const todayCT = WEEK.toChicagoYMD(new Date());
   if (new Date(todayCT + 'T00:00:00Z').getUTCDay() === 0) {
-    captureOccupancySnapshot(occSnapshotAsOf(todayCT))
+    const satur = occSnapshotAsOf(todayCT);
+    captureOccupancySnapshot(satur)
       .then(r => logLine('[occ-snapshot] ' + JSON.stringify(r)))
       .catch(e => logLine('[occ-snapshot] FAILED: ' + e.message));
+    // Independent of the one above: a failure in either must not cost the
+    // other, so they are two promises rather than a chain.
+    captureUnitVacancySnapshot(satur)
+      .then(r => logLine('[uv-snapshot] ' + JSON.stringify(r)))
+      .catch(e => logLine('[uv-snapshot] FAILED: ' + e.message));
   }
   leasingCronSync()
     .then(s => logLine(`[leasing-sync] ${s.received} received, ${s.in_range} in range, `
