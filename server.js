@@ -455,6 +455,65 @@ app.get('/ping', (req, res) => {
   res.json({ ok: true, ts: Date.now(), uptime: Math.round(process.uptime()) });
 });
 
+// ---- Activity log ----------------------------------------------------------
+// Who used the dashboard and what they changed. Phase 1: login, logout, and
+// authenticated writes. The rules live in lib/activity-log.js; this is the I/O
+// and the wiring.
+//
+// IT MUST NEVER AFFECT THE USER'S ACTION. activityLog.log() is synchronous,
+// returns nothing and cannot throw, so no route can wait on it or fail because
+// of it. The queue is bounded at 500 rows and DROPS on failure rather than
+// growing — losing an audit row is annoying, an unbounded queue is an outage.
+const ACT = require('./lib/activity-log.js');
+
+const activityLog = ACT.createLogger(async rows => {
+  if (!CRM_CONFIGURED) throw new Error('supabase not configured');
+  const db = supabaseAdmin || supabasePublic;
+  const { error } = await db.from('activity_log').insert(rows);
+  if (error) throw new Error(error.message);
+}, {
+  onError: (err, dropped) => {
+    // Counted and logged, never retried. A missing table says which migration
+    // to run instead of repeating an opaque failure every ten seconds.
+    const hint = /activity_log/.test(err.message)
+      ? ' — run supabase/migrations/073_activity_log.sql' : '';
+    logLine(`[activity-log] dropped ${dropped} row(s): ${err.message}${hint}`);
+  },
+});
+
+// Identity straight off the verified JWT. Never off a header or the body,
+// which the caller controls.
+function activityActor(req) {
+  const u = req.user;
+  if (!u || !u.email) return null;
+  return { user_email: u.email, user_name: u.name || null, user_role: u.role || null };
+}
+
+// Every authenticated write, recorded after the response is on its way out.
+// Mounted AFTER requireAuth has run on the routes that have it, so req.user is
+// populated; a request with no session records nothing, which is correct — an
+// API-key call is not a person.
+function activityWriteLogger(req, res, next) {
+  if (!/^(POST|PUT|PATCH|DELETE)$/.test(req.method)) return next();
+  res.on('finish', () => {
+    // on('finish') fires after the bytes are sent: nothing here is in the
+    // user's critical path, and an exception cannot reach their request.
+    try {
+      const who = activityActor(req);
+      if (!who) return;
+      activityLog.log({
+        ...who,
+        event: 'write',
+        section: ACT.sectionOf(req.path),
+        resource: ACT.resourceOf(req.path),
+        method: req.method,
+        status_code: res.statusCode,
+      });
+    } catch { /* logging never reaches the caller */ }
+  });
+  next();
+}
+
 // ---- Auth helpers ----------------------------------------------------------
 function requireAuth(req, res, next) {
   const token = req.cookies?.dashboardToken;
@@ -496,6 +555,8 @@ function requireCallAnalyzer(req, res, next) {
 }
 
 // ---- POST /api/auth/login --------------------------------------------------
+app.use('/api', activityWriteLogger);
+
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
@@ -532,6 +593,10 @@ app.post('/api/auth/login', async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
+    activityLog.log({
+      user_email: payload.email, user_name: payload.name, user_role: payload.role,
+      event: 'login', status_code: 200,
+    });
     res.json({ user: payload });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -540,6 +605,15 @@ app.post('/api/auth/login', async (req, res) => {
 
 // ---- POST /api/auth/logout -------------------------------------------------
 app.post('/api/auth/logout', (req, res) => {
+  // Read the identity BEFORE clearing the cookie, and never let a bad token
+  // turn a logout into an error.
+  try {
+    const u = jwt.verify(req.cookies?.dashboardToken || '', JWT_SECRET);
+    activityLog.log({
+      user_email: u.email, user_name: u.name, user_role: u.role,
+      event: 'logout', status_code: 200,
+    });
+  } catch { /* expired or absent: nothing to attribute */ }
   res.clearCookie('dashboardToken', { httpOnly: true, sameSite: 'strict' });
   res.json({ ok: true });
 });
@@ -8003,6 +8077,16 @@ app.post('/api/sv/grade/backfill', requireAuth, requireRole('admin'), requireCal
 
 // Nightly auto-grade at 2:00 AM Central (07:00 UTC): grade yesterday's calls.
 cron.schedule('0 2 * * *', () => {
+  // Activity log retention: 90 days. Runs on its own, before the guard below,
+  // because it has nothing to do with SimpleVOIP being configured.
+  if (CRM_CONFIGURED) {
+    const cutoff = new Date(Date.now() - 90 * 86400000).toISOString();
+    (supabaseAdmin || supabasePublic).from('activity_log').delete().lt('at', cutoff)
+      .then(({ error }) => logLine(error
+        ? `[activity-log] retention sweep failed: ${error.message}`
+        : `[activity-log] retention sweep: removed rows older than ${cutoff.slice(0, 10)}`))
+      .catch(e => logLine(`[activity-log] retention sweep failed: ${e.message}`));
+  }
   if (!CRM_CONFIGURED || !simplevoip.isConfigured()) return;
   const yesterday = ctDateStr(-1);
   autoGradeDay(yesterday, { delayMs: 500 })

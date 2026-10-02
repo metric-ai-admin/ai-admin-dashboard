@@ -30,6 +30,9 @@ const GUARDS = [
 
 // Public ON PURPOSE. Each line needs a reason, because each line is a hole.
 const ALLOWED = new Map([
+  ['USE /api',                    'activityWriteLogger: logging middleware, not a route. It reads nothing, '
+                                + 'returns nothing to the caller and calls next() unconditionally; the row is '
+                                + 'written on res.finish, after the guarded route has already decided.'],
   ['GET /health',                 'liveness; reports no data and is the anti-hibernation ping'],
   ['GET /ping',                   'liveness; uptime only'],
   ['POST /api/auth/login',        'the login itself — cannot require a session to get one'],
