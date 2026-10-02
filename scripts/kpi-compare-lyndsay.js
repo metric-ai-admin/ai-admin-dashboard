@@ -36,6 +36,19 @@ const num = v => {
   return isFinite(n) ? n : 0;
 };
 const canon = K.canonicalProperty;
+
+// Properties the dashboard syncs that are NOT in Lyndsay's workbook. They are
+// not disagreements — her report does not cover them — and leaving them in the
+// table made eleven of the forty-three "differences" noise that buried the ones
+// that matter. Excluded by name, with the reason, so adding one back is a
+// visible decision rather than a silent widening of scope.
+const NOT_IN_HER_REPORT = new Set(['Brazos Lofts', 'Cedar and Sage', '513 Wolf Ridge']);
+const inScope = name => {
+  if (NOT_IN_HER_REPORT.has(name)) return false;
+  // "513 Wolf Ridge Georgetown, TX 78628" is one property under a long name.
+  for (const skip of NOT_IN_HER_REPORT) if (String(name).startsWith(skip)) return false;
+  return true;
+};
 const rowsOf = (wb, name) => {
   const ws = wb.Sheets[wb.SheetNames.find(n => n.toLowerCase() === name.toLowerCase())];
   return ws ? XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' }) : [];
@@ -160,7 +173,11 @@ function explain(metric, h, o, ctx) {
   const METRICS = ['units', 'occupied', 'preleased', 'occPct', 'vacantUnrented', 'notices',
     'leads', 'showings', 'tours', 'applications', 'approved', 'canceled',
     'vacantRented', 'moveIns', 'moveOuts'];
-  const props = [...new Set(Object.keys(H).concat(Object.keys(O.byProperty)))].sort();
+  const all = [...new Set(Object.keys(H).concat(Object.keys(O.byProperty)))].sort();
+  const props = all.filter(inScope);
+  const skipped = all.filter(p => !inScope(p));
+  if (skipped.length) console.log(`Out of scope (not in her workbook): ${skipped.join(', ')}
+`);
 
   const fmt = v => v === null || v === undefined ? '—'
     : (typeof v === 'number' && !Number.isInteger(v) ? (v * 100).toFixed(1) + '%' : String(v));
