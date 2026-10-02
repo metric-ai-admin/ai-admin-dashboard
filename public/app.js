@@ -1478,42 +1478,90 @@ function renderTasks() {
   });
 }
 
+// Refresh the board and SAY SO if it fails.
+//
+// loadTasks() used to be called without await from five places. An unawaited
+// rejection is not caught by the surrounding try/catch — it escapes as an
+// unhandled promise — so a failed refresh after a successful write was
+// completely silent: the write had happened, the board disagreed, and nothing
+// on screen admitted it. That is what makes somebody click a second time.
+//
+// The message names which half broke, because "try again" and "reload the
+// page" are different instructions.
+async function refreshTasks(afterWhat) {
+  try { await loadTasks(); }
+  catch (err) { toast(`${afterWhat}, but the board did not refresh: ${err.message}`, 'error'); }
+}
+
 async function handleTaskAction(act, id, card) {
   try {
     if (act === 'done') {
       await api(`/api/tasks/${id}/done`, { method: 'POST' });
       toast('Marked done', 'success');
-      loadTasks();
+      await refreshTasks('Marked done');
     } else if (act === 'delete') {
       if (!confirm('Delete this task?')) return;
       await api(`/api/tasks/${id}`, { method: 'DELETE' });
       toast('Deleted');
-      loadTasks();
+      await refreshTasks('Deleted');
     } else if (act === 'add-note') {
       const input = card.querySelector('[data-note-input]');
       const text = input.value.trim();
       if (!text) return toast('Write a note first', 'error');
       await api(`/api/tasks/${id}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
       toast('Note added', 'success');
-      loadTasks();
+      await refreshTasks('Note added');
     }
   } catch (err) { toast(err.message, 'error'); }
 }
 
 async function updateTask(id, patch) {
-  await api(`/api/tasks/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
-  loadTasks();
+  await api(`/api/tasks/${id}`, { method: 'PUT', body: patch });
+  await refreshTasks('Saved');
 }
 
+// Adding a task duplicated itself on 2026-10-02: the POST was still in flight,
+// nothing on screen said so, and a second click created a second task. Both
+// returned 200 ten seconds apart.
+//
+// Two separate faults, and the obvious one is not the one that caused it:
+//
+//   1. NO FEEDBACK WHILE IN FLIGHT. The button stayed live and the board stayed
+//      unchanged for as long as the request took, which on a cold Render dyno
+//      is several seconds. Clicking again is the reasonable thing to do when
+//      nothing happens. The guard below is what actually prevents duplicates —
+//      disabling the button, not just hiding it behind a flag, so the browser
+//      refuses the second click rather than the handler ignoring it.
+//
+//   2. THE REFRESH FAILED SILENTLY. loadTasks() was called without await and
+//      without a catch, so if the GET that follows the POST failed, the
+//      rejection went nowhere: no error, no refreshed board, and a task that
+//      had in fact been created looked like it had not. That is the half that
+//      makes somebody click again even after the toast.
+let taskAddInFlight = false;
 $('#task-form').addEventListener('submit', async e => {
   e.preventDefault();
-  const fd = new FormData(e.target);
+  if (taskAddInFlight) return;
+  const form = e.target;
+  const btn = form.querySelector('button[type="submit"]');
+  const label = btn ? btn.textContent : null;
+  const fd = new FormData(form);
+  taskAddInFlight = true;
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
   try {
-    await api('/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(fd)) });
-    e.target.reset();
+    await api('/api/tasks', { method: 'POST', body: Object.fromEntries(fd) });
+    form.reset();
     toast('Task added', 'success');
-    loadTasks();
-  } catch (err) { toast(err.message, 'error'); }
+    // Awaited and caught separately: the task IS created by this point, so a
+    // failed refresh must not read as a failed add. Saying which one broke is
+    // the difference between "try again" and "reload the page".
+    await refreshTasks('Task added');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    taskAddInFlight = false;
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
 });
 $('#refresh-tasks').addEventListener('click', loadTasks);
 $('#task-type-filter').addEventListener('change', renderTasks);
