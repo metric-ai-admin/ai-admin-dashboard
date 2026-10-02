@@ -48,6 +48,7 @@ const NOT_IN_HER_REPORT = new Map([
   ['513 Wolf Ridge',  'not in her workbook'],
   ['Live With Metric', 'the corporate entity, not a managed property'],
   ['The Sidney',      'under assignment'],
+  ['Metric Property Management', 'the corporate entity — 0 units, not a managed property'],
 ]);
 const inScope = name => {
   if (NOT_IN_HER_REPORT.has(name)) return false;

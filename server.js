@@ -14356,6 +14356,24 @@ cron.schedule('45 17 * * *', () => {
   require('./appfolio-reports.js').syncReport('wo_completed')
     .then(r => logLine(`[wo-completed-sync] ${r?.rowCount ?? '?'} rows`))
     .catch(err => console.error('[wo-completed-sync] failed:', err.message));
+
+  // unit_turn_detail — the move-out source for the combined KPI report.
+  //
+  // It was registered on 2026-10-02 but nothing ever synced it, so its store
+  // was empty and move-outs read 0 in every comparison. Registering a report
+  // and syncing it are two different things, and the first looks like the
+  // second until somebody checks the store.
+  //
+  // Here rather than in the Sunday block: the Sunday snapshot reads
+  // unit_vacancy, not this, and a feed the weekly comparison depends on should
+  // not be a week old. Sequenced after wo_completed rather than beside it, so
+  // the two do not race each other into AppFolio's 7-requests-per-15-seconds
+  // limit.
+  setTimeout(() => {
+    require('./appfolio-reports.js').syncReport('unit_turn_detail')
+      .then(r => logLine(`[unit-turn-sync] ${r?.rowCount ?? '?'} rows`))
+      .catch(err => console.error('[unit-turn-sync] failed:', err.message));
+  }, 60000);
 }, { timezone: LYNDSAY_TIMEZONE });
 
 // 6 PM Central weekdays. Timezone-anchored (DST-safe) rather than a raw UTC hour.
