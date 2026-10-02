@@ -240,7 +240,40 @@ function explain(metric, h, o, ctx) {
   return 'rule or window differs';
 }
 
+// --ours-only: print OUR numbers and skip the workbook entirely.
+//
+// The workbook lives on a laptop; delinquency_as_of and unit_turn_detail live
+// in the saved-report store on Render. Neither machine has both, so running
+// the full comparison in one place is not possible today. This prints our half
+// where the data actually is, as JSON, so it can be diffed against the
+// workbook half afterwards rather than reading 0 for everything the laptop
+// cannot see.
+const OURS_ONLY = process.argv.includes('--ours-only');
+
 (async () => {
+  if (OURS_ONLY) {
+    console.log('OUR NUMBERS ONLY — read only, no workbook, nothing written.');
+    console.log(`Week: ${START} .. ${END}
+`);
+    const O = await ours();
+    const rows = Object.values(O.byProperty)
+      .filter(r => inScope(r.property))
+      .sort((a, b) => a.property.localeCompare(b.property));
+    const COLS = ['units', 'occupied', 'preleased', 'vacantUnrented', 'notices', 'leads',
+      'tours', 'applications', 'approved', 'vacantRented', 'moveIns', 'moveOuts',
+      'newWos', 'openWos', 'closedThisWeek', 'dqTotal', 'dqResidents'];
+    console.log('PROPERTY'.padEnd(24) + COLS.map(c => c.slice(0, 9).padStart(11)).join(''));
+    console.log('-'.repeat(24 + COLS.length * 11));
+    rows.forEach(r => console.log(r.property.slice(0, 23).padEnd(24)
+      + COLS.map(c => String(r[c] === null || r[c] === undefined ? '—' : r[c]).padStart(11)).join('')));
+    console.log('\noccupancy as_of in our data: ' + (O.occupancyAsOf.join(', ') || '(none)'));
+    // JSON too, so the two halves can be diffed by machine rather than by eye.
+    const out = path.join(__dirname, '..', 'exports', `kpi-ours-${START}-to-${END}.json`);
+    require('fs').mkdirSync(path.dirname(out), { recursive: true });
+    require('fs').writeFileSync(out, JSON.stringify({ week: O.week, byProperty: O.byProperty, portfolio: O.portfolio }, null, 2));
+    console.log('JSON: ' + out);
+    return;
+  }
   console.log('KPI comparison — READ ONLY, nothing is written anywhere.');
   console.log(`Week    : ${START} .. ${END}`);
   console.log(`Workbook: ${XLSX_PATH}\n`);
