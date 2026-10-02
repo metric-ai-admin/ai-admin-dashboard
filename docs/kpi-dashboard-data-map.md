@@ -261,3 +261,21 @@ in `appfolio-reports.js` has no alias for it. The workbook's box score sheet
 carries a saved-report id (`344b8651-11f1-11f1`), but the v2 API addresses
 reports by name, not by saved-report id, so that id is not a way in. Worth one
 more probe of a catalogue endpoint before concluding it is unreachable.
+
+
+## Appendix — income_statement is not a source for MTD (2026-10-02)
+
+Probed live. It returns **309 rows whatever you ask it**, and the numbers do not
+move either: four filter bodies, three different date windows and a property
+filter all produced the same Rent Income. It answers **portfolio totals** and
+ignores the filters it is given.
+
+Her MTD Cash and MTD Accrual sheets are per property, so a portfolio total
+cannot replace them. **The MTD financials stay on Katie's workbook.**
+
+One thing left unresolved and worth a later attempt: passing `properties`
+returned **HTTP 500**, not the silent no-op the other parameter names gave. A
+500 is the server trying and failing rather than ignoring, which suggests the
+parameter IS recognised and the shape was wrong. Worth one retry with a nested
+form — `filters[properties][0]`, or an object rather than an array — before
+concluding the report cannot be scoped at all.

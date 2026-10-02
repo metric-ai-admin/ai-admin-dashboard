@@ -65,6 +65,7 @@ function hers(wb) {
   const out = {};
   const b = p => { const k = canon(p); if (!k) return null; if (!out[k]) out[k] = {}; return out[k]; };
   const add = (p, key, n) => { const x = b(p); if (x) x[key] = (x[key] || 0) + n; };
+  const b2 = b;
 
   // occupancy: C units, D occupied, H vacant rented, I vacant unrented,
   // J notice rented, K notice unrented
@@ -118,10 +119,56 @@ function hers(wb) {
     else if (ev.indexOf('notice') !== -1) add(currentProp, 'newNotices', 1);
   });
 
+  // work order open / closed: property name is column K (10), status column G
+  // (6), created column J (9), completed column AT (45). Column A is a short
+  // name and K is the full one, so K is what buckets alike with ours.
+  const woDone = /^(completed|complete|canceled|cancelled)$/i;
+  rowsOf(wb, 'work order open').forEach(r => {
+    if (!r[10] || r[10] === 'Property Name') return;
+    const status = String(r[6] || '').trim();
+    if (!woDone.test(status)) add(r[10], 'openWos', 1);
+    const created = K.ymd(r[9]);
+    if (created && created >= START && created <= END) add(r[10], 'newWos', 1);
+  });
+  rowsOf(wb, 'work order closed').forEach(r => {
+    if (!r[10] || r[10] === 'Property Name') return;
+    // Her Work Orders Closed This Week is the closed report filtered to the
+    // leasing week, and that report is ALREADY scoped to it — the sheet's own
+    // filter reads "Completed On 09/20/2026 - 09/26/2026". So every row counts.
+    add(r[10], 'closedThisWeek', 1);
+  });
+
+  // delinquency: no property column. The sheet is grouped — a row with text in
+  // column A and nothing else is a property heading, and the charge rows under
+  // it belong to it until the next heading.
+  //
+  // Only POSITIVE balances are summed, the way her report does. The feed
+  // carries concessions as negatives (-918.75 on one row), and netting them off
+  // would report less delinquency than there is. The sheet's own Total row DOES
+  // net them, which is why that figure and this one are not meant to match.
+  let dqProp = null;
+  rowsOf(wb, 'delinquency').forEach(r => {
+    const c0 = String(r[0] || '').trim();
+    if (!c0) return;
+    const rest = r.slice(1).some(c => String(c || '').trim());
+    if (!rest) { dqProp = c0 === 'Total' ? null : c0; return; }
+    if (!dqProp || c0 === 'Total') return;
+    const amt = num(r[5]);
+    if (amt > 0) {
+      const b = b2(dqProp);
+      if (b) {
+        b.dqTotal = Math.round(((b.dqTotal || 0) + amt) * 100) / 100;
+        (b._payers = b._payers || {})[c0] = true;
+      }
+    }
+  });
+
   Object.keys(out).forEach(p => {
     const x = out[p];
     x.preleased = (x.occupied || 0) + (x.vacantRentedOcc || 0);
     x.occPct = x.units ? x.occupied / x.units : null;
+    x.dqResidents = x._payers ? Object.keys(x._payers).length : undefined;
+    delete x._payers;
   });
   return out;
 }
@@ -159,9 +206,18 @@ async function ours() {
   }
   // detailed_status is what Vacant Rented reads. Pull it explicitly so a row
   // synced before migration 075 is visibly null rather than missing.
+  // Delinquency lives in the saved-report store, like unit_turn_detail.
+  let delinquency = [];
+  try {
+    const af = require(path.join(__dirname, '..', 'appfolio-reports.js'));
+    const d = await af.readReportData('delinquency_as_of');
+    delinquency = (d && d.rows) || (Array.isArray(d) ? d : []);
+  } catch { /* reported below */ }
+  if (!delinquency.length) console.log('  (delinquency_as_of not in the local store — DQ will read 0)');
+
   const applications2 = await grab('leasing_applications',
     'property_name,application_date,status,detailed_status');
-  return K.build({ occupancy, leads, showings, applications: applications2, leaseHistory, workOrders, unitTurns },
+  return K.build({ occupancy, leads, showings, applications: applications2, leaseHistory, workOrders, unitTurns, delinquency },
     { weekStart: START, weekEnd: END, asOf: END });
 }
 
@@ -196,7 +252,8 @@ function explain(metric, h, o, ctx) {
 
   const METRICS = ['units', 'occupied', 'preleased', 'occPct', 'vacantUnrented', 'notices',
     'leads', 'showings', 'tours', 'applications', 'approved', 'canceled',
-    'vacantRented', 'moveIns', 'moveOuts'];
+    'vacantRented', 'moveIns', 'moveOuts',
+    'newWos', 'openWos', 'closedThisWeek', 'dqTotal', 'dqResidents'];
   const all = [...new Set(Object.keys(H).concat(Object.keys(O.byProperty)))].sort();
   const props = all.filter(inScope);
   const skipped = all.filter(p => !inScope(p));
@@ -210,8 +267,15 @@ function explain(metric, h, o, ctx) {
     console.log('');
   }
 
-  const fmt = v => v === null || v === undefined ? '—'
-    : (typeof v === 'number' && !Number.isInteger(v) ? (v * 100).toFixed(1) + '%' : String(v));
+  // Only occPct and prePct are ratios. Formatting every non-integer as a
+  // percentage turned a $690,130 delinquency balance into "690130.0%".
+  const PCT = new Set(['occPct', 'prePct']);
+  const fmt = (v, metric) => {
+    if (v === null || v === undefined) return '—';
+    if (typeof v !== 'number') return String(v);
+    if (PCT.has(metric)) return (v * 100).toFixed(1) + '%';
+    return Number.isInteger(v) ? String(v) : v.toFixed(2);
+  };
   let agree = 0, differ = 0, cannot = 0;
   const notes = {};
 
@@ -229,11 +293,11 @@ function explain(metric, h, o, ctx) {
       else {
         mark = 'DIFF'; differ++;
         diff = (typeof hv === 'number' && typeof ov === 'number')
-          ? (ov - hv > 0 ? '+' : '') + fmt(ov - hv) : '—';
+          ? (ov - hv > 0 ? '+' : '') + fmt(ov - hv, m) : '—';
         const why = explain(m, hv, ov, { asOf: O.occupancyAsOf });
         notes[m + ' :: ' + why] = (notes[m + ' :: ' + why] || 0) + 1;
       }
-      lines.push(`   ${mark}  ${m.padEnd(15)} hers ${fmt(hv).padStart(9)}   ours ${fmt(ov).padStart(9)}   ${diff}`);
+      lines.push(`   ${mark}  ${m.padEnd(15)} hers ${fmt(hv, m).padStart(11)}   ours ${fmt(ov, m).padStart(11)}   ${diff}`);
     }
     if (!lines.length) continue;
     console.log('='.repeat(78));
