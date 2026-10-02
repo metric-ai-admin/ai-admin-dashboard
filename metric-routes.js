@@ -87,12 +87,37 @@ function hasValidSession(req) {
   return !!sessionPayload(req);
 }
 
+// Put the signed-in person on the request, the way requireAuth does.
+//
+// WHY THIS EXISTS. requireMetricAccess and requireMetricAdmin validated the
+// session and then threw the payload away, so req.user stayed undefined on all
+// 133 routes behind them. Everything downstream that asks "who did this" —
+// the activity log, and anything added later — saw nobody, and a write made by
+// a signed-in admin was indistinguishable from an anonymous one. Found
+// 2026-10-02, when two task writes by Arturo left no activity_log row.
+//
+// A VALID COOKIE MEANS A PERSON, whichever branch authorised the call. The key
+// branch only answers "is this allowed"; it does not answer "who". So the
+// session is read whenever one is present, and a request carrying only an API
+// key has no cookie and therefore still has no person — which is the point.
+//
+// Never overwrites: if requireAuth already ran, its payload stands.
+function attachSessionUser(req) {
+  if (req.user) return req.user;
+  const payload = sessionPayload(req);
+  if (payload) req.user = payload;
+  return req.user || null;
+}
+
 function requireMetricAccess(req, res, next) {
   const key = process.env.METRIC_API_KEY;
   if (!key) return next();                       // not configured — warned at startup
   const provided = req.get('x-metric-key');
+  // Attribution before authorisation: a request can carry both, and the cookie
+  // is what says who is holding it.
+  attachSessionUser(req);
   if (provided && timingSafeEq(provided, key)) return next();
-  if (hasValidSession(req)) return next();
+  if (req.user) return next();
   return res.status(401).json({ error: 'Unauthorized — missing or invalid x-metric-key' });
 }
 
@@ -110,8 +135,8 @@ function requireMetricAccess(req, res, next) {
 function requireMetricAdmin(req, res, next) {
   const key = process.env.METRIC_API_KEY;
   const provided = req.get('x-metric-key');
+  const payload = attachSessionUser(req);
   if (key && provided && timingSafeEq(provided, key)) return next();
-  const payload = sessionPayload(req);
   if (payload && payload.role === 'admin') return next();
   return res.status(403).json({ error: 'Admin access required' });
 }
@@ -1329,4 +1354,4 @@ function registerMetricRoutes(app, db) {
 // email routes that serve Lyndsay's mailbox. They need session-or-key for the
 // same reason /api/operational does: the MCP tools read them over HTTP with no
 // cookie, sending x-metric-key instead.
-module.exports = { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, identifyCaller };
+module.exports = { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, attachSessionUser, identifyCaller };

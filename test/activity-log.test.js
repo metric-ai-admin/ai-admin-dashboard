@@ -187,6 +187,73 @@ const tick = () => new Promise(r => setImmediate(r));
       'the sweep sits behind the SimpleVOIP guard and would never run without it');
   });
 
+  console.log('\nthe guards attribute a session to a person');
+  // THE BUG THIS BLOCK EXISTS FOR. requireMetricAccess validated the session
+  // and threw the payload away, so req.user was undefined on all 133 routes
+  // behind it and every write through them logged nobody. Two task writes by a
+  // signed-in admin on 2026-10-02 produced no row at all.
+  const MR = fs.readFileSync(path.join(__dirname, '..', 'metric-routes.js'), 'utf8');
+  const ATTACH = MR.slice(MR.indexOf('function attachSessionUser('),
+    MR.indexOf('function requireMetricAccess('));
+  const attachWith = payload => new Function('sessionPayload', ATTACH + 'return attachSessionUser;')(() => payload);
+  const guard = name => {
+    const i = MR.indexOf('function ' + name + '(');
+    return MR.slice(i, MR.indexOf('\n}', i));
+  };
+
+  t('requireMetricAccess puts the signed-in person on the request', () => {
+    const g = guard('requireMetricAccess');
+    assert.ok(/attachSessionUser\(req\)/.test(g),
+      'the guard still validates the session and discards who it was');
+    assert.ok(!/hasValidSession\(req\)\) return next\(\)/.test(g),
+      'it still authorises off a boolean that carries no identity');
+  });
+  t('requireMetricAdmin does too', () => {
+    assert.ok(/attachSessionUser\(req\)/.test(guard('requireMetricAdmin')));
+  });
+  t('a key-only call still has no person', () => {
+    // attachSessionUser reads the cookie. No cookie, no person — which is what
+    // keeps an API-key write unattributed instead of attributed to whoever.
+    const req = { get: () => 'the-key' };
+    assert.strictEqual(attachWith(null)(req), null);
+    assert.strictEqual(req.user, undefined, 'a key-only request was given a person');
+  });
+  t('a session is attached whichever branch authorises', () => {
+    const payload = { email: 'a@b.com', name: 'A', role: 'admin' };
+    const req = {};
+    assert.deepStrictEqual(attachWith(payload)(req), payload);
+    assert.deepStrictEqual(req.user, payload);
+  });
+  t('it never overwrites what requireAuth already set', () => {
+    const mine = { email: 'real@b.com' };
+    const req = { user: mine };
+    attachWith({ email: 'other@b.com' })(req);
+    assert.strictEqual(req.user, mine);
+  });
+  t('a session write to /api/tasks produces a row with section "tasks"', () => {
+    // End to end on the shapes rather than the network: the guard attaches the
+    // user, the middleware reads it, the row names the section and the id.
+    const rows = [];
+    const l = ACT.createLogger(async r => { rows.push(...r); });
+    const req = {
+      method: 'POST', path: '/api/tasks/task_1790950441037_9749/done',
+      user: { email: 'arturo@metric.internal', name: 'Arturo', role: 'admin' },
+    };
+    l.log({
+      user_email: req.user.email, user_name: req.user.name, user_role: req.user.role,
+      event: 'write', section: ACT.sectionOf(req.path), resource: ACT.resourceOf(req.path),
+      method: req.method, status_code: 200,
+    });
+    l.flushNow();
+    assert.strictEqual(rows.length, 1, 'the write produced no row');
+    assert.strictEqual(rows[0].section, 'tasks');
+    assert.strictEqual(rows[0].resource, 'task_1790950441037_9749');
+    assert.strictEqual(rows[0].user_email, 'arturo@metric.internal');
+    assert.ok(!JSON.stringify(rows[0]).toLowerCase().includes('activity logs test'),
+      'a task title reached the row');
+    l.stop();
+  });
+
   console.log('\nnothing user-facing yet');
   t('no tab, no route, no browser code reads it — phases 2 and 3 are next week', () => {
     const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
