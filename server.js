@@ -6707,7 +6707,20 @@ app.post('/api/leasing/sync/applications', requireMetricAccess, async (req, res)
         property_name: occCommunityName(r.property_name),
         property_id: leasingPropId(r.property_id),
         application_date: leasingDateOnly(r.received),
+        // TWO status fields, and they are not interchangeable.
+        //
+        // application_status is the rolled-up one (Approved / Denied /
+        // Canceled / Decision Pending / In Screening). Katie's Goal Board
+        // counts Approved off it, so it keeps mapping exactly what it always
+        // mapped.
+        //
+        // r.status is the detailed one, and the only place "Converting" exists
+        // — approved and moving toward a move-in that has not happened yet, as
+        // distinct from "Converted", where it already did. Lyndsay's Vacant
+        // Rented counts Converting, and until migration 075 we were discarding
+        // the only field that says so.
         status: r.application_status != null ? String(r.application_status) : null,
+        detailed_status: r.status != null ? String(r.status) : null,
         move_in_date: leasingDateOnly(r.move_in_date),
         synced_at: now,
       });

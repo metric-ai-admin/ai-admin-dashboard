@@ -143,7 +143,25 @@ async function ours() {
     grab('leasing_lease_history', 'property_name,move_in_date,move_out_date,renewal'),
     grab('maintenance_work_orders', 'property_name,status,created_at_appfolio,updated_at'),
   ]);
-  return K.build({ occupancy, leads, showings, applications, leaseHistory, workOrders },
+  // Move-outs come from unit_turn_detail, which lives in the saved-report store
+  // on Render rather than in Supabase. Locally it is usually absent, and an
+  // empty array is honest: the comparison then shows 0 move-outs rather than
+  // silently falling back to lease_history, which has three in its history.
+  let unitTurns = [];
+  try {
+    const af = require(path.join(__dirname, '..', 'appfolio-reports.js'));
+    const d = await af.readReportData('unit_turn_detail');
+    unitTurns = (d && d.rows) || (Array.isArray(d) ? d : []);
+  } catch { /* not synced here — reported below */ }
+  if (!unitTurns.length) {
+    console.log('  (unit_turn_detail not in the local store — move-outs will read 0;');
+    console.log('   run this on Render, or sync the report, for a real comparison)\n');
+  }
+  // detailed_status is what Vacant Rented reads. Pull it explicitly so a row
+  // synced before migration 075 is visibly null rather than missing.
+  const applications2 = await grab('leasing_applications',
+    'property_name,application_date,status,detailed_status');
+  return K.build({ occupancy, leads, showings, applications: applications2, leaseHistory, workOrders, unitTurns },
     { weekStart: START, weekEnd: END, asOf: END });
 }
 

@@ -73,16 +73,41 @@ t('a showing outside the week is not counted at all', () => {
 });
 
 console.log('\napplications');
-t('vacantRented is null, not a stand-in', () => {
-  // Her report counts apps whose detailed status is "Converting". Ours holds
-  // the rolled-up status and cannot express it. "Approved" is a different
-  // population and would look like agreement.
-  const r = K.appsFrom([
-    { property_name: 'X', application_date: '2026-09-22', status: 'Approved' },
-  ], W.weekStart, W.weekEnd).X;
-  assert.strictEqual(r.approved, 1);
-  assert.strictEqual(r.vacantRented, null);
-  assert.ok(/Converting/.test(K.UNAVAILABLE.vacantRented), 'the reason is not recorded');
+t('Vacant Rented is a STATE, counted over every application', () => {
+  // Her parseApps has no date filter: Vacant Rented is "every application
+  // currently Converting", which is the right shape for a unit that is leased
+  // but not yet moved into. Filtering it to the reporting week would count only
+  // the ones applied for in those seven days — across her whole workbook, 8 are
+  // Converting and NONE were received in 09/20-09/26, so a week filter would
+  // report zero where the truth is eight.
+  const rows = [
+    { property_name: 'X', application_date: '2026-08-01', status: 'Approved', detailed_status: 'Converting' },
+    { property_name: 'X', application_date: '2026-09-22', status: 'Approved', detailed_status: 'Converted' },
+    { property_name: 'X', application_date: '2026-07-15', status: 'Approved', detailed_status: 'Converting' },
+  ];
+  assert.strictEqual(K.vacantRentedFrom(rows).X.vacantRented, 2,
+    'applications outside the week were dropped');
+  // appsFrom, which IS weekly, must not also count it.
+  assert.strictEqual(K.appsFrom(rows, W.weekStart, W.weekEnd).X.vacantRented, undefined);
+});
+t('"Converted" is not "Converting" — the move-in already happened', () => {
+  const r = K.vacantRentedFrom([
+    { property_name: 'X', detailed_status: 'Converted' },
+    { property_name: 'X', detailed_status: 'Approved' },
+  ]).X;
+  assert.ok(!r.vacantRented, 'Converted or Approved counted as Vacant Rented');
+});
+t('a row with no detailed_status is unknown, not "not converting"', () => {
+  // Rows synced before migration 075 have none. Reading null as "no" would
+  // under-report silently; counting it separately makes the answer say it is
+  // incomplete.
+  const r = K.vacantRentedFrom([
+    { property_name: 'X', detailed_status: null },
+    { property_name: 'X' },
+    { property_name: 'X', detailed_status: 'Converting' },
+  ]).X;
+  assert.strictEqual(r.vacantRented, 1);
+  assert.strictEqual(r.vacantRentedUnknown, 2);
 });
 t('each status lands in exactly one bucket', () => {
   const r = K.appsFrom([
@@ -107,9 +132,43 @@ t('a lease counts in the week its date falls in, on each side separately', () =>
     { property_name: 'X', move_in_date: '2026-08-01', move_out_date: '2026-08-02', renewal: 'Yes' },
   ], W.weekStart, W.weekEnd).X;
   assert.strictEqual(r.moveIns, 2);
-  assert.strictEqual(r.moveOuts, 2);
   assert.strictEqual(r.renewals, 1);
   assert.strictEqual(r.didNotRenew, 2);
+  // lease_history no longer contributes move-outs. It has three in its ENTIRE
+  // history against a 398-unit portfolio, so counting it alongside
+  // unit_turn_detail would double whichever ones it does happen to carry.
+  assert.strictEqual(r.moveOuts, undefined, 'lease_history is still counting move-outs');
+  assert.strictEqual(r.moveOutsFromLeaseHistory, 2, 'the backup count is gone');
+});
+
+console.log('\nmove-outs come from unit_turn_detail');
+t('a turn counts in the week its move_out_date falls in', () => {
+  // The three in Lyndsay's box score for 09/20-09/26, which unit_turn_detail
+  // found 3 of 3 when probed on 2026-10-02.
+  const r = K.moveOutsFrom([
+    { property_name: 'Ascent at Northgate', unit: '5-127', move_out_date: '2026-09-21' },
+    { property_name: 'Hyde Park Square', unit: '107', move_out_date: '2026-09-23' },
+    { property_name: 'iConic Round Rock', unit: '106', move_out_date: '2026-09-25' },
+    { property_name: 'Ascent at Northgate', unit: '9-001', move_out_date: '2026-09-19' },
+    { property_name: 'Ascent at Northgate', unit: '9-002', move_out_date: '2026-09-27' },
+  ], W.weekStart, W.weekEnd);
+  assert.strictEqual(r['Ascent at Northgate'].moveOuts, 1, 'the days either side leaked in');
+  assert.strictEqual(r['Hyde Park Square'].moveOuts, 1);
+  assert.strictEqual(r['iConic Round Rock'].moveOuts, 1);
+  assert.strictEqual(Object.keys(r).length, 3);
+});
+t('a turn with no move-out date is not a move-out', () => {
+  // The report carries turns in progress too; only a dated move-out counts.
+  assert.deepStrictEqual(K.moveOutsFrom([
+    { property_name: 'X', unit: '1', move_out_date: null },
+    { property_name: 'X', unit: '2' },
+  ], W.weekStart, W.weekEnd), {});
+});
+t('the address is stripped here too, so both feeds bucket alike', () => {
+  const r = K.moveOutsFrom([
+    { property_name: 'Hyde Park Square - 206 W 38th St', move_out_date: '2026-09-23' },
+  ], W.weekStart, W.weekEnd);
+  assert.strictEqual(r['Hyde Park Square'].moveOuts, 1);
 });
 
 console.log('\ndates');
@@ -134,15 +193,23 @@ const BUILT = K.build({
   occupancy: [{ property_name: 'X', total_units: 10, occupied_units: 8, vacant_rented: 1, notice_units: 2, as_of: '2026-09-26' }],
   leads: [{ property: 'X', interest_received: '2026-09-22' }],
   showings: [{ property_name: 'X', showing_date: '2026-09-22', status: 'Completed' }],
-  applications: [{ property_name: 'X', application_date: '2026-09-22', status: 'Approved' }],
+  applications: [
+    { property_name: 'X', application_date: '2026-09-22', status: 'Approved', detailed_status: 'Converted' },
+    { property_name: 'X', application_date: '2026-07-01', status: 'Approved', detailed_status: 'Converting' },
+  ],
   leaseHistory: [{ property_name: 'Y', move_in_date: '2026-09-22', renewal: 'No' }],
+  unitTurns: [{ property_name: 'X', unit: '101', move_out_date: '2026-09-24' }],
   workOrders: [{ property_name: 'X', status: 'New', created_at_appfolio: '2026-09-22' }],
 }, W);
-t('zero and "cannot compute" never look the same', () => {
+t('a measured zero and an uncounted thing never look the same', () => {
   // X has no move-ins: that is zero, a measurement.
   assert.strictEqual(BUILT.byProperty.X.moveIns, 0);
-  // X's vacantRented cannot be computed at all: that stays null.
-  assert.strictEqual(BUILT.byProperty.X.vacantRented, null);
+  // Its move-out comes from unit_turn_detail, not from lease_history.
+  assert.strictEqual(BUILT.byProperty.X.moveOuts, 1);
+  // Vacant Rented counts the July application, which is outside the week —
+  // it is a state, not a weekly event.
+  assert.strictEqual(BUILT.byProperty.X.vacantRented, 1);
+  assert.strictEqual(BUILT.byProperty.X.vacantRentedUnknown, 0);
 });
 t('a property present in only one source still appears', () => {
   assert.ok(BUILT.byProperty.Y, 'Y has lease history and no occupancy row, and vanished');

@@ -194,6 +194,29 @@ const REPORTS = [
     params: {},
   },
 
+  // ---- Unit turns, for move-outs and make-ready --------------------------
+  // Probed live 2026-10-02. This is the move-out source the KPI report needs.
+  //
+  // WHY NOT unit_vacancy. Its last_move_out matched Lyndsay's box score for
+  // 09/20-09/26, but it only lists units that are still vacant or on notice at
+  // sync time: a unit that moves out and is re-rented before the next sync
+  // drops off the report and takes its move-out with it. unit_turn_detail
+  // keeps the turn, and found all three of her move-outs (Ascent 5-127, Hyde
+  // Park 107, iConic Round Rock 106) on move_out_date.
+  //
+  // turn_end_date and total_days_to_complete are the make-ready section of the
+  // combined report, which is not built yet. Noted here so the next person does
+  // not go looking for another report to get them.
+  {
+    id: 'unit_turn_detail',
+    resource: 'unit_turn_detail',
+    label: 'Unit Turn Detail',
+    group: 'Leasing / Vacancy',
+    priority: 9,
+    feeds: 'KPI combined report — move-outs (move_out_date); make-ready later (turn_end_date, total_days_to_complete)',
+    params: {},
+  },
+
   // ---- Lease expirations, for the Monday Morning Brief -------------------
   // Probed live 2026-09-23. Bekah named "Lease Expiration or Rent Roll"; both
   // exist in Reports API v2, and they answer DIFFERENT questions, so the brief
