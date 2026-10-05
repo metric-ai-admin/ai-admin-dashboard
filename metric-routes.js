@@ -928,8 +928,14 @@ function registerMetricRoutes(app, db) {
     app.get('/api/appfolio/reports/:id/data', requireMetricAccess, async (req, res) => {
       const data = await afReports.readReportData(req.params.id);
       if (!data) return res.status(404).json({ error: 'No synced data yet for this report.' });
+      // offset, so a report larger than the 1000-row cap can be read in pages.
+      // Without it a caller silently gets the first 1000 of 1157 and has no way
+      // to know what it did not see — which is how a diagnosis concludes that
+      // 157 work orders "disappeared" when they were simply past the cap.
       const limit = Math.min(parseInt(req.query.limit, 10) || 100, 1000);
-      res.json({ ...data, rows: data.rows.slice(0, limit), returned: Math.min(limit, data.rows.length) });
+      const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+      const page = data.rows.slice(offset, offset + limit);
+      res.json({ ...data, rows: page, returned: page.length, offset, total: data.rows.length });
     });
 
     // ── Local CSV / PDF exports ─────────────────────────────────────────────
