@@ -254,12 +254,35 @@ const tick = () => new Promise(r => setImmediate(r));
     l.stop();
   });
 
-  console.log('\nnothing user-facing yet');
-  t('no tab, no route, no browser code reads it — phases 2 and 3 are next week', () => {
+  console.log('\nwhat phase 1 guarded, now that 2 and 3 exist');
+  // This used to assert that NOTHING user-facing existed — "phases 2 and 3 are
+  // next week". Phase 3 made that false on purpose, so the assertion is
+  // replaced rather than deleted: what it was really protecting is that the
+  // log is not readable by whoever happens to find the URL.
+  //
+  // Worth recording that it did not catch phase 2. It tested
+  // app.get('/api/activity…) and the beacon is a POST, so the write path went
+  // in without tripping a test whose stated purpose was "no route yet". A
+  // guard narrower than its own description is a guard that will be believed
+  // when it should not be.
+  t('every READ route is behind admin/ceo', () => {
+    // Captures what follows the path up to the handler, not up to the first
+    // ")" — that one lives inside requireRole(...) and cut the guard in half.
+    const gets = [...server.matchAll(/app\.get\('(\/api\/activity[^']*)',([\s\S]*?)(?:async )?\(req, res\)/g)];
+    assert.ok(gets.length >= 2, 'the read routes vanished');
+    gets.forEach(m => {
+      assert.ok(/requireAuth,\s*requireRole\(\.\.\.ACTIVITY_ROLES\)/.test(m[2]),
+        m[1] + ' is not behind the role guard — middleware seen: ' + m[2].trim());
+    });
+  });
+  t('the WRITE route stays open to any signed-in user', () => {
+    // Everybody's sections are recorded; only reading is restricted.
+    assert.ok(/app\.post\('\/api\/activity\/view', requireAuth, \(req, res\)/.test(server));
+  });
+  t('the browser never reads the raw table', () => {
     const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
-    const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
-    assert.ok(!/activity[_-]log/i.test(app + html), 'the browser now references the activity log');
-    assert.ok(!/app\.get\('\/api\/activity/.test(server), 'a read route was added');
+    assert.ok(!/from\('activity_log'\)/.test(app),
+      'the browser queries the table directly instead of going through a gated route');
   });
 
   console.log(`\n${pass} passing`);
