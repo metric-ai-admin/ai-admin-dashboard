@@ -78,9 +78,13 @@ t('it NEVER deletes a row', () => {
   assert.ok(!/\.delete\(/.test(REC), 'the reconciliation deletes');
 });
 t('a row already settled is left alone', () => {
-  // Re-running must not rewrite a row that is already closed, and must not
-  // turn an unknown back into anything else.
-  assert.ok(/if \(WOS\.isClosed\(r\.status\) \|\| WOS\.isUnknown\(r\.status\)\) return;/.test(REC));
+  // Re-running must not rewrite a row that is already closed. An Unknown row
+  // is settled too on an ordinary run; the sweep is the one case that may
+  // revisit it, and only to move it to a state AppFolio actually reported.
+  assert.ok(/if \(WOS\.isClosed\(r\.status\)\) return;/.test(REC),
+    'a closed row can be rewritten');
+  assert.ok(/if \(WOS\.isUnknown\(r\.status\) && !sweep\) return;/.test(REC),
+    'Unknown rows are churned on every ordinary run');
 });
 t('a work order newer than the feed is not called a ghost', () => {
   // The feed is a snapshot. 21 work orders existed in AppFolio and not in our

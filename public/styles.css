@@ -454,6 +454,10 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 /* The family only had a warn variant. Added for the Command Center's restore
    notice, which is reassurance rather than a warning. */
 .banner-ok { border-color: var(--success); background: var(--success-bg); }
+/* Stale data on the Command Center. Deliberately louder than banner-warn: on
+   2026-10-05 Erick generated 243 tasks from a three-day-old sync because the
+   age was a grey line of small print next to a green "restored" notice. */
+.banner-stale { border-color: var(--red); background: var(--red-bg); border-width: 2px; font-weight: 600; }
 .banner code { background: var(--bg-base); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 
 @keyframes rs-spin-kf { to { transform: rotate(360deg); } }

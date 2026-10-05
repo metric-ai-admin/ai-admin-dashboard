@@ -6883,7 +6883,21 @@ app.post('/api/maintenance/sync', requireMetricAccess, async (req, res) => {
 // is the one that was just written rather than yesterday's.
 const WOS = require('./lib/work-order-status.js');
 
-async function reconcileWorkOrders({ dryRun = true, feedRows = null } = {}) {
+// `sweep` adds a THIRD source: work_order asked for status codes 1..30 in one
+// request, rather than the two pulls the dashboard already stores. It exists
+// because wo_completed asks only for codes 4 and 7 — code 5 (Canceled) is
+// deliberately excluded, and no status beyond those has ever been requested by
+// code — so a canceled or otherwise-ended work order leaves wo_all, never
+// appears in wo_completed, and the reconciliation can honestly say nothing
+// about it. 104 rows ended up there on 2026-10-05.
+//
+// OFF BY DEFAULT, and it stays off until a live run of
+// scripts/probe-unknown-work-orders.js shows the extra codes are honoured.
+// They may not be: this API silently ignores filters it does not recognise
+// (`status: 'Completed'` was ignored for months and looked like it worked), so
+// a sweep that returns exactly wo_all + wo_completed means the codes did
+// nothing and the Unknowns are the honest answer.
+async function reconcileWorkOrders({ dryRun = true, feedRows = null, sweep = false } = {}) {
   if (!CRM_CONFIGURED) return { skipped: 'supabase not configured' };
   const db = supabaseAdmin || supabasePublic;
   const af = require('./appfolio-reports.js');
@@ -6906,6 +6920,31 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null } = {}) {
   const closedBy = new Map();
   completedRows.forEach(r => { const k = key(r); if (k) closedBy.set(k, r); });
 
+  // The sweep, when asked for. Its rows are layered UNDER the two stored pulls
+  // — wo_all and wo_completed are what the rest of the dashboard runs on, so
+  // where they disagree with a one-off request they win — and only fill in
+  // work orders neither of them carries. A sweep that errors is not fatal:
+  // without it the row stays Unknown, which is where it already was.
+  // The status the sweep found, for rows it reopens. Writing a guessed
+  // "Assigned" would put a status on Erick's board that AppFolio never said.
+  const openStatus = new Map();
+  let sweepStatus = sweep ? 'not attempted' : 'off';
+  if (sweep) {
+    try {
+      const codes = Array.from({ length: 30 }, (_, i) => String(i + 1));
+      const s = await require('./appfolio-client.js').fetchReport('work_order', { work_order_statuses: codes });
+      const rows = (s && s.rows) || [];
+      let added = 0;
+      rows.forEach(r => {
+        const k = key(r);
+        if (!k || openNow.has(k) || closedBy.has(k)) return;
+        if (WOS.isClosed(r.status)) { closedBy.set(k, r); added++; }
+        else { openNow.add(k); openStatus.set(k, String(r.status || '').trim()); }
+      });
+      sweepStatus = `${rows.length} rows, ${added} new closures` + (s && s.truncated ? ' (TRUNCATED)' : '');
+    } catch (e) { sweepStatus = 'failed: ' + e.message; }
+  }
+
   const { data: table, error: readErr } = await db.from('maintenance_work_orders')
     .select('id,work_order_number,property_name,status,work_order_type,created_at_appfolio')
     .limit(50000);
@@ -6917,9 +6956,22 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null } = {}) {
 
   const changes = [];
   (table || []).forEach(r => {
-    if (WOS.isClosed(r.status) || WOS.isUnknown(r.status)) return;   // already settled
+    if (WOS.isClosed(r.status)) return;                               // already settled
+    // An Unknown row is settled too, EXCEPT under a sweep — resolving those is
+    // the only reason the sweep exists. It can only move a row to a known
+    // state: a row that is still in neither feed falls out below rather than
+    // being rewritten as Unknown a second time.
+    if (WOS.isUnknown(r.status) && !sweep) return;
     const k = key(r);
-    if (openNow.has(k)) return;                                       // still open
+    if (openNow.has(k)) {
+      if (!WOS.isUnknown(r.status)) return;                           // still open, nothing to say
+      const found = openStatus.get(k);
+      if (!found) return;        // in wo_all but we have no status for it — say nothing
+      changes.push({ id: r.id, work_order_number: k, property_name: r.property_name,
+        work_order_type: r.work_order_type, status_before: r.status, status_after: found,
+        completed_on: null, reason: 'reopened' });
+      return;
+    }
     const c = closedBy.get(k);
     if (c) {
       const to = String(c.status || 'Completed').trim();
@@ -6929,6 +6981,7 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null } = {}) {
         completed_on: /^\d{4}-\d{2}-\d{2}$/.test(on) ? on : null, reason: 'closed' });
       return;
     }
+    if (WOS.isUnknown(r.status)) return;                              // still unresolved, leave it
     const created = String(r.created_at_appfolio || '').slice(0, 10);
     if (created && created > feedDay) return;                         // newer than the feed
     changes.push({ id: r.id, work_order_number: k, property_name: r.property_name,
@@ -6937,9 +6990,12 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null } = {}) {
   });
 
   const summary = {
-    dryRun, examined: (table || []).length, openInFeed: openNow.size,
+    dryRun, sweep: sweepStatus, examined: (table || []).length, openInFeed: openNow.size,
     toClose: changes.filter(c => c.reason === 'closed').length,
     toUnknown: changes.filter(c => c.reason === 'unknown').length,
+    toReopen: changes.filter(c => c.reason === 'reopened').length,
+    stillUnknown: (table || []).filter(r => WOS.isUnknown(r.status)).length
+      - changes.filter(c => WOS.isUnknown(c.status_before)).length,
   };
   if (dryRun || !changes.length) return { ...summary, changes: changes.slice(0, 20) };
 
@@ -7003,7 +7059,8 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null } = {}) {
 app.post('/api/maintenance/reconcile', requireMetricAdmin, async (req, res) => {
   try {
     const dryRun = !(req.body && req.body.write === true);
-    const r = await reconcileWorkOrders({ dryRun });
+    const sweep = !!(req.body && req.body.sweep === true);
+    const r = await reconcileWorkOrders({ dryRun, sweep });
     res.json({ ok: !r.error, ...r });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });

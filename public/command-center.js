@@ -419,6 +419,9 @@ async function ccSyncFromAppFolio() {
     }
     ccRenderSlots();
     const when = new Date().toLocaleString();
+    // A sync that pulled nothing has not made the data fresh. Only clear the
+    // staleness banner when rows actually arrived.
+    if (total) ccShowStaleness(new Date().toISOString());
     if (status) status.textContent = `Last synced: ${when} · ${total} rows` + (failed.length ? ` · ${failed.length} failed` : '');
     if (st) st.innerHTML = `<b>✓ Synced from AppFolio:</b> ${parts.map(esc).join(' · ')}`
       + (failed.length ? `<br><span style="color:var(--red)">failed: ${failed.map(esc).join(' · ')}</span>` : '');
@@ -994,10 +997,18 @@ function ccRefreshCounts() {
   //
   // Shown with their numbers rather than as a count, because a count tells
   // Erick there is a problem and gives him nowhere to start.
-  const ccNotInFeed = (ccReports.wo && ccReports.wo.rows || [])
-    .filter(r => String(ccStatusOf(r) || '').includes('not in feed'));
+  //
+  // The rows here are keyed by the SOURCE HEADER name ('Status', 'Work Order
+  // Number'), not by the normalized field names — ccIngest stores
+  // { rows, map, headers } and ccVal(row, map, field) is how every other
+  // reader gets at a column. Reading r.status / r.wo directly, as this did
+  // when it was written, matches nothing and the banner never appears, which
+  // is exactly what Arturo saw.
+  const woRep = ccReports.wo;
+  const ccNotInFeed = !woRep ? [] : woRep.rows
+    .filter(r => ccVal(r, woRep.map, 'status').toLowerCase().includes('not in feed'));
   if (sum && ccNotInFeed.length) {
-    const nums = ccNotInFeed.map(r => String(r.wo || r.workorder || r.number || '').trim())
+    const nums = ccNotInFeed.map(r => ccVal(r, woRep.map, 'woNum'))
       .filter(Boolean).slice(0, 12);
     const banner = document.createElement('div');
     banner.className = 'banner banner-warn';
@@ -1164,10 +1175,40 @@ function ccImportActivity(file) {
 /* ---------------- boot ---------------- */
 /* Rebuild the board on load from Supabase (no AppFolio fetch), so Erick sees his
    task board + progress immediately after a refresh without clicking Sync. */
+/* How old is the data on screen, in whole days, and say so loudly past one.
+   Erick works from this board every morning; a board built from a sync that
+   stopped running three days ago looks exactly like a board built this
+   morning, which is how 243 tasks came out of 10/02 data on 10/05. The age
+   belongs in a red banner, not in grey small print beside a green one. */
+function ccShowStaleness(lastSynced) {
+  const banner = $('#cc-stale');
+  if (!banner) return 0;
+  const when = lastSynced ? new Date(lastSynced) : null;
+  const days = when && !isNaN(when) ? Math.floor((Date.now() - when.getTime()) / 86400000) : null;
+
+  if (days === null) {
+    banner.className = 'banner banner-stale';
+    banner.innerHTML = '⚠ <b>No synced data.</b> This board is empty until you click '
+      + '“Sync from AppFolio”. Do not generate tasks from it.';
+    banner.classList.remove('hidden');
+    return 0;
+  }
+  if (days < 1) { banner.classList.add('hidden'); return days; }
+
+  banner.className = 'banner banner-stale';
+  banner.innerHTML = `⚠ <b>This data is ${days} day${days === 1 ? '' : 's'} old</b> — `
+    + `last synced ${esc(when.toLocaleString())}. `
+    + `Click “Sync from AppFolio” before generating today's tasks; anything you generate now `
+    + `reflects work orders as they stood ${days} day${days === 1 ? '' : 's'} ago.`;
+  banner.classList.remove('hidden');
+  return days;
+}
+
 async function ccLoadCached() {
   let data;
-  try { data = await api('/api/maintenance/cached'); } catch { return false; }
-  if (!data || !data.last_synced) return false;
+  try { data = await api('/api/maintenance/cached'); } catch { ccShowStaleness(null); return false; }
+  if (!data || !data.last_synced) { ccShowStaleness(null); return false; }
+  ccShowStaleness(data.last_synced);
   let any = false;
   for (const d of CC_SYNC_DEFS) {
     const rows = (data[d.key] || []).map(d.row);
@@ -1179,9 +1220,16 @@ async function ccLoadCached() {
   const status = $('#cc-sync-status'); if (status) status.textContent = `Data from last sync: ${when}`;
   const banner = $('#cc-restored');
   if (banner && !banner.classList.contains('hidden')) {
-    banner.innerHTML = `↻ <b>Restored from today's session</b> — showing data from last sync (${esc(when)}). Click “Sync from AppFolio” to refresh.`;
+    // One notice, not two. "Restored from today's session" is reassurance, and
+    // sitting it next to a staleness warning reads as permission to ignore the
+    // warning. When the data is old, the red banner is the only one shown.
+    if (!$('#cc-stale')?.classList.contains('hidden')) banner.classList.add('hidden');
+    else banner.innerHTML = `↻ <b>Restored from today's session</b> — showing data from last sync (${esc(when)}). Click “Sync from AppFolio” to refresh.`;
   }
-  ccGenerate(); // rebuild totals + task board; saved check states re-apply by task id
+  // The server copy wins over whatever the session restored: ccGenerate rebuilds
+  // CC_TASKS from the rows just ingested, so a board carried over from an older
+  // session is replaced rather than merged. Ticks survive, keyed by task id.
+  ccGenerate();
   return true;
 }
 
