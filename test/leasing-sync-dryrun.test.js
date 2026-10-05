@@ -80,6 +80,42 @@ t('a field that is always empty is not called interest-level', () => {
     'the empty check does not come first');
 });
 
+console.log('\nit measures what the sync silently discards');
+t('it says whether the report returns property_name at all', () => {
+  // leasingRowFromReport resolves the property from property_name first. This
+  // report does not return that field — it returns `property` (name plus
+  // address) and property_id — so the fallback is the only path there is.
+  assert.ok(/returnsPropertyName: keys\.includes\('property_name'\)/.test(DRY),
+    'nothing states whether the field the mapping expects exists');
+});
+t('a dropped property is named and counted, not totalled', () => {
+  // A total says rows are lost; a property_id with a row count says which
+  // property and how many, which is the difference between a number and
+  // something anyone can act on.
+  assert.ok(/rowsDroppedForUnresolvableProperty/.test(DRY), 'no count of discarded rows');
+  assert.ok(/properties,/.test(DRY), 'the per-property breakdown is not returned');
+  assert.ok(/resolvesTo: resolvable\[b\.property_id\] \|\| null/.test(DRY),
+    'it does not say what each property_id resolves to');
+});
+t('a row is only called dropped when BOTH paths fail', () => {
+  // property_name present OR a propMap hit is enough to keep the row.
+  // Checking one alone would overstate the loss.
+  assert.ok(/dropped: !b\.hasPropertyName && !resolvable\[b\.property_id\]/.test(DRY),
+    'the two resolution paths are not both considered');
+});
+t('the propMap is rebuilt from the same source the sync uses', () => {
+  // leasing_leads, filtered to rows that have both halves — otherwise the dry
+  // run would measure against a map the real sync does not have.
+  assert.ok(/from\('leasing_leads'\)\.select\('property_id,property'\)/.test(DRY));
+  assert.ok(/\.not\('property', 'is', null\)\.not\('property_id', 'is', null\)/.test(DRY),
+    'rows with half the pair would seed a map the sync cannot build');
+});
+t('reading leasing_leads here is still a read', () => {
+  const i = DRY.indexOf("from('leasing_leads')");
+  assert.ok(i > 0);
+  assert.ok(/\.select\(/.test(DRY.slice(i, i + 80)), 'the dry run touches leasing_leads with something other than select');
+});
+
 console.log('\nresident data is masked');
 t('name, email and phone are masked in the samples', () => {
   assert.ok(/const PII = new Set\(\['name', 'email_address', 'phone_number'\]\)/.test(DRY));

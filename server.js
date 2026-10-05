@@ -6138,6 +6138,40 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
       });
 
       const idLike = grain.filter(g => /(^|_)(id|uuid|number|guid)$/.test(g.field));
+
+      // WHICH ROWS THIS SYNC THROWS AWAY, and why.
+      //
+      // leasingRowFromReport resolves the property from `property_name`, then
+      // falls back to property_id against propMap. This report does NOT return
+      // property_name — it returns `property` (name plus address) and
+      // property_id — so the fallback is the only path, and propMap is seeded
+      // from rows that already have a name (none) plus previously-synced
+      // leasing_leads. A property with no prior rows therefore resolves to
+      // nothing and every one of its leads is dropped, silently and forever,
+      // because the only way it gets into propMap is by having been synced.
+      //
+      // Reported per property_id so the gap is a named property and a row
+      // count rather than a total.
+      const { data: known } = await (supabaseAdmin || supabasePublic)
+        .from('leasing_leads').select('property_id,property')
+        .not('property', 'is', null).not('property_id', 'is', null).limit(10000);
+      const resolvable = {};
+      (known || []).forEach(k => { resolvable[String(k.property_id)] = k.property; });
+
+      const byProp = {};
+      rows.forEach(r => {
+        const pid = r && r.property_id != null ? String(r.property_id) : '(none)';
+        const b = byProp[pid] = byProp[pid] || { property_id: pid, rows: 0, hasPropertyName: 0, rawProperty: null };
+        b.rows++;
+        if (r && r.property_name) b.hasPropertyName++;
+        if (!b.rawProperty && r && r.property) b.rawProperty = String(r.property).slice(0, 60);
+      });
+      const properties = Object.values(byProp).map(b => ({
+        ...b,
+        resolvesTo: resolvable[b.property_id] || null,
+        dropped: !b.hasPropertyName && !resolvable[b.property_id],
+      })).sort((a, b) => b.rows - a.rows);
+
       return res.json({
         ok: true, dryRun: true, wrote: 0, source,
         window: { date_from, date_to },
@@ -6147,6 +6181,9 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
         unmappedFields: keys.filter(k => !mapped.has(k)),
         interestLevelFields: grain.filter(g => g.level.indexOf('PER INTEREST') === 0).map(g => g.field),
         idLikeFields: idLike,
+        returnsPropertyName: keys.includes('property_name'),
+        rowsDroppedForUnresolvableProperty: properties.filter(p => p.dropped).reduce((n, p) => n + p.rows, 0),
+        properties,
         grain,
         samples,
         note: 'read only — nothing was written to leasing_leads or any other table',
