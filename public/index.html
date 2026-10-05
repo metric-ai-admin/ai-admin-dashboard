@@ -2274,6 +2274,9 @@
     <h3 id="bl-preview-title">Preview &mdash; Billable Labor Report</h3>
     <div class="bl-preview-meta">
       <div><span class="bl-preview-label">To</span> <span id="bl-preview-to"></span></div>
+      <!-- Shown even when empty would be noise, so it is hidden if there is no
+           CC. What it must never do is stay hidden while people are copied. -->
+      <div id="bl-preview-cc-row" class="hidden"><span class="bl-preview-label">Cc</span> <span id="bl-preview-cc"></span></div>
       <div><span class="bl-preview-label">Subject</span> <span id="bl-preview-subject"></span></div>
     </div>
     <!-- Sandboxed: this is the email's own HTML, and rendering it inline would

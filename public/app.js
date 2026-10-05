@@ -5863,6 +5863,9 @@ async function blOpenPreview() {
     const mail = await api('/api/billable/email/preview');
     blSay('');
     document.getElementById('bl-preview-to').textContent = (mail.recipients || []).join(', ');
+    const cc = mail.cc || [];
+    document.getElementById('bl-preview-cc').textContent = cc.join(', ');
+    document.getElementById('bl-preview-cc-row').classList.toggle('hidden', !cc.length);
     document.getElementById('bl-preview-subject').textContent = mail.subject || '';
     // srcdoc into a sandboxed frame: no scripts, no same-origin, so the email
     // body renders as a mail client would show it and cannot touch the page.
@@ -5887,12 +5890,17 @@ function blClosePreview() {
 async function blSendFromPreview() {
   const btn = document.getElementById('bl-preview-send');
   const to = document.getElementById('bl-preview-to').textContent;
-  if (!confirm('Send this report to ' + to + '?')) return;
+  // The CC belongs in the confirmation. Erick is the one pressing send, and a
+  // prompt that names two people while four receive it is asking him to
+  // approve something he has not been told.
+  const cc = document.getElementById('bl-preview-cc').textContent;
+  if (!confirm('Send this report to ' + to + (cc ? '\nCc: ' + cc : '') + '?')) return;
   if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   try {
     const r = await api('/api/billable/email', { method: 'POST', body: {} });
     blClosePreview();
-    blSay('Sent to ' + (r.sentTo || []).join(', '), 'ok');
+    blSay('Sent to ' + (r.sentTo || []).join(', ')
+      + ((r.cc || []).length ? ' · cc ' + r.cc.join(', ') : ''), 'ok');
     await blLoadStatus();
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Send to these recipients'; }

@@ -8425,6 +8425,14 @@ const BILLABLE_RECIPIENTS = (process.env.BILLABLE_RECIPIENTS
   || 'lyndsay@metricpropertymanagement.com,admin@metricpropertymanagement.com')
   .split(',').map(x => x.trim()).filter(Boolean);
 
+// CC. Kara Garst and Rebekah Tuckner, added 2026-10-05 at Jay's request.
+// Separate from BILLABLE_RECIPIENTS rather than appended to it: they are being
+// kept informed, not asked to act, and folding them into To would also change
+// who "reply all" reaches. Same shape as EOD_CC so there is one convention.
+const BILLABLE_CC = (process.env.BILLABLE_CC
+  || 'kgarst@metricpropertymanagement.com,rtuckner@metricpropertymanagement.com')
+  .split(',').map(x => x.trim()).filter(Boolean);
+
 async function billableManifest() {
   return await readJSON(BILLABLE_MANIFEST, {});
 }
@@ -8479,6 +8487,7 @@ app.get('/api/billable/status', requireAuth, requireRole(...BILLABLE_ROLES), asy
       lastGenerated: manifest._lastGenerated || null,
       lastEmailed: manifest._lastEmailed || null,
       recipients: BILLABLE_RECIPIENTS,
+      cc: BILLABLE_CC,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -8817,6 +8826,7 @@ function billableEmail(report) {
   return {
     subject: `Billable Labor Report — ${report.today}`,
     recipients: BILLABLE_RECIPIENTS,
+    cc: BILLABLE_CC,
     html: billableEmailHtml(report),
   };
 }
@@ -8845,6 +8855,7 @@ app.post('/api/billable/email', requireAuth, requireRole(...BILLABLE_ROLES), asy
         subject: mail.subject,
         body: { contentType: 'HTML', content: mail.html },
         toRecipients: mail.recipients.map(a => ({ emailAddress: { address: a } })),
+        ccRecipients: mail.cc.map(a => ({ emailAddress: { address: a } })),
       },
       saveToSentItems: true,
     };
@@ -8861,7 +8872,7 @@ app.post('/api/billable/email', requireAuth, requireRole(...BILLABLE_ROLES), asy
     const manifest = await billableManifest();
     manifest._lastEmailed = new Date().toISOString();
     await writeJSON(BILLABLE_MANIFEST, manifest);
-    res.json({ ok: true, sentTo: BILLABLE_RECIPIENTS, at: manifest._lastEmailed });
+    res.json({ ok: true, sentTo: BILLABLE_RECIPIENTS, cc: BILLABLE_CC, at: manifest._lastEmailed });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
