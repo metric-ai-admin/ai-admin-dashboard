@@ -103,6 +103,21 @@ t('a row is only called dropped when BOTH paths fail', () => {
   assert.ok(/dropped: !b\.hasPropertyName && !resolvable\[b\.property_id\]/.test(DRY),
     'the two resolution paths are not both considered');
 });
+t('the loss is broken down by leasing week, not just totalled', () => {
+  // The pull ignores the date filter and returns months of rows, so one total
+  // cannot say whether any given week on the Goal Board moved.
+  assert.ok(/weeks: Object\.values\(byWeek\)/.test(DRY), 'there is no per-week breakdown');
+  assert.ok(/6 - d\.getUTCDay\(\)/.test(DRY), 'weeks are not Sun–Sat like the rest of the dashboard');
+  assert.ok(/droppedByFirstContact/.test(DRY) && /droppedByInterestReceived/.test(DRY),
+    'only one of the two date readings is broken down');
+});
+t('a dropped row is named once, not once per date reading', () => {
+  // The week tally walks each row twice, once per date field. Tallying the
+  // property on both passes would double every entry in that breakdown while
+  // the two counts beside it stayed correct.
+  assert.ok(/if \(which === 'byFirstContact'\) \{/.test(DRY),
+    'droppedProperties is counted on both passes and is therefore doubled');
+});
 t('the propMap is rebuilt from the same source the sync uses', () => {
   // leasing_leads, filtered to rows that have both halves — otherwise the dry
   // run would measure against a map the real sync does not have.

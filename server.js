@@ -6166,6 +6166,43 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
         if (r && r.property_name) b.hasPropertyName++;
         if (!b.rawProperty && r && r.property) b.rawProperty = String(r.property).slice(0, 60);
       });
+      // The same loss, BY LEASING WEEK. The pull ignores the date filter and
+      // comes back with months of rows, so a single total says nothing about
+      // whether any given week on the Goal Board moved. Weeks are Sun–Sat, the
+      // dashboard's convention, keyed on first_contact_date because that is
+      // what the Goal Board counts; interest_received is carried alongside so
+      // the two readings can be told apart.
+      const satOf = iso => {
+        const d = new Date(String(iso || '').slice(0, 10) + 'T12:00:00Z');
+        if (isNaN(d)) return null;
+        d.setUTCDate(d.getUTCDate() + (6 - d.getUTCDay()));   // forward to Saturday
+        return d.toISOString().slice(0, 10);
+      };
+      const byWeek = {};
+      rows.forEach(r => {
+        const pid = r && r.property_id != null ? String(r.property_id) : '(none)';
+        const resolvableHere = !!(r && r.property_name);
+        const wkFC = satOf(r && r.first_contact_date);
+        const wkIR = satOf(r && r.received);
+        [[wkFC, 'byFirstContact'], [wkIR, 'byInterestReceived']].forEach(([wk, which]) => {
+          if (!wk) return;
+          const b = byWeek[wk] = byWeek[wk] || { weekEnding: wk, byFirstContact: 0, byInterestReceived: 0,
+            droppedByFirstContact: 0, droppedByInterestReceived: 0, droppedProperties: {} };
+          b[which]++;
+          if (!resolvableHere && !resolvable[pid]) {
+            b[which === 'byFirstContact' ? 'droppedByFirstContact' : 'droppedByInterestReceived']++;
+            // Named once per row, on the first-contact pass only. Tallying it
+            // on both passes would double every property in this breakdown
+            // while the two counts beside it stayed right — the kind of number
+            // that looks plausible and is twice what it should be.
+            if (which === 'byFirstContact') {
+              const nm = (r && r.property) ? String(r.property).split(' - ')[0].trim() : pid;
+              b.droppedProperties[nm] = (b.droppedProperties[nm] || 0) + 1;
+            }
+          }
+        });
+      });
+
       const properties = Object.values(byProp).map(b => ({
         ...b,
         resolvesTo: resolvable[b.property_id] || null,
@@ -6184,6 +6221,7 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
         returnsPropertyName: keys.includes('property_name'),
         rowsDroppedForUnresolvableProperty: properties.filter(p => p.dropped).reduce((n, p) => n + p.rows, 0),
         properties,
+        weeks: Object.values(byWeek).sort((a, b) => a.weekEnding.localeCompare(b.weekEnding)),
         grain,
         samples,
         note: 'read only — nothing was written to leasing_leads or any other table',
