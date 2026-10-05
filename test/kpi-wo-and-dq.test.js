@@ -116,6 +116,73 @@ t('it has a cron', () => {
     'it fires beside the other two pulls and races them into the rate limit');
 });
 
+console.log('\nleads: both readings, neither overwriting the other');
+t('leads is Interest Received — Katie’s sheet filter', () => {
+  const r = K.leadsFrom([
+    { property: P, interest_received: '2026-09-28T10:00:00Z', first_contact_date: '2026-09-01' },
+    { property: P, interest_received: '2026-09-01T10:00:00Z', first_contact_date: '2026-09-29' },
+  ], W, E);
+  assert.strictEqual(r[P].leads, 1, 'leads is not keyed on interest_received');
+});
+t('first contact is kept alongside it, not instead of it', () => {
+  // The Goal Board and leasing_leads run on first_contact_date — Traffic, per
+  // Lyndsay 2026-09-15. Replacing one with the other would move a number she
+  // reads every Monday.
+  const r = K.leadsFrom([
+    { property: P, interest_received: '2026-09-01T10:00:00Z', first_contact_date: '2026-09-29' },
+  ], W, E);
+  assert.strictEqual(r[P].leadsByFirstContact, 1);
+  assert.strictEqual(r[P].leads, undefined, 'the two readings have been collapsed into one');
+});
+t('both survive build()', () => {
+  const o = K.build({ leads: [{ property: P, interest_received: '2026-09-28T10:00:00Z',
+    first_contact_date: '2026-09-28' }] }, { weekStart: W, weekEnd: E, asOf: E });
+  assert.strictEqual(o.byProperty[P].leads, 1);
+  assert.strictEqual(o.byProperty[P].leadsByFirstContact, 1, 'dropped by METRICS again');
+});
+
+console.log('\nclosedThisWeek is scoped the way her sheet is');
+t('Unit Turn work orders are excluded', () => {
+  // Her "Work Orders Completed Last Week" is filtered to Work Order Type:
+  // Resident and Internal. Keeping them made us count 19 at The Highlander
+  // against her 9.
+  const r = wo([
+    { property_name: P, status: 'Completed', completed_on: '2026-09-30', work_order_type: 'Internal' },
+    { property_name: P, status: 'Completed', completed_on: '2026-09-30', work_order_type: 'Unit Turn' },
+    { property_name: P, status: 'Completed', completed_on: '2026-09-30', work_order_type: 'unit turn' },
+  ]);
+  assert.strictEqual(r[P].closedThisWeek, 1, 'Unit Turn still counted');
+});
+t('openFieldWos excludes Unit Turn too — her open sheet does', () => {
+  const r = wo([
+    { property_name: P, status: 'Assigned', work_order_type: 'Resident' },
+    { property_name: P, status: 'Assigned', work_order_type: 'Unit Turn' },
+  ]);
+  assert.strictEqual(r[P].openFieldWos, 1, 'her scope includes Unit Turn');
+  assert.strictEqual(r[P].openWos, 2, 'ours should still count every open work order');
+  assert.strictEqual(r[P].openUnitTurn, 1, 'the excluded ones are not reported anywhere');
+});
+t('excluding them from her scope does not hide them from ours', () => {
+  // The Unit Turn work orders are real work. They come out of HER comparison
+  // metric, not out of the dashboard.
+  const r = wo([{ property_name: P, status: 'Assigned', work_order_type: 'Unit Turn' }]);
+  assert.strictEqual(r[P].openWos, 1);
+  assert.strictEqual(r[P].openFieldWos, undefined);
+});
+
+console.log('\nthe Evict probe does not touch Collections');
+t('it is read-only and leaves the registered report alone', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const i = server.indexOf("app.post('/api/collections/probe-tenant-statuses'");
+  assert.ok(i > 0, 'the probe is gone');
+  const body = server.slice(i, server.indexOf("app.post('/api/maintenance/probe-wo-window'"));
+  assert.ok(!/\.upsert\(|\.insert\(|\.update\(|\.delete\(|syncReport\(/.test(body), 'the probe writes');
+  assert.ok(/tenant_statuses: \[String\(code\)\]/.test(body), 'it does not ask per code');
+  const reports = fs.readFileSync(path.join(__dirname, '..', 'appfolio-reports.js'), 'utf8');
+  assert.ok(/tenant_statuses: \['0', '4'\]/.test(reports),
+    'the Collections report’s own filter was changed — it was explicitly to be left alone');
+});
+
 console.log('\nevery metric workOrdersFrom computes survives build()');
 t('the split reaches byProperty instead of being dropped', () => {
   // build() copies ONLY the names in METRICS. A metric computed upstream and

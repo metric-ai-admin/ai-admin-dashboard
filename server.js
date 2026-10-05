@@ -7141,6 +7141,41 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null, sweep = fal
 const WO_WINDOW_TARGETS = ['14196-1', '18516-1', '18518-1', '18546-1', '18548-1',
   '20872-1', '20912-1', '21395-1', '21482-1'];
 
+// POST /api/collections/probe-tenant-statuses — READ ONLY. Which tenant_statuses
+// code is Evict?
+//
+// delinquency_as_of is registered with ['0','4'], and the 72 rows it returns
+// are 69 Current + 3 Notice. Katie's delinquency sheet is filtered to
+// "Tenant Status: Current, Notice, and Evict", so every resident in eviction is
+// missing from our side of the KPI comparison.
+//
+// The code is not guessable and must not be guessed: this is the Collections
+// feed, and a wrong code would quietly change what the Decision Queue shows.
+// So each code is asked for ON ITS OWN and the tenant_status values that come
+// back are reported. Nothing is written and the registered report is not
+// touched.
+app.post('/api/collections/probe-tenant-statuses', requireMetricAdmin, async (req, res) => {
+  try {
+    const out = [];
+    for (let code = 0; code <= 9; code++) {
+      try {
+        const rows = await appfolioReportsFetch('/api/v2/reports/delinquency_as_of.json',
+          { tenant_statuses: [String(code)], property_visibility: 'active' });
+        const tally = {};
+        (rows || []).forEach(r => {
+          const s = String(r.tenant_status || '(blank)').trim();
+          tally[s] = (tally[s] || 0) + 1;
+        });
+        out.push({ code: String(code), rows: (rows || []).length, tenantStatuses: tally });
+      } catch (e) { out.push({ code: String(code), error: e.message }); }
+    }
+    // A code that returns the same statuses as another is not a distinct code;
+    // this API answers an unrecognised filter by ignoring it, so two codes
+    // returning identical tallies means at least one of them did nothing.
+    res.json({ ok: true, readOnly: true, note: 'registered report unchanged; nothing written', codes: out });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.post('/api/maintenance/probe-wo-window', requireMetricAdmin, async (req, res) => {
   try {
     // appfolioReportsFetch, NOT appfolio-client's fetchReport. Two reasons,
