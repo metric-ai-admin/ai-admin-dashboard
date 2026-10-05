@@ -182,6 +182,28 @@ t('it is read-only and leaves the registered report alone', () => {
   assert.ok(/tenant_statuses: \['0', '4'\]/.test(reports),
     'the Collections report’s own filter was changed — it was explicitly to be left alone');
 });
+t('the KPI read is a separate report, not a widened one', () => {
+  const reports = fs.readFileSync(path.join(__dirname, '..', 'appfolio-reports.js'), 'utf8');
+  assert.ok(/id: 'delinquency_kpi'/.test(reports), 'there is no separate KPI read');
+  // Evict is code 3, probed live 2026-10-05 one code at a time:
+  // 0=Current 1=Past 2=Future 3=Evict 4=Notice.
+  assert.ok(/tenant_statuses: \['0', '4', '3'\]/.test(reports),
+    'the KPI read does not ask for Current + Notice + Evict');
+  // Past is the largest bucket at 209 rows and her filter excludes it.
+  assert.ok(!/tenant_statuses: \['0', '4', '3', '1'\]/.test(reports), 'Past was included');
+  // Two entries, one resource.
+  assert.strictEqual((reports.match(/id: 'delinquency_as_of'/g) || []).length, 1);
+  assert.strictEqual((reports.match(/resource: 'delinquency_as_of'/g) || []).length, 2,
+    'the KPI read points at a different resource');
+});
+t('it is synced on the same schedule, behind the others', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const sc = server.split('\n').filter(l => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+  const j = sc.indexOf("cron.schedule('45 17 * * *'");
+  const block = sc.slice(j, sc.indexOf('cron.schedule(', j + 10));
+  assert.ok(/syncReport\('delinquency_kpi'\)/.test(block), 'nothing refreshes the KPI read');
+  assert.ok(/}, 180000\);/.test(block), 'it races the other three into the rate limit');
+});
 
 console.log('\nevery metric workOrdersFrom computes survives build()');
 t('the split reaches byProperty instead of being dropped', () => {

@@ -185,6 +185,29 @@ const REPORTS = [
     params: { tenant_statuses: ['0', '4'], property_visibility: 'active' },
   },
   {
+    // The SAME report, read for the KPI comparison only.
+    //
+    // delinquency_as_of above is the Collections feed and its filter is
+    // deliberately left alone — the Decision Queue and the Eviction Tracker
+    // both run on it, and widening it would quietly change what they show.
+    //
+    // Katie's delinquency sheet is filtered to "Tenant Status: Current,
+    // Notice, and Evict". Collections asks for ['0','4'] = Current + Notice,
+    // so every resident in eviction was missing from our side of the KPI
+    // comparison. The codes are not guessed: probed live on 2026-10-05, one
+    // request per code, 0=Current 1=Past 2=Future 3=Evict 4=Notice.
+    //
+    // Past (1) stays out on purpose — her filter does not include it, and it
+    // is the largest bucket of the five at 209 rows.
+    id: 'delinquency_kpi',
+    resource: 'delinquency_as_of',
+    label: 'Delinquency — KPI scope (Current + Notice + Evict)',
+    group: 'Collections',
+    priority: 9,
+    feeds: 'KPI comparison dqTotal / dqResidents — NOT the Collections queue',
+    params: { tenant_statuses: ['0', '4', '3'], property_visibility: 'active' },
+  },
+  {
     id: 'unit_vacancy',
     resource: 'unit_vacancy',
     label: 'Unit Vacancy Detail',

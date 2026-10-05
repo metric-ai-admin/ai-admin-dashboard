@@ -14859,6 +14859,16 @@ cron.schedule('45 17 * * *', () => {
       .then(r => logLine(`[delinquency-sync] ${r?.rowCount ?? '?'} rows`))
       .catch(err => console.error('[delinquency-sync] failed:', err.message));
   }, 120000);
+
+  // The KPI-scope read of the same report: Current + Notice + Evict, which is
+  // what Katie's sheet is filtered to. Separate from the Collections pull
+  // above rather than a widening of it, so the Decision Queue keeps the exact
+  // scope it has always had. Fourth in the queue, 60s behind.
+  setTimeout(() => {
+    require('./appfolio-reports.js').syncReport('delinquency_kpi')
+      .then(r => logLine(`[delinquency-kpi-sync] ${r?.rowCount ?? '?'} rows`))
+      .catch(err => console.error('[delinquency-kpi-sync] failed:', err.message));
+  }, 180000);
 }, { timezone: LYNDSAY_TIMEZONE });
 
 // 6 PM Central weekdays. Timezone-anchored (DST-safe) rather than a raw UTC hour.
