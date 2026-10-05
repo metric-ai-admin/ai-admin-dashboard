@@ -139,6 +139,12 @@ const MAINT_VIEW_ONLY_ROLES = ['regional_director', 'resident_success'];
 
 let currentUser = null;
 
+/* The tab the user picked themselves, as opposed to the one the role gate
+ * chooses on their behalf. Set on click and never cleared: initAuth() reads it
+ * when /api/auth/me comes back, so that a choice made while that request was in
+ * flight survives instead of being overwritten. */
+let userChoseTab = null;
+
 // Jay's Ops Dashboard. The one place this address is written: the sidebar
 // anchor gets its href from here, so moving the dashboard is a one-line change
 // and there is no second copy to forget.
@@ -226,15 +232,36 @@ async function initAuth() {
     group.style.display = anyVisible ? '' : 'none';
   });
 
-  // Activate first allowed tab
+  // Activate a tab — but NOT over one the user already picked.
+  //
+  // THE BUG THIS FIXES. initAuth() awaits /api/auth/me, and the sidebar is
+  // clickable the whole time it is in flight. Every click handler is wired at
+  // module load, so a tab chosen during that wait used to be thrown away here:
+  // this block cleared every .active and forced the first allowed tab back on
+  // screen. The user saw their click do nothing and clicked again.
+  //
+  // It looked like the Morning Report because for admin the first allowed tab
+  // IS Morning, and Morning is the slowest thing on the page — so the override
+  // always landed there and always while a report was spinning. The race is
+  // with /api/auth/me, not with the report.
+  //
+  // A chosen tab is still overridden when the role may not have it: until this
+  // function runs, the buttons for tabs this user cannot see are visible and
+  // clickable, so "the user picked it" is not on its own permission to keep it.
   const firstAllowed = allTabBtns.find(b => allowed.includes(b.dataset.tab));
-  if (firstAllowed) {
+  const chosen = userChoseTab && allowed.includes(userChoseTab) ? userChoseTab : null;
+  const target = chosen
+    ? allTabBtns.find(b => b.dataset.tab === chosen)
+    : firstAllowed;
+  if (target) {
     $$('#tabs button').forEach(b => b.classList.remove('active'));
     $$('.tab').forEach(t => t.classList.remove('active'));
-    firstAllowed.classList.add('active');
-    const tabEl = $(`#tab-${firstAllowed.dataset.tab}`);
+    target.classList.add('active');
+    const tabEl = $(`#tab-${target.dataset.tab}`);
     if (tabEl) tabEl.classList.add('active');
-    loadTab(firstAllowed.dataset.tab);
+    // Re-run even for a tab the click already loaded: that run happened with
+    // currentUser still null, so anything role-dependent inside it saw nothing.
+    loadTab(target.dataset.tab);
   }
 
   // Wire logout button
@@ -270,6 +297,9 @@ $$('#tabs button[data-tab]').forEach(btn => {
       const c = group.querySelector('.subnav-caret'); if (c) c.textContent = '›';
       return;
     }
+    // Recorded AFTER the submenu-collapse branch above, which returns without
+    // changing tabs — collapsing Maintenance is not choosing a tab.
+    userChoseTab = btn.dataset.tab;
     $$('#tabs button[data-tab]').forEach(b => b.classList.remove('active'));
     $$('.tab').forEach(t => t.classList.remove('active'));
     btn.classList.add('active');
