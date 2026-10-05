@@ -6981,6 +6981,18 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null } = {}) {
   return { ...summary, dryRun: false, written, backupPath, backupTable };
 }
 
+// POST /api/maintenance/reconcile — settle the work orders the feed stopped
+// carrying. Admin only, and a DRY RUN unless `write: true` is sent: the default
+// has to be the harmless one, because this changes hundreds of rows in a pass
+// and the person who types it wrong should get a report, not a migration.
+app.post('/api/maintenance/reconcile', requireMetricAdmin, async (req, res) => {
+  try {
+    const dryRun = !(req.body && req.body.write === true);
+    const r = await reconcileWorkOrders({ dryRun });
+    res.json({ ok: !r.error, ...r });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // ── Supporting maintenance reports (Inspection / Billable / Labor / Custom
 // Fields / Inventory) → their own tables, full-replaced each sync (each report
 // is a current snapshot). Field keys are tolerant candidates; `sample_keys` is
