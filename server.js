@@ -465,6 +465,7 @@ app.get('/ping', (req, res) => {
 // of it. The queue is bounded at 500 rows and DROPS on failure rather than
 // growing — losing an audit row is annoying, an unbounded queue is an outage.
 const ACT = require('./lib/activity-log.js');
+const ACTS = require('./lib/activity-actions.js');
 
 const activityLog = ACT.createLogger(async rows => {
   if (!CRM_CONFIGURED) throw new Error('supabase not configured');
@@ -525,9 +526,19 @@ function activityWriteLogger(req, res, next) {
     try {
       const who = activityActor(req);
       if (!who) return;
+      // What the route MEANS, from lib/activity-actions.js. A route with no
+      // entry logs with a null action rather than a guessed one — an invented
+      // label would make an uncatalogued route look catalogued, and a test
+      // fails the build while any write route is unnamed.
+      const d = ACTS.describe(req.method, req.path);
       activityLog.log({
         ...who,
-        event: 'write',
+        // The dashboard talking to itself is not somebody working. The
+        // Command Center autosave fires on every page load for every user.
+        event: d && d.system ? 'system' : 'write',
+        action: d && d.label ? d.label : null,
+        entity_type: d && d.entity ? d.entity : null,
+        entity_id: ACT.resourceOf(req.path),
         section: ACT.sectionOf(req.path),
         resource: ACT.resourceOf(req.path),
         method: req.method,

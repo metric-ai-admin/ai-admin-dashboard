@@ -11543,6 +11543,21 @@ function actWhen(iso) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+/* Days and Rate have to agree, or the table argues with itself.
+ *
+ * Somebody who worked only Saturday has one active day and a 0% rate, because
+ * the rate counts working days. "1" beside "0%" reads as a bug; "1 (weekend)"
+ * reads as the fact it is. */
+function actDaysCell(p, workingDays) {
+  const days = p.active_days || [];
+  if (!days.length) return '0';
+  const work = days.filter(d => (workingDays || []).includes(d)).length;
+  const weekend = days.length - work;
+  if (!weekend) return String(days.length);
+  if (!work) return `${days.length} <span class="muted small">(weekend)</span>`;
+  return `${days.length} <span class="muted small">(${weekend} weekend)</span>`;
+}
+
 async function loadActivity() {
   const ls = $('#act-lastseen'), wk = $('#act-weekly');
 
@@ -11557,15 +11572,20 @@ async function loadActivity() {
       ls.innerHTML = `<table class="data-table"><thead><tr>
         <th>Person</th><th>Role</th><th>Last activity</th><th>Last section</th><th>Days since login</th>
       </tr></thead><tbody>${d.users.map(u => {
-        // "never" is rendered as its own word, never as a dash or a zero: a
-        // person who has not signed in is the thing this panel is for.
+        // NOT "never". The log starts when phase 1 shipped, so "never" claims
+        // something about years the table cannot see — the honest statement is
+        // the window it does cover. Reads "not since Oct 5" until the log is
+        // older than the people in it.
         const never = u.never_signed_in;
+        const since = d.oldestRow
+          ? 'not since ' + new Date(d.oldestRow).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+          : 'no activity logged';
         return `<tr${never ? ' style="opacity:.75"' : ''}>
           <td>${esc(u.name || u.email)}<div class="muted small">${esc(u.email)}</div></td>
           <td>${esc(u.role || '—')}</td>
-          <td>${never ? '<b>never</b>' : esc(actWhen(u.last_at))}</td>
+          <td>${never ? `<b>${esc(since)}</b>` : esc(actWhen(u.last_at))}</td>
           <td>${esc(u.last_section || '—')}</td>
-          <td>${never ? '<b>never</b>' : (u.days_since_login === null ? '—' : u.days_since_login)}</td>
+          <td>${never ? `<span class="muted">${esc(since)}</span>` : (u.days_since_login === null ? '—' : u.days_since_login)}</td>
         </tr>`;
       }).join('')}</tbody></table>`;
     }
@@ -11591,7 +11611,7 @@ async function loadActivity() {
     </tr></thead><tbody>${d.people.map(p => `<tr>
       <td>${esc(p.name || p.email)}<div class="muted small">${esc(p.role || '')}</div></td>
       <td>${p.activity_rate === null ? '—' : Math.round(p.activity_rate * 100) + '%'}</td>
-      <td>${p.active_days.length}</td>
+      <td>${actDaysCell(p, d.working_days)}</td>
       ${cols.map(c => `<td>${p.sections[c] || ''}</td>`).join('')}
     </tr>`).join('')}</tbody></table>`;
   } catch (e) {

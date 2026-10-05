@@ -76,10 +76,13 @@ t('never-signed-in is its own flag, not a null to be guessed from', () => {
   const body = code.slice(i, code.indexOf("app.get('/api/activity/weekly'"));
   assert.ok(/never_signed_in: !b\.lastAt/.test(body));
 });
-t('the UI prints the word, not a dash or a zero', () => {
+t('a user with no rows reads as "not since <log start>", not "never"', () => {
   const i = appCode.indexOf('async function loadActivity');
   const body = appCode.slice(i, appCode.indexOf('async function loadKpiRecaps'));
-  assert.ok(/<b>never<\/b>/.test(body), 'a never-signed-in user renders like any other');
+  // "never" claims something about years the log cannot see — it starts when
+  // phase 1 shipped. The honest statement is the window it does cover.
+  assert.ok(/not since/.test(body), 'the UI still says never');
+  assert.ok(!/<b>never<\/b>/.test(body), 'the literal word never is still rendered');
 });
 t('the retention window is reported, so silence can be read correctly', () => {
   // Without it, 200 days without a login looks the same as rows that aged out.
@@ -130,6 +133,16 @@ t('the week can be asked for explicitly, and a bad value is ignored', () => {
   const i = code.indexOf("app.get('/api/activity/weekly'");
   const body = code.slice(i, i + 900);
   assert.ok(/\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$/.test(body), 'week_ending is used unvalidated');
+});
+
+t('Days and Rate cannot contradict each other', () => {
+  // One active day with a 0% rate reads as a bug unless the cell says why:
+  // the rate counts working days and Saturday is not one.
+  const i = appCode.indexOf('function actDaysCell');
+  const body = appCode.slice(i, appCode.indexOf('async function loadActivity'));
+  assert.ok(i > 0, 'there is no days cell');
+  assert.ok(/\(weekend\)/.test(body), 'a weekend-only day is indistinguishable from a working one');
+  assert.ok(/weekend = days\.length - work/.test(body));
 });
 
 console.log('\nthe tab exists and loads');
