@@ -110,24 +110,44 @@ t('every other section survived', () => {
 
 console.log('\n3 — Security items stay out of the group chat');
 const MR_OPS_PRIVATE_RE = lift('const MR_OPS_PRIVATE_RE', '// The same idea as mrOwnsAllDay');
-t('a title STARTING with Security is held back', () => {
+t('security, activity logs and the past-days report are held back', () => {
+  // Three categories, one rule. Security names an open gap; the other two are
+  // team monitoring, and announcing a tool that watches the team in the room
+  // being watched is a conversation to have on purpose, not by pasting.
   ['Security — Reduce Azure app permissions (remove Mail.Read + MailboxSettings.ReadWrite)',
    'Security hardening — access log, CORS origin, persistent log',
    'security review of the triage caller key',
+   'Activity Logs — Who logged in and what they did, per dashboard section',
+   'Activity Logs test — verify phase 1 logging (safe to ignore)',
+   'Daily Report — View past days',
+   'Daily Report - View past days (dashboard)',
   ].forEach(x => assert.ok(MR_OPS_PRIVATE_RE.test(x.trim()), x));
 });
-t('a title that merely mentions security is NOT held back', () => {
-  // Start of the title only. A rule matching anywhere would hide ordinary work.
+t('a title that merely MENTIONS any of them is NOT held back', () => {
+  // Start of the title only. A rule matching anywhere would hide ordinary work,
+  // and the cost of over-hiding is a task nobody chases.
   ['Review Social Security letter for payroll',
    'Jay — Ops Dashboard integration: single login (meeting Friday)',
    'Deposit security refund — Windy Hill 204',
+   'fix activity logs timezone bug',
+   'Review the daily report with Bekah',
+   'Daily Report — send to Lyndsay',
+   'Weekly activity logs review with Jay',
   ].forEach(x => assert.ok(!MR_OPS_PRIVATE_RE.test(x.trim()), x));
 });
-t('the report says something was held back, without saying what', () => {
+t('the count says something is missing without naming the category', () => {
+  // "security items" would give away the thing the line exists to withhold,
+  // now that the held-back set covers monitoring work too.
   const i = server.indexOf("L.push(`*ARTURO'S PENDING ITEMS LIST*`)");
-  const body = server.slice(i, i + 1800);
-  assert.ok(/security item\$\{opsPrivate === 1 \? '' : 's'\} not shown here/.test(body),
+  // Statements only. The comment above the line says «"items", not "security
+  // items"», and the first version of this test matched that sentence instead
+  // of the code — the same way an earlier one matched the comment documenting
+  // its own fix.
+  const body = server.slice(i, i + 1800)
+    .split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
+  assert.ok(/\+ \$\{opsPrivate\} item\$\{opsPrivate === 1 \? '' : 's'\} not shown here/.test(body),
     'items vanish with no notice that the list is incomplete');
+  assert.ok(!/security item/.test(body), 'the count still names the category');
   assert.ok(!/\$\{o\.item\}/.test(body.slice(body.indexOf('opsPrivate'), body.indexOf('opsPrivate') + 300)),
     'the notice leaks the title it is hiding');
 });

@@ -12381,9 +12381,21 @@ let mrSenderDiagnostic = [];
 const MR_INTERNAL_DOMAINS = ['metricpropertymanagement.com', 'livewithmetric.com'];
 const mrIsInternalAddress = a => MR_INTERNAL_DOMAINS.includes(String(a || '').toLowerCase().split('@')[1] || '');
 
-// Arturo's Pending Items goes into the High Ops group chat, so a line that
-// names an open security gap is read by the room. Start of the title only.
-const MR_OPS_PRIVATE_RE = /^security\b/i;
+// Arturo's Pending Items goes into the High Ops group chat, so some titles are
+// read by the room whether or not they were meant for it:
+//
+//   * "Security …" names an open gap and tells everyone which one.
+//   * "Activity Logs …" and "Daily Report — View past days …" are team
+//     monitoring. Announcing the build of a tool that watches the team, in the
+//     room being watched, is a conversation to have deliberately rather than
+//     by pasting a report.
+//
+// START OF THE TITLE ONLY, so a task that merely mentions any of these in
+// passing is unaffected: "Social Security letter", "review the daily report
+// with Bekah", "fix activity logs timezone" all stay.
+//
+// The work stays on the dashboard either way; it just does not get announced.
+const MR_OPS_PRIVATE_RE = /^(security\b|activity logs\b|daily report\s*[—-]\s*view past days\b)/i;
 
 // The same idea as mrOwnsAllDay, deliberately LOOSER.
 //
@@ -13038,11 +13050,9 @@ function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sop
   if (errors.ops) L.push(`  ⚠ ${errors.ops}`);
   else if (!ops.length) L.push('  No 🔴/🟡/🟢 items pending.');
   else {
-    // The report is pasted into the High Ops group chat. A line beginning
-    // "Security —" tells a room of people which hole is still open and how it
-    // is worded in the backlog. The work stays on the dashboard; it just does
-    // not get announced. Title only, and only at the START — a task that
-    // merely mentions security in passing is unaffected.
+    // The report is pasted into the High Ops group chat. Some titles are read
+    // by the room whether or not they were meant for it — see
+    // MR_OPS_PRIVATE_RE for which, and why each one.
     const opsSafe = ops.filter(o => !MR_OPS_PRIVATE_RE.test(String(o.item || '').trim()));
     const opsPrivate = ops.length - opsSafe.length;
     const opsEn = opsSafe.filter(o => !mrLooksSpanish(o.item));
@@ -13055,7 +13065,10 @@ function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sop
     if (!opsEn.length) L.push('  No 🔴/🟡/🟢 items pending.');
     // Counted, not silent: the list says something is missing without saying
     // what it is.
-    if (opsPrivate) L.push(`  + ${opsPrivate} security item${opsPrivate === 1 ? '' : 's'} not shown here — see dashboard`);
+    // "items", not "security items": the held-back set now covers monitoring
+    // work too, and naming the category in the count would give away the thing
+    // the line exists to withhold.
+    if (opsPrivate) L.push(`  + ${opsPrivate} item${opsPrivate === 1 ? '' : 's'} not shown here — see dashboard`);
     if (opsSkipped) L.push(`  + ${opsSkipped} item${opsSkipped === 1 ? '' : 's'} not shown (written in Spanish) — see dashboard`);
     if (opsEn.length > 10) L.push(`  + ${opsEn.length - 10} more task${opsEn.length - 10 === 1 ? '' : 's'} — see dashboard`);
   }
