@@ -6842,11 +6842,16 @@ app.post('/api/maintenance/sync', requireMetricAccess, async (req, res) => {
   try {
     const raw = await appfolioReportsFetch(APPFOLIO_WORK_ORDER_REPORT, APPFOLIO_WORK_ORDER_FILTER);
     const seen = new Set();
+    const syncStamp = new Date().toISOString();
     const rows = [];
     for (const r of raw) {
       const rec = mwoRowFromReport(r);
       if (!rec || seen.has(rec.work_order_number)) continue;
       seen.add(rec.work_order_number);
+      // Stamped on every row the feed returns. A row whose stamp stops moving
+      // is one the feed has stopped carrying, which is the whole signal the
+      // reconciliation needs and the thing this table never recorded.
+      rec.last_seen_in_feed = syncStamp;
       rows.push(rec);
     }
     const db = supabaseAdmin || supabasePublic;
@@ -6862,6 +6867,119 @@ app.post('/api/maintenance/sync', requireMetricAccess, async (req, res) => {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Maintenance sync failed: ' + err.message });
   }
 });
+
+// ── Work-order reconciliation ───────────────────────────────────────────────
+//
+// The sync asks AppFolio for OPEN work orders only and upserts what comes back.
+// A work order that closes stops appearing in the feed, so its row is never
+// written again and keeps its last open status for ever. On 2026-10-05 that put
+// 436 work orders on Erick's Command Center where AppFolio had 95 open.
+//
+// Nothing is ever deleted. A row either gets the status AppFolio says it has,
+// or it gets WOS.UNKNOWN — "stopped being reported and we cannot say why" —
+// which is neither open nor closed and gets its own line on the screens.
+//
+// Runs AFTER the sync, inside the same request, so the feed it compares against
+// is the one that was just written rather than yesterday's.
+const WOS = require('./lib/work-order-status.js');
+
+async function reconcileWorkOrders({ dryRun = true, feedRows = null } = {}) {
+  if (!CRM_CONFIGURED) return { skipped: 'supabase not configured' };
+  const db = supabaseAdmin || supabasePublic;
+  const af = require('./appfolio-reports.js');
+
+  // The open feed. Prefer the rows the caller just synced; fall back to the
+  // stored copy for a standalone run.
+  let open = feedRows;
+  if (!open) {
+    const d = await af.readReportData('wo_all');
+    open = (d && d.rows) || (Array.isArray(d) ? d : null);
+  }
+  if (!open || !open.length) return { error: 'no open feed available — sync wo_all first' };
+
+  const comp = await af.readReportData('wo_completed');
+  const completedRows = (comp && comp.rows) || (Array.isArray(comp) ? comp : []);
+  if (!completedRows.length) return { error: 'wo_completed store is empty — sync it first' };
+
+  const key = r => String(r.work_order_number == null ? '' : r.work_order_number).trim();
+  const openNow = new Set(open.map(key).filter(Boolean));
+  const closedBy = new Map();
+  completedRows.forEach(r => { const k = key(r); if (k) closedBy.set(k, r); });
+
+  const { data: table, error: readErr } = await db.from('maintenance_work_orders')
+    .select('id,work_order_number,property_name,status,work_order_type,created_at_appfolio')
+    .limit(50000);
+  if (readErr) return { error: 'read: ' + readErr.message };
+
+  // The feed is a snapshot. A work order created after it was taken is not a
+  // ghost — we have it and the feed predates it — so it is left alone.
+  const feedDay = (comp && comp.fetchedAt ? String(comp.fetchedAt) : new Date().toISOString()).slice(0, 10);
+
+  const changes = [];
+  (table || []).forEach(r => {
+    if (WOS.isClosed(r.status) || WOS.isUnknown(r.status)) return;   // already settled
+    const k = key(r);
+    if (openNow.has(k)) return;                                       // still open
+    const c = closedBy.get(k);
+    if (c) {
+      const to = String(c.status || 'Completed').trim();
+      const on = String(c.completed_on || c.work_completed_on || c.canceled_on || '').slice(0, 10);
+      changes.push({ id: r.id, work_order_number: k, property_name: r.property_name,
+        work_order_type: r.work_order_type, status_before: r.status, status_after: to,
+        completed_on: /^\d{4}-\d{2}-\d{2}$/.test(on) ? on : null, reason: 'closed' });
+      return;
+    }
+    const created = String(r.created_at_appfolio || '').slice(0, 10);
+    if (created && created > feedDay) return;                         // newer than the feed
+    changes.push({ id: r.id, work_order_number: k, property_name: r.property_name,
+      work_order_type: r.work_order_type, status_before: r.status, status_after: WOS.UNKNOWN,
+      completed_on: null, reason: 'unknown' });
+  });
+
+  const summary = {
+    dryRun, examined: (table || []).length, openInFeed: openNow.size,
+    toClose: changes.filter(c => c.reason === 'closed').length,
+    toUnknown: changes.filter(c => c.reason === 'unknown').length,
+  };
+  if (dryRun || !changes.length) return { ...summary, changes: changes.slice(0, 20) };
+
+  // BACKUP BEFORE WRITING, to disk and to Supabase. Not for tidiness: 362 rows
+  // change status in one pass, and "put it back the way it was" needs a record
+  // of the way it was that survives this process exiting.
+  const stamp = new Date().toISOString();
+  const backup = { takenAt: stamp, feedDay, rows: changes };
+  let backupPath = null, backupTable = null;
+  try {
+    backupPath = path.join(DATA_DIR, `wo-reconcile-backup-${stamp.slice(0, 19).replace(/[:T]/g, '')}.json`);
+    await writeJSON(backupPath, backup);
+  } catch (e) { return { ...summary, error: 'backup to disk failed, nothing written: ' + e.message }; }
+  try {
+    const { error } = await db.from('work_order_reconcile_log')
+      .insert(changes.map(c => ({ ...c, run_at: stamp })));
+    backupTable = error ? ('failed: ' + error.message) : 'ok';
+  } catch (e) { backupTable = 'failed: ' + e.message; }
+  // The disk backup is the one that gates the write; the table is a
+  // convenience. If the table is missing, say so and carry on rather than
+  // refusing to fix 362 rows over a log.
+
+  let written = 0;
+  for (const c of changes) {
+    const patch = { status: c.status_after, last_seen_in_feed: null };
+    if (c.completed_on) patch.completed_on = c.completed_on;
+    const { error } = await db.from('maintenance_work_orders').update(patch).eq('id', c.id);
+    if (error) { logLine(`[wo-reconcile] ${c.work_order_number}: ${error.message}`); continue; }
+    written++;
+  }
+  // Everything still in the feed is seen NOW. Stamped after the closures so a
+  // row cannot be both closed and freshly seen.
+  const seenStamp = [...openNow];
+  for (let i = 0; i < seenStamp.length; i += 200) {
+    const chunk = seenStamp.slice(i, i + 200);
+    await db.from('maintenance_work_orders')
+      .update({ last_seen_in_feed: stamp }).in('work_order_number', chunk);
+  }
+  return { ...summary, dryRun: false, written, backupPath, backupTable };
+}
 
 // ── Supporting maintenance reports (Inspection / Billable / Labor / Custom
 // Fields / Inventory) → their own tables, full-replaced each sync (each report
@@ -13410,8 +13528,13 @@ async function eodGather() {
       db.from('maintenance_labor').select('work_order_number,worked_hours,labor_date'),
     ]);
     const wos = woR.data || [];
-    const isClosed = st => { const s = String(st || '').toLowerCase(); return s === 'completed' || s === 'cancelled' || s === 'canceled'; };
-    const openWos = wos.filter(w => !isClosed(w.status));
+    // Three states, from lib/work-order-status.js. The exact-match test this
+    // replaces called "Completed No Need To Bill" open — 113 rows of it.
+    const openWos = wos.filter(w => WOS.isOpen(w.status));
+    // Neither open nor closed: rows the feed stopped carrying. Counted and
+    // listed separately rather than hidden, because somebody has to look at
+    // them and a number nobody can see is a number nobody checks.
+    const unknownWos = wos.filter(w => WOS.isUnknown(w.status));
     const prank = p => ({ critical: 3, high: 2, normal: 1 }[String(p || '').toLowerCase()] || 0);
     openWos.sort((a, b) => prank(b.priority) - prank(a.priority) || String(b.created_at_appfolio || '').localeCompare(String(a.created_at_appfolio || '')));
     // NOTE: a "completed today" count from this table is always 0 — see below.
@@ -13491,6 +13614,14 @@ async function eodGather() {
 
     S.maintenance = {
       open: openWos.length, openedToday, completed,
+      // Not open, not closed: rows AppFolio stopped reporting. Surfaced with
+      // their work-order numbers so Erick or Jay can look them up, because a
+      // count on its own gives nobody anywhere to start.
+      notInFeed: unknownWos.length,
+      notInFeedList: unknownWos.slice(0, 25).map(w => ({
+        wo: w.work_order_number, property: w.property_name, unit: w.unit,
+        issue: (w.issue || '').replace(/\s+/g, ' ').slice(0, 44),
+      })),
       totalHours: Math.round(postedToday.reduce((a, l) => a + (Number(l.worked_hours) || 0), 0) * 10) / 10,
       wosWorked: new Set(postedToday.map(l => l.work_order_number).filter(Boolean)).size,
       assignedNotPosted,
@@ -13854,6 +13985,10 @@ function eodRenderHtml(data) {
       + (m5.stalledCount ? mLine('⚠ Stalled:', `${m5.stalledCount} assigned 7+ days with no hours logged`, true) : '')
       + (m5.capacityCount ? mLine('⚠ Capacity:', `${m5.capacityCount} propert${m5.capacityCount === 1 ? 'y' : 'ies'} with 5+ open — ${(m5.capacityTop || []).join(', ')}`, true) : '')
       + (m5.violations ? mLine('Code violations:', `${m5.violations} open`) : '')
+      // Its own line, flagged. These are not open work and not finished work:
+      // AppFolio stopped reporting them and nobody has established why. Folding
+      // them into "open" is what produced 436 where 95 were real.
+      + (m5.notInFeed ? mLine('⚠ Not in AppFolio feed:', `${m5.notInFeed} — verify`, true) : '')
       + `<div style="font-weight:600;font-size:12px;margin:8px 0 2px;color:${EOD.text}">Oldest open</div>`
       + eodTable(['WO#', 'Property / Unit', 'Issue', 'Age'], (m5.oldest || []).map(w =>
         [eodEsc(w.wo), eodEsc([w.property, w.unit].filter(Boolean).join(' ')),
