@@ -14804,6 +14804,26 @@ cron.schedule('45 17 * * *', () => {
       .then(r => logLine(`[unit-turn-sync] ${r?.rowCount ?? '?'} rows`))
       .catch(err => console.error('[unit-turn-sync] failed:', err.message));
   }, 60000);
+
+  // delinquency_as_of — the KPI comparison's DQ source.
+  //
+  // Its store was last fetched 2026-09-30 when the 09/27–10/03 comparison ran
+  // on 10/05, so every delinquency figure was five days stale against a sheet
+  // that is explicitly "As of 10/03". Nothing was scheduled to refresh it.
+  //
+  // Saturday is what the comparison wants, and Saturday is what the report is
+  // read for — but this report takes no as-of parameter: it answers as of NOW.
+  // Running it here, the evening before the Sunday snapshot, is the closest
+  // this feed can get to "as of the Saturday that just closed", and it is
+  // honest about being that rather than a true as-of read.
+  //
+  // Sequenced third so the three pulls do not race each other into the
+  // 7-requests-per-15-seconds limit.
+  setTimeout(() => {
+    require('./appfolio-reports.js').syncReport('delinquency_as_of')
+      .then(r => logLine(`[delinquency-sync] ${r?.rowCount ?? '?'} rows`))
+      .catch(err => console.error('[delinquency-sync] failed:', err.message));
+  }, 120000);
 }, { timezone: LYNDSAY_TIMEZONE });
 
 // 6 PM Central weekdays. Timezone-anchored (DST-safe) rather than a raw UTC hour.
