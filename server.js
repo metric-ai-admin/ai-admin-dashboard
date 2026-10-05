@@ -6081,6 +6081,72 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
   if (!date_from || !date_to) return res.status(400).json({ ok: false, error: 'date_from and date_to are required (YYYY-MM-DD)' });
   try {
     const { raw, source } = await leasingFetchGuestCards(date_from, date_to);
+
+    // DRY RUN — returns here, before `db` is even resolved, so there is no path
+    // from this branch to a write.
+    //
+    // THE QUESTION IT ANSWERS. leasing_leads upserts on appfolio_id, which is
+    // guest_card_uuid — one row per CARD. The report is one row per INTEREST,
+    // so every interest after the first on a card overwrites the one before:
+    // 136 interests became 79 rows for 09/27–10/03. Whether that is fixable
+    // with a natural key depends on whether the API returns an id at interest
+    // level, and we only ever mapped 18 fields, so the raw response has never
+    // been looked at.
+    //
+    // Rather than eyeballing the samples, every key is scored: a field whose
+    // distinct count equals the ROW count is interest-level and is the key we
+    // want; one that equals the distinct guest_card_uuid count is card-level
+    // and is the problem we already have.
+    if (req.body && req.body.dryRun === true) {
+      const rows = raw || [];
+      const keys = [...new Set(rows.flatMap(r => Object.keys(r || {})))].sort();
+      const mapped = new Set(Object.values(APPFOLIO_LEASING_FIELDS));
+      const cards = new Set(rows.map(r => r && r.guest_card_uuid).filter(Boolean)).size;
+
+      const grain = keys.map(k => {
+        const vals = rows.map(r => r && r[k]).filter(v => v !== null && v !== undefined && String(v).trim() !== '');
+        const distinct = new Set(vals.map(v => String(v))).size;
+        return {
+          field: k, mapped: mapped.has(k), filled: vals.length, distinct,
+          level: !vals.length ? 'always empty'
+            : distinct === rows.length ? 'PER INTEREST — one distinct value per row'
+              : distinct === cards ? 'per card'
+                : distinct < cards ? 'coarser than a card' : 'between card and interest',
+        };
+      });
+
+      // Resident PII is masked. It is not needed to answer the question, and
+      // this output gets pasted around.
+      const PII = new Set(['name', 'email_address', 'phone_number']);
+      const mask = (k, v) => {
+        if (v === null || v === undefined || !PII.has(k)) return v;
+        const s = String(v);
+        if (k === 'email_address') return s.replace(/^(.).*(@.*)$/, '$1***$2');
+        if (k === 'phone_number') return s.replace(/\d(?=\d{4})/g, '*');
+        return s.slice(0, 1) + '***';
+      };
+      const samples = rows.slice(0, 3).map(r => {
+        const o = {};
+        Object.keys(r).sort().forEach(k => { o[k] = mask(k, r[k]); });
+        return o;
+      });
+
+      const idLike = grain.filter(g => /(^|_)(id|uuid|number|guid)$/.test(g.field));
+      return res.json({
+        ok: true, dryRun: true, wrote: 0, source,
+        window: { date_from, date_to },
+        rows: rows.length, distinctGuestCardUuids: cards,
+        interestsLostToTheCurrentKey: rows.length - cards,
+        totalFields: keys.length, mappedFields: mapped.size,
+        unmappedFields: keys.filter(k => !mapped.has(k)),
+        interestLevelFields: grain.filter(g => g.level.indexOf('PER INTEREST') === 0).map(g => g.field),
+        idLikeFields: idLike,
+        grain,
+        samples,
+        note: 'read only — nothing was written to leasing_leads or any other table',
+      });
+    }
+
     const db = supabaseAdmin || supabasePublic;
     // property_id → property_name, so rows that arrive without a property name can
     // still be attributed. Seed from this batch's own named rows, then supplement
