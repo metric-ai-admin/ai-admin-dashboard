@@ -7162,8 +7162,15 @@ app.post('/api/maintenance/probe-wo-window', requireMetricAdmin, async (req, res
 
     // Field-name candidates, in the shape this API uses elsewhere
     // (labor_performed_from / due_at_from), plus the two generic spellings.
+    // Extra spellings can be posted in the body as
+    // {"extra":[{"name":"…","params":{…}}]} so a new round costs a request
+    // rather than a deploy. Seven spellings were already shown to be ignored;
+    // that rules those out, it does not rule out the parameter existing.
+    const CUSTOM = Array.isArray(req.body && req.body.extra) ? req.body.extra : [];
     const VARIANTS = [
       { name: '(baseline — no date params)', extra: {} },
+      ...CUSTOM.filter(c => c && c.name && c.params).slice(0, 20)
+        .map(c => ({ name: String(c.name), extra: c.params, dropTypes: !!c.dropTypes })),
       { name: 'created_at_from / _to', extra: { created_at_from: FAR_PAST, created_at_to: FAR_FUTURE } },
       { name: 'created_on_from / _to', extra: { created_on_from: FAR_PAST, created_on_to: FAR_FUTURE } },
       { name: 'created_from / created_to', extra: { created_from: FAR_PAST, created_to: FAR_FUTURE } },
