@@ -7143,7 +7143,18 @@ const WO_WINDOW_TARGETS = ['14196-1', '18516-1', '18518-1', '18546-1', '18548-1'
 
 app.post('/api/maintenance/probe-wo-window', requireMetricAdmin, async (req, res) => {
   try {
-    const client = require('./appfolio-client.js');
+    // appfolioReportsFetch, NOT appfolio-client's fetchReport. Two reasons,
+    // both found the hard way on the first run of this probe, which returned
+    // 0 rows for every variant INCLUDING the baseline and would have been read
+    // as "every date parameter is ignored":
+    //
+    //   1. With paginate_results:false the API answers with a bare array.
+    //      fetchReport only unwraps {results:[…]} / {data:[…]}, so it saw none.
+    //   2. They use DIFFERENT CREDENTIALS. The sync runs on
+    //      APPFOLIO_REPORTS_CLIENT_ID; fetchReport runs on APPFOLIO_CLIENT_ID.
+    //      A probe on the other key would not be measuring the sync's reach,
+    //      and the two keys having different report permissions is itself a
+    //      live candidate for why nine work orders never arrive.
     const ALL = Array.from({ length: 31 }, (_, i) => String(i));
     const base = { work_order_statuses: ALL, work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
       property_visibility: 'active', paginate_results: false };
@@ -7170,23 +7181,34 @@ app.post('/api/maintenance/probe-wo-window', requireMetricAdmin, async (req, res
       if (v.dropTypes) delete params.work_order_types;
       let r;
       try {
-        const got = await client.fetchReport('work_order', params);
-        const rows = got.rows || [];
+        const rows = await appfolioReportsFetch(APPFOLIO_WORK_ORDER_REPORT, params);
         const keys = new Set(rows.map(x => String(x.work_order_number || '').trim()).filter(Boolean));
         const created = rows.map(x => String(x.created_at || '').slice(0, 10))
           .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
-        if (!baselineKeys) baselineKeys = keys;
+        // Set ONLY by the baseline variant. Letting the next variant become the
+        // baseline when the baseline fails is how every row ends up compared
+        // against nothing.
+        if (v.name.startsWith('(baseline')) baselineKeys = keys;
         const found = WO_WINDOW_TARGETS.filter(w => keys.has(w));
-        const beyondBaseline = [...keys].filter(k => !baselineKeys.has(k)).length;
+        const beyondBaseline = baselineKeys ? [...keys].filter(k => !baselineKeys.has(k)).length : null;
         r = {
-          variant: v.name, rows: rows.length, truncated: !!got.truncated,
+          variant: v.name, rows: rows.length,
           createdRange: created.length ? `${created[0]} .. ${created[created.length - 1]}` : null,
           targetsFound: found.length, targets: found,
           rowsBaselineDoesNotHave: beyondBaseline,
           // The verdict, stated rather than left to be inferred from counts.
+          //
+          // An EMPTY BASELINE can produce no verdict at all. The first run of
+          // this probe returned 0 rows for every variant and happily printed
+          // "IGNORED — identical coverage to baseline" eight times, which reads
+          // as a finding and is the absence of one.
           verdict: v.name.startsWith('(baseline')
-            ? 'baseline'
-            : (beyondBaseline === 0 ? 'IGNORED — identical coverage to baseline' : 'HONOURED — returns rows baseline does not'),
+            ? (rows.length ? 'baseline' : 'BASELINE IS EMPTY — every verdict below is meaningless, fix the probe')
+            : !baselineKeys || !baselineKeys.size
+              ? 'NO VERDICT — the baseline returned nothing to compare against'
+              : rows.length === 0 ? 'REJECTED IN EFFECT — returned no rows at all'
+                : beyondBaseline === 0 ? 'IGNORED — identical coverage to baseline'
+                  : 'HONOURED — returns rows the baseline does not',
         };
       } catch (e) {
         r = { variant: v.name, error: e.message, verdict: 'REJECTED — ' + (e.status || 'error') };
