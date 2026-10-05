@@ -84,7 +84,23 @@ console.log('\nresident data is masked');
 t('name, email and phone are masked in the samples', () => {
   assert.ok(/const PII = new Set\(\['name', 'email_address', 'phone_number'\]\)/.test(DRY));
   assert.ok(/email_address.*\$1\*\*\*\$2/.test(DRY), 'emails come out whole');
-  assert.ok(/phone_number.*\\d\{4\}/.test(DRY), 'phone numbers come out whole');
+});
+t('the phone mask survives brackets and dashes', () => {
+  // It did not. /\d(?=\d{4})/ needs four CONTIGUOUS digits after, so
+  // "(737) 881-7336" came back whole on the first live run and the number
+  // reached a chat transcript. A masking bug prints the thing it was there to
+  // hide and fails silently while doing it.
+  const m = DRY.match(/if \(k === 'phone_number'\) return s\.replace\((\/[^/]+\/g), '\*'\);/);
+  assert.ok(m, 'the phone branch is gone or was rewritten into another shape');
+  const re = new RegExp(m[1].slice(1, -2), 'g');
+  const mask = s => s.replace(re, '*');
+  ['(737) 881-7336', '737-881-7336', '7378817336', '+1 (737) 881 7336']
+    .forEach(raw => {
+      const out = mask(raw);
+      // Exactly the last four digits survive, whatever the formatting.
+      assert.strictEqual(out.replace(/\D/g, ''), '7336', `${raw} -> ${out}`);
+      assert.ok(out.endsWith('7336'), `the surviving digits are not the last four: ${raw} -> ${out}`);
+    });
 });
 t('masking does not hide any field name', () => {
   // The question is which FIELDS exist. Masking values answers it just as well

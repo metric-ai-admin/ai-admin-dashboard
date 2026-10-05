@@ -6122,7 +6122,13 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
         if (v === null || v === undefined || !PII.has(k)) return v;
         const s = String(v);
         if (k === 'email_address') return s.replace(/^(.).*(@.*)$/, '$1***$2');
-        if (k === 'phone_number') return s.replace(/\d(?=\d{4})/g, '*');
+        // Mask a digit when four or more digits follow it ANYWHERE after,
+        // separators included. The first version required four CONTIGUOUS
+        // digits, so "(737) 881-7336" came back whole on the first live run —
+        // the brackets and the dash broke every lookahead and the mask
+        // silently did nothing. A masking bug does not fail loudly; it prints
+        // the thing it was there to hide.
+        if (k === 'phone_number') return s.replace(/\d(?=(?:\D*\d){4})/g, '*');
         return s.slice(0, 1) + '***';
       };
       const samples = rows.slice(0, 3).map(r => {
