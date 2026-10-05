@@ -141,42 +141,11 @@ function requireMetricAdmin(req, res, next) {
   return res.status(403).json({ error: 'Admin access required' });
 }
 
-// Who is calling the two endpoints with no caller in this codebase?
-//
-// POST /api/triage/log-session and POST /api/lyndsay/import were both open
-// until 2026-09-29 and neither appears anywhere in the front end, the scripts
-// or the MCP tools — something external calls them and we do not know what.
-// Guarding them will start returning 401 to that caller, so this records who it
-// was: enough to recognise a Power Automate flow, a Copilot connector or a
-// scheduled script, and nothing more.
-//
-// Deliberately NOT logged: the request body. These carry triage counts and
-// Lyndsay's task snapshots, and a rejected request is exactly the one whose
-// contents we have least reason to keep.
-//
-// The wrapper works because both guards decide synchronously — they either call
-// next() or answer on the spot, with no await in between. A guard that went
-// async would break this, so it is asserted at boot rather than left to drift.
-function identifyCaller(label, guard) {
-  return (req, res, next) => {
-    let passed = false;
-    guard(req, res, () => { passed = true; next(); });
-    if (!passed) {
-      console.log(`[caller-probe] ${label} REJECTED · ip=${req.ip}`
-        + ` · xff=${req.get('x-forwarded-for') || '-'}`
-        + ` · ua=${(req.get('user-agent') || '-').slice(0, 120)}`
-        + ` · referer=${req.get('referer') || '-'}`
-        + ` · at=${new Date().toISOString()}`);
-    }
-  };
-}
-// If either guard ever becomes async, every rejection would be logged as a pass
-// and the probe would go quiet without anyone noticing.
-[requireMetricAccess, requireMetricAdmin].forEach(g => {
-  if (g.constructor.name === 'AsyncFunction') {
-    throw new Error(`identifyCaller assumes ${g.name} is synchronous — it is not any more`);
-  }
-});
+// identifyCaller lived here until 2026-10-05. It existed to find out who was
+// calling POST /api/triage/log-session and POST /api/lyndsay/import, the two
+// endpoints with no caller in this codebase. The answer turned out to be
+// nobody — no rejections logged, no access-log lines since 09-29 — so both
+// routes are retired and the probe has nothing left to watch.
 
 // ── CSV parser (minimal, handles quotes/commas) ───────────────────────────────
 function parseCSV(text) {
@@ -792,16 +761,19 @@ function registerMetricRoutes(app, db) {
 
   // ── MODULE: Lyndsay Command Center snapshots ──────────────────────────────
 
-  app.post('/api/lyndsay/import', identifyCaller('lyndsay/import', requireMetricAdmin), async (req, res) => {
-    const { tasks, checks, date, exportedAt } = req.body;
-    if (!Array.isArray(tasks)) return res.status(400).json({ error: 'tasks[] array required' });
-    try {
-      const row = { imported_at: new Date().toISOString(), exported_at: exportedAt || null, report_date: date || todayStr(), tasks, checks: checks || {} };
-      const { error } = await db.from('lyndsay_snapshots').insert(row);
-      if (error) throw error;
-      const open = tasks.filter(t => !(checks || {})[t.id]).length;
-      res.json({ ok: true, count: tasks.length, open, date: row.report_date });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+  // RETIRED 2026-10-05, same as POST /api/triage/log-session and for the same
+  // reason: no caller anywhere in this codebase, nothing in the access logs
+  // since 2026-09-29, nothing in activity_log since 10/02.
+  //
+  // The snapshots TABLE stays and so does everything that reads it —
+  // /api/lyndsay/tasks and the two done/undone routes all run off
+  // lyndsay_snapshots. Only the way new snapshots arrived is retired.
+  app.post('/api/lyndsay/import', (req, res) => {
+    res.status(410).json({
+      error: 'endpoint retired on 2026-10-05',
+      detail: 'POST /api/lyndsay/import no longer accepts snapshots. Existing '
+        + 'snapshots are unaffected and still served by GET /api/lyndsay/tasks.',
+    });
   });
 
   app.get('/api/lyndsay/tasks', requireMetricAccess, async (req, res) => {
@@ -1360,4 +1332,4 @@ function registerMetricRoutes(app, db) {
 // email routes that serve Lyndsay's mailbox. They need session-or-key for the
 // same reason /api/operational does: the MCP tools read them over HTTP with no
 // cookie, sending x-metric-key instead.
-module.exports = { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, attachSessionUser, identifyCaller };
+module.exports = { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, attachSessionUser };

@@ -56,7 +56,7 @@ const WEEK = require('./lib/week.js');
 const DUE = require('./lib/due-date.js');
 const followups = require('./email-followups.js');
 const kpiRecap = require('./kpi-recap.js');
-const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin, identifyCaller } = require('./metric-routes.js');
+const { registerMetricRoutes, requireMetricAccess, requireMetricAdmin } = require('./metric-routes.js');
 const autoMove = require('./email-automove.js');
 const callGrading = require('./call-grading.js');
 const gradeExport = require('./call-grades-export.js');
@@ -3154,39 +3154,25 @@ app.get('/api/copilot/export', requireCopilotApiKey, async (req, res) => {
 // than insert means logging the same day twice updates the existing row instead
 // of creating a duplicate or silently failing — so the 6PM report always finds
 // today's counts. Requires the unique constraint on session_date (migration 045).
-app.post('/api/triage/log-session', identifyCaller('triage/log-session', requireMetricAccess), async (req, res) => {
-  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
-  const db = supabaseAdmin || supabasePublic;
-  const {
-    session_date, emails_processed, lyndsay_review, bekah_follow_up,
-    rocio, mpm_team, clients, financial, archive, archive_and_mark_read,
-    unsubscribe, do_not_move, manual_corrections, correction_notes, confidence_avg,
-  } = req.body || {};
-  if (!emails_processed && emails_processed !== 0) {
-    return res.status(400).json({ error: 'emails_processed is required' });
-  }
-  const row = {
-    // Default to today in Central time so the conflict target is deterministic.
-    session_date:          session_date || new Intl.DateTimeFormat('en-CA', { timeZone: LYNDSAY_TIMEZONE }).format(new Date()),
-    emails_processed:      emails_processed      ?? 0,
-    lyndsay_review:        lyndsay_review        ?? 0,
-    bekah_follow_up:       bekah_follow_up       ?? 0,
-    rocio:                 rocio                 ?? 0,
-    mpm_team:              mpm_team              ?? 0,
-    clients:               clients               ?? 0,
-    financial:             financial             ?? 0,
-    archive:               archive               ?? 0,
-    archive_and_mark_read: archive_and_mark_read ?? 0,
-    unsubscribe:           unsubscribe           ?? 0,
-    do_not_move:           do_not_move           ?? 0,
-    manual_corrections:    manual_corrections    ?? 0,
-    correction_notes:      correction_notes      || null,
-    confidence_avg:        confidence_avg        ?? null,
-  };
-  const { data, error } = await db.from('triage_sessions')
-    .upsert([row], { onConflict: 'session_date' }).select().single();
-  if (error) return res.status(500).json({ error: error.message });
-  res.status(201).json({ ok: true, session: data });
+// RETIRED 2026-10-05. 410, not 404 and not deletion.
+//
+// Nothing in this codebase ever called it — not the front end, not the scripts,
+// not the MCP tools — and Render's access logs show no call since 2026-09-29,
+// with nothing in activity_log since 10/02 either. Something external may
+// still hold the URL, so it answers with what happened rather than with the
+// silence of a 404: a forgotten Power Automate flow failing against "not
+// found" looks like a typo, and against "retired on this date" it looks like
+// the fact it is.
+//
+// The TABLE stays. GET /api/triage/summary still reads triage_sessions and the
+// EOD still reports from it; what is retired is the way rows got in.
+app.post('/api/triage/log-session', (req, res) => {
+  res.status(410).json({
+    error: 'endpoint retired on 2026-10-05',
+    detail: 'POST /api/triage/log-session no longer accepts data. Triage session '
+      + 'counts are not collected through this route any more. Existing data is '
+      + 'unaffected and still readable at GET /api/triage/summary.',
+  });
 });
 
 // ---- GET /api/triage/summary ----------------------------------------------------

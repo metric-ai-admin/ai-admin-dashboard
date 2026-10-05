@@ -33,6 +33,14 @@ const ALLOWED = new Map([
   ['USE /api',                    'activityWriteLogger: logging middleware, not a route. It reads nothing, '
                                 + 'returns nothing to the caller and calls next() unconditionally; the row is '
                                 + 'written on res.finish, after the guarded route has already decided.'],
+  // Retired 2026-10-05. They answer 410 and nothing else — no body read, no
+  // table touched. Deliberately UNguarded: a forgotten external caller should
+  // be told the endpoint is gone, not told to authenticate against something
+  // that no longer exists. A 401 would send whoever still holds the URL
+  // looking for credentials instead of for the retirement.
+  // test/retired-endpoints.test.js asserts both do nothing.
+  ['POST /api/triage/log-session', 'retired 2026-10-05; answers 410 and touches nothing'],
+  ['POST /api/lyndsay/import',     'retired 2026-10-05; answers 410 and touches nothing'],
   ['GET /health',                 'liveness; reports no data and is the anti-hibernation ping'],
   ['GET /ping',                   'liveness; uptime only'],
   ['POST /api/auth/login',        'the login itself — cannot require a session to get one'],
@@ -99,7 +107,12 @@ const guardOf = key => all.find(r => r.key === key);
   'GET /api/calendar/today', 'GET /api/summary', 'GET /api/lyndsay-queue',
   'GET /api/asana/tasks', 'GET /api/assignments', 'POST /api/assignments',
   'GET /api/lyndsay/tasks', 'GET /api/maintenance/summary', 'GET /api/report',
-  'GET /api/triage/summary', 'POST /api/triage/log-session',
+  // POST /api/triage/log-session was here until 2026-10-05. It is retired now
+  // and answers 410 with no guard, which is deliberate: an unauthenticated
+  // caller should be told the endpoint is gone rather than told to log in to
+  // something that no longer exists. test/retired-endpoints.test.js asserts it
+  // takes no body and touches no table.
+  'GET /api/triage/summary',
   'DELETE /api/maintenance/sops/:id',
 ].forEach(key => {
   t(`${key} is no longer open`, () => {
