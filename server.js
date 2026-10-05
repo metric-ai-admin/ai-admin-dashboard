@@ -14500,6 +14500,23 @@ cron.schedule('30 5 * * *', () => {
     });
 }, { timezone: LYNDSAY_TIMEZONE });
 
+// Work orders into maintenance_work_orders.
+//
+// THERE WAS NO CRON FOR THIS. The table was only ever written when somebody
+// pressed Sync in the UI, and the last time anybody did was 2026-10-02 — so on
+// 2026-10-05 AppFolio had 21 open work orders (23083-23107) that the dashboard
+// had never heard of. Not a crashed job and not a silent failure: it was never
+// scheduled, which is the kind of gap that leaves no error anywhere to find.
+//
+// 06:00, before Erick opens the Command Center and well before the EOD reads
+// the table at 18:00.
+cron.schedule('0 6 * * *', () => {
+  if (!CRM_CONFIGURED) return;
+  callOwnRoute('/api/maintenance/sync', {})
+    .then(r => logLine(`[wo-sync] ${r?.synced ?? '?'} work orders`))
+    .catch(err => logLine(`[wo-sync] FAILED: ${err.message}`));
+}, { timezone: LYNDSAY_TIMEZONE });
+
 cron.schedule('45 17 * * *', () => {
   require('./appfolio-reports.js').syncReport('wo_completed')
     .then(r => logLine(`[wo-completed-sync] ${r?.rowCount ?? '?'} rows`))

@@ -983,6 +983,31 @@ function ccRefreshCounts() {
   if (fc) fc.textContent = CC_TASKS.filter(t => t.cat === 'flag7' && !ccChecks[t.id]).length + ' open';
   const sum = $('#cc-summary');
   if (sum) sum.innerHTML = '';
+
+  // Work orders AppFolio has stopped reporting.
+  //
+  // Not a task category: these are not work to do, they are rows whose state
+  // nobody can establish. The sync only ever asks for OPEN work orders, so one
+  // that closes simply stops coming back — and until 2026-10-05 they kept their
+  // last open status for ever and sat in this board as live work. 436 of them,
+  // against 95 AppFolio actually had open.
+  //
+  // Shown with their numbers rather than as a count, because a count tells
+  // Erick there is a problem and gives him nowhere to start.
+  const ccNotInFeed = (ccReports.wo && ccReports.wo.rows || [])
+    .filter(r => String(ccStatusOf(r) || '').includes('not in feed'));
+  if (sum && ccNotInFeed.length) {
+    const nums = ccNotInFeed.map(r => String(r.wo || r.workorder || r.number || '').trim())
+      .filter(Boolean).slice(0, 12);
+    const banner = document.createElement('div');
+    banner.className = 'banner banner-warn';
+    banner.style.cssText = 'width:100%;margin:0 0 8px';
+    banner.innerHTML = `<b>⚠ ${ccNotInFeed.length} not in AppFolio feed — verify.</b> `
+      + `These stopped being reported and are neither open nor closed. `
+      + (nums.length ? `WO ${nums.map(esc).join(', ')}${ccNotInFeed.length > nums.length ? ', …' : ''}` : '');
+    sum.appendChild(banner);
+  }
+
   CC_CATS.forEach(cat => {
     const items = CC_TASKS.filter(t => t.cat === cat.key);
     if (!items.length) return;
