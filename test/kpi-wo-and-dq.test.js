@@ -116,4 +116,33 @@ t('it has a cron', () => {
     'it fires beside the other two pulls and races them into the rate limit');
 });
 
+console.log('\nevery metric workOrdersFrom computes survives build()');
+t('the split reaches byProperty instead of being dropped', () => {
+  // build() copies ONLY the names in METRICS. A metric computed upstream and
+  // missing from that list is calculated and thrown away, which reads in a
+  // comparison as "she reports it and we produce nothing" — which is exactly
+  // how it showed up on the first pass of this change.
+  const out = K.build({ workOrders: [
+    { property_name: P, status: 'Assigned' },
+    { property_name: P, status: 'Ready to Bill' },
+    { property_name: P, status: WOS.UNKNOWN },
+  ] }, { weekStart: W, weekEnd: E, asOf: E });
+  const row = out.byProperty[P];
+  assert.strictEqual(row.openFieldWos, 1, 'openFieldWos never reaches the output');
+  assert.strictEqual(row.awaitingBilling, 1, 'awaitingBilling never reaches the output');
+  assert.strictEqual(row.notInFeed, 1, 'notInFeed never reaches the output');
+});
+t('no metric workOrdersFrom produces is missing from METRICS', () => {
+  // The general form, so the next metric added upstream cannot be dropped in
+  // silence the way these three were.
+  const produced = Object.keys(K.workOrdersFrom([
+    { property_name: P, status: 'Assigned', created_at_appfolio: '2026-09-28' },
+    { property_name: P, status: 'Ready to Bill' },
+    { property_name: P, status: WOS.UNKNOWN },
+    { property_name: P, status: 'Completed', completed_on: '2026-09-30' },
+  ], W, E)[P]);
+  const missing = produced.filter(k => K.METRICS.indexOf(k) === -1);
+  assert.deepStrictEqual(missing, [], 'computed and then dropped by build(): ' + missing.join(', '));
+});
+
 console.log(`\n${pass} passing`);
