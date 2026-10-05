@@ -11817,6 +11817,160 @@ async function kpiRecapScan(force, dateISO) {
 // the person they are written for — would have got a 403 from her own review
 // screen. run-now keeps requireMetricAdmin: generating drafts is a scripted
 // operation, and widening it was not asked for.
+// =====================================================================
+// ACTIVITY LOGS — phase 3, the read side
+// =====================================================================
+// admin and ceo only, the same pair as KPI Recaps. This is a record of what
+// named colleagues did, so the guard is on every route and not only on the tab.
+//
+// WHAT THESE NUMBERS ARE NOT. Dashboard use is not work, and the UI says so
+// out loud above the panels. Somebody can run a property brilliantly from
+// AppFolio, a phone and a truck and appear here as a thin row. The figures
+// answer "is the dashboard being used, and by whom", which is the question
+// that was asked, and they do not answer any question about performance.
+const ACTIVITY_ROLES = ['admin', 'ceo'];
+
+// GET /api/activity/last-seen — one row per dashboard user, including the ones
+// who have never signed in.
+//
+// The never-signed-in rows are the point. A list built from activity_log alone
+// answers "who used it" and silently drops everybody who did not, which is
+// exactly the group the question is about — so this starts from dashboard_users
+// and joins the log onto it, never the other way round.
+app.get('/api/activity/last-seen', requireAuth, requireRole(...ACTIVITY_ROLES), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data: users, error: uErr } = await db.from('dashboard_users')
+      .select('email,name,role').limit(500);
+    if (uErr) throw new Error(uErr.message);
+
+    const { data: rows, error: aErr } = await db.from('activity_log')
+      .select('user_email,event,section,at')
+      .order('at', { ascending: false })
+      .limit(20000);
+    if (aErr) throw new Error(aErr.message);
+
+    const byUser = new Map();
+    for (const r of rows || []) {
+      const key = String(r.user_email || '').toLowerCase();
+      if (!key) continue;
+      const b = byUser.get(key) || {};
+      // Rows arrive newest first, so the FIRST of each kind is the latest one.
+      if (!b.lastAt) b.lastAt = r.at;
+      if (!b.lastSection && r.section) b.lastSection = r.section;
+      if (!b.lastLoginAt && r.event === 'login') b.lastLoginAt = r.at;
+      byUser.set(key, b);
+    }
+
+    const now = Date.now();
+    const days = iso => {
+      if (!iso) return null;
+      const t = new Date(iso).getTime();
+      return isNaN(t) ? null : Math.floor((now - t) / 86400000);
+    };
+
+    const out = (users || []).map(u => {
+      const b = byUser.get(String(u.email || '').toLowerCase()) || {};
+      return {
+        email: u.email, name: u.name || null, role: u.role || null,
+        last_at: b.lastAt || null,
+        last_section: b.lastSection || null,
+        last_login_at: b.lastLoginAt || null,
+        days_since_login: days(b.lastLoginAt),
+        // Stated rather than implied by a null, so the UI cannot render an
+        // absent login as "0 days ago".
+        never_signed_in: !b.lastAt,
+      };
+    }).sort((a, b) => {
+      if (a.never_signed_in !== b.never_signed_in) return a.never_signed_in ? 1 : -1;
+      return String(b.last_at || '').localeCompare(String(a.last_at || ''));
+    });
+
+    // The window the log can actually speak for. Without it, a user who has not
+    // signed in for 200 days is indistinguishable from one whose rows aged out
+    // of the 90-day retention.
+    const oldest = (rows || []).length ? rows[rows.length - 1].at : null;
+    res.json({ users: out, rowsScanned: (rows || []).length, oldestRow: oldest, retentionDays: 90 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/activity/weekly?week_ending=YYYY-MM-DD — person x section for one
+// Sun–Sat week, plus a simple activity rate.
+app.get('/api/activity/weekly', requireAuth, requireRole(...ACTIVITY_ROLES), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const WEEK = require('./lib/week.js');
+    const todayCT = WEEK.toChicagoYMD(new Date());
+    const ending = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.week_ending || ''))
+      ? String(req.query.week_ending)
+      : WEEK.weekEndYMD(todayCT, WEEK.DASHBOARD);
+    const start = WEEK.weekStartYMD(ending, WEEK.DASHBOARD);
+
+    const { data: rows, error } = await db.from('activity_log')
+      .select('user_email,user_name,user_role,event,section,at')
+      .gte('at', start + 'T00:00:00Z')
+      .lte('at', ending + 'T23:59:59Z')
+      .limit(50000);
+    if (error) throw new Error(error.message);
+
+    const people = new Map();
+    const sections = new Set();
+    for (const r of rows || []) {
+      const key = String(r.user_email || '').toLowerCase();
+      if (!key) continue;
+      const p = people.get(key) || {
+        email: r.user_email, name: r.user_name || null, role: r.user_role || null,
+        sections: {}, activeDays: new Set(), logins: 0, writes: 0, views: 0,
+      };
+      if (!p.name && r.user_name) p.name = r.user_name;
+      if (r.section) {
+        sections.add(r.section);
+        p.sections[r.section] = (p.sections[r.section] || 0) + 1;
+      }
+      // The DAY in Central, not UTC: a 7pm Austin session is still that day.
+      const day = WEEK.toChicagoYMD(new Date(r.at));
+      if (day) p.activeDays.add(day);
+      if (r.event === 'login') p.logins++;
+      else if (r.event === 'write') p.writes++;
+      else if (r.event === 'view') p.views++;
+      people.set(key, p);
+    }
+
+    // Jay's "activity rate": active days over WORKING days, Mon–Fri, and
+    // counted only up to today so a week in progress is not scored against
+    // days that have not happened. Capped at 1 — somebody who works Saturday
+    // is not 120% active, and a rate above 100% would read as a target beaten.
+    const workingDays = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start + 'T12:00:00Z');
+      d.setUTCDate(d.getUTCDate() + i);
+      const ymd = d.toISOString().slice(0, 10);
+      const dow = d.getUTCDay();
+      if (dow >= 1 && dow <= 5 && ymd <= todayCT) workingDays.push(ymd);
+    }
+
+    const out = [...people.values()].map(p => ({
+      email: p.email, name: p.name, role: p.role,
+      sections: p.sections,
+      active_days: [...p.activeDays].sort(),
+      logins: p.logins, writes: p.writes, views: p.views,
+      activity_rate: workingDays.length
+        ? Math.min(1, [...p.activeDays].filter(d => workingDays.includes(d)).length / workingDays.length)
+        : null,
+    })).sort((a, b) => (b.activity_rate || 0) - (a.activity_rate || 0));
+
+    res.json({
+      week_start: start, week_ending: ending,
+      working_days: workingDays, working_days_counted: workingDays.length,
+      sections: [...sections].sort(),
+      people: out,
+      disclaimer: 'Measures dashboard use only — not performance or work done outside the dashboard.',
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 const KPI_RECAP_ROLES = ['admin', 'ceo'];
 
 // The list deliberately does NOT carry transcript_text. A transcript is tens of

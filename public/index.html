@@ -92,6 +92,7 @@
           collapse for whom.
         -->
         <button data-tab="kpirecaps"><span class="nav-ico">📝</span>KPI Recaps</button>
+        <button data-tab="activity"><span class="nav-ico">👣</span>Activity Logs</button>
       </div>
       <div class="nav-group">
         <div class="nav-group-label">Departments</div>
@@ -2133,6 +2134,35 @@
         opens it and confirms it is the right account.
       </p>
       <div id="mkt-body"><p class="muted">Loading…</p></div>
+    </div>
+  </section>
+
+  <section id="tab-activity" class="tab">
+    <div class="view-head">
+      <h2>Activity Logs</h2>
+      <p class="muted small">Who is using the dashboard, and which sections</p>
+    </div>
+    <!-- Fixed, above everything, and not dismissible. These numbers will be
+         read by the CEO about named colleagues, and the single most likely way
+         for them to do harm is to be mistaken for a measure of work. -->
+    <div class="banner banner-warn" style="margin-bottom:14px">
+      <b>Measures dashboard use only</b> — not performance or work done outside the dashboard.
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="view-head" style="margin-bottom:8px">
+        <h3 style="margin:0">Last seen</h3>
+        <p class="muted small" id="act-ls-note">—</p>
+      </div>
+      <div id="act-lastseen">Loading…</div>
+    </div>
+
+    <div class="card">
+      <div class="view-head" style="margin-bottom:8px">
+        <h3 style="margin:0">This week</h3>
+        <p class="muted small" id="act-wk-note">—</p>
+      </div>
+      <div id="act-weekly">Loading…</div>
     </div>
   </section>
 

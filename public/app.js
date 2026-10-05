@@ -81,8 +81,8 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy', 'marketing', 'kpirecaps'],
-  ceo:         ['crm', 'platform', 'eod', 'reports', 'marketing', 'kpirecaps'],
+  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy', 'marketing', 'kpirecaps', 'activity'],
+  ceo:         ['crm', 'platform', 'eod', 'reports', 'marketing', 'kpirecaps', 'activity'],
   // 'calls' (Call Analyzer) removed 2026-09-18: call transcripts and grades are
   // employee performance data about named staff, alongside resident PII, so the
   // tab is admin-only — Arturo and Lyndsay. Widening it later is a role change
@@ -395,6 +395,7 @@ function loadTab(tab) {
   if (tab === 'leasing') loadLeasing();
   if (tab === 'marketing') loadMarketing();
   if (tab === 'kpirecaps') loadKpiRecaps();
+  if (tab === 'activity') loadActivity();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -11521,6 +11522,82 @@ const KRC_STATUS = {
   skipped:  ['badge-gray',  'skipped'],
   failed:   ['badge-red',   'failed'],
 };
+
+/* ---------------- Activity Logs (phase 3) ----------------
+ *
+ * Two panels. Both are about dashboard USE, and the banner above them says so
+ * in the markup rather than here, so it is on screen even if this file fails
+ * to load.
+ *
+ * The role gate in index.html/TAB_ACCESS only hides the tab. The routes carry
+ * requireRole('admin','ceo') of their own — this is a record of what named
+ * colleagues did, and a hidden button is not a lock. */
+function actWhen(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return '—';
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  if (mins < 60 * 24) return Math.floor(mins / 60) + 'h ago';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+async function loadActivity() {
+  const ls = $('#act-lastseen'), wk = $('#act-weekly');
+
+  try {
+    const d = await api('/api/activity/last-seen');
+    const note = $('#act-ls-note');
+    if (note) {
+      note.textContent = `${d.users.length} users · log keeps ${d.retentionDays} days`
+        + (d.oldestRow ? ` (back to ${new Date(d.oldestRow).toLocaleDateString()})` : '');
+    }
+    if (ls) {
+      ls.innerHTML = `<table class="data-table"><thead><tr>
+        <th>Person</th><th>Role</th><th>Last activity</th><th>Last section</th><th>Days since login</th>
+      </tr></thead><tbody>${d.users.map(u => {
+        // "never" is rendered as its own word, never as a dash or a zero: a
+        // person who has not signed in is the thing this panel is for.
+        const never = u.never_signed_in;
+        return `<tr${never ? ' style="opacity:.75"' : ''}>
+          <td>${esc(u.name || u.email)}<div class="muted small">${esc(u.email)}</div></td>
+          <td>${esc(u.role || '—')}</td>
+          <td>${never ? '<b>never</b>' : esc(actWhen(u.last_at))}</td>
+          <td>${esc(u.last_section || '—')}</td>
+          <td>${never ? '<b>never</b>' : (u.days_since_login === null ? '—' : u.days_since_login)}</td>
+        </tr>`;
+      }).join('')}</tbody></table>`;
+    }
+  } catch (e) {
+    if (ls) ls.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`;
+  }
+
+  try {
+    const d = await api('/api/activity/weekly');
+    const note = $('#act-wk-note');
+    if (note) {
+      note.textContent = `${d.week_start} to ${d.week_ending} · rate = active days / `
+        + `${d.working_days_counted} working day${d.working_days_counted === 1 ? '' : 's'} so far`;
+    }
+    if (!wk) return;
+    if (!d.people.length) {
+      wk.innerHTML = '<p class="muted">No activity recorded this week yet.</p>';
+      return;
+    }
+    const cols = d.sections;
+    wk.innerHTML = `<table class="data-table"><thead><tr>
+      <th>Person</th><th>Rate</th><th>Days</th>${cols.map(c => `<th>${esc(c)}</th>`).join('')}
+    </tr></thead><tbody>${d.people.map(p => `<tr>
+      <td>${esc(p.name || p.email)}<div class="muted small">${esc(p.role || '')}</div></td>
+      <td>${p.activity_rate === null ? '—' : Math.round(p.activity_rate * 100) + '%'}</td>
+      <td>${p.active_days.length}</td>
+      ${cols.map(c => `<td>${p.sections[c] || ''}</td>`).join('')}
+    </tr>`).join('')}</tbody></table>`;
+  } catch (e) {
+    if (wk) wk.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`;
+  }
+}
 
 async function loadKpiRecaps() {
   const box = $('#krc-list');
