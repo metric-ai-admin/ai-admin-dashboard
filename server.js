@@ -7411,6 +7411,112 @@ const WO_WINDOW_TARGETS = ['14196-1', '18516-1', '18518-1', '18546-1', '18548-1'
 // So each code is asked for ON ITS OWN and the tenant_status values that come
 // back are reported. Nothing is written and the registered report is not
 // touched.
+// POST /api/leasing/probe-guest-cards — READ ONLY. Can guest_cards reproduce
+// Katie's 105?
+//
+// "Guest Card Interests" is registered in the catalogue under the id
+// `guest_cards`, not `guest_card_interests`. leasingFetchGuestCards already
+// lists it, as the SECOND attempt — and the first, guest_card_inquiries, never
+// errors, so it always wins and guest_cards has never actually been read by
+// the sync. The two are different populations: inquiries put 84 rows in
+// 09/27-10/03 and claimed 109 interests between them, where her sheet has 136.
+//
+// Her report also runs with "Status: All" while the API is understood to
+// return active cards only, so a status parameter is probed alongside the
+// baseline rather than assumed. The control matters as always: an unrecognised
+// parameter here is dropped in silence, so a variant counts only if it returns
+// rows the baseline does not.
+//
+// Nothing is written and the sync is untouched.
+app.post('/api/leasing/probe-guest-cards', requireMetricAdmin, async (req, res) => {
+  try {
+    const from = (req.body && req.body.date_from) || '2026-09-27';
+    const to = (req.body && req.body.date_to) || '2026-10-03';
+    const ALL_CODES = Array.from({ length: 10 }, (_, i) => String(i));
+
+    const VARIANTS = [
+      { name: '(baseline — active only, as the sync would call it)', extra: {} },
+      { name: 'guest_card_statuses 0..9', extra: { guest_card_statuses: ALL_CODES } },
+      { name: 'statuses 0..9', extra: { statuses: ALL_CODES } },
+      { name: "status 'all'", extra: { status: 'all' } },
+      { name: 'include_inactive true', extra: { include_inactive: true } },
+      { name: 'property_visibility all', extra: { property_visibility: 'all' } },
+    ];
+
+    // Her dedupe, exactly: phone, then email, then name, per property, with
+    // both iConics collapsed into one bucket the way canonicalProperty does.
+    const herBucket = raw => {
+      const bare = String(raw || '').split(' - ')[0].trim();
+      if (!bare) return null;
+      return /iconic/i.test(bare) ? 'Round Rock' : bare;
+    };
+    const inWeek = v => {
+      const s = String(v || '');
+      const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
+        || s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (!m) return false;
+      const d = s.startsWith(m[1] + '-') ? `${m[1]}-${m[2]}-${m[3]}`
+        : `${m[3]}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+      return d >= from && d <= to;
+    };
+
+    let baselineRows = null;
+    const out = [];
+    for (const v of VARIANTS) {
+      try {
+        const rows = await appfolioReportsFetch(APPFOLIO_GUEST_CARD_REPORT,
+          { ...{ property_visibility: 'active' }, ...v.extra });
+        if (v.name.startsWith('(baseline')) baselineRows = rows.length;
+
+        const keys = [...new Set(rows.flatMap(r => Object.keys(r || {})))].sort();
+        const wk = rows.filter(r => inWeek(r && (r.received || r.interest_received)));
+
+        // Per property, her key.
+        const seen = {}, byProp = {};
+        wk.forEach((r, i) => {
+          const b = herBucket(r.property || r.property_name);
+          if (!b) return;
+          const bare = String(r.property || r.property_name || '').split(' - ')[0].trim();
+          const key = String(r.phone_number || r.phone || '').trim()
+            || String(r.email_address || r.email || '').trim()
+            || String(r.name || '').trim() || ('row' + i);
+          const box = seen[b] || (seen[b] = {});
+          const p = byProp[bare] = byProp[bare] || { rows: 0, deduped: 0 };
+          p.rows++;
+          if (box[key]) return;
+          box[key] = true;
+          p.deduped++;
+        });
+        const deduped = Object.values(byProp).reduce((t, p) => t + p.deduped, 0);
+
+        // Is any field one-distinct-value-per-row inside the week?
+        const perRow = keys.filter(k => {
+          const vals = wk.map(r => r && r[k]).filter(x => x !== null && x !== undefined && String(x).trim() !== '');
+          return vals.length === wk.length && wk.length > 0
+            && new Set(vals.map(String)).size === wk.length;
+        });
+
+        out.push({
+          variant: v.name, rows: rows.length, rowsInWeek: wk.length,
+          dedupedByHerKey: deduped, target: 105,
+          perInterestIdCandidates: perRow,
+          fields: keys.length,
+          byProperty: Object.fromEntries(Object.entries(byProp)
+            .sort((a, b) => b[1].rows - a[1].rows)),
+          verdict: v.name.startsWith('(baseline') ? 'baseline'
+            : baselineRows == null ? 'NO VERDICT — baseline failed'
+              : rows.length === baselineRows ? 'IGNORED — same row count as baseline'
+                : 'HONOURED — row count differs from baseline',
+        });
+      } catch (e) {
+        out.push({ variant: v.name, error: e.message, verdict: 'REJECTED' });
+      }
+    }
+    res.json({ ok: true, readOnly: true, window: { from, to },
+      note: 'nothing written; leasingFetchGuestCards untouched', variants: out });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.post('/api/collections/probe-tenant-statuses', requireMetricAdmin, async (req, res) => {
   try {
     const out = [];
