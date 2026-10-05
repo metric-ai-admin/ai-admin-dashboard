@@ -7124,6 +7124,79 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null, sweep = fal
 // carrying. Admin only, and a DRY RUN unless `write: true` is sent: the default
 // has to be the harmless one, because this changes hundreds of rows in a pass
 // and the person who types it wrong should get a report, not a migration.
+// POST /api/maintenance/probe-wo-window — READ ONLY. Can the work_order report
+// be asked for work orders older than it volunteers?
+//
+// Nine work orders are open in Katie's export and in none of our pulls, not
+// even the all-codes sweep: 14196-1 (created 2025-09-12), four from 2026-02-05,
+// and others up to 2026-06-22. Everything the sweep returns starts 2026-07-01,
+// which looks like a default window of about 90 days. Her report asks for
+// "Created On 01/03/0001 - 12/30/9999", so the UI can clearly reach them.
+//
+// THE CONTROL IS THE WHOLE POINT. This API silently ignores parameters it does
+// not recognise — `status: 'Completed'` was ignored for months and looked like
+// it worked. A date parameter that is ignored returns exactly the baseline, so
+// each variant is reported against a no-dates call and judged on whether it
+// returns MORE, not on whether it returns something.
+const WO_WINDOW_TARGETS = ['14196-1', '18516-1', '18518-1', '18546-1', '18548-1',
+  '20872-1', '20912-1', '21395-1', '21482-1'];
+
+app.post('/api/maintenance/probe-wo-window', requireMetricAdmin, async (req, res) => {
+  try {
+    const client = require('./appfolio-client.js');
+    const ALL = Array.from({ length: 31 }, (_, i) => String(i));
+    const base = { work_order_statuses: ALL, work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
+      property_visibility: 'active', paginate_results: false };
+    const FAR_PAST = '2015-01-01', FAR_FUTURE = '2035-12-31';
+
+    // Field-name candidates, in the shape this API uses elsewhere
+    // (labor_performed_from / due_at_from), plus the two generic spellings.
+    const VARIANTS = [
+      { name: '(baseline — no date params)', extra: {} },
+      { name: 'created_at_from / _to', extra: { created_at_from: FAR_PAST, created_at_to: FAR_FUTURE } },
+      { name: 'created_on_from / _to', extra: { created_on_from: FAR_PAST, created_on_to: FAR_FUTURE } },
+      { name: 'created_from / created_to', extra: { created_from: FAR_PAST, created_to: FAR_FUTURE } },
+      { name: 'from_date / to_date', extra: { from_date: FAR_PAST, to_date: FAR_FUTURE } },
+      { name: 'work_order_created_from / _to', extra: { work_order_created_from: FAR_PAST, work_order_created_to: FAR_FUTURE } },
+      { name: 'status_date_from / _to', extra: { status_date_from: FAR_PAST, status_date_to: FAR_FUTURE } },
+      // Without the type filter as well, in case the two interact.
+      { name: 'created_at_from/_to AND no type filter', extra: { created_at_from: FAR_PAST, created_at_to: FAR_FUTURE }, dropTypes: true },
+    ];
+
+    const out = [];
+    let baselineKeys = null;
+    for (const v of VARIANTS) {
+      const params = { ...base, ...v.extra };
+      if (v.dropTypes) delete params.work_order_types;
+      let r;
+      try {
+        const got = await client.fetchReport('work_order', params);
+        const rows = got.rows || [];
+        const keys = new Set(rows.map(x => String(x.work_order_number || '').trim()).filter(Boolean));
+        const created = rows.map(x => String(x.created_at || '').slice(0, 10))
+          .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+        if (!baselineKeys) baselineKeys = keys;
+        const found = WO_WINDOW_TARGETS.filter(w => keys.has(w));
+        const beyondBaseline = [...keys].filter(k => !baselineKeys.has(k)).length;
+        r = {
+          variant: v.name, rows: rows.length, truncated: !!got.truncated,
+          createdRange: created.length ? `${created[0]} .. ${created[created.length - 1]}` : null,
+          targetsFound: found.length, targets: found,
+          rowsBaselineDoesNotHave: beyondBaseline,
+          // The verdict, stated rather than left to be inferred from counts.
+          verdict: v.name.startsWith('(baseline')
+            ? 'baseline'
+            : (beyondBaseline === 0 ? 'IGNORED — identical coverage to baseline' : 'HONOURED — returns rows baseline does not'),
+        };
+      } catch (e) {
+        r = { variant: v.name, error: e.message, verdict: 'REJECTED — ' + (e.status || 'error') };
+      }
+      out.push(r);
+    }
+    res.json({ ok: true, readOnly: true, targets: WO_WINDOW_TARGETS, variants: out });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.post('/api/maintenance/reconcile', requireMetricAdmin, async (req, res) => {
   try {
     const dryRun = !(req.body && req.body.write === true);
