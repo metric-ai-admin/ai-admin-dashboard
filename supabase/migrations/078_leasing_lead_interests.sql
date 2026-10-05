@@ -1,7 +1,6 @@
--- PROPOSED — NOT A MIGRATION. Deliberately in docs/ and not in
--- supabase/migrations/, so nothing picks it up and runs it. Rename and move it
--- to 078_leasing_lead_interests.sql once it is approved.
+-- 078_leasing_lead_interests.sql
 --
+-- Approved 2026-10-05. Reviewed as docs/proposed-leasing-lead-interests.sql.
 -- ONE ROW PER INTEREST, which leasing_leads cannot hold.
 --
 -- leasing_leads upserts on appfolio_id = guest_card_uuid, one row per guest

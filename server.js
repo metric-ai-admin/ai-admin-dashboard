@@ -6009,10 +6009,31 @@ function leasingRowFromReport(r, propMap = {}) {
   const gcId = leasingVal(r, F.guest_card_id);
   const propId = leasingVal(r, F.property_id);
   const propIdStr = propId != null ? String(propId) : null;
-  // Property name: from the row, else resolved via property_id against known
-  // properties. Unattributable → exclude (no "Unknown" rows).
+  // (see leasingInterestFromReport below for the per-interest row)
+  // Property name, in three steps, and the THIRD one is new.
+  //
+  // F.property points at `property_name`. The report this sync actually
+  // fetches — guest_card_inquiries — does not return that field at all, so
+  // step 1 never fires and step 2 carried everything: property_id resolved
+  // against a map built from previously-synced rows. A property with no prior
+  // rows resolves to nothing, its leads are dropped, and because the only way
+  // into the map is having been synced, it drops its own leads for ever,
+  // silently. Measured 2026-10-05: 7 rows over 14 weeks, Live With Metric (6)
+  // and Cedar and Sage (1).
+  //
+  // Step 3 reads `property`, which IS on every row — name plus address,
+  // "Cedar and Sage - 5800 Cougar Dr Austin, TX 78745" — and takes the part
+  // before the first " - ". That is the same split canonicalProperty uses, so
+  // the name it produces matches what the map would have held.
   let property = leasingVal(r, F.property);
   if (!property && propIdStr && propMap[propIdStr]) property = propMap[propIdStr];
+  if (!property) {
+    const withAddress = leasingVal(r, 'property');
+    if (withAddress) {
+      const bare = String(withAddress).split(' - ')[0].trim();
+      if (bare) property = bare;
+    }
+  }
   if (!property) return null;
   return {
     // Stable per-guest-card UUID is the identity; composite is only a fallback
@@ -6045,6 +6066,61 @@ function leasingRowFromReport(r, propMap = {}) {
     // Central belongs to that day, not to the UTC tomorrow.
     first_contact_date: trafficValid ? toChicagoYMD(trafficDate) : null,
     week_ending: trafficValid ? leasingWeekEnding(trafficDate) : (interestIso ? leasingWeekEnding(interestDate) : null),
+    synced_at: new Date().toISOString(),
+  };
+}
+
+// One row per INTEREST, for leasing_lead_interests (migration 078).
+//
+// Separate from leasingRowFromReport on purpose. That one builds a guest-CARD
+// row and its identity collapses every interest on a card onto one key; this
+// one keys on inquiry_id, which was probed live on 2026-10-05 as 524 distinct
+// values across 524 rows — one per interest, where guest_card_uuid gave 479.
+//
+// It also reads `property` and property_id straight off the row rather than
+// going through APPFOLIO_LEASING_FIELDS.property, which points at a field
+// (`property_name`) this report does not return at all.
+function leasingInterestFromReport(r) {
+  const inq = leasingVal(r, 'inquiry_id');
+  const uuid = leasingVal(r, 'guest_card_uuid');
+  const received = leasingVal(r, 'received');
+  // Without an id there is no key, and without a received date the row cannot
+  // be placed in a week. Either missing means it is not an interest we can
+  // record; dropping it is honest, inventing a key is not.
+  if (inq == null || !uuid || !received) return null;
+
+  const iso = v => {
+    if (!v) return null;
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  };
+  const int = v => {
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    const n = parseInt(String(v).replace(/[^0-9-]/g, ''), 10);
+    return isNaN(n) ? null : n;
+  };
+  const receivedIso = iso(received);
+  if (!receivedIso) return null;
+
+  return {
+    inquiry_id: int(inq),
+    guest_card_uuid: String(uuid).trim(),
+    guest_card_id: int(leasingVal(r, 'guest_card_id')),
+    property: leasingVal(r, 'property'),           // name PLUS address, as given
+    property_id: int(leasingVal(r, 'property_id')),
+    interest_received: receivedIso,
+    first_contact_date: iso(leasingVal(r, 'first_contact_date')),
+    source: leasingVal(r, 'source'),
+    lead_type: leasingVal(r, 'lead_type'),
+    status: leasingVal(r, 'status'),
+    inquiry_type: leasingVal(r, 'inquiry_type'),
+    // Card-level counters the report repeats on every interest row of a card.
+    // Stored as given; they do NOT vary per interest.
+    interests_received_in_range: int(leasingVal(r, 'interests_received_in_range')),
+    total_interests_received: int(leasingVal(r, 'total_interests_received')),
+    showings: int(leasingVal(r, 'showings')),
+    follow_ups: int(leasingVal(r, 'follow_ups')),
+    last_activity_date: iso(leasingVal(r, 'last_activity_date')),
     synced_at: new Date().toISOString(),
   };
 }
@@ -6327,9 +6403,43 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
       if (error) throw new Error(error.message);
       synced += chunk.length;
     }
+    // ── leasing_lead_interests — ONE ROW PER INTEREST ──────────────────────
+    //
+    // Written from `raw`, not from `kept`: kept has already been deduped onto
+    // guest_card_uuid and filtered to the week, which is exactly the collapse
+    // this table exists to undo. 136 interests became 79 rows for 09/27–10/03.
+    //
+    // leasing_leads above is untouched — same rows, same key, same filter.
+    // This is additive, and it is deliberately AFTER that upsert: the leads
+    // sync succeeding must not depend on this one.
+    let interests = 0, interestsError = null;
+    try {
+      const seenInq = new Set();
+      const iRows = [];
+      for (const r of raw) {
+        const rec = leasingInterestFromReport(r);
+        if (!rec || seenInq.has(rec.inquiry_id)) continue;
+        seenInq.add(rec.inquiry_id);
+        iRows.push(rec);
+      }
+      for (let i = 0; i < iRows.length; i += 500) {
+        const { error } = await db.from('leasing_lead_interests')
+          .upsert(iRows.slice(i, i + 500), { onConflict: 'inquiry_id' });
+        if (error) throw new Error(error.message);
+        interests += Math.min(500, iRows.length - i);
+      }
+    } catch (e) {
+      // A missing table or a bad row must not fail the leads sync. Reported in
+      // the response rather than swallowed, so "0 interests" cannot look like
+      // "no interests to write".
+      interestsError = e.message;
+      console.warn('[leasing-sync] leasing_lead_interests: ' + e.message);
+    }
+
     // `received` and `out_of_range` are reported, not just logged: a sync that
     // quietly discards 87% of what it was handed should say so on screen.
-    res.json({ ok: true, synced, received, out_of_range: outOfRange, seen: stamped, excluded, date_from, date_to, source });
+    res.json({ ok: true, synced, received, out_of_range: outOfRange, seen: stamped, excluded,
+      interests, interestsError, date_from, date_to, source });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Leasing sync failed: ' + err.message });
   }
