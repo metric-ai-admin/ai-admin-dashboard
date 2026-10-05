@@ -2001,7 +2001,18 @@ async function readLyndsayQueue() {
 //    end-of-day today rather than scrambling tomorrow morning.
 // Skips cancelled meetings and dedupes against any still-pending (not sent)
 // reminder already queued for the same event + reminder type.
-async function generateLyndsayReminders(lyndsayMeetings) {
+// DISABLED 2026-10-06. Kept as a no-op rather than deleted so the call sites
+// stay honest about what used to happen here.
+//
+// This pushed reminders into a file that nothing ever took them out of, which
+// is where all four reported faults came from: tomorrow's meetings queued as
+// things to send now, today's still listed hours after they started, a moved
+// meeting frozen at its old time, and text baked at queue time that always
+// read "starts in 4 minutes". GET /api/lyndsay-queue now rebuilds from the
+// calendar on every read instead.
+async function generateLyndsayReminders() { /* no longer queues anything */ }
+
+async function generateLyndsayRemindersLEGACY(lyndsayMeetings) {
   const now = new Date();
   const queue = await readLyndsayQueue();
   let changed = false;
@@ -3451,8 +3462,56 @@ app.get('/api/calendar/today', requireMetricAccess, async (req, res) => {
 });
 
 // Ready-to-send reminder queue — copy/paste text, never auto-sent.
+// REBUILT FROM THE CALENDAR ON EVERY READ, not accumulated.
+//
+// The stored queue is now only two things: the manual entries somebody typed,
+// and the record of which meeting reminders have been marked sent. Everything
+// else is derived here, which is what makes a moved meeting move, a cancelled
+// one disappear and a finished one expire — none of which the old file could
+// do, because nothing ever went back to the calendar to check.
+const LQ = require('./lib/lyndsay-queue.js');
+const LYNDSAY_SENT_FILE = path.join(DATA_DIR, 'lyndsay_queue_sent.json');
+
+async function lyndsaySentMarks() { return await readJSON(LYNDSAY_SENT_FILE, {}); }
+
 app.get('/api/lyndsay-queue', requireMetricAccess, async (req, res) => {
-  res.json(await readLyndsayQueue());
+  try {
+    const stored = await readLyndsayQueue();
+    // Manual entries only. Auto-generated meeting reminders are no longer kept
+    // — an old row for a meeting that has moved is exactly the bug.
+    const manual = stored.filter(q => !q.reminderType);
+
+    const meetings = await readJSON(MEETINGS_FILE, { lyndsay: [] });
+    // Hers, by the Morning Report's own rule: a personal event or an external
+    // invitation she never answered is not her day and not a reminder to send.
+    const mine = (meetings.lyndsay || []).filter(m => !m.isAllDay && mrOwnsTimed(m));
+
+    const built = LQ.build(mine, {
+      now: new Date(),
+      todayCentral: WEEK.toChicagoYMD(new Date()),
+      toCentralYMD: d => WEEK.toChicagoYMD(d),
+      sent: await lyndsaySentMarks(),
+      leadFor: m => classifyMeeting(m).leadMinutes,
+    });
+
+    // The text is written NOW, so the minutes are the real ones. The old
+    // message baked in the classified lead time when the row was created,
+    // which is why every one of them said "starts in 4 minutes".
+    const reminders = built.map(b => ({
+      ...b,
+      id: b.key,
+      reminderType: 'today',
+      reason: 'Meeting reminder (rebuilt from calendar)',
+      text: LQ.messageFor(b, new Date(), new Date(b.meetingTime)
+        .toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: LYNDSAY_TIMEZONE })),
+    }));
+
+    res.json([...reminders, ...manual]);
+  } catch (e) {
+    // The queue is copy/paste only; failing closed is better than showing a
+    // list that may be stale in a way nobody can see.
+    res.status(500).json({ error: 'Could not rebuild the queue: ' + e.message });
+  }
 });
 
 app.post('/api/lyndsay-queue', requireMetricAccess, async (req, res) => {
@@ -3489,6 +3548,23 @@ app.post('/api/lyndsay-queue/bulk-import', requireMetricAdmin, async (req, res) 
 });
 
 app.post('/api/lyndsay-queue/:id/sent', requireMetricAccess, async (req, res) => {
+  // A rebuilt reminder's id IS its key — event plus start — so the mark
+  // survives the rebuild and travels with the meeting. If it moves to 3pm the
+  // key changes and the new time is unmarked, which is right: that is a
+  // different message to send.
+  if (String(req.params.id || '').includes('|')) {
+    const marks = await lyndsaySentMarks();
+    marks[req.params.id] = new Date().toISOString();
+    // Keys age out with the day they belong to; without this the file grows
+    // for ever, one entry per meeting the company ever holds.
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    for (const k of Object.keys(marks)) {
+      const t = new Date(marks[k]).getTime();
+      if (!isNaN(t) && t < cutoff) delete marks[k];
+    }
+    await writeJSON(LYNDSAY_SENT_FILE, marks);
+    return res.json({ id: req.params.id, sent: true, sentAt: marks[req.params.id] });
+  }
   const queue = await readLyndsayQueue();
   const idx = queue.findIndex(m => m.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Message not found' });
