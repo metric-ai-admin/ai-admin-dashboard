@@ -118,16 +118,65 @@ t('a row with neither is still excluded', () => {
 });
 
 console.log('\nleads counted her way, from the interest rows');
-const rows = (spec) => spec.map((s, i) => ({
+const rows = (spec) => spec.map(s => ({
   guest_card_uuid: s[0], property: s[1], interest_received: s[2] || '2026-09-29T10:00:00Z',
 }));
+// The card map the caller joins from leasing_leads on appfolio_id.
+const CARDS = {
+  'card-a': { phone: '(737) 555-0101', email: 'a@example.com', name: 'Alvarez, Ana' },
+  'card-b': { phone: '(737) 555-0202', email: 'b@example.com', name: 'Boyd, Ben' },
+  // Same person, two cards, one phone — her key merges them, a uuid key would
+  // not. This is the case that makes the rule hers rather than ours.
+  'card-c': { phone: '(737) 555-0101', email: 'c@example.com', name: 'Alvarez, A.' },
+  // No phone: her chain falls to email.
+  'card-d': { phone: '', email: 'd@example.com', name: 'Diaz, Dee' },
+  // No phone, no email: falls to name.
+  'card-e': { phone: '', email: '', name: 'Escobar, Eve' },
+};
+
 t('two interests from one card at one property are one lead', () => {
   const r = K.leadsByInterestFrom(rows([
     ['card-a', 'Ascent at Northgate - 9315 Northgate Blvd'],
     ['card-a', 'Ascent at Northgate - 9315 Northgate Blvd'],
     ['card-b', 'Ascent at Northgate - 9315 Northgate Blvd'],
-  ]), W, E);
+  ]), W, E, CARDS);
   assert.strictEqual(r['Ascent at Northgate'].leadsByInterest, 2, 'interests are counted raw');
+});
+t('her key is phone first — two cards on one phone are ONE lead', () => {
+  // The whole reason for joining back to leasing_leads. Keying on
+  // guest_card_uuid would call this two leads and miss her number.
+  const r = K.leadsByInterestFrom(rows([
+    ['card-a', 'Ascent at Northgate - 1 Main St'],
+    ['card-c', 'Ascent at Northgate - 1 Main St'],
+  ]), W, E, CARDS);
+  assert.strictEqual(r['Ascent at Northgate'].leadsByInterest, 1,
+    'the phone key is not being used');
+});
+t('no phone falls to email, no email falls to name', () => {
+  const r = K.leadsByInterestFrom(rows([
+    ['card-d', 'Sunset Palms - 1 Main St'],
+    ['card-d', 'Sunset Palms - 1 Main St'],
+    ['card-e', 'Sunset Palms - 1 Main St'],
+    ['card-e', 'Sunset Palms - 1 Main St'],
+  ]), W, E, CARDS);
+  assert.strictEqual(r['Sunset Palms'].leadsByInterest, 2, 'the fallback chain is wrong');
+});
+t('an interest with no card falls back to the uuid AND is counted', () => {
+  // It has no contact details to key on. The uuid can only ever split one
+  // person into more leads, never merge two — and the fallback is reported so
+  // it is never silent.
+  const r = K.leadsByInterestFrom(rows([
+    ['card-a', 'Ascent at Northgate - 1 Main St'],
+    ['card-zz', 'Ascent at Northgate - 1 Main St'],
+    ['card-zz', 'Ascent at Northgate - 1 Main St'],
+  ]), W, E, CARDS);
+  assert.strictEqual(r['Ascent at Northgate'].leadsByInterest, 2, 'the unmatched card was dropped');
+  assert.strictEqual(r['Ascent at Northgate'].leadsByInterestUnmatched, 1,
+    'the fallback is not reported');
+});
+t('a fully matched week reports no fallbacks at all', () => {
+  const r = K.leadsByInterestFrom(rows([['card-a', 'Ascent at Northgate - 1 Main St']]), W, E, CARDS);
+  assert.strictEqual(r['Ascent at Northgate'].leadsByInterestUnmatched, undefined);
 });
 t('the two iConics share one dedupe bucket', () => {
   // Her canonicalProperty returns the literal 'Round Rock' for both, so a card
@@ -135,7 +184,7 @@ t('the two iConics share one dedupe bucket', () => {
   const r = K.leadsByInterestFrom(rows([
     ['card-a', 'iConic Downtown - 1 Main St'],
     ['card-a', 'iConic Round Rock - 2 Main St'],
-  ]), W, E);
+  ]), W, E, CARDS);
   const total = Object.values(r).reduce((t2, b) => t2 + (b.leadsByInterest || 0), 0);
   assert.strictEqual(total, 1, 'the iConic pair is deduped separately');
 });
@@ -145,7 +194,7 @@ t('but the count stays on the real property, not on Round Rock', () => {
   const r = K.leadsByInterestFrom(rows([
     ['card-a', 'iConic Downtown - 1 Main St'],
     ['card-b', 'iConic Round Rock - 2 Main St'],
-  ]), W, E);
+  ]), W, E, CARDS);
   assert.strictEqual(r['iConic Downtown'].leadsByInterest, 1);
   assert.strictEqual(r['iConic Round Rock'].leadsByInterest, 1);
   assert.ok(!r['Round Rock'], 'a roll-up bucket swallowed the real properties');
@@ -154,21 +203,33 @@ t('the same card at two different properties counts twice', () => {
   const r = K.leadsByInterestFrom(rows([
     ['card-a', 'Ascent at Northgate - 1 Main St'],
     ['card-a', 'Sunset Palms - 2 Main St'],
-  ]), W, E);
+  ]), W, E, CARDS);
   assert.strictEqual(r['Ascent at Northgate'].leadsByInterest, 1);
   assert.strictEqual(r['Sunset Palms'].leadsByInterest, 1);
 });
 t('interests outside the week do not count', () => {
   const r = K.leadsByInterestFrom(rows([
     ['card-a', 'Ascent at Northgate - 1 Main St', '2026-09-20T10:00:00Z'],
-  ]), W, E);
+  ]), W, E, CARDS);
   assert.ok(!r['Ascent at Northgate'] || !r['Ascent at Northgate'].leadsByInterest);
 });
-t('it survives build() instead of being dropped by METRICS', () => {
-  const o = K.build({ leadInterests: rows([['card-a', 'Ascent at Northgate - 1 Main St']]) },
-    { weekStart: W, weekEnd: E, asOf: E });
+t('build() passes the card map through', () => {
+  const o = K.build({
+    leadInterests: rows([['card-a', 'Ascent at Northgate - 1 Main St'],
+      ['card-c', 'Ascent at Northgate - 1 Main St']]),
+    leadCards: CARDS,
+  }, { weekStart: W, weekEnd: E, asOf: E });
   assert.strictEqual(o.byProperty['Ascent at Northgate'].leadsByInterest, 1,
-    'computed and then thrown away');
+    'build() drops the card map, so the phone key never applies');
+});
+t('no card map at all degrades to the uuid, and says so', () => {
+  const o = K.build({
+    leadInterests: rows([['card-a', 'Ascent at Northgate - 1 Main St'],
+      ['card-c', 'Ascent at Northgate - 1 Main St']]),
+  }, { weekStart: W, weekEnd: E, asOf: E });
+  assert.strictEqual(o.byProperty['Ascent at Northgate'].leadsByInterest, 2);
+  assert.strictEqual(o.byProperty['Ascent at Northgate'].leadsByInterestUnmatched, 2,
+    'a missing join would silently produce a different number');
 });
 t('the other two readings of leads still exist', () => {
   // Three questions, three numbers: interests deduped (hers), guest cards by
