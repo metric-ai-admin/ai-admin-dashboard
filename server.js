@@ -7496,8 +7496,38 @@ app.post('/api/leasing/probe-guest-cards', requireMetricAdmin, async (req, res) 
             && new Set(vals.map(String)).size === wk.length;
         });
 
+        // Row-level key material for ONE property, so "which rows do we merge
+        // that she does not" can be answered row by row instead of inferred
+        // from two totals. Masked: the question is which FIELD the key falls
+        // to and whether it collides, and that survives masking intact.
+        let detail = null;
+        if (req.body && req.body.property) {
+          const want = String(req.body.property).toLowerCase();
+          const mask = (s, kind) => {
+            const t = String(s || '').trim();
+            if (!t) return '';
+            if (kind === 'email') return t.replace(/^(.).*(@.*)$/, '$1***$2');
+            if (kind === 'phone') return t.replace(/\d(?=(?:\D*\d){4})/g, '*');
+            return t;                                   // names are the point
+          };
+          const seen2 = {};
+          detail = wk.filter(r => String(r.property || r.property_name || '').toLowerCase().includes(want))
+            .map((r, i) => {
+              const phone = String(r.phone_number || r.phone || '').trim();
+              const email = String(r.email_address || r.email || '').trim();
+              const nm = String(r.name || '').trim();
+              const key = phone || email || nm || ('row' + i);
+              const via = phone ? 'phone' : email ? 'email' : nm ? 'name' : 'row-index';
+              const dup = !!seen2[key];
+              seen2[key] = true;
+              return { name: mask(nm), phone: mask(phone, 'phone'), email: mask(email, 'email'),
+                keyVia: via, mergedIntoEarlierRow: dup, received: r.received || null };
+            });
+        }
+
         out.push({
           variant: v.name, rows: rows.length, rowsInWeek: wk.length,
+          detail,
           dedupedByHerKey: deduped, target: 105,
           perInterestIdCandidates: perRow,
           fields: keys.length,
