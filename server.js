@@ -6954,8 +6954,23 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null } = {}) {
     await writeJSON(backupPath, backup);
   } catch (e) { return { ...summary, error: 'backup to disk failed, nothing written: ' + e.message }; }
   try {
+    // NOT {...c}: the change object carries the work order's own `id`, which is
+    // a uuid, and the log's id is a bigserial. Spreading it made Postgres try
+    // to parse a uuid as a bigint and rejected the whole insert — the disk
+    // backup was fine and the queryable log was empty, which is the half
+    // somebody would reach for first. The columns are listed explicitly so a
+    // new field on `changes` cannot silently break it again.
     const { error } = await db.from('work_order_reconcile_log')
-      .insert(changes.map(c => ({ ...c, run_at: stamp })));
+      .insert(changes.map(c => ({
+        run_at: stamp,
+        work_order_number: c.work_order_number,
+        property_name: c.property_name,
+        work_order_type: c.work_order_type,
+        status_before: c.status_before,
+        status_after: c.status_after,
+        completed_on: c.completed_on,
+        reason: c.reason,
+      })));
     backupTable = error ? ('failed: ' + error.message) : 'ok';
   } catch (e) { backupTable = 'failed: ' + e.message; }
   // The disk backup is the one that gates the write; the table is a

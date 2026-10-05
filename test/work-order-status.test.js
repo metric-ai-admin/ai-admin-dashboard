@@ -114,6 +114,30 @@ t('every synced row carries last_seen_in_feed', () => {
   assert.ok(/rec\.last_seen_in_feed = syncStamp;/.test(server), 'rows are written without it');
 });
 
+console.log('\nthe reconcile log is writable');
+t('the log insert does not spread the change object', () => {
+  // It carries the work order's own `id`, a uuid, and the log's id is a
+  // bigserial. Spreading it made Postgres try to parse a uuid as a bigint and
+  // reject the whole batch — the disk backup was fine and the queryable log
+  // was empty, which is the half somebody reaches for first. The columns are
+  // listed explicitly so a new field on `changes` cannot break it again.
+  const i = REC.indexOf("from('work_order_reconcile_log')");
+  assert.ok(i > 0, 'the log insert is gone');
+  const body = REC.slice(i, i + 700);
+  assert.ok(!/\.\.\.c,/.test(body), 'the change object is spread into the log insert');
+  ['work_order_number', 'status_before', 'status_after', 'reason'].forEach(f =>
+    assert.ok(new RegExp(f + ':').test(body), `${f} is not written to the log`));
+  assert.ok(!/\bid: /.test(body), 'the work order id is written into the log primary key');
+});
+t('a run can be undone from the log alone', () => {
+  // status_before plus work_order_number is the whole undo. If either stopped
+  // being written, the backup would be unusable without saying so.
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'migrations',
+    '077_work_order_reconcile_log.sql'), 'utf8');
+  assert.ok(/status_before/.test(sql) && /work_order_number/.test(sql));
+  assert.ok(/set status = l\.status_before/.test(sql), 'the undo is not written down anywhere');
+});
+
 console.log('\nthe Billable Labor Report is untouched');
 t('it never reads the work-order table or this rule', () => {
   // It is built from four CSVs Lyndsay uploads, because the API returns only
