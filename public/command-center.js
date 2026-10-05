@@ -1005,8 +1005,27 @@ function ccRefreshCounts() {
   // when it was written, matches nothing and the banner never appears, which
   // is exactly what Arturo saw.
   const woRep = ccReports.wo;
+  const woStatus = r => ccVal(r, woRep.map, 'status');
   const ccNotInFeed = !woRep ? [] : woRep.rows
-    .filter(r => ccVal(r, woRep.map, 'status').toLowerCase().includes('not in feed'));
+    .filter(r => woStatus(r).toLowerCase().includes('not in feed'));
+
+  // Finished in the field, waiting to be billed. Shown apart from the rest of
+  // the open work because they are not jobs a tech still has to attend: until
+  // 2026-10-05 they sat in the same pile and read as pending site visits.
+  // The rule comes from the shared module, not from a second opinion here.
+  const WOS = window.WorkOrderStatus;
+  const ccAwaiting = (!woRep || !WOS) ? [] : woRep.rows.filter(r => WOS.isAwaitingBilling(woStatus(r)));
+  if (sum && ccAwaiting.length) {
+    const nums = ccAwaiting.map(r => ccVal(r, woRep.map, 'woNum')).filter(Boolean).slice(0, 12);
+    const b = document.createElement('div');
+    b.className = 'banner';
+    b.style.cssText = 'width:100%;margin:0 0 8px';
+    b.innerHTML = `<b>💵 ${ccAwaiting.length} awaiting billing.</b> `
+      + `Work Done / Ready to Bill — the job is finished, the money is not collected. `
+      + `Not field work; they belong to the Billable Labor Report. `
+      + (nums.length ? `WO ${nums.map(esc).join(', ')}${ccAwaiting.length > nums.length ? ', …' : ''}` : '');
+    sum.appendChild(b);
+  }
   if (sum && ccNotInFeed.length) {
     const nums = ccNotInFeed.map(r => ccVal(r, woRep.map, 'woNum'))
       .filter(Boolean).slice(0, 12);

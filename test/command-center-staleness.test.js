@@ -65,24 +65,32 @@ t('the server copy replaces the restored board rather than merging', () => {
 });
 
 console.log('\nthe "not in feed" line Arturo could not find');
+// Sliced to a NAMED END MARKER, not a byte count. A fixed window stops
+// covering what it was written for the moment a line is added above it, and
+// then passes for the wrong reason.
+const SUMMARY = (() => {
+  const i = code.indexOf('function ccRefreshCounts');
+  const j = code.indexOf('CC_CATS.forEach', i);
+  assert.ok(i > 0 && j > i, 'ccRefreshCounts or its end marker moved');
+  return code.slice(i, j);
+})();
+
 t('it reads the column through the map, not by guessing field names', () => {
   // ccIngest stores rows keyed by the SOURCE HEADER ('Status', 'Work Order
   // Number'). r.status and r.wo are undefined on these rows, so the filter
   // matched nothing and the banner never rendered.
-  const i = code.indexOf('ccNotInFeed');
-  const body = code.slice(i - 200, i + 700);
-  assert.ok(/ccVal\(r, woRep\.map, 'status'\)/.test(body), 'the status is read off the raw row');
-  assert.ok(/ccVal\(r, woRep\.map, 'woNum'\)/.test(body), 'the work order number is read off the raw row');
-  assert.ok(!/r\.wo \|\| r\.workorder/.test(body), 'the guessed field names are still there');
+  assert.ok(/ccVal\(r, woRep\.map, 'status'\)/.test(SUMMARY), 'the status is read off the raw row');
+  assert.ok(/ccVal\(r, woRep\.map, 'woNum'\)/.test(SUMMARY), 'the work order number is read off the raw row');
+  assert.ok(!/r\.wo \|\| r\.workorder/.test(SUMMARY), 'the guessed field names are still there');
 });
 t('it is in the Command Center summary, where Erick works', () => {
-  const i = code.indexOf('ccNotInFeed');
-  assert.ok(i > 0, 'the banner is gone');
-  assert.ok(code.slice(i, i + 900).includes("sum.appendChild(banner)"), 'it is built but never attached');
+  assert.ok(/ccNotInFeed/.test(SUMMARY), 'the banner is gone');
+  const at = SUMMARY.indexOf('if (sum && ccNotInFeed.length)');
+  assert.ok(at > 0, 'the banner is never rendered');
+  assert.ok(SUMMARY.slice(at).includes('sum.appendChild(banner)'), 'it is built but never attached');
 });
 t('the work order numbers are shown, not just a count', () => {
-  const i = code.indexOf('ccNotInFeed');
-  const body = code.slice(i, i + 900);
+  const body = SUMMARY.slice(SUMMARY.indexOf('if (sum && ccNotInFeed.length)'));
   assert.ok(/slice\(0, 12\)/.test(body), 'every number would be dumped, or none');
   assert.ok(/ccNotInFeed\.length > nums\.length \? ', …' : ''/.test(body),
     'a truncated list does not say it was truncated');

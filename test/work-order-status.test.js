@@ -47,8 +47,38 @@ t('tally splits all three and loses nothing', () => {
     { status: WOS.UNKNOWN }, { status: WOS.UNKNOWN },
   ];
   const c = WOS.tally(rows);
-  assert.deepStrictEqual(c, { open: 2, closed: 3, unknown: 2, total: 7 });
+  assert.deepStrictEqual(c, { open: 2, closed: 3, unknown: 2, total: 7, awaitingBilling: 0, fieldWork: 2 });
   assert.strictEqual(c.open + c.closed + c.unknown, c.total, 'a row fell through the cracks');
+});
+
+console.log('\nawaiting billing is a split of open, not a fourth bucket');
+t('"Work Done" and "Ready to Bill" are the ones', () => {
+  ['Work Done', 'work done', 'Ready to Bill', '  Ready To Bill  ']
+    .forEach(s => assert.strictEqual(WOS.isAwaitingBilling(s), true, JSON.stringify(s)));
+  ['Assigned', 'Scheduled', 'New', 'Waiting', '', null]
+    .forEach(s => assert.strictEqual(WOS.isAwaitingBilling(s), false, JSON.stringify(s)));
+});
+t('they are still OPEN — the money is not collected', () => {
+  // Counting them as closed would drop them out of the board entirely, and
+  // they are precisely the rows the Billable Labor Report is for.
+  ['Work Done', 'Ready to Bill'].forEach(s => {
+    assert.strictEqual(WOS.isOpen(s), true, s + ' stopped being open');
+    assert.strictEqual(WOS.isClosed(s), false, s + ' counted as closed');
+    assert.strictEqual(WOS.isFieldWork(s), false, s + ' counted as work still to do on site');
+  });
+});
+t('a closed or unknown row is never awaiting billing', () => {
+  assert.strictEqual(WOS.isAwaitingBilling(WOS.UNKNOWN), false);
+  assert.strictEqual(WOS.isAwaitingBilling('Completed'), false);
+});
+t('the split never double-counts', () => {
+  const rows = [{ status: 'Assigned' }, { status: 'Work Done' }, { status: 'Ready to Bill' },
+    { status: 'Completed' }, { status: WOS.UNKNOWN }];
+  const c = WOS.tally(rows);
+  assert.strictEqual(c.awaitingBilling + c.fieldWork, c.open, 'the split does not add up to open');
+  assert.strictEqual(c.open + c.closed + c.unknown, c.total, 'the total stopped being the total');
+  assert.strictEqual(c.awaitingBilling, 2);
+  assert.strictEqual(c.fieldWork, 1);
 });
 
 console.log('\nthe screens use the shared rule');

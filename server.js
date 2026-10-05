@@ -6771,8 +6771,36 @@ app.post('/api/leasing/sync/lease-history', requireMetricAccess, async (req, res
 // Reports-API auth/pagination as the leasing sync (appfolioReportsFetch).
 // =====================================================================
 const APPFOLIO_WORK_ORDER_REPORT = '/api/v2/reports/work_order.json';
-const APPFOLIO_WORK_ORDER_FILTER = {
+
+// Everything that is not finished, EXCEPT it never was.
+//
+// This list of six status codes was hand-picked, and it is missing at least
+// "Ready to Bill", "Work Done" and some "Waiting". The sweep on 2026-10-05
+// found 113 work orders open where this filter returns 95 — 18 the daily sync
+// has never written, because it never asked for them. They are not ghosts;
+// they are work AppFolio has and Erick's board does not.
+//
+// Kept only so a dry run can report what widening the filter actually adds.
+const APPFOLIO_WO_NARROW_FILTER = {
   work_order_statuses: ['0', '1', '2', '9', '11', '3'],
+  work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
+  property_visibility: 'active',
+  paginate_results: false,
+};
+
+// Ask for every status code and decide what "open" means HERE, with the one
+// rule in lib/work-order-status.js, rather than by guessing which numbers
+// AppFolio assigned to which status. A code list cannot be verified from the
+// response — a missing status looks exactly like a status with no rows — and
+// that is precisely how three of them went missing for as long as this table
+// has existed.
+//
+// The type and visibility filters are deliberately UNCHANGED. The 2026-10-05
+// sweep omitted them, so part of its 113 may be work order types this
+// dashboard excludes on purpose; widening the status list and dropping the
+// type filter in one step would make it impossible to say which did what.
+const APPFOLIO_WORK_ORDER_FILTER = {
+  work_order_statuses: Array.from({ length: 31 }, (_, i) => String(i)),
   work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
   property_visibility: 'active',
   paginate_results: false, // return all rows in one response (some reports 404 on next_page_url)
@@ -6840,13 +6868,24 @@ function mwoRowFromReport(r) {
 app.post('/api/maintenance/sync', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   try {
+    const dryRun = !!(req.body && req.body.dryRun === true);
     const raw = await appfolioReportsFetch(APPFOLIO_WORK_ORDER_REPORT, APPFOLIO_WORK_ORDER_FILTER);
     const seen = new Set();
     const syncStamp = new Date().toISOString();
     const rows = [];
+    const skipped = { closed: 0, byStatus: {} };
     for (const r of raw) {
       const rec = mwoRowFromReport(r);
       if (!rec || seen.has(rec.work_order_number)) continue;
+      // The pull now covers every status, so the closed ones have to be dropped
+      // here. One rule, the same one the screens count with — not a second
+      // opinion about what "open" means.
+      if (!WOS.isOpen(rec.status)) {
+        skipped.closed++;
+        const s = String(rec.status || '(none)');
+        skipped.byStatus[s] = (skipped.byStatus[s] || 0) + 1;
+        continue;
+      }
       seen.add(rec.work_order_number);
       // Stamped on every row the feed returns. A row whose stamp stops moving
       // is one the feed has stopped carrying, which is the whole signal the
@@ -6854,6 +6893,34 @@ app.post('/api/maintenance/sync', requireMetricAccess, async (req, res) => {
       rec.last_seen_in_feed = syncStamp;
       rows.push(rec);
     }
+    const openByStatus = {};
+    rows.forEach(r => { const s = String(r.status || '(none)'); openByStatus[s] = (openByStatus[s] || 0) + 1; });
+
+    // The dry run exists because this filter changed. It writes nothing and
+    // reports what the WIDER pull sees against what the old six-code list saw,
+    // so "18 more work orders" can be read as specific statuses rather than
+    // taken on trust.
+    if (dryRun) {
+      const narrow = await appfolioReportsFetch(APPFOLIO_WORK_ORDER_REPORT, APPFOLIO_WO_NARROW_FILTER);
+      const narrowKeys = new Set(narrow.map(r => {
+        const rec = mwoRowFromReport(r); return rec && rec.work_order_number;
+      }).filter(Boolean));
+      const added = rows.filter(r => !narrowKeys.has(r.work_order_number));
+      const addedByStatus = {};
+      added.forEach(r => { const s = String(r.status || '(none)'); addedByStatus[s] = (addedByStatus[s] || 0) + 1; });
+      return res.json({
+        ok: true, dryRun: true, wrote: 0,
+        fetched: raw.length, open: rows.length, openByStatus,
+        droppedAsClosed: skipped.closed, droppedByStatus: skipped.byStatus,
+        narrowFilterOpen: narrowKeys.size,
+        addedByWiderFilter: added.length, addedByStatus,
+        addedExamples: added.slice(0, 25).map(r => ({
+          work_order_number: r.work_order_number, status: r.status,
+          property_name: r.property_name, work_order_type: r.work_order_type,
+        })),
+      });
+    }
+
     const db = supabaseAdmin || supabasePublic;
     let synced = 0;
     for (let i = 0; i < rows.length; i += 500) {
@@ -6862,7 +6929,8 @@ app.post('/api/maintenance/sync', requireMetricAccess, async (req, res) => {
       if (error) throw new Error(error.message);
       synced += chunk.length;
     }
-    res.json({ ok: true, synced, timestamp: new Date().toISOString(), rows });
+    res.json({ ok: true, synced, openByStatus, droppedAsClosed: skipped.closed,
+      timestamp: new Date().toISOString(), rows });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Maintenance sync failed: ' + err.message });
   }
