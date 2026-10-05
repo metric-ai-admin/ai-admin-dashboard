@@ -470,7 +470,31 @@ const activityLog = ACT.createLogger(async rows => {
   if (!CRM_CONFIGURED) throw new Error('supabase not configured');
   const db = supabaseAdmin || supabasePublic;
   const { error } = await db.from('activity_log').insert(rows);
-  if (error) throw new Error(error.message);
+  if (!error) return;
+
+  // A DUPLICATE VIEW MUST NOT TAKE THE BATCH DOWN WITH IT.
+  //
+  // Phase 2 relies on the partial unique index from 073 to collapse a user's
+  // repeated visits to one row per 30 minutes — so a rejected insert is the
+  // normal case, not a failure. But the queue batches views and WRITES
+  // together, and a single 23505 fails the whole statement: one person
+  // clicking back into Leasing would silently discard everybody's write rows
+  // in that flush.
+  //
+  // So on a duplicate, re-insert one row at a time and drop only the rows that
+  // actually conflict. PostgREST cannot express the index's WHERE predicate
+  // through on_conflict, which is why this is a retry rather than an upsert.
+  if (error.code !== '23505' && !/duplicate key/i.test(error.message || '')) {
+    throw new Error(error.message);
+  }
+  let failed = 0, lastMsg = null;
+  for (const row of rows) {
+    const { error: one } = await db.from('activity_log').insert([row]);
+    if (!one) continue;
+    if (one.code === '23505' || /duplicate key/i.test(one.message || '')) continue;  // already logged, by design
+    failed++; lastMsg = one.message;
+  }
+  if (failed) throw new Error(`${failed} row(s) failed individually: ${lastMsg}`);
 }, {
   onError: (err, dropped) => {
     // Counted and logged, never retried. A missing table says which migration
@@ -513,6 +537,41 @@ function activityWriteLogger(req, res, next) {
   });
   next();
 }
+
+// POST /api/activity/view — phase 2. The browser says which section it just
+// opened; nothing else.
+//
+// requireAuth, NOT requireMetricAccess: an API-key call is not a person, and
+// this table is a record of what people looked at. The identity is taken off
+// the verified JWT and the body is ignored except for the section name.
+//
+// It answers 204 BEFORE logging, and the logger cannot throw, so a beacon can
+// never delay or break navigation. The client sends it and forgets.
+//
+// De-duplication is the partial unique index from 073, not anything here: a
+// second tab, a retried beacon or a restarted process all defeat an in-memory
+// guard, and none of them defeat the index.
+//
+// REGISTERED BEFORE app.use('/api', activityWriteLogger) ON PURPOSE. Express
+// runs middleware in mount order, so a route declared first is not covered by
+// it — and this is a POST, which that middleware logs as a 'write'. Were the
+// order reversed, every beacon would write TWO rows: the view it means and a
+// 'write' to /api/activity that means nothing. A test pins the order.
+app.post('/api/activity/view', requireAuth, (req, res) => {
+  res.status(204).end();
+  try {
+    const who = activityActor(req);
+    if (!who) return;
+    const section = ACT.normalizeSection(req.body && req.body.section);
+    if (!section) return;              // unparseable or suspicious — drop it
+    activityLog.log({
+      ...who,
+      event: 'view',
+      section,
+      view_bucket: ACT.viewBucket(new Date()),
+    });
+  } catch { /* a beacon never reaches the caller */ }
+});
 
 // ---- Auth helpers ----------------------------------------------------------
 function requireAuth(req, res, next) {

@@ -295,7 +295,35 @@ $$('#tabs button[data-tab]').forEach(btn => {
   onScroll();
 })();
 
+/* Activity Logs, phase 2: say which section was opened, and nothing else.
+ *
+ * SEND AND FORGET. No await, no .then that touches the page, and the whole
+ * thing wrapped so a failure cannot reach loadTab — navigation must not depend
+ * on logging. keepalive lets the request survive the page being closed, which
+ * is exactly when the last section of a session would otherwise be lost.
+ *
+ * Only the section name goes over the wire. Who the user is comes off the
+ * server's own JWT, because anything this file sends is something a user could
+ * change.
+ *
+ * Repeats are not suppressed here. The 30-minute collapse is the unique index
+ * from migration 073: a second browser tab or a reopened dashboard would walk
+ * straight past any guard kept in this variable. */
+function logSectionView(tab) {
+  try {
+    const section = String(tab || '').trim().toLowerCase();
+    if (!/^[a-z0-9_-]{1,40}$/.test(section)) return;
+    fetch('/api/activity/view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section }),
+      keepalive: true,
+    }).catch(() => {});        // offline, logged out, blocked — all fine
+  } catch { /* never reaches the caller */ }
+}
+
 function loadTab(tab) {
+  logSectionView(tab);
   if (tab !== 'maintenance') {
     $('#maintenance-subnav')?.classList.add('hidden');
     const caret = $('#maint-subnav-caret');
