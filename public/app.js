@@ -11540,7 +11540,9 @@ function actWhen(iso) {
   if (mins < 1) return 'just now';
   if (mins < 60) return mins + 'm ago';
   if (mins < 60 * 24) return Math.floor(mins / 60) + 'h ago';
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  // Older than a day: a Central date, so it agrees with every other date on
+  // this tab rather than with the reader's own timezone.
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' });
 }
 
 /* Days and Rate have to agree, or the table argues with itself.
@@ -11584,7 +11586,7 @@ async function loadActivity() {
           <td>${esc(u.name || u.email)}<div class="muted small">${esc(u.email)}</div></td>
           <td>${esc(u.role || '—')}</td>
           <td>${never ? `<b>${esc(since)}</b>` : esc(actWhen(u.last_at))}</td>
-          <td>${esc(u.last_section || '—')}</td>
+          <td>${esc(actSection(u.last_section) || '—')}</td>
           <td>${never ? `<span class="muted">${esc(since)}</span>` : (u.days_since_login === null ? '—' : u.days_since_login)}</td>
         </tr>`;
       }).join('')}</tbody></table>`;
@@ -11667,12 +11669,30 @@ function actQuery(extra) {
  * lookup table. */
 function actLabel(r) {
   if (r.action) return r.action;
-  if (r.event === 'view') return 'Opened ' + (r.section || 'a section');
+  // "Opened Morning Report", not "Opened morning". The map is shared with the
+  // server so the tab and the API cannot drift on what a section is called.
+  if (r.event === 'view') return 'Opened ' + (actSection(r.section) || 'a section');
   if (r.event === 'login') return 'Signed in';
   if (r.event === 'logout') return 'Signed out';
   if (r.event === 'open') return 'Opened a record';
   return r.event || '—';
 }
+
+const actSection = id => (window.ActivityActions && window.ActivityActions.sectionLabel(id)) || id || null;
+
+/* EVERY time on this tab is Central, with CT written next to it.
+ *
+ * toLocaleString uses the BROWSER's zone, so Arturo in Venezuela read 10:51 AM
+ * for something that happened at 9:51 in Austin. Session start and last
+ * activity were already computed on Central days, so the clock has to agree
+ * with them or the same row says two different things on one screen. */
+const ACT_TZ = 'America/Chicago';
+const actTime = iso => (iso
+  ? new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: ACT_TZ }) + ' CT'
+  : '—');
+const actDateTime = iso => (iso
+  ? new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: ACT_TZ }) + ' CT'
+  : '—');
 
 async function loadActivityDetail() {
   const host = $('#act-detail');
@@ -11690,10 +11710,10 @@ async function loadActivityDetail() {
     host.innerHTML = `<table class="data-table"><thead><tr>
       <th>When</th><th>Person</th><th>Action</th><th>Section</th><th>Property</th><th>Record</th>
     </tr></thead><tbody>${d.rows.map(r => `<tr>
-      <td title="${esc(r.at)}">${esc(new Date(r.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</td>
+      <td title="${esc(r.at)}">${esc(actDateTime(r.at))}</td>
       <td><a href="#" class="act-person" data-email="${esc(r.user_email)}">${esc(r.user_name || r.user_email)}</a></td>
-      <td>${esc(actLabel(r))}</td>
-      <td>${esc(r.section || '—')}</td>
+      <td>${esc(actLabel(r))}${r.groupCount > 1 ? ` <span class="muted small">(${r.groupCount}&times;)</span>` : ''}</td>
+      <td>${esc(actSection(r.section) || '—')}</td>
       <td>${esc(r.property_name || '—')}</td>
       <td>${esc(r.entity_type ? r.entity_type + (r.entity_id ? ' ' + r.entity_id : '') : '—')}</td>
     </tr>`).join('')}</tbody></table>`;
@@ -11719,17 +11739,17 @@ async function loadActivityDay(person, date) {
     if (who) who.textContent = (d.name || d.person) + ' — ' + d.date;
     const sum = $('#act-day-sum');
     if (sum) {
-      const t = x => x ? new Date(x).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '—';
+      const t = actTime;
       sum.textContent = `Session start ${t(d.sessionStart)} · last activity ${t(d.lastActivity)} · `
-        + `${d.actions} actions · ` + (Object.entries(d.bySection).map(([k, v]) => `${k} ${v}`).join(', ') || 'no sections');
+        + `${d.actions} actions · ` + (Object.entries(d.bySection).map(([k, v]) => `${actSection(k)} ${v}`).join(', ') || 'no sections');
     }
     if (!d.timeline.length) { host.innerHTML = '<p class="muted">Nothing that day.</p>'; return; }
     host.innerHTML = `<table class="data-table"><thead><tr>
       <th>Time</th><th>Action</th><th>Section</th><th>Property</th><th>Record</th>
     </tr></thead><tbody>${d.timeline.map(r => `<tr${r.event === 'system' ? ' style="opacity:.5"' : ''}>
-      <td>${esc(new Date(r.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }))}</td>
-      <td>${esc(actLabel(r))}${r.event === 'system' ? ' <span class="muted small">(automatic)</span>' : ''}</td>
-      <td>${esc(r.section || '—')}</td>
+      <td>${esc(actTime(r.at))}</td>
+      <td>${esc(actLabel(r))}${r.groupCount > 1 ? ` <span class="muted small">(${r.groupCount}&times;)</span>` : ''}${r.event === 'system' ? ' <span class="muted small">(automatic)</span>' : ''}</td>
+      <td>${esc(actSection(r.section) || '—')}</td>
       <td>${esc(r.property_name || '—')}</td>
       <td>${esc(r.entity_type ? r.entity_type + (r.entity_id ? ' ' + r.entity_id : '') : '—')}</td>
     </tr>`).join('')}</tbody></table>`;

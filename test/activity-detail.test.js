@@ -98,7 +98,12 @@ t('system rows are out of the summary but still in the timeline', () => {
   const i = code.indexOf("app.get('/api/activity/day'");
   const body = code.slice(i, i + 2200);
   assert.ok(/const human = \(data \|\| \[\]\)\.filter\(r => r\.event !== 'system'\)/.test(body));
-  assert.ok(/timeline: data \|\| \[\]/.test(body), 'the timeline is filtered too');
+  // The timeline is built from `data`, not from `human` — grouped for reading,
+  // but never filtered. Asserted on the SOURCE rather than the exact
+  // expression, so adding a display transform does not look like a regression.
+  assert.ok(/timeline: ACTS\.groupRuns\(data \|\| \[\]\)/.test(body)
+    || /timeline: data \|\| \[\]/.test(body), 'the timeline is filtered too');
+  assert.ok(!/timeline: .*human/.test(body), 'system rows are dropped from the timeline');
   assert.ok(/\(automatic\)/.test(appCode), 'the UI does not mark automatic rows');
 });
 
@@ -185,6 +190,90 @@ t('a label is never built from user input', () => {
   const body = appCode.slice(i, i + 500);
   assert.ok(/if \(r\.action\) return r\.action;/.test(body));
   assert.ok(!/\+ r\.(entity_id|resource)/.test(body), 'an id is concatenated into the label');
+});
+
+console.log('\ngrouping a burst into one line');
+t('consecutive identical actions in the same minute fold', () => {
+  // One click of "Sync from AppFolio" fires seven parallel requests and leaves
+  // seven rows in the same second. The log is right; the screen was not.
+  const r = A.groupRuns([
+    { at: '2026-10-06T14:51:03Z', user_email: 'a', action: 'Synced maintenance data from AppFolio', event: 'write' },
+    { at: '2026-10-06T14:51:04Z', user_email: 'a', action: 'Synced maintenance data from AppFolio', event: 'write' },
+    { at: '2026-10-06T14:51:09Z', user_email: 'a', action: 'Synced maintenance data from AppFolio', event: 'write' },
+  ]);
+  assert.strictEqual(r.length, 1);
+  assert.strictEqual(r[0].groupCount, 3);
+});
+t('a different minute starts a new line', () => {
+  const r = A.groupRuns([
+    { at: '2026-10-06T14:51:03Z', user_email: 'a', action: 'X', event: 'write' },
+    { at: '2026-10-06T15:20:00Z', user_email: 'a', action: 'X', event: 'write' },
+  ]);
+  assert.strictEqual(r.length, 2, 'two bursts an hour apart folded together');
+});
+t('different people never fold', () => {
+  const r = A.groupRuns([
+    { at: '2026-10-06T14:51:03Z', user_email: 'a', action: 'X', event: 'write' },
+    { at: '2026-10-06T14:51:04Z', user_email: 'b', action: 'X', event: 'write' },
+  ]);
+  assert.strictEqual(r.length, 2);
+});
+t('rows with no action never fold', () => {
+  // An unlabelled row says nothing about what happened, so collapsing several
+  // would claim they were the same thing when nobody knows that.
+  const r = A.groupRuns([
+    { at: '2026-10-06T14:51:03Z', user_email: 'a', action: null, event: 'view' },
+    { at: '2026-10-06T14:51:04Z', user_email: 'a', action: null, event: 'view' },
+  ]);
+  assert.strictEqual(r.length, 2);
+});
+t('it does not modify the rows it was given', () => {
+  // A reading aid, not a rewrite: an audit log that discards rows is not one.
+  const input = [{ at: '2026-10-06T14:51:03Z', user_email: 'a', action: 'X', event: 'write' }];
+  A.groupRuns(input);
+  assert.strictEqual(input[0].groupCount, undefined, 'groupRuns mutated its input');
+});
+t('the CSV is NOT grouped', () => {
+  // The export is the record; grouping belongs on screen.
+  const i = code.indexOf("app.get('/api/activity/detail'");
+  const body = code.slice(i, i + 4200);
+  assert.ok(body.indexOf("format") < body.indexOf('ACTS.groupRuns'),
+    'the CSV branch sits after the grouping and would export collapsed rows');
+});
+
+console.log('\nsection ids read as names');
+t('the known ones are mapped', () => {
+  assert.strictEqual(A.sectionLabel('crm'), 'BD CRM');
+  assert.strictEqual(A.sectionLabel('morning'), 'Morning Report');
+  assert.strictEqual(A.sectionLabel('activity'), 'Activity Logs');
+  assert.strictEqual(A.sectionLabel('sixpm'), '6 PM Report');
+});
+t('an unmapped id tidies itself rather than reading Unknown', () => {
+  // A new section should be readable the day it is added, not the day somebody
+  // remembers to edit the map.
+  assert.strictEqual(A.sectionLabel('unit-turns'), 'Unit Turns');
+  assert.strictEqual(A.sectionLabel(''), null);
+});
+t('there is ONE map and the browser loads it', () => {
+  assert.ok(/src="\/lib\/activity-actions\.js"/.test(html), 'the tab cannot reach the map');
+  assert.ok(/window\.ActivityActions && window\.ActivityActions\.sectionLabel/.test(appCode),
+    'the tab keeps its own copy of the names');
+});
+
+console.log('\nevery time is Central');
+t('the tab formats in America/Chicago and writes CT', () => {
+  // toLocaleString uses the BROWSER's zone: Arturo in Venezuela read 10:51 AM
+  // for something that happened at 9:51 in Austin. Session start and last
+  // activity were already computed on Central days, so the clock has to agree
+  // with them or one row says two things on one screen.
+  assert.ok(/const ACT_TZ = 'America\/Chicago'/.test(appCode));
+  assert.ok(/timeZone: ACT_TZ \}\) \+ ' CT'/.test(appCode), 'the zone is not written on screen');
+});
+t('no time in the detail or timeline renders in the browser zone', () => {
+  const i = appCode.indexOf('let actOffset = 0;');
+  const body = appCode.slice(i, appCode.indexOf('async function loadKpiRecaps'));
+  const bare = body.match(/toLocale(Time|Date)?String\('en-US', \{(?![^}]*timeZone)[^}]*\}/g) || [];
+  assert.deepStrictEqual(bare, [], 'these render in the reader’s zone: ' + bare.join(' | '));
 });
 
 console.log(`\n${pass} passing`);

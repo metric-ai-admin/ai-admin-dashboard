@@ -12401,7 +12401,12 @@ app.get('/api/activity/detail', requireAuth, requireRole(...ACTIVITY_ROLES), asy
       return res.send([cols.join(','), ...(data || []).map(r => cols.map(c => esc(r[c])).join(','))].join('\n'));
     }
 
-    res.json({ from, to, limit, offset, total: count ?? null, rows: data || [],
+    // Grouped for reading, AFTER the CSV branch above so the export stays
+    // row-for-row with the table. One click of "Sync from AppFolio" fires
+    // seven parallel requests and leaves seven rows in the same second; the
+    // log is right and the screen was not.
+    res.json({ from, to, limit, offset, total: count ?? null, rows: ACTS.groupRuns(data || []),
+      ungroupedRows: (data || []).length,
       disclaimer: 'Measures dashboard use only — not performance or work done outside the dashboard.' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -12450,7 +12455,7 @@ app.get('/api/activity/day', requireAuth, requireRole(...ACTIVITY_ROLES), async 
       lastActivity: human.length ? human[human.length - 1].at : null,
       actions: human.length,
       bySection,
-      timeline: data || [],
+      timeline: ACTS.groupRuns(data || []),
       disclaimer: 'Measures dashboard use only — not performance or work done outside the dashboard.',
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
