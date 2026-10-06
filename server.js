@@ -7560,14 +7560,46 @@ const WO_WINDOW_TARGETS = ['14196-1', '18516-1', '18518-1', '18546-1', '18548-1'
 // rows the baseline does not.
 //
 // Nothing is written and the sync is untouched.
+// POST /api/appfolio/probe-catalogue — READ ONLY. What reports exist, and
+// under what id?
+//
+// "Guest Card Interests" is registered as `guest_cards`, not
+// `guest_card_interests` — a name guessed from the UI label would have 404'd
+// and been read as "the report does not exist". This lists the catalogue so
+// the id is read rather than guessed, which is the whole lesson of the last
+// two days of probing.
+app.post('/api/appfolio/probe-catalogue', requireMetricAdmin, async (req, res) => {
+  try {
+    const q = String((req.body && req.body.match) || '').toLowerCase();
+    const rows = await appfolioReportsFetch('/api/v1/reports.json', {});
+    const list = (rows || []).map(r => ({
+      id: r.id || r.name || r.report || null,
+      label: r.label || r.title || r.display_name || null,
+    })).filter(r => r.id || r.label);
+    const hit = q
+      ? list.filter(r => String(r.id || '').toLowerCase().includes(q)
+        || String(r.label || '').toLowerCase().includes(q))
+      : list;
+    res.json({ ok: true, readOnly: true, total: list.length, matched: hit.length, reports: hit });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message,
+      note: 'if this 404s the catalogue may not be at /api/v1/reports.json on this account' });
+  }
+});
+
 app.post('/api/leasing/probe-guest-cards', requireMetricAdmin, async (req, res) => {
   try {
     const from = (req.body && req.body.date_from) || '2026-09-27';
     const to = (req.body && req.body.date_to) || '2026-10-03';
     const ALL_CODES = Array.from({ length: 10 }, (_, i) => String(i));
 
+    // Extra spellings from the request body, so a round costs a request rather
+    // than a deploy — same as the work-order probe.
+    const CUSTOM = Array.isArray(req.body && req.body.extra) ? req.body.extra : [];
     const VARIANTS = [
       { name: '(baseline — active only, as the sync would call it)', extra: {} },
+      ...CUSTOM.filter(c => c && c.name && c.params).slice(0, 10)
+        .map(c => ({ name: String(c.name), extra: c.params })),
       { name: 'guest_card_statuses 0..9', extra: { guest_card_statuses: ALL_CODES } },
       { name: 'statuses 0..9', extra: { statuses: ALL_CODES } },
       { name: "status 'all'", extra: { status: 'all' } },
@@ -7758,8 +7790,26 @@ app.post('/api/maintenance/probe-wo-window', requireMetricAdmin, async (req, res
         if (v.name.startsWith('(baseline')) baselineKeys = keys;
         const found = WO_WINDOW_TARGETS.filter(w => keys.has(w));
         const beyondBaseline = baselineKeys ? [...keys].filter(k => !baselineKeys.has(k)).length : null;
+        // Status breakdown, and how many of them are OPEN by the shared rule.
+        // "125 rows" does not answer "how many open" — the row count depends on
+        // which status codes were asked for, and the question is always about
+        // the work, not the request.
+        const tally = {};
+        rows.forEach(x => { const s = String(x.status || '(blank)').trim(); tally[s] = (tally[s] || 0) + 1; });
+        const WOSr = require('./lib/work-order-status.js');
+        const openRows = rows.filter(x => WOSr.isOpen(x.status));
+        const byProp = {};
+        openRows.forEach(x => {
+          const p = String(x.property_name || x.property || '(none)').split(' - ')[0].trim();
+          byProp[p] = (byProp[p] || 0) + 1;
+        });
+
         r = {
           variant: v.name, rows: rows.length,
+          statuses: tally,
+          open: openRows.length,
+          openFieldWork: rows.filter(x => WOSr.isFieldWork(x.status)).length,
+          openByProperty: byProp,
           createdRange: created.length ? `${created[0]} .. ${created[created.length - 1]}` : null,
           targetsFound: found.length, targets: found,
           rowsBaselineDoesNotHave: beyondBaseline,
