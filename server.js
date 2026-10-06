@@ -7170,8 +7170,13 @@ const APPFOLIO_WORK_ORDER_REPORT = '/api/v2/reports/work_order.json';
 // they are work AppFolio has and Erick's board does not.
 //
 // Kept only so a dry run can report what widening the filter actually adds.
+// The PREVIOUS live filter — every status code, no date range — kept so the
+// dry run measures the change against what production is actually doing today,
+// not against a filter that was already replaced yesterday. Measured against
+// the six-code list it would report an eighteen-row gain that was banked a day
+// ago, and the thirteen rows this change adds would be lost inside it.
 const APPFOLIO_WO_NARROW_FILTER = {
-  work_order_statuses: ['0', '1', '2', '9', '11', '3'],
+  work_order_statuses: Array.from({ length: 31 }, (_, i) => String(i)),
   work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
   property_visibility: 'active',
   paginate_results: false,
@@ -7188,12 +7193,37 @@ const APPFOLIO_WO_NARROW_FILTER = {
 // sweep omitted them, so part of its 113 may be work order types this
 // dashboard excludes on purpose; widening the status list and dropping the
 // type filter in one step would make it impossible to say which did what.
-const APPFOLIO_WORK_ORDER_FILTER = {
-  work_order_statuses: Array.from({ length: 31 }, (_, i) => String(i)),
-  work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
-  property_visibility: 'active',
-  paginate_results: false, // return all rows in one response (some reports 404 on next_page_url)
-};
+// THE DOCUMENTED SYNTAX, confirmed live on 2026-10-06.
+//
+// Asking for every status code 0..30 and filtering locally still only returned
+// work orders created in the last ~96 days, because the report applies a
+// default window when no date range is given. Fifteen invented spellings of a
+// date parameter were all silently ignored; `status_date` plus
+// `status_date_range_from` / `_to` is the real one, out of AppFolio's own
+// documentation. With it, nine work orders that had been open since 2025-09-12
+// and 2026-02-05 came back — they had been invisible to every pull this
+// dashboard has ever made.
+//
+// status_date '0' means Created On.
+//
+// A FUNCTION, not a constant. `_to` is today, and a constant evaluated at
+// module load would pin it to the deploy date: the sync would quietly stop
+// seeing anything created after the day it shipped, which is the kind of fault
+// that produces no error and is found weeks later.
+const APPFOLIO_WO_OPEN_CODES = ['0', '1', '2', '9', '11', '3', '6', '8', '12'];
+const APPFOLIO_WO_RANGE_FROM = '2020-01-01';   // far enough back to cover anything still open
+
+function appfolioWorkOrderFilter(today) {
+  return {
+    status_date: '0',                                   // Created On
+    status_date_range_from: APPFOLIO_WO_RANGE_FROM,
+    status_date_range_to: today || new Date().toISOString().slice(0, 10),
+    work_order_statuses: APPFOLIO_WO_OPEN_CODES,
+    work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
+    property_visibility: 'active',
+    paginate_results: false, // return all rows in one response (some reports 404 on next_page_url)
+  };
+}
 // Response field -> column, locked to the live work_order.json keys (verified
 // against a real response). `issue` prefers work_order_issue and falls back to
 // job_description; everything else is an exact key.
@@ -7258,7 +7288,8 @@ app.post('/api/maintenance/sync', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   try {
     const dryRun = !!(req.body && req.body.dryRun === true);
-    const raw = await appfolioReportsFetch(APPFOLIO_WORK_ORDER_REPORT, APPFOLIO_WORK_ORDER_FILTER);
+    const raw = await appfolioReportsFetch(APPFOLIO_WORK_ORDER_REPORT,
+      appfolioWorkOrderFilter(WEEK.toChicagoYMD(new Date())));
     const seen = new Set();
     const syncStamp = new Date().toISOString();
     const rows = [];
@@ -7664,6 +7695,51 @@ app.post('/api/leasing/probe-guest-cards', requireMetricAdmin, async (req, res) 
         // that she does not" can be answered row by row instead of inferred
         // from two totals. Masked: the question is which FIELD the key falls
         // to and whether it collides, and that survives masking intact.
+        // Is there a key that identifies a single INTEREST row?
+        //
+        // leasing_lead_interests was built on inquiry_id, which only exists on
+        // guest_card_inquiries. This report is the one that matches Katie's
+        // 136, and it carries no obvious id, so the candidate keys have to be
+        // measured rather than assumed — a key that collides silently merges
+        // two people's interests into one row.
+        let keyCheck = null;
+        if (req.body && req.body.keyCheck) {
+          const cands = {
+            'guest_card_uuid': r => [r.guest_card_uuid],
+            'guest_card_uuid + received': r => [r.guest_card_uuid, r.received],
+            'guest_card_uuid + received + property_id': r => [r.guest_card_uuid, r.received, r.property_id],
+            'guest_card_uuid + received + source': r => [r.guest_card_uuid, r.received, r.source],
+            'guest_card_uuid + received + last_activity_date': r => [r.guest_card_uuid, r.received, r.last_activity_date],
+          };
+          keyCheck = { rowsInWeek: wk.length, candidates: [] };
+          for (const [name, fn] of Object.entries(cands)) {
+            const seen = new Map();
+            const collisions = [];
+            wk.forEach((r, i) => {
+              const k = fn(r).map(v => String(v == null ? '' : v)).join('|');
+              if (seen.has(k)) {
+                if (collisions.length < 8) {
+                  const a = seen.get(k);
+                  collisions.push({
+                    key: k.slice(0, 80),
+                    // Masked: the question is whether rows collide, which
+                    // survives masking. Names stay because a collision between
+                    // two DIFFERENT people is the case that matters.
+                    rowA: { name: String(a.name || '').slice(0, 26), property: String(a.property || '').split(' - ')[0],
+                      received: a.received, source: a.source || null },
+                    rowB: { name: String(r.name || '').slice(0, 26), property: String(r.property || '').split(' - ')[0],
+                      received: r.received, source: r.source || null },
+                  });
+                }
+              } else seen.set(k, r);
+            });
+            keyCheck.candidates.push({
+              key: name, distinct: seen.size, collisions: wk.length - seen.size,
+              unique: seen.size === wk.length, examples: collisions,
+            });
+          }
+        }
+
         let detail = null;
         if (req.body && req.body.property) {
           const want = String(req.body.property).toLowerCase();
@@ -7691,7 +7767,7 @@ app.post('/api/leasing/probe-guest-cards', requireMetricAdmin, async (req, res) 
 
         out.push({
           variant: v.name, rows: rows.length, rowsInWeek: wk.length,
-          detail,
+          detail, keyCheck,
           dedupedByHerKey: deduped, target: 105,
           perInterestIdCandidates: perRow,
           fields: keys.length,

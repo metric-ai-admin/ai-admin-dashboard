@@ -17,28 +17,55 @@ const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
 // Match code, never the comments describing it.
 const code = server.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
 
-console.log('the sync asks for every status and decides locally');
-t('the status list is generated, not hand-picked', () => {
-  const i = code.indexOf('const APPFOLIO_WORK_ORDER_FILTER');
-  const body = code.slice(i, i + 400);
-  assert.ok(/work_order_statuses: Array\.from\(\{ length: 31 \}/.test(body),
-    'the filter still carries a hand-written code list');
-  assert.ok(!/work_order_statuses: \['0', '1', '2', '9', '11', '3'\]/.test(body),
-    'the six-code list is still the live filter');
+console.log('the sync uses the DOCUMENTED date syntax');
+t('status_date and the range are sent', () => {
+  // Asking for every status code still only returned the last ~96 days: the
+  // report applies a default window when no range is given. Fifteen invented
+  // spellings were silently ignored; this is the one from AppFolio's own
+  // documentation, and with it nine work orders open since 2025-09-12 and
+  // 2026-02-05 came back.
+  const i = code.indexOf('function appfolioWorkOrderFilter');
+  assert.ok(i > 0, 'the filter is not built by a function any more');
+  const body = code.slice(i, i + 600);
+  assert.ok(/status_date: '0'/.test(body), 'status_date (Created On) is not sent');
+  assert.ok(/status_date_range_from: APPFOLIO_WO_RANGE_FROM/.test(body));
+  assert.ok(/status_date_range_to: today \|\| /.test(body));
 });
-t('the old narrow filter survives only for the dry run', () => {
-  assert.ok(/APPFOLIO_WO_NARROW_FILTER/.test(code), 'there is nothing left to compare against');
+t('the range reaches far enough back to cover anything still open', () => {
+  assert.ok(/APPFOLIO_WO_RANGE_FROM = '2020-01-01'/.test(code),
+    'the window starts too late to catch an old open work order');
+});
+t('the "to" date is computed per call, NOT frozen at module load', () => {
+  // A constant evaluated at boot would pin the range to the deploy date and
+  // the sync would quietly stop seeing anything created after the day it
+  // shipped — no error, found weeks later.
+  assert.ok(/function appfolioWorkOrderFilter\(today\)/.test(code),
+    'the filter is a constant, so the end date freezes at deploy time');
+  assert.ok(/appfolioWorkOrderFilter\(WEEK\.toChicagoYMD\(new Date\(\)\)\)/.test(code),
+    'the sync does not pass today in Central');
+  assert.ok(!/^const APPFOLIO_WORK_ORDER_FILTER = \{/m.test(code),
+    'the old constant filter is still there');
+});
+t('the status codes are the open ones, confirmed against the live report', () => {
+  // All 126 rows the documented pull returns are open by the shared rule — so
+  // this list IS the open set, not a guess at it.
+  assert.ok(/APPFOLIO_WO_OPEN_CODES = \['0', '1', '2', '9', '11', '3', '6', '8', '12'\]/.test(code));
+});
+t('the dry run compares against what production does TODAY', () => {
+  // Comparing against the six-code list would report an eighteen-row gain
+  // banked yesterday and lose this change's thirteen rows inside it.
+  const i = code.indexOf('const APPFOLIO_WO_NARROW_FILTER');
+  const body = code.slice(i, i + 300);
+  assert.ok(/Array\.from\(\{ length: 31 \}/.test(body),
+    'the baseline is a filter that is no longer live');
   const uses = code.split('APPFOLIO_WO_NARROW_FILTER').length - 1;
-  assert.ok(uses >= 2, 'the narrow filter is declared but never used');
-  // It must not be what the sync pulls.
-  assert.ok(!/appfolioReportsFetch\(APPFOLIO_WORK_ORDER_REPORT, APPFOLIO_WO_NARROW_FILTER\);\s*\n\s*const seen/.test(code),
-    'the sync still pulls the narrow filter');
+  assert.ok(uses >= 2, 'the baseline filter is declared but never used');
 });
 t('type and visibility filters are untouched', () => {
-  // Widening the status list and dropping the type filter in one step would
-  // make it impossible to say which change produced which rows.
-  const i = code.indexOf('const APPFOLIO_WORK_ORDER_FILTER');
-  const body = code.slice(i, i + 400);
+  // Changing the date syntax and the type filter in one step would make it
+  // impossible to say which produced which rows.
+  const i = code.indexOf('function appfolioWorkOrderFilter');
+  const body = code.slice(i, i + 600);
   assert.ok(/work_order_types: \['internal', 'tenant_requested', 'unit_turn'\]/.test(body));
   assert.ok(/property_visibility: 'active'/.test(body));
 });
