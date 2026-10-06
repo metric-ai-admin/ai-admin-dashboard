@@ -13345,7 +13345,31 @@ app.get('/api/reports/daily/views/:report_id', requireAuth, requireRole(...REPOR
 // Keyed by date, not by user: Erick is the only person who works this board, and
 // two browsers open on the same day should converge rather than fork.
 
-const CC_STATE_RETENTION_DAYS = 7;
+// Retention: none.
+//
+// The table was pruned to 7 days on every write, so by the time anyone asked
+// "how did the board move last month?" the answer had been deleted. A row is
+// ~169 KB of JSON — ~60 MB a year before jsonb compression — which is not a
+// reason to throw away the only record of what Erick was asked to do each day.
+// The history now grows from 2026-10-06; everything before 2026-09-29 is gone.
+const ccAuto = require('./lib/cc-autocomplete.js');
+
+// The two feeds a card can be closed by. Read fresh on every call rather than
+// stored with the board: a work order closed at 4pm should close its card
+// without the board being regenerated.
+async function ccClosureSources(client) {
+  const [wo, insp] = await Promise.all([
+    client.from('maintenance_work_orders').select('work_order_id, status, completed_on'),
+    client.from('maintenance_inspections').select('inspection_id, status, marked_done_on'),
+  ]);
+  if (wo.error) throw new Error('work orders: ' + wo.error.message);
+  if (insp.error) throw new Error('inspections: ' + insp.error.message);
+  const wos = new Map();
+  (wo.data || []).forEach(r => { if (r.work_order_id) wos.set(String(r.work_order_id).trim(), r); });
+  const inspections = new Map();
+  (insp.data || []).forEach(r => { if (r.inspection_id) inspections.set(String(r.inspection_id).trim(), r); });
+  return { wos, inspections };
+}
 
 app.get('/api/maintenance/command-center/state', requireAuth, async (req, res) => {
   try {
@@ -13355,7 +13379,24 @@ app.get('/api/maintenance/command-center/state', requireAuth, async (req, res) =
     if (error) return res.status(500).json({ error: error.message });
     // null, not 404: "no state yet today" is the normal first call each morning,
     // and the client should not have to tell that apart from a failure.
-    res.json({ state: data || null });
+    if (!data) return res.json({ state: null });
+
+    // Computed on read, not stored. A stored auto-tick would be a snapshot of
+    // AppFolio at save time pretending to be the current answer.
+    let auto = {}, autoError = null;
+    try {
+      const sources = await ccClosureSources(client);
+      auto = ccAuto.autoMap(data.tasks, { ...sources, on: data.state_date });
+    } catch (e) {
+      // Said out loud rather than returning an empty map: "nothing closed
+      // itself" and "I could not find out" look identical on the board, and
+      // only one of them means Erick should start ticking by hand.
+      autoError = e.message;
+    }
+    res.json({
+      state: data, auto, autoError,
+      counts: ccAuto.countsFor(data.tasks, data.checks, auto),
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -13368,27 +13409,37 @@ app.post('/api/maintenance/command-center/state', requireAuth, async (req, res) 
     const client = supabaseAdmin || supabasePublic;
     // Counts are recomputed here rather than trusted from the client, so the
     // stored row cannot disagree with the payload it was built from.
-    const completed = tasks.filter(t => t && checks[t.id]).length;
+    let auto = {}, autoError = null;
+    try {
+      const sources = await ccClosureSources(client);
+      auto = ccAuto.autoMap(tasks, { ...sources, on: state_date });
+    } catch (e) { autoError = e.message; }
+    const counts = ccAuto.countsFor(tasks, checks, auto);
     const row = {
       state_date, tasks, checks,
       total_tasks: tasks.length,
-      completed_tasks: completed,
+      ...counts,
       generated_at: body.generated_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    const { data, error } = await client.from('cc_daily_state')
+    let { data, error } = await client.from('cc_daily_state')
       .upsert(row, { onConflict: 'state_date' }).select().single();
+    // The three split columns are added by a migration Arturo runs by hand, so
+    // for the window between this deploy and that SQL they do not exist yet.
+    // Erick's board must keep saving through that window — losing a morning of
+    // ticks to a schema that is minutes behind the code is not a trade worth
+    // making — so the save is retried with the columns this table is known to
+    // have, and the shortfall is logged rather than hidden.
+    if (error && /completed_(manual|auto|routine)/.test(error.message || '')) {
+      console.warn('[cc-state] split count columns missing; saving without them:', error.message);
+      const { completed_manual, completed_auto, completed_routine, ...base } = row;
+      ({ data, error } = await client.from('cc_daily_state')
+        .upsert(base, { onConflict: 'state_date' }).select().single());
+    }
     if (error) return res.status(500).json({ error: error.message });
 
-    // Pruned on write instead of on a schedule — this table is touched often
-    // enough that a cron would be a second thing to maintain for no gain.
-    // Failing to prune must not fail the save.
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - CC_STATE_RETENTION_DAYS);
-    client.from('cc_daily_state').delete().lt('state_date', localDateStr(cutoff))
-      .then(({ error: de }) => { if (de) console.error('[cc-state] prune failed:', de.message); });
-
-    res.json({ ok: true, state: data });
+    // No prune. See the note above the route — the history is the point.
+    res.json({ ok: true, state: data, auto, autoError, counts });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

@@ -2951,3 +2951,15 @@ tr.ca-sel { background: var(--accent-glow); }
 
 /* The upload confirmation, above everything else on the page. */
 #bl-last-upload:not(:empty) { margin-bottom: 14px; }
+
+/* A card AppFolio closed, not Erick.
+   Deliberately not the same as a manual tick: the strikethrough says "done",
+   the badge says who decided it. Dimmed less than .done so a board that closed
+   itself overnight is still readable at a glance rather than a grey wall. */
+.cc-task.cc-autodone { opacity: .62; }
+.cc-auto { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px;
+  border-radius: 999px; background: var(--ok-bg, #ecfdf5); color: var(--ok, #047857);
+  border: 1px solid currentColor; }
+/* Cancelled ends the card without the work having happened, so it never wears
+   the colour that means "done well". */
+.cc-auto.cancelled { background: transparent; color: var(--muted); font-weight: 500; }

@@ -857,7 +857,7 @@ function ccRenderTasks() {
     const a = document.createElement('div');
     a.className = 'cc-alert';
     a.innerHTML = `<div class="cc-alert-head"><span>⚠️</span><h4>Clear these first — over 7 days</h4>
-      <span class="cc-count" id="cc-flag7count">${flags.filter(t => !ccChecks[t.id]).length} open</span></div>
+      <span class="cc-count" id="cc-flag7count">${flags.filter(t => !ccIsDone(t)).length} open</span></div>
       <p class="small">Work Done and unbilled work orders should never sit past 7 days.</p>`;
     flags.forEach(t => a.appendChild(ccTaskRow(t)));
     host.appendChild(a);
@@ -873,7 +873,7 @@ function ccRenderTasks() {
       const tally = Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${esc(k)} (${v})`).join(' · ');
       if (tally) descHtml += ` &nbsp;|&nbsp; <b>By tech:</b> ${tally}`;
     }
-    const open = items.filter(t => !ccChecks[t.id]).length;
+    const open = items.filter(t => !ccIsDone(t)).length;
 
     if (sum) {
       const pill = document.createElement('button');
@@ -897,10 +897,44 @@ function ccRenderTasks() {
   ccUpdateProgress();
 }
 
+/* Cards AppFolio has already closed.
+   ccAuto is { taskId: {kind, reason, at, status} }, computed by the server on
+   every state read -- not stored, because a stored auto-tick is a snapshot of
+   AppFolio pretending to be the current answer.
+
+   ccChecks carries THREE states, and the third is what makes an automatic tick
+   safe to disagree with:
+       1        ticked by Erick
+       0        Erick explicitly un-ticked it (an override, auto or not)
+       absent   nobody has said anything, so the automatic answer stands
+   0 is falsy, so every existing `!!ccChecks[id]` reader already reads it as
+   not done. */
+let ccAuto = {};
+let ccAutoError = null;
+
+function ccStateOf(t) {
+  const id = t.id;
+  if (ccChecks[id]) return { done: true, by: 'manual' };
+  if (Object.prototype.hasOwnProperty.call(ccChecks, id)) return { done: false, by: 'override' };
+  const a = ccAuto[id];
+  if (a) return { done: true, by: 'auto', kind: a.kind, at: a.at, status: a.status };
+  return { done: false, by: null };
+}
+const ccIsDone = t => ccStateOf(t).done;
+
+/* "cancelled in AppFolio" is kept apart from "closed in AppFolio" on purpose:
+   both end the card, only one of them means the work happened. */
+function ccAutoBadge(st) {
+  if (st.by !== 'auto') return '';
+  const label = st.kind === 'cancelled' ? 'cancelled in AppFolio' : 'closed in AppFolio';
+  return `<span class="cc-auto ${st.kind === 'cancelled' ? 'cancelled' : ''}">${esc(label)}${st.at ? ' · ' + esc(st.at) : ''}</span>`;
+}
+
 function ccTaskRow(t) {
-  const done = !!ccChecks[t.id];
+  const st0 = ccStateOf(t);
+  const done = st0.done;
   const d = document.createElement('div');
-  d.className = 'cc-task' + (done ? ' done' : '');
+  d.className = 'cc-task' + (done ? ' done' : '') + (st0.by === 'auto' ? ' cc-autodone' : '');
   const meta = [];
   if (t.wo.property) meta.push(`<span class="cc-chip">${esc(t.wo.property)}${t.wo.unit ? ' · ' + esc(t.wo.unit) : ''}</span>`);
   if (t.wo.tech) meta.push(`<span class="cc-chip">👤 ${esc(t.wo.tech)}</span>`);
@@ -909,6 +943,8 @@ function ccTaskRow(t) {
   if (t.wo.priority) meta.push(`<span class="cc-chip">${esc(t.wo.priority)}</span>`);
   if (t.age != null) meta.push(`<span class="cc-chip">${t.age}d old</span>`);
   if (t.extraMeta) meta.push(`<span class="cc-chip kpi">${esc(t.extraMeta)}</span>`);
+  const badge = ccAutoBadge(st0);
+  if (badge) meta.push(badge);
   if (t.wo.woId) meta.push(`<span class="cc-chip">WO ${esc(t.wo.woId)}${t.wo.srId ? ' · SR ' + esc(t.wo.srId) : ''}</span>`);
 
   let extra = '';
@@ -933,10 +969,20 @@ function ccTaskRow(t) {
     </div>${openLink}`;
 
   d.querySelector('.cc-tck').addEventListener('change', e => {
-    if (e.target.checked) ccChecks[t.id] = 1; else delete ccChecks[t.id];
+    if (e.target.checked) {
+      ccChecks[t.id] = 1;
+    } else if (ccAuto[t.id]) {
+      /* Deleting the key here would let the automatic tick put it straight
+         back on the next read, and Erick would be unable to un-tick it at all.
+         0 records the disagreement and is falsy everywhere else. */
+      ccChecks[t.id] = 0;
+    } else {
+      delete ccChecks[t.id];
+    }
     ccSaveChecks();
     ccScheduleSave();
     d.classList.toggle('done', e.target.checked);
+    d.classList.toggle('cc-autodone', e.target.checked && ccStateOf(t).by === 'auto');
     ccRefreshCounts();
   });
   return d;
@@ -983,7 +1029,7 @@ function ccRenderTotals() {
 
 function ccRefreshCounts() {
   const fc = $('#cc-flag7count');
-  if (fc) fc.textContent = CC_TASKS.filter(t => t.cat === 'flag7' && !ccChecks[t.id]).length + ' open';
+  if (fc) fc.textContent = CC_TASKS.filter(t => t.cat === 'flag7' && !ccIsDone(t)).length + ' open';
   const sum = $('#cc-summary');
   if (sum) sum.innerHTML = '';
 
@@ -1041,7 +1087,7 @@ function ccRefreshCounts() {
   CC_CATS.forEach(cat => {
     const items = CC_TASKS.filter(t => t.cat === cat.key);
     if (!items.length) return;
-    const open = items.filter(t => !ccChecks[t.id]).length;
+    const open = items.filter(t => !ccIsDone(t)).length;
     const c = $('#cc-cat-' + cat.key);
     if (c) c.querySelector('.cc-count').textContent = open + ' open';
     if (sum) {
@@ -1064,9 +1110,17 @@ function ccUpdateProgress() {
   const pctEl = $('#cc-pct'); if (pctEl) pctEl.textContent = pct + '%';
   const bar = $('#cc-bar'); if (bar) bar.style.width = pct + '%';
   const counts = $('#cc-counts');
-  if (counts) counts.textContent = CC_TASKS.length
-    ? `${CC_TASKS.filter(t => ccChecks[t.id]).length}/${CC_TASKS.length} report tasks done`
-    : 'no tasks generated yet';
+  if (!counts) return;
+  if (!CC_TASKS.length) { counts.textContent = 'no tasks generated yet'; return; }
+  /* Split, because an automatic 45 is not 45 decisions by a person and the
+     two should never be added up into one reassuring number. */
+  let man = 0, aut = 0;
+  CC_TASKS.forEach(t => { const st = ccStateOf(t); if (st.by === 'manual') man++; else if (st.by === 'auto') aut++; });
+  const parts = [`${man + aut}/${CC_TASKS.length} report tasks done`];
+  if (aut) parts.push(`${aut} closed in AppFolio`);
+  if (man) parts.push(`${man} ticked by you`);
+  counts.textContent = parts.join(' · ')
+    + (ccAutoError ? ' — could not check AppFolio, tick by hand' : '');
 }
 
 /* ---------------- standing routine ---------------- */
@@ -1118,10 +1172,26 @@ let ccGeneratedAt = null;
 async function ccSaveState() {
   clearTimeout(ccSaveTimer); ccSaveTimer = null;
   try {
-    await fetch(CC_STATE_URL, {
+    const res = await fetch(CC_STATE_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tasks: CC_TASKS, checks: ccChecks, generated_at: ccGeneratedAt }),
     });
+    /* The save answers with the automatic ticks as the server sees them NOW.
+       Taken rather than ignored, so a work order closed since the page loaded
+       shows up without a reload -- and so the board and the stored counts can
+       never be looking at two different answers. */
+    if (res.ok) {
+      const body = await res.json().catch(() => null);
+      if (body && body.auto) {
+        /* Re-rendered only when the answer actually changed. A debounced save
+           fires after every run of ticks, and rebuilding the board under
+           Erick's cursor each time would be its own bug. */
+        const changed = JSON.stringify(body.auto) !== JSON.stringify(ccAuto);
+        ccAuto = body.auto;
+        ccAutoError = body.autoError || null;
+        if (changed) ccRenderTasks();
+      }
+    }
   } catch { /* offline or logged out -- localStorage still holds the ticks */ }
 }
 
@@ -1138,7 +1208,10 @@ async function ccRestoreState() {
   try {
     const res = await fetch(CC_STATE_URL);
     if (!res.ok) return;                       // not signed in, or nothing to restore
-    state = (await res.json()).state;
+    const body = await res.json();
+    state = body.state;
+    ccAuto = body.auto || {};
+    ccAutoError = body.autoError || null;
   } catch { return; }
   if (!state || !Array.isArray(state.tasks) || !state.tasks.length) return;
 
