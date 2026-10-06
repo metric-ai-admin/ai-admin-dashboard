@@ -263,4 +263,99 @@ t('clearing asks first, and says whose answers are safe', () => {
   assert.ok(/are not touched/.test(body), 'the prompt does not say what survives');
 });
 
+console.log('\na token writes its own answers and nobody else’s');
+
+// The rule, lifted from server.js so the assertions exercise the real one
+// rather than a restatement of it. If the shapes in server.js change, these
+// stop matching and the extraction fails loudly.
+const refuse = (() => {
+  const slugSrc = code.match(/const rebrandSlug = ([^;]+);/);
+  const ownerSrc = code.match(/function rebrandPathOwner\(p\) \{[\s\S]*?\n\}/);
+  const refuseSrc = code.match(/function rebrandWriteRefusal\(person, p\) \{[\s\S]*?\n\}/);
+  assert.ok(slugSrc && ownerSrc && refuseSrc, 'the write-scoping rule moved or was renamed');
+  // eslint-disable-next-line no-new-func
+  return new Function(`const rebrandSlug = ${slugSrc[1]};
+    ${ownerSrc[0]}
+    ${refuseSrc[0]}
+    return rebrandWriteRefusal;`)();
+})();
+
+t('Kara CANNOT write to Zach’s review', () => {
+  // The page renders "I'm: Zach / Kara / Bekah" in every section and builds
+  // the path from whoever is selected, so this was reachable from Kara's own
+  // link with no tampering at all.
+  assert.ok(refuse('Kara', 'reviews/signal--zach'), 'Kara can overwrite Zach');
+  assert.ok(refuse('Kara', 'rankings/zach'), 'Kara can overwrite Zach’s ranking');
+  assert.ok(refuse('Kara', 'final/bekah'), 'Kara can overwrite Bekah’s final answers');
+});
+t('each person CAN write their own', () => {
+  assert.strictEqual(refuse('Kara', 'reviews/signal--kara'), null);
+  assert.strictEqual(refuse('Zach', 'rankings/zach'), null);
+  assert.strictEqual(refuse('Bekah', 'final/bekah'), null);
+});
+t('an unrecognised path is refused, not stored', () => {
+  // Four external links onto a table is a free-form key-value store unless the
+  // shapes are the ones the page documents.
+  assert.ok(refuse('Kara', 'something/else'));
+  assert.ok(refuse('Kara', 'reviews/no-separator'));
+  assert.ok(refuse('Kara', '../../etc/passwd'));
+});
+t('ideas are shared, so they are allowed by path', () => {
+  assert.strictEqual(refuse('Kara', 'ideas/abc123'), null);
+  assert.strictEqual(refuse('Zach', 'ideas/abc123'), null);
+});
+t('but an idea may only be changed by whoever added it', () => {
+  // The id is generated client-side, so two reviewers could land on the same
+  // one and silently overwrite each other.
+  ['put', 'delete'].forEach(m => {
+    const i = code.indexOf(`app.${m}('/api/review/:token/docs'`);
+    const body = code.slice(i, i + 2600);
+    assert.ok(/existing\.updated_by !== person/.test(body),
+      m.toUpperCase() + ' lets one reviewer change another’s recommendation');
+  });
+});
+t('both write routes check before touching anything', () => {
+  ['put', 'delete'].forEach(m => {
+    const i = code.indexOf(`app.${m}('/api/review/:token/docs'`);
+    const body = code.slice(i, i + 2600);
+    // The DATABASE call, not any ".delete(" — app.delete( at the top of the
+    // route matched that and made this fail on correct code.
+    const check = body.indexOf('rebrandWriteRefusal');
+    const write = body.search(/from\('rebrand_review'\)\s*\.?\s*(upsert|delete)\(|from\('rebrand_review'\)\.delete\(\)/);
+    assert.ok(check > 0, m.toUpperCase() + ' does not check at all');
+    assert.ok(write > 0, m.toUpperCase() + ': could not find the write');
+    assert.ok(check < write, m.toUpperCase() + ' writes before checking');
+  });
+});
+
+console.log('\nthe picker is locked to the token');
+t('the page is told who it belongs to, from the token', () => {
+  const i = code.indexOf("app.get('/review/:token'");
+  const body = code.slice(i, i + 1100);
+  assert.ok(/__REVIEW_PERSON__\/g, person\.replace\(\/\[\^A-Za-z\]\/g, ''\)/.test(body),
+    'the person is injected unsanitised, or not at all');
+});
+t('other people’s buttons are hidden and disabled', () => {
+  assert.ok(/__REVIEW_PERSON__/.test(page), 'the placeholder is gone');
+  assert.ok(/b\.hidden = true;/.test(page) && /b\.disabled = true;/.test(page),
+    'hiding alone leaves the button clickable by script or keyboard');
+  assert.ok(/mine\.click\(\)/.test(page), 'the right person is not preselected');
+});
+t('it survives the page re-rendering its sections', () => {
+  // The page rebuilds those blocks as it goes, so running once would leave
+  // later sections unlocked.
+  assert.ok(/new MutationObserver\(lock\)/.test(page), 'the lock runs once and then stops');
+});
+t('the read-only link is left alone', () => {
+  assert.ok(/PERSON === "Lyndsay"\) return;/.test(page), 'Lyndsay’s link runs the picker lock');
+});
+t('locking the UI is not what protects the data', () => {
+  // Stated because the next person to read this will wonder whether the
+  // server check is redundant. It is not: anything the browser decides is a
+  // suggestion.
+  assert.ok(/rebrandWriteRefusal/.test(code));
+  assert.ok(/Hiding the picker fixes the accident/.test(server),
+    'the reasoning is not written down anywhere');
+});
+
 console.log(`\n${pass} passing`);

@@ -881,5 +881,35 @@ function goLocal(){
 })();
 })();
 </script>
+<script>
+/* Lock the "I am" picker to the person this link belongs to.
+ *
+ * The page renders the picker in every section and builds the save path from
+ * whatever is selected, so Kara's link could write to Zach's answer. The
+ * server refuses that outright; this is so nobody has to discover it by
+ * losing a colleague's work and seeing an error.
+ *
+ * Appended rather than woven in: the page re-renders those sections as it
+ * goes, so this watches instead of running once, and it changes nothing
+ * except which buttons are reachable. Reading other people's answers is
+ * untouched. */
+(function(){
+  var PERSON = "__REVIEW_PERSON__";
+  if (!PERSON || PERSON === "Lyndsay") return;   // read-only link needs no picker lock
+  function lock(){
+    document.querySelectorAll(".who").forEach(function(group){
+      var mine = null;
+      group.querySelectorAll("button[data-person]").forEach(function(b){
+        if (b.dataset.person === PERSON) { mine = b; return; }
+        b.hidden = true;
+        b.disabled = true;
+      });
+      if (mine && mine.getAttribute("aria-pressed") !== "true") mine.click();
+    });
+  }
+  lock();
+  new MutationObserver(lock).observe(document.body, { childList:true, subtree:true });
+})();
+</script>
 </body>
 </html>

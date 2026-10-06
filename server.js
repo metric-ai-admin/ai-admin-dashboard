@@ -12528,6 +12528,45 @@ const REBRAND_TEST_PERSON = 'Test';
 const REBRAND_TEST_PREFIX = 'test/';
 const rebrandIsTest = person => person === REBRAND_TEST_PERSON;
 
+// Which paths may a token write?
+//
+// THE HOLE THIS CLOSES. The page renders an "I'm: Zach / Kara / Bekah" picker
+// in every section, and the path it writes is built from whoever is selected —
+// so Kara's link could write to reviews/signal--zach and overwrite Zach's
+// answer. Hiding the picker fixes the accident; this fixes the capability,
+// and the two are not the same thing. Anything the browser decides is a
+// suggestion.
+//
+// The page's own slug(): lowercase, then drop anything outside [a-z0-9_-].
+const rebrandSlug = s => String(s).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+
+// reviews/<brand>--<person>, rankings/<person>, final/<person> all belong to
+// one person and are checked. ideas/<id> is shared by design — the page calls
+// it "an added name recommendation" and everyone sees them — so it is allowed,
+// with the owner check below standing in for path ownership.
+function rebrandPathOwner(p) {
+  const s = String(p || '');
+  let m = /^reviews\/[^/]*?--([a-z0-9_-]+)$/.exec(s);
+  if (m) return m[1];
+  m = /^(?:rankings|final)\/([a-z0-9_-]+)$/.exec(s);
+  if (m) return m[1];
+  return null;                      // ideas/… and anything unrecognised
+}
+
+/** @returns {string|null} null when allowed, otherwise the reason to refuse. */
+function rebrandWriteRefusal(person, p) {
+  const owner = rebrandPathOwner(p);
+  if (owner === null) {
+    // Not a person-owned path. Only the shapes the page documents are
+    // accepted: an unrecognised collection would otherwise be a free-form
+    // key-value store open to four external links.
+    if (!/^ideas\/[A-Za-z0-9_-]{1,80}$/.test(String(p))) return 'unrecognised path';
+    return null;
+  }
+  if (owner !== rebrandSlug(person)) return 'that answer belongs to someone else';
+  return null;
+}
+
 function rebrandToken(person) {
   const secret = process.env.REBRAND_REVIEW_SECRET;
   if (!secret) return null;
@@ -12588,7 +12627,12 @@ app.get('/review/:token', (req, res) => {
     // borrowed laptop is the likeliest way this leaks.
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Cache-Control', 'no-store');
-    res.send(html.replace(/__REVIEW_TOKEN__/g, encodeURIComponent(req.params.token)));
+    res.send(html
+      .replace(/__REVIEW_TOKEN__/g, encodeURIComponent(req.params.token))
+      // The person comes from the TOKEN, so the page cannot be made to claim
+      // a different one by editing the URL. It only decides which button the
+      // picker leaves reachable; the server decides what may be written.
+      .replace(/__REVIEW_PERSON__/g, person.replace(/[^A-Za-z]/g, '')));
   });
 });
 
@@ -12628,6 +12672,10 @@ app.put('/api/review/:token/docs', async (req, res) => {
     // The path becomes a primary key and is echoed into the review screen, so
     // it is checked against the shape the page documents rather than trusted.
     if (!/^[A-Za-z0-9_\-/]{1,120}$/.test(p)) return res.status(400).json({ error: 'bad path' });
+    // A token writes its own answers and nobody else's.
+    const refusal = rebrandWriteRefusal(person, p);
+    if (refusal) return res.status(403).json({ error: refusal });
+
     // Prefixed SERVER-SIDE, never by the client: a test session that could
     // choose its own prefix could choose not to have one, and then it writes
     // over a reviewer's answer again.
@@ -12638,6 +12686,18 @@ app.put('/api/review/:token/docs', async (req, res) => {
     }
     if (JSON.stringify(data).length > 100000) return res.status(413).json({ error: 'too large' });
     const db = supabaseAdmin || supabasePublic;
+
+    // Same rule for an idea as for deleting one: it is shared, so anyone may
+    // add, but only its author may change it. Without this, two reviewers
+    // choosing the same id — and the page generates them client-side — would
+    // silently overwrite each other.
+    if (rebrandPathOwner(p) === null) {
+      const { data: existing } = await db.from('rebrand_review')
+        .select('updated_by').eq('path', storedPath).maybeSingle();
+      if (existing && existing.updated_by && existing.updated_by !== person) {
+        return res.status(403).json({ error: 'that recommendation belongs to someone else' });
+      }
+    }
     const { error } = await db.from('rebrand_review').upsert([{
       path: storedPath, data,
       // From the TOKEN, never from the body: a reviewer editing the request
@@ -12658,8 +12718,22 @@ app.delete('/api/review/:token/docs', async (req, res) => {
     const p = String((req.body && req.body.path) || '');
     if (!/^[A-Za-z0-9_\-/]{1,120}$/.test(p)) return res.status(400).json({ error: 'bad path' });
     const db = supabaseAdmin || supabasePublic;
-    const { error } = await db.from('rebrand_review').delete()
-      .eq('path', rebrandIsTest(person) ? REBRAND_TEST_PREFIX + p : p);
+    const refusal = rebrandWriteRefusal(person, p);
+    if (refusal) return res.status(403).json({ error: refusal });
+
+    const storedPath = rebrandIsTest(person) ? REBRAND_TEST_PREFIX + p : p;
+    // An idea is shared, so deleting one is the only cross-person write the
+    // page offers ("Remove X and its feedback for everyone?"). Allowed, but
+    // only for the person who added it — otherwise a reviewer can delete a
+    // colleague's recommendation and nothing records that they did.
+    if (rebrandPathOwner(p) === null) {
+      const { data: existing } = await db.from('rebrand_review')
+        .select('updated_by').eq('path', storedPath).maybeSingle();
+      if (existing && existing.updated_by && existing.updated_by !== person) {
+        return res.status(403).json({ error: 'that recommendation belongs to someone else' });
+      }
+    }
+    const { error } = await db.from('rebrand_review').delete().eq('path', storedPath);
     if (error) throw new Error(error.message);
     res.status(204).end();
   } catch (e) { res.status(500).json({ error: e.message }); }
