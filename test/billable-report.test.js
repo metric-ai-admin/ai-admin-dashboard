@@ -403,14 +403,25 @@ t('money still sums every LINE, not the distinct jobs', () => {
   assert.strictEqual(sum.unbilled, 425);   // 100+100+100+50+75
 });
 t('how the count was reached is reported, never implied', () => {
-  // MULTILINE has the count(Work Order Number) column but leaves it blank on
-  // the data rows, so the identity really is the fallback — and the label says
-  // so, including WHY, rather than naming a column it did not use.
+  // MULTILINE is the web export: its "-> Hyde Park Square,3" header carries a
+  // real count, and that is where the 3 comes from. Said plainly, because the
+  // same number reached three different ways means three different things.
   const grouped = B.summarisePeriod(B.parseCsv(MULTILINE));
-  assert.ok(grouped.countedBy.startsWith('unit + description + date'), grouped.countedBy);
-  assert.ok(/is empty on every row/.test(grouped.countedBy), grouped.countedBy);
+  assert.strictEqual(grouped.workOrders, 3);
+  assert.ok(/group header/.test(grouped.countedBy), grouped.countedBy);
+  // A flat sheet counts distinct numbers off the data rows, and names them.
   const flat = B.summarisePeriod(parseUI());
-  assert.strictEqual(flat.countedBy, '"Work Order Number"');
+  assert.ok(/^distinct "Work Order Number"/.test(flat.countedBy), flat.countedBy);
+});
+t('a grouped file with NO header counts says it fell back, and why', () => {
+  // The same fixture with the counts removed: no header count, no work-order
+  // number on the data rows, so the identity is the fallback — and the label
+  // must say so rather than naming a column it did not use.
+  const noCounts = MULTILINE.replace('-> Hyde Park Square,3,', '-> Hyde Park Square,,');
+  const s = B.summarisePeriod(B.parseCsv(noCounts));
+  assert.ok(s.countedBy.startsWith('unit + description + date'), s.countedBy);
+  assert.ok(/is empty on every row/.test(s.countedBy), s.countedBy);
+  assert.strictEqual(s.workOrders, 3);   // the fallback identity still finds 3 jobs
 });
 t('a real work-order number is preferred over the fallback identity', () => {
   const s2 = B.summarisePeriod(parseUI());
@@ -603,8 +614,15 @@ t('two lines of one work order count once, even with different descriptions', ()
 t('money still sums every line', () => {
   assert.strictEqual(B.summarisePeriod(B.parseCsv(WITH_WO)).billed, 650);
 });
-t('the card names the actual column it counted by', () => {
-  assert.strictEqual(B.summarisePeriod(B.parseCsv(WITH_WO)).countedBy, '"count(Work Order Number)"');
+t('the card names where the count actually came from', () => {
+  // WITH_WO has BOTH a header count of 12 and work-order numbers on its data
+  // rows, and the header wins — a work order with nothing billed yet has no
+  // data row at all, so only the header knows about it. The label has to say
+  // that, because the old wording named the column while reporting the header's
+  // number: a right number under a wrong explanation.
+  const s = B.summarisePeriod(B.parseCsv(WITH_WO));
+  assert.strictEqual(s.workOrders, 12);
+  assert.ok(/group header/.test(s.countedBy), s.countedBy);
 });
 t('a real Work Order Number column is still preferred over it', () => {
   const both = 'Group,count(Work Order Number),Work Order Number,Unit,Created Date,Description,Billable Hours,Work Order Status'

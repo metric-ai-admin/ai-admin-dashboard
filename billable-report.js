@@ -359,6 +359,75 @@ function sheetToCsv(rows, { skip = SHEET_HEADER_ROW } = {}) {
     .join('\n');
 }
 
+// ---- The period the sheet says it covers ------------------------------------
+//
+// The five metadata rows sheetToCsv throws away carry the one fact that makes
+// a staleness check meaningful:
+//
+//   MWeekly:  "Status Date: Work Done On 09/27/2026 - 10/03/2026"
+//   MMonthly: "Status Date: Work Done On 10/01/2026 - 10/31/2026"
+//   Labor:    "Date Range: 07/09/2026 to 10/06/2026"
+//
+// Staleness was being inferred from the newest "Created Date" on the data rows
+// instead, and that is a different date entirely: a work order marked Work Done
+// last week can have been created in July. On this week's file the newest
+// created date was three days old and the page said so — "Newest row is 3 days
+// old" — about a file that was perfectly current. The week ALWAYS ends on
+// Saturday; nothing about that is evidence of an old export.
+//
+// Returns { first, last } as ISO, or nulls when no range is written.
+function sheetPeriod(rows, { skip = SHEET_HEADER_ROW } = {}) {
+  // ONE line, not all five. The block also holds "Exported On: 10/06/2026" and
+  // a filter URL carrying "relative_to=2026-10-06"; sweeping the whole block
+  // for dates pulled today's date in as the end of every period, which made
+  // every sheet look like it covered up to today and could never read stale.
+  const line = (rows || []).slice(0, skip)
+    .map(r => (r || []).map(c => String(c == null ? '' : c)).join(' '))
+    .filter(t => /status date\s*:|date range\s*:/i.test(t))
+    .find(t => !/exported on/i.test(t));
+  const text = line || '';
+  const dates = [];
+  const re = /(\d{1,2})\/(\d{1,2})\/(\d{2,4})/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const y = m[3].length === 2 ? String(2000 + Number(m[3])) : m[3];
+    // AppFolio writes 01/01/0001 and 12/30/9999 for "all time" in the filter
+    // line. Those are not a period, they are the absence of one.
+    if (y === '0001' || y === '9999') continue;
+    dates.push(`${y}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`);
+  }
+  if (!dates.length) return { first: null, last: null };
+  dates.sort();
+  return { first: dates[0], last: dates[dates.length - 1] };
+}
+
+// How far behind today each sheet's period is allowed to end.
+//
+// A period that CONTAINS today is current by definition and never stale, which
+// is what makes the monthly sheet work without a per-month rule: 10/01–10/31
+// covers today all month. The numbers below only apply to a period that has
+// already closed.
+const SHEET_STALE_DAYS = {
+  daily: 2,     // yesterday's export, refreshed this morning
+  weekly: 8,    // the week ends Saturday and the report is read the week after
+  monthly: 7,   // a closed month is read in the first days of the next one
+  labor: 2,
+};
+
+// null when the sheet declares no period — "unknown" is not "fine", and the UI
+// says so rather than showing a reassuring zero.
+function periodStaleDays(period, today, slot) {
+  if (!period || !period.last || !today) return null;
+  if (period.first && today >= period.first && today <= period.last) return 0;
+  return daysBetween(period.last, today);
+}
+
+function periodIsStale(period, today, slot) {
+  const d = periodStaleDays(period, today, slot);
+  if (d === null) return false;
+  return d > (SHEET_STALE_DAYS[slot] === undefined ? 2 : SHEET_STALE_DAYS[slot]);
+}
+
 // ---- Column resolution ------------------------------------------------------
 //
 // The CSV comes from the WEB UI, which writes human labels ("Work Order
@@ -563,18 +632,34 @@ function summarisePeriod(parsed) {
     s.workedHours += num(get(r, cols, 'workedHours'));
     s.billed += num(get(r, cols, 'billedAmount'));
     s.unbilled += num(get(r, cols, 'unbilledAmount'));
-    const wo = get(r, cols, 'workOrder');
-    if (wo) { s.workOrders.add(String(wo)); woNumbered = true; }
+    // The SAME identity the per-status counts use. It used to add only rows
+    // that carried a real number, so a grouped file with neither header counts
+    // nor work-order numbers reported 0 work orders beside non-zero Work Done
+    // and Ready to Bill — while countedBy claimed "unit + description + date",
+    // a label describing a number that had not been reached that way.
+    if (get(r, cols, 'workOrder')) woNumbered = true;
+    s.workOrders.add(woIdentity(r, cols));
   });
 
-  // In the grouped export the data rows carry no work-order number — the count
-  // lives on the "-> Property" header. Sum those, skipping excluded properties.
-  let workOrders = s.workOrders.size;
-  if (parsed.groupCounts) {
-    workOrders = Object.entries(parsed.groupCounts)
-      .filter(([p]) => !isExcludedProperty(p))
-      .reduce((a, [, n]) => a + n, 0);
-  }
+  // Where the work-order count comes from, and why it is a choice.
+  //
+  // In the WEB export the data rows carry no work-order number: the count lives
+  // on the "-> Property" header, and it is authoritative — a work order with
+  // nothing billed yet has no data row at all and exists only in that count.
+  //
+  // Excel Connect has no counts there. The property name sits in the column the
+  // count would occupy, and the work order number is on each data row instead.
+  // Summing the headers unconditionally therefore overrode a perfectly good set
+  // of 85 distinct work orders with 0 — which is exactly what the report showed
+  // on every grouped sheet.
+  //
+  // So: the header counts win when there are any, and the distinct numbers off
+  // the data rows are used when there are not.
+  const headerCount = Object.entries(parsed.groupCounts || {})
+    .filter(([p]) => !isExcludedProperty(p))
+    .reduce((a, [, n]) => a + n, 0);
+  const countedFromHeaders = headerCount > 0;
+  const workOrders = countedFromHeaders ? headerCount : s.workOrders.size;
 
   // A status group that produced no data rows exists only as its header count.
   // Added here, and ONLY when it produced none, so a group with rows is not
@@ -615,9 +700,11 @@ function summarisePeriod(parsed) {
     // export, but if it is blank on the data rows the identity silently falls
     // back, and printing the column name then would be a wrong label on a right
     // number — which is still something someone acts on.
-    countedBy: (cols.workOrder && woNumbered)
-      ? `"${cols.workOrder}"`
-      : `unit + description + date${cols.workOrder ? ` ("${cols.workOrder}" is empty on every row)` : ''}`,
+    countedBy: countedFromHeaders
+      ? 'the per-property counts on the group header rows'
+      : (cols.workOrder && woNumbered)
+        ? `distinct "${cols.workOrder}" values on the data rows`
+        : `unit + description + date${cols.workOrder ? ` ("${cols.workOrder}" is empty on every row)` : ''}`,
     statusColumn: cols.status,
     workOrders,
     grouped: !!parsed.grouped,
@@ -847,5 +934,6 @@ module.exports = {
   parseCsv, resolveColumns, buildReport, summarisePeriod,
   byProperty, byPropertyAndTech, byTech, toCsv,
   isExcludedProperty, cleanTech, num, statusGroup, exportDate,
+  sheetPeriod, periodStaleDays, periodIsStale, SHEET_STALE_DAYS,
   EXCLUDED_FRAGMENTS,
 };

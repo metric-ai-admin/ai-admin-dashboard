@@ -259,6 +259,121 @@ t('the history element exists on the page', () => {
   assert.ok(html.includes('id="bl-sends"'));
 });
 
+
+// ---- the work-order count on a grouped Excel sheet --------------------------
+//
+// It read 0 on all three detail sheets beside 7 / 85 / 53 completed, because
+// the header counts were summed UNCONDITIONALLY and Excel Connect has none:
+// the property name occupies the column the count would be in. 85 distinct
+// numbers were being overridden by an empty object summing to zero.
+t('distinct work order numbers are counted when the headers carry no counts', () => {
+  const s = B.summarisePeriod(B.parseCsv(EXCEL_CSV));
+  assert.strictEqual(s.workOrders, 3);
+  assert.ok(/distinct/.test(s.countedBy), s.countedBy);
+});
+
+t('the web export still trusts its header counts, which are authoritative', () => {
+  // The header says 2 and only ONE data row follows: the missing one is a work
+  // order with nothing billed yet, which exists only in that count.
+  const csv = WEB_CSV.split('\n').slice(0, 3).join('\n');
+  const s = B.summarisePeriod(B.parseCsv(csv));
+  assert.strictEqual(s.workOrders, 2, 'the header count must win over the one data row');
+  assert.ok(/group header/.test(s.countedBy), s.countedBy);
+});
+
+t('a work order with several billable lines counts once', () => {
+  const s = B.summarisePeriod(B.parseCsv(EXCEL_CSV));
+  // 23092-1, 23093-1 and 23100-1 across 3 rows; add a second line for one.
+  const more = EXCEL_CSV + '\n23092-1,8-116,Metric,Inventory,10/2/26,A part,0,12.50,0.00,Completed';
+  assert.strictEqual(B.summarisePeriod(B.parseCsv(more)).workOrders, s.workOrders);
+});
+
+// ---- the declared period, and staleness -------------------------------------
+const META = slot => [
+  [slot + ' - Work Order Billable Detail'],
+  ['Exported On: 10/06/2026 1:40 PM'],
+  ['Status Date: Work Done On 09/27/2026 - 10/03/2026'],
+  ['Property Groups: All Active, Item Created Date Range: 01/01/0001 to 12/30/9999 (All Time)'],
+  ['headerSize=5&filters%5Bstatus_date_range_relative_to%5D=2026-10-06'],
+  ['count(Work Order Number)', 'Unit'],
+];
+
+t('the period is read from the Status Date line only', () => {
+  assert.deepStrictEqual(B.sheetPeriod(META('MWeekly')),
+    { first: '2026-09-27', last: '2026-10-03' });
+});
+
+t('"Exported On" and the relative_to in the filter URL are not the period', () => {
+  const p = B.sheetPeriod(META('MWeekly'));
+  assert.notStrictEqual(p.last, '2026-10-06',
+    'sweeping the whole metadata block made every sheet end today and never read stale');
+});
+
+t('the all-time sentinel dates are not a period', () => {
+  const p = B.sheetPeriod([[''], [''], ['Date Range: 01/01/0001 to 12/30/9999'], [''], [''], ['h']]);
+  assert.deepStrictEqual(p, { first: null, last: null });
+});
+
+t('a sheet with no declared period reports nulls rather than guessing', () => {
+  assert.deepStrictEqual(B.sheetPeriod([['x'], ['y'], ['z'], [''], [''], ['h']]),
+    { first: null, last: null });
+  assert.strictEqual(B.periodStaleDays({ first: null, last: null }, '2026-10-06', 'weekly'), null);
+});
+
+t('last week is NOT stale on a Tuesday — the week always ends Saturday', () => {
+  const week = { first: '2026-09-27', last: '2026-10-03' };
+  assert.strictEqual(B.periodStaleDays(week, '2026-10-06', 'weekly'), 3);
+  assert.strictEqual(B.periodIsStale(week, '2026-10-06', 'weekly'), false);
+});
+
+t('a weekly file two weeks old still trips the warning', () => {
+  const old = { first: '2026-09-20', last: '2026-09-26' };
+  assert.strictEqual(B.periodIsStale(old, '2026-10-06', 'weekly'), true);
+});
+
+t('a period containing today is current, which is what carries the month', () => {
+  const month = { first: '2026-10-01', last: '2026-10-31' };
+  assert.strictEqual(B.periodStaleDays(month, '2026-10-06', 'monthly'), 0);
+  assert.strictEqual(B.periodIsStale(month, '2026-10-06', 'monthly'), false);
+  // And September's file, read in November, is not.
+  assert.strictEqual(B.periodIsStale({ first: '2026-09-01', last: '2026-09-30' }, '2026-11-08', 'monthly'), true);
+});
+
+t('yesterday\'s daily is fine, last week\'s is not', () => {
+  assert.strictEqual(B.periodIsStale({ first: '2026-10-05', last: '2026-10-05' }, '2026-10-06', 'daily'), false);
+  assert.strictEqual(B.periodIsStale({ first: '2026-09-29', last: '2026-09-29' }, '2026-10-06', 'daily'), true);
+});
+
+t('each slot has its own allowance, and weekly is more than daily', () => {
+  assert.ok(B.SHEET_STALE_DAYS.weekly > B.SHEET_STALE_DAYS.daily);
+  ['daily', 'weekly', 'monthly', 'labor'].forEach(k =>
+    assert.ok(typeof B.SHEET_STALE_DAYS[k] === 'number', k + ' needs an allowance'));
+});
+
+t('the period is captured at upload, before the metadata rows are dropped', () => {
+  const route = server.slice(server.indexOf("app.post('/api/billable/upload-workbook'"));
+  const body = route.slice(0, route.indexOf("app.post('/api/billable/generate'"));
+  assert.ok(body.indexOf('sheetPeriod(aoa)') < body.indexOf('sheetToCsv(aoa)'),
+    'sheetToCsv throws the metadata rows away, so the period must be read first');
+  assert.ok(/period: out\.period \|\| null/.test(body), 'and kept in the manifest');
+});
+
+t('status prefers the declared period and falls back for a hand-uploaded CSV', () => {
+  const st = server.slice(server.indexOf("app.get('/api/billable/status'"));
+  const body = st.slice(0, st.indexOf("app.post('/api/billable/upload/:slot'"));
+  assert.ok(/periodStaleDays\(period, ctDateStr\(0\), slot\)/.test(body));
+  assert.ok(/periodIsStale\(period, ctDateStr\(0\), slot\)/.test(body));
+  assert.ok(/staleDays !== null && staleDays > 2/.test(body),
+    'a CSV slot has no metadata left, so it keeps the row-date rule');
+});
+
+t('the slot card shows the declared period, and labels the fallback', () => {
+  const fn = appjs.slice(appjs.indexOf('async function blLoadStatus'));
+  const body = fn.slice(0, fn.indexOf('async function blUpload('));
+  assert.ok(/s\.period && s\.period\.last/.test(body));
+  assert.ok(/\(row dates\)/.test(body), 'the weaker answer must say that it is one');
+});
+
 // ---- the real workbook, when it is on this machine --------------------------
 // Skipped in CI and on Render: this is Erick's actual export, and it is the
 // only thing that proves the parser against the file that was failing.

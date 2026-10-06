@@ -9413,14 +9413,31 @@ app.get('/api/billable/status', requireAuth, requireRole(...BILLABLE_ROLES), asy
         const cols = billableReport.resolveColumns(parsed.headers);
         rows = parsed.rows.length;
         dateRange = billableReport.exportDate(parsed.rows, cols);
-        if (dateRange.last) {
+      }
+      // Staleness comes from the period the sheet DECLARES, not from the newest
+      // row in it. Those are different dates: a work order marked Work Done
+      // last week can have been created in July, and judging the file by that
+      // made a current weekly export read as three days old every single week,
+      // because the week always ends on a Saturday.
+      //
+      // The declared period only exists for a workbook upload. A hand-uploaded
+      // CSV has no metadata rows left, so it keeps the old row-date rule — the
+      // best available answer there, and it is labelled as such.
+      const period = (m && m.period && m.period.last) ? m.period : null;
+      if (present) {
+        if (period) {
+          staleDays = billableReport.periodStaleDays(period, ctDateStr(0), slot);
+        } else if (dateRange.last) {
           staleDays = Math.round((Date.parse(ctDateStr(0) + 'T00:00:00Z')
             - Date.parse(dateRange.last + 'T00:00:00Z')) / 86400000);
         }
       }
+      const stale = period
+        ? billableReport.periodIsStale(period, ctDateStr(0), slot)
+        : (staleDays !== null && staleDays > 2);
       return {
         slot, label: BILLABLE_LABELS[slot], present, rows, dateRange, staleDays,
-        stale: staleDays !== null && staleDays > 2,
+        period, staleAfterDays: billableReport.SHEET_STALE_DAYS[slot] || 2, stale,
         uploadedAt: m && m.uploadedAt || null,
         uploadedBy: m && m.uploadedBy || null,
         filename: m && m.filename || null,
@@ -9616,6 +9633,11 @@ app.post('/api/billable/upload-workbook', requireAuth, requireRole(...BILLABLE_R
       const notices = [];
       for (const [slot, name] of Object.entries(sheets)) {
         const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
+        // Read BEFORE the metadata rows are dropped: this is the period the
+        // report declares it covers, and it is the only honest basis for "is
+        // this file current?". The CSV written to disk no longer contains it,
+        // so it is kept in the manifest.
+        const period = billableReport.sheetPeriod(aoa);
         const csv = billableReport.sheetToCsv(aoa);
         const parsed = billableReport.parseCsv(csv);
         // No HEADER is still a refusal: the sheet is the wrong shape, or was
@@ -9630,7 +9652,7 @@ app.post('/api/billable/upload-workbook', requireAuth, requireRole(...BILLABLE_R
         // than a silent zero.
         if (!parsed.rows.length) {
           notices.push(`${BILLABLE_LABELS[slot]} came through empty — no billable work in that period.`);
-          converted[slot] = { csv, name, rows: 0, empty: true, dateRange: { first: null, last: null } };
+          converted[slot] = { csv, name, rows: 0, empty: true, period, dateRange: { first: null, last: null } };
           continue;
         }
         const cols = billableReport.resolveColumns(parsed.headers);
@@ -9638,7 +9660,7 @@ app.post('/api/billable/upload-workbook', requireAuth, requireRole(...BILLABLE_R
           return billableRecordUploadFailure(req, res,
             `Sheet "${name}" has no property column. Columns seen: ${parsed.headers.slice(0, 8).join(', ')}`);
         }
-        converted[slot] = { csv, name, rows: parsed.rows.length, dateRange: billableReport.exportDate(parsed.rows, cols) };
+        converted[slot] = { csv, name, rows: parsed.rows.length, period, dateRange: billableReport.exportDate(parsed.rows, cols) };
       }
 
       await fsp.mkdir(BILLABLE_DIR, { recursive: true });
@@ -9653,6 +9675,8 @@ app.post('/api/billable/upload-workbook', requireAuth, requireRole(...BILLABLE_R
           filename: `${req.file.originalname} → ${out.name}`,
           rows: out.rows,
           empty: !!out.empty,
+          // The declared period, which the CSV on disk no longer carries.
+          period: out.period || null,
         };
       }
       // Everything the confirmation at the top of the page needs, kept so it

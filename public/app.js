@@ -5730,9 +5730,15 @@ async function blLoadStatus() {
     // The date INSIDE the file, not when it was uploaded: a file uploaded this
     // morning can hold last month's rows, and that is the failure this module
     // is most exposed to.
-    const span = s.dateRange && s.dateRange.last
-      ? `${blEsc(s.dateRange.first)} &rarr; ${blEsc(s.dateRange.last)}`
-      : '&mdash;';
+    // The period the export DECLARES, when the workbook gave us one. It is the
+    // honest answer to "what does this file cover"; the row dates are when the
+    // work orders were created, which is a different question and was what made
+    // a current weekly file read as three days old every week.
+    const span = s.period && s.period.last
+      ? `${blEsc(s.period.first)} &rarr; ${blEsc(s.period.last)}`
+      : s.dateRange && s.dateRange.last
+        ? `${blEsc(s.dateRange.first)} &rarr; ${blEsc(s.dateRange.last)} <span class="muted">(row dates)</span>`
+        : '&mdash;';
     return `<div class="bl-slot${s.present ? ' filled' : ''}${s.stale ? ' stale' : ''}">
       <div class="bl-slot-head">
         <span class="bl-slot-label">${blEsc(s.label)}</span>
@@ -5740,7 +5746,9 @@ async function blLoadStatus() {
       </div>
       <div class="bl-slot-meta">Data covers ${span}</div>
       ${s.present ? `<div class="bl-slot-meta">Uploaded ${blEsc((s.uploadedAt || '').slice(0, 16).replace('T', ' '))}${s.uploadedBy ? ' by ' + blEsc(s.uploadedBy) : ''}</div>` : ''}
-      ${s.stale ? `<div class="bl-stale">Newest row is ${s.staleDays} days old &mdash; is this the current export?</div>` : ''}
+      ${s.stale ? `<div class="bl-stale">${s.period
+        ? `This period ended ${s.staleDays} days ago, past the ${s.staleAfterDays} allowed for ${blEsc(s.slot)} &mdash; is this the current export?`
+        : `Newest row is ${s.staleDays} days old &mdash; is this the current export?`}</div>` : ''}
       <label class="btn btn-ghost bl-upload">
         ${s.present ? 'Replace' : 'Upload CSV'}
         <input type="file" accept=".csv,text/csv" data-bl-slot="${blEsc(s.slot)}" hidden>
