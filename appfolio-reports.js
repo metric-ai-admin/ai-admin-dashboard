@@ -96,13 +96,32 @@ const REPORTS = [
   // would fire extra requests that return byte-identical data, so the
   // per-status metrics are counted locally instead. See efficiencyMetrics().
   {
+    // THE DATE RANGE IS NOT OPTIONAL HERE, and getting this wrong undoes the
+    // fix in server.js in one step.
+    //
+    // reconcileWorkOrders() uses this store as "what AppFolio has open" and
+    // marks anything absent from it "Unknown — not in feed". With params:{}
+    // the report applies its own ~96-day window, so the nine work orders open
+    // since 2025-09-12 and 2026-02-05 — the ones the documented syntax just
+    // recovered — would be absent, marked Unknown, and taken straight back off
+    // Erick's board by the next reconciliation.
+    //
+    // A FUNCTION, so `_to` is resolved per call. A constant would pin the end
+    // of the range to the deploy date and the feed would silently stop seeing
+    // new work orders.
     id: 'wo_all',
     resource: 'work_order',
-    label: 'WO — All open (unfiltered pull)',
+    label: 'WO — All open (documented date syntax)',
     group: 'Maintenance Efficiency',
     priority: 5,
-    feeds: 'Efficiency rows 45 & 49 — counted locally',
-    params: {},
+    feeds: 'Efficiency rows 45 & 49, and the reconciliation\'s open feed',
+    params: () => ({
+      status_date: '0',                       // Created On
+      status_date_range_from: '2020-01-01',
+      status_date_range_to: new Date().toISOString().slice(0, 10),
+      work_order_statuses: ['0', '1', '2', '9', '11', '3', '6', '8', '12'],
+      work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
+    }),
   },
 
   // ---- WO Scheduling Tool pilot (iConic Round Rock + iConic Downtown) ----

@@ -83,6 +83,36 @@ t('what was dropped is reported, not silently discarded', () => {
   assert.ok(/openByStatus/.test(body), 'the response does not say what it wrote');
 });
 
+console.log("\nthe reconciliation's feed uses the same syntax");
+t('wo_all carries the date range too', () => {
+  // reconcileWorkOrders reads this store as "what AppFolio has open" and marks
+  // anything absent from it Unknown. Left on params:{} it keeps the ~96-day
+  // window, so the nine old work orders the documented syntax just recovered
+  // would be marked Unknown and taken straight back off Erick's board.
+  const reports = fs.readFileSync(path.join(__dirname, '..', 'appfolio-reports.js'), 'utf8');
+  const i = reports.indexOf("id: 'wo_all'");
+  assert.ok(i > 0, 'wo_all is gone');
+  const body = reports.slice(i, i + 700);
+  assert.ok(/status_date: '0'/.test(body), 'wo_all still pulls without a date range');
+  assert.ok(!/params: \{\},/.test(body), 'wo_all is still the windowed pull');
+});
+t('wo_all resolves its end date per call', () => {
+  const reports = fs.readFileSync(path.join(__dirname, '..', 'appfolio-reports.js'), 'utf8');
+  const i = reports.indexOf("id: 'wo_all'");
+  const body = reports.slice(i, i + 700);
+  assert.ok(/params: \(\) => \(\{/.test(body), 'the end date freezes at deploy time');
+  assert.ok(/status_date_range_to: new Date\(\)/.test(body));
+});
+t('the two feeds ask for the same statuses', () => {
+  // A reconciliation whose idea of "open" is narrower than the sync's would
+  // mark the difference Unknown on every run.
+  const reports = fs.readFileSync(path.join(__dirname, '..', 'appfolio-reports.js'), 'utf8');
+  const i = reports.indexOf("id: 'wo_all'");
+  const body = reports.slice(i, i + 700);
+  assert.ok(/\['0', '1', '2', '9', '11', '3', '6', '8', '12'\]/.test(body),
+    "wo_all's status codes have drifted from the sync's");
+});
+
 console.log('\nthe dry run');
 t('it writes nothing', () => {
   const i = code.indexOf('if (dryRun) {');
