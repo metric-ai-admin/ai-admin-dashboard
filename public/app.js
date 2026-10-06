@@ -11668,10 +11668,40 @@ async function loadRebrand() {
     try {
       const d = await api('/api/rebrand/links');
       links.innerHTML = '<h3 style="margin:0 0 8px">Links</h3>'
-        + d.links.map(l => `<div style="margin:4px 0">
-            <b>${esc(l.person)}</b>${l.readOnly ? ' <span class="muted small">(read only)</span>' : ''}
-            <div class="muted small" style="word-break:break-all">${esc(l.url)}</div>
-          </div>`).join('');
+        + d.links.map(l => `<div style="margin:8px 0;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+            <b style="min-width:110px">${esc(l.person)}</b>
+            ${l.readOnly ? '<span class="muted small">(read only)</span>' : ''}
+            ${l.isTest ? '<span class="muted small">(not counted as a reviewer)</span>' : ''}
+            <a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer"
+               style="word-break:break-all;flex:1 1 320px">${esc(l.url)}</a>
+            <button class="btn btn-sm rb-copy" data-url="${esc(l.url)}">Copy</button>
+          </div>`).join('')
+        + `<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+             <button class="btn btn-sm" id="rb-clear-test">Clear test answers</button>
+             <span class="muted small" id="rb-clear-msg"></span>
+           </div>`;
+
+      // rel="noopener" on every one of these: without it the opened page gets
+      // a handle on this one through window.opener, and these links are shared
+      // outside the company.
+      links.querySelectorAll('.rb-copy').forEach(b => b.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(b.dataset.url);
+          const was = b.textContent; b.textContent = 'Copied ✓';
+          setTimeout(() => { b.textContent = was; }, 1500);
+        } catch { toast('Could not copy — select the link and copy it by hand', 'error'); }
+      }));
+
+      $('#rb-clear-test')?.addEventListener('click', async () => {
+        if (!confirm('Delete every answer saved through the Test link?\nReviewers’ answers are not touched.')) return;
+        const msg = $('#rb-clear-msg');
+        try {
+          const r = await api('/api/rebrand/test-answers', { method: 'DELETE' });
+          if (msg) msg.textContent = `Cleared ${r.deleted} test record(s).`;
+        } catch (e) {
+          if (msg) msg.textContent = 'Could not clear: ' + e.message;
+        }
+      });
     } catch (e) {
       // Admin-only; the CEO sees the answers without the links.
       links.innerHTML = `<p class="muted small">${esc(e.message)}</p>`;

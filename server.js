@@ -12507,10 +12507,26 @@ app.get('/api/activity/day', requireAuth, requireRole(...ACTIVITY_ROLES), async 
 // A WRONG TOKEN IS A 404, never a 401. A 401 confirms the URL shape is right
 // and invites a second attempt; a 404 says there is nothing here, which is
 // what somebody who should not have the link ought to be told.
-const REBRAND_PEOPLE = ['Kara', 'Bekah', 'Zach', 'Lyndsay'];
+const REBRAND_PEOPLE = ['Kara', 'Bekah', 'Zach', 'Lyndsay', 'Test'];
 // Lyndsay reads, she does not fill one in. Kept in the token list so her link
 // works the same way as everyone else's.
 const REBRAND_READONLY = new Set(['Lyndsay']);
+
+// The test link, and why it needs more than a label.
+//
+// The page writes to "reviews/<brand>--<slug(person)>", and the person comes
+// from a picker inside the page. So somebody on the test link who selects
+// "Zach" writes to Zach's path — and would overwrite a real answer with test
+// text. Filtering the test user out of the responses view would hide the
+// damage rather than prevent it.
+//
+// Every write from the test token is therefore prefixed. Its rows cannot
+// collide with a reviewer's, they are trivially excluded from the review
+// screen, and "clear the test answers" is one delete of one prefix instead of
+// a judgement about which rows were real.
+const REBRAND_TEST_PERSON = 'Test';
+const REBRAND_TEST_PREFIX = 'test/';
+const rebrandIsTest = person => person === REBRAND_TEST_PERSON;
 
 function rebrandToken(person) {
   const secret = process.env.REBRAND_REVIEW_SECRET;
@@ -12586,8 +12602,18 @@ app.get('/api/review/:token/docs', async (req, res) => {
     if (error) throw new Error(error.message);
     // Everyone sees everyone's answers — the page is a shared review and that
     // is what it was built to show. The token decides who you WRITE as.
+    //
+    // Except the test link, which sees ONLY its own prefixed rows, with the
+    // prefix stripped so the page behaves exactly as it does for a reviewer.
+    // A test session that could read real answers would be a way to read the
+    // review without being in it.
     const docs = {};
-    (data || []).forEach(r => { docs[r.path] = r.data; });
+    const test = rebrandIsTest(person);
+    (data || []).forEach(r => {
+      const isTestRow = String(r.path).startsWith(REBRAND_TEST_PREFIX);
+      if (test !== isTestRow) return;
+      docs[test ? String(r.path).slice(REBRAND_TEST_PREFIX.length) : r.path] = r.data;
+    });
     res.json({ docs, person, readOnly: REBRAND_READONLY.has(person) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -12602,6 +12628,10 @@ app.put('/api/review/:token/docs', async (req, res) => {
     // The path becomes a primary key and is echoed into the review screen, so
     // it is checked against the shape the page documents rather than trusted.
     if (!/^[A-Za-z0-9_\-/]{1,120}$/.test(p)) return res.status(400).json({ error: 'bad path' });
+    // Prefixed SERVER-SIDE, never by the client: a test session that could
+    // choose its own prefix could choose not to have one, and then it writes
+    // over a reviewer's answer again.
+    const storedPath = rebrandIsTest(person) ? REBRAND_TEST_PREFIX + p : p;
     const data = (req.body && req.body.data);
     if (data === null || typeof data !== 'object' || Array.isArray(data)) {
       return res.status(400).json({ error: 'data must be an object' });
@@ -12609,7 +12639,7 @@ app.put('/api/review/:token/docs', async (req, res) => {
     if (JSON.stringify(data).length > 100000) return res.status(413).json({ error: 'too large' });
     const db = supabaseAdmin || supabasePublic;
     const { error } = await db.from('rebrand_review').upsert([{
-      path: p, data,
+      path: storedPath, data,
       // From the TOKEN, never from the body: a reviewer editing the request
       // must not be able to sign somebody else's name to an answer.
       updated_by: person, updated_at: new Date().toISOString(),
@@ -12628,7 +12658,8 @@ app.delete('/api/review/:token/docs', async (req, res) => {
     const p = String((req.body && req.body.path) || '');
     if (!/^[A-Za-z0-9_\-/]{1,120}$/.test(p)) return res.status(400).json({ error: 'bad path' });
     const db = supabaseAdmin || supabasePublic;
-    const { error } = await db.from('rebrand_review').delete().eq('path', p);
+    const { error } = await db.from('rebrand_review').delete()
+      .eq('path', rebrandIsTest(person) ? REBRAND_TEST_PREFIX + p : p);
     if (error) throw new Error(error.message);
     res.status(204).end();
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -12642,11 +12673,35 @@ app.get('/api/rebrand/responses', requireAuth, requireRole('admin', 'ceo'), asyn
     const { data, error } = await db.from('rebrand_review')
       .select('path,data,updated_by,updated_at').order('updated_at', { ascending: false }).limit(2000);
     if (error) throw new Error(error.message);
-    res.json({ rows: data || [], people: REBRAND_PEOPLE.filter(p => !REBRAND_READONLY.has(p)) });
+    // Test rows are excluded BY PATH, not by author. The prefix is what the
+    // server wrote and the author field is only a label — filtering on the
+    // label would miss a test row whose author got set some other way.
+    const rows = (data || []).filter(r => !String(r.path).startsWith(REBRAND_TEST_PREFIX));
+    res.json({
+      rows,
+      testRows: (data || []).length - rows.length,
+      people: REBRAND_PEOPLE.filter(p => !REBRAND_READONLY.has(p) && !rebrandIsTest(p)),
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// The four links, for admin only, so they are read off the running service
+// DELETE /api/rebrand/test-answers — empty the test link's rows.
+//
+// Scoped to the prefix, so it cannot reach a reviewer's answer even if it is
+// called by mistake. admin only: it is a delete, and the review is the kind of
+// thing people only fill in once.
+app.delete('/api/rebrand/test-answers', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('rebrand_review').delete()
+      .like('path', REBRAND_TEST_PREFIX + '%').select('path');
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, deleted: (data || []).length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// The links, for admin only, so they are read off the running service
 // rather than reconstructed by hand from the secret.
 app.get('/api/rebrand/links', requireAuth, requireRole('admin'), (req, res) => {
   if (!process.env.REBRAND_REVIEW_SECRET) {
@@ -12655,7 +12710,9 @@ app.get('/api/rebrand/links', requireAuth, requireRole('admin'), (req, res) => {
   const base = process.env.PUBLIC_URL || `https://${req.get('host')}`;
   res.json({
     links: REBRAND_PEOPLE.map(p => ({
-      person: p, readOnly: REBRAND_READONLY.has(p),
+      person: rebrandIsTest(p) ? 'Test (Arturo)' : p,
+      readOnly: REBRAND_READONLY.has(p),
+      isTest: rebrandIsTest(p),
       url: `${base}/review/${rebrandToken(p)}`,
     })),
   });

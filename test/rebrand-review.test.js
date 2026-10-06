@@ -180,4 +180,87 @@ t('it matches the shape the page documents', () => {
   assert.ok(/updated_by\s+text/.test(sql) && /updated_at\s+timestamptz/.test(sql));
 });
 
+console.log('\nthe test link cannot touch a reviewer’s answers');
+t('its writes are prefixed, server-side', () => {
+  // The page writes to "reviews/<brand>--<slug(person)>" and the person comes
+  // from a picker INSIDE the page. Somebody on the test link who selects
+  // "Zach" would otherwise write to Zach's path and overwrite a real answer.
+  // Filtering the test user out of the review screen hides that; prefixing
+  // prevents it.
+  const i = code.indexOf("app.put('/api/review/:token/docs'");
+  const body = code.slice(i, i + 1800);
+  assert.ok(/const storedPath = rebrandIsTest\(person\) \? REBRAND_TEST_PREFIX \+ p : p;/.test(body),
+    'test writes are not prefixed');
+  assert.ok(/path: storedPath, data,/.test(body), 'the prefix is computed and then not used');
+});
+t('the prefix is never chosen by the client', () => {
+  // A test session that could choose its own prefix could choose not to have
+  // one.
+  const i = code.indexOf("app.put('/api/review/:token/docs'");
+  const body = code.slice(i, i + 1800);
+  assert.ok(!/req\.body.*prefix/i.test(body));
+  assert.ok(/REBRAND_TEST_PREFIX = 'test\/'/.test(code));
+});
+t('delete is prefixed too', () => {
+  const i = code.indexOf("app.delete('/api/review/:token/docs'");
+  const body = code.slice(i, i + 900);
+  assert.ok(/rebrandIsTest\(person\) \? REBRAND_TEST_PREFIX \+ p : p/.test(body),
+    'the test link can delete a reviewer’s row');
+});
+t('the test link reads only its own rows', () => {
+  // A test session that could read real answers would be a way to read the
+  // review without being in it.
+  const i = code.indexOf("app.get('/api/review/:token/docs'");
+  const body = code.slice(i, i + 1200);
+  assert.ok(/if \(test !== isTestRow\) return;/.test(body), 'the test link sees real answers');
+  assert.ok(/slice\(REBRAND_TEST_PREFIX\.length\)/.test(body),
+    'the prefix is not stripped, so the page would not find its own data');
+});
+
+console.log('\nthe test link is not a reviewer');
+t('it is excluded from the responses view BY PATH', () => {
+  // By path, not by author: the prefix is what the server wrote, the author
+  // field is only a label, and filtering on a label would miss a row whose
+  // label got set some other way.
+  const i = code.indexOf("app.get('/api/rebrand/responses'");
+  const body = code.slice(i, i + 1200);
+  assert.ok(/!String\(r\.path\)\.startsWith\(REBRAND_TEST_PREFIX\)/.test(body));
+  assert.ok(!/updated_by !== 'Test'/.test(body), 'it filters on the author label');
+});
+t('it is not listed among the people', () => {
+  const i = code.indexOf("app.get('/api/rebrand/responses'");
+  const body = code.slice(i, i + 1200);
+  assert.ok(/!rebrandIsTest\(p\)/.test(body), 'Test counts as a reviewer');
+});
+t('clearing is scoped to the prefix and is admin only', () => {
+  const i = code.indexOf("app.delete('/api/rebrand/test-answers'");
+  assert.ok(i > 0, 'there is no clear route');
+  const body = code.slice(i, i + 800);
+  assert.ok(/requireAuth, requireRole\('admin'\)/.test(code.slice(i - 120, i + 120)));
+  assert.ok(/\.like\('path', REBRAND_TEST_PREFIX \+ '%'\)/.test(body),
+    'the clear is not scoped and could reach a reviewer’s answer');
+});
+
+console.log('\nthe links are usable');
+t('they are anchors that open in a new tab, safely', () => {
+  const i = app.indexOf('async function loadRebrand');
+  const body = app.slice(i, app.indexOf('/* ---------------- Activity Logs: detail'));
+  assert.ok(/target="_blank" rel="noopener noreferrer"/.test(body),
+    'without noopener the opened page gets a handle on this one');
+  assert.ok(/<a href="\$\{esc\(l\.url\)\}"/.test(body), 'the url is not escaped in the href');
+});
+t('each has a Copy button', () => {
+  const i = app.indexOf('async function loadRebrand');
+  const body = app.slice(i, app.indexOf('/* ---------------- Activity Logs: detail'));
+  assert.ok(/class="btn btn-sm rb-copy" data-url="\$\{esc\(l\.url\)\}"/.test(body));
+  assert.ok(/navigator\.clipboard\.writeText/.test(body));
+  assert.ok(/Could not copy/.test(body), 'a blocked clipboard fails silently');
+});
+t('clearing asks first, and says whose answers are safe', () => {
+  const i = app.indexOf('async function loadRebrand');
+  const body = app.slice(i, app.indexOf('/* ---------------- Activity Logs: detail'));
+  assert.ok(/confirm\(/.test(body), 'a delete happens on one click');
+  assert.ok(/are not touched/.test(body), 'the prompt does not say what survives');
+});
+
 console.log(`\n${pass} passing`);
