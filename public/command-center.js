@@ -404,16 +404,33 @@ const CC_SYNC_DEFS = [
   { key: 'inv',   name: 'Inventory Usage',     ep: '/api/maintenance/sync/inventory',     headers: () => CC_INV_HEADERS,   row: ccInvRow },
   { key: 'audit', name: 'Audit: unbilled',     ep: '/api/maintenance/sync/audit',         headers: () => CC_AUDIT_HEADERS, row: ccAuditRow },
 ];
+const CC_SYNC_BATCH = 4;              // of 7 allowed per 15s, leaving room for the hourly job
+const CC_SYNC_BATCH_PAUSE_MS = 15000; // the limit's own window
 async function ccSyncFromAppFolio() {
   const btn = $('#cc-sync'), status = $('#cc-sync-status'), st = $('#cc-status');
   if (!btn) return;
   const label = btn.textContent; btn.disabled = true; btn.textContent = '⏳ Syncing…';
   if (status) status.textContent = 'Pulling all reports from AppFolio…';
   try {
-    const settled = await Promise.all(CC_SYNC_DEFS.map(d =>
-      api(d.ep, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-        .then(r => ({ d, r })).catch(e => ({ d, err: e }))
-    ));
+    /* In batches of four, not all seven at once.
+       AppFolio allows 7 requests per 15 seconds. CC_SYNC_DEFS has exactly
+       seven entries, so Promise.all over the whole list sat precisely on the
+       limit with no headroom -- and from 2026-10-06 an hourly job makes two
+       more calls of its own, so a click landing in the same window would tip
+       it over. Four at a time leaves room for that job and for a second
+       person pressing the same button. */
+    const settled = [];
+    for (let i = 0; i < CC_SYNC_DEFS.length; i += CC_SYNC_BATCH) {
+      const batch = CC_SYNC_DEFS.slice(i, i + CC_SYNC_BATCH);
+      if (status) status.textContent = `Pulling from AppFolio… ${Math.min(i + batch.length, CC_SYNC_DEFS.length)}/${CC_SYNC_DEFS.length} reports`;
+      settled.push(...await Promise.all(batch.map(d =>
+        api(d.ep, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+          .then(r => ({ d, r })).catch(e => ({ d, err: e }))
+      )));
+      /* The limit is per fifteen seconds, so the next batch waits out the
+         window rather than following immediately. */
+      if (i + CC_SYNC_BATCH < CC_SYNC_DEFS.length) await new Promise(r => setTimeout(r, CC_SYNC_BATCH_PAUSE_MS));
+    }
     let total = 0; const parts = [], failed = [];
     for (const { d, r, err } of settled) {
       if (err || !r || !r.ok) { failed.push(`${d.name} (${(err && err.message) || (r && r.error) || 'error'})`); continue; }
@@ -1178,11 +1195,23 @@ function ccUpdateProgress() {
   if (!CC_TASKS.length) { counts.textContent = 'no tasks generated yet'; return; }
   /* Split, because an automatic 45 is not 45 decisions by a person and the
      two should never be added up into one reassuring number. */
-  let man = 0, aut = 0;
-  CC_TASKS.forEach(t => { const st = ccStateOf(t); if (st.by === 'manual') man++; else if (st.by === 'auto') aut++; });
+  let man = 0, aut = 0, canc = 0;
+  CC_TASKS.forEach(t => {
+    const st = ccStateOf(t);
+    if (st.by === 'manual') man++;
+    else if (st.by === 'auto') { aut++; if (st.kind === 'cancelled') canc++; }
+  });
+  const routine = CC_ROUTINE.filter(([id]) => ccChecks['routine:' + id]).length;
+  /* Three different things, never added into one number.
+     "Closed in AppFolio" is attributed to nobody on purpose: AppFolio records
+     no field for who closed a work order. assigned_user is who it was given
+     to, and the Labor Summary's "Last Edited By" is whoever last touched a
+     labor line -- 1,635 of 1,959 of them say the same name. Neither answers
+     the question, so the board does not pretend to. */
   const parts = [`${man + aut}/${CC_TASKS.length} report tasks done`];
-  if (aut) parts.push(`${aut} closed in AppFolio`);
-  if (man) parts.push(`${man} ticked by you`);
+  if (aut) parts.push(`${aut} closed in AppFolio${canc ? ` (${canc} cancelled)` : ''}`);
+  if (man) parts.push(`${man} ticked here`);
+  parts.push(`${routine}/${CC_ROUTINE.length} daily routine`);
   counts.textContent = parts.join(' · ')
     + (ccAutoError ? ' — could not check AppFolio, tick by hand' : '');
 }

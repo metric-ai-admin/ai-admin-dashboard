@@ -7524,8 +7524,17 @@ app.post('/api/maintenance/sync', requireMetricAccess, async (req, res) => {
 // or it gets WOS.UNKNOWN — "stopped being reported and we cannot say why" —
 // which is neither open nor closed and gets its own line on the screens.
 //
-// Runs AFTER the sync, inside the same request, so the feed it compares against
-// is the one that was just written rather than yesterday's.
+// IT DOES NOT RUN AFTER THE SYNC. This comment used to say it did — "runs
+// after the sync, inside the same request" — and that was simply false: the
+// sync route at /api/maintenance/sync never calls this function. Its only
+// callers are POST /api/maintenance/reconcile, which is admin-only and was on
+// no schedule until 2026-10-06, and the hourly job added that day.
+//
+// The cost of the wrong comment was real. The Command Center's auto-tick was
+// built on maintenance_work_orders.status on the strength of it, and shipped
+// reading a column that only moved when a human pressed a button. Between
+// 2026-10-02 and 2026-10-05 nobody did, which is why 436 closed work orders
+// were still sitting on Erick's board as live work.
 const WOS = require('./lib/work-order-status.js');
 
 // `sweep` adds a THIRD source: work_order asked for status codes 1..30 in one
@@ -13443,6 +13452,72 @@ app.post('/api/maintenance/command-center/state', requireAuth, async (req, res) 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// The day's figures, written whether or not anybody opened the board.
+//
+// cc_daily_state is only ever written by Erick's browser, so a day he does not
+// open the Command Center leaves NO ROW: no tasks, no counts, no routines. In
+// the history that is indistinguishable from a day with nothing to do, which
+// is exactly the distinction the retention change was made to preserve.
+//
+// 23:30 CT, after the working day and before midnight rolls the date.
+async function ccNightlySnapshot() {
+  const client = supabaseAdmin || supabasePublic;
+  const state_date = reportDateStr();
+  const { data: existing, error } = await client.from('cc_daily_state')
+    .select('*').eq('state_date', state_date).maybeSingle();
+  if (error) throw new Error(error.message);
+
+  // No board at all. The row still gets written, flagged, so the gap is a fact
+  // rather than an absence — and with zeros, not nulls, because "not opened"
+  // genuinely means nothing was ticked.
+  if (!existing) {
+    const row = {
+      state_date, tasks: [], checks: {},
+      total_tasks: 0, completed_tasks: 0, completed_manual: 0,
+      completed_auto: 0, completed_routine: 0,
+      board_opened: false,
+      generated_at: null, updated_at: new Date().toISOString(),
+    };
+    const { error: e2 } = await client.from('cc_daily_state').upsert(row, { onConflict: 'state_date' });
+    if (e2 && /board_opened/.test(e2.message || '')) {
+      // Same degradation as the save path: the column is added by hand.
+      const { board_opened, ...base } = row;
+      const { error: e3 } = await client.from('cc_daily_state').upsert(base, { onConflict: 'state_date' });
+      if (e3) throw new Error(e3.message);
+      return { state_date, boardOpened: false, note: 'board_opened column missing' };
+    }
+    if (e2) throw new Error(e2.message);
+    return { state_date, boardOpened: false, total: 0 };
+  }
+
+  // A board exists. Its counts are recomputed against the work orders as they
+  // stand NOW — the last save may be hours old and several hourly closure runs
+  // will have happened since, so the stored figure would understate the day.
+  let auto = {};
+  try {
+    const sources = await ccClosureSources(client);
+    auto = ccAuto.autoMap(existing.tasks, { ...sources, on: state_date });
+  } catch (e) {
+    // Recomputing failed, so the stored counts are left exactly as they are.
+    // Overwriting them with figures built from no closure data would turn a
+    // measurement problem into a wrong number nobody could spot later.
+    return { state_date, boardOpened: true, skipped: 'closure sources unavailable: ' + e.message };
+  }
+  const counts = ccAuto.countsFor(existing.tasks, existing.checks, auto);
+  const cancelled = Object.values(auto).filter(a => a.kind === 'cancelled').length;
+  const { error: e2 } = await client.from('cc_daily_state')
+    .update({ ...counts, updated_at: new Date().toISOString() }).eq('state_date', state_date);
+  if (e2) throw new Error(e2.message);
+  return { state_date, boardOpened: true, total: existing.total_tasks, cancelled, ...counts };
+}
+
+cron.schedule('30 23 * * *', () => {
+  if (!CRM_CONFIGURED) return;
+  ccNightlySnapshot()
+    .then(r => logLine('[cc-snapshot] ' + JSON.stringify(r)))
+    .catch(err => logLine(`[cc-snapshot] FAILED: ${err.message}`));
+}, { timezone: LYNDSAY_TIMEZONE });
+
 // ── End Command Center daily state ──────────────────────────────────────────
 
 // =====================================================================
@@ -16418,6 +16493,59 @@ cron.schedule('0 6 * * *', () => {
   callOwnRoute('/api/maintenance/sync', {})
     .then(r => logLine(`[wo-sync] ${r?.synced ?? '?'} work orders`))
     .catch(err => logLine(`[wo-sync] FAILED: ${err.message}`));
+}, { timezone: LYNDSAY_TIMEZONE });
+
+// The closure loop, hourly through the working day.
+//
+// Until 2026-10-06 nothing closed a work order's row. The 06:00 sync asks
+// AppFolio for OPEN status codes only and drops anything closed before it
+// writes, so a work order that closes simply stops being written and keeps its
+// last open status for ever. wo_completed went to the Render-disk store, not to
+// the table. And reconcileWorkOrders — the one thing that writes a closed
+// status into maintenance_work_orders — was on no schedule at all. The Command
+// Center's auto-tick read that column, so a card could never tick itself: the
+// 42-49 a day measured in the dry run all came from one manual sweep.
+//
+// Three steps in one run, in this order, because each needs the one before it:
+//   wo_all        the open feed, as AppFolio has it right now
+//   wo_completed  what closed — the ONLY source of a closed status
+//   reconcile     compares the two against the table and writes the difference
+//
+// Spaced, not parallel. AppFolio allows 7 requests per 15 seconds and the
+// Command Center's own Sync button already fires several at once; two calls
+// landing together with a human's click is how that limit gets hit. The gap
+// is the same device the 17:45 job below already uses.
+//
+// 07:00-19:00 CT. Outside those hours nobody is closing work orders, and the
+// 06:00 sync plus the 23:30 snapshot cover the edges.
+const WO_LOOP_GAP_MS = 2500;
+async function workOrderClosureLoop() {
+  const af = require('./appfolio-reports.js');
+  const out = {};
+  const a = await af.syncReport('wo_all');
+  out.open = a && a.rowCount;
+  await sleep(WO_LOOP_GAP_MS);
+  const c = await af.syncReport('wo_completed');
+  out.completed = c && c.rowCount;
+  await sleep(WO_LOOP_GAP_MS);
+  // write:true — this is the step that was missing. dryRun is the default on
+  // the route, so it has to be asked for explicitly.
+  const r = await callOwnRoute('/api/maintenance/reconcile', { write: true });
+  out.closed = r.closed != null ? r.closed : r.toClose;
+  out.reopened = r.reopened != null ? r.reopened : r.toReopen;
+  out.unknown = r.unknown != null ? r.unknown : r.toUnknown;
+  out.stillUnknown = r.stillUnknown;
+  return out;
+}
+cron.schedule('0 7-19 * * *', () => {
+  if (!CRM_CONFIGURED) return;
+  workOrderClosureLoop()
+    .then(o => logLine(`[wo-loop] ${o.open} open, ${o.completed} completed — `
+      + `closed ${o.closed}, reopened ${o.reopened}, new unknown ${o.unknown}, unknown total ${o.stillUnknown}`))
+    // Logged through logLine, not console.error: a step that stops working
+    // should be visible in the same place the other jobs report, or a silent
+    // failure here puts the board back to never closing anything.
+    .catch(err => logLine(`[wo-loop] FAILED: ${err.message}`));
 }, { timezone: LYNDSAY_TIMEZONE });
 
 cron.schedule('45 17 * * *', () => {

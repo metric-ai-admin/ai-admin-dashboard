@@ -310,4 +310,134 @@ t('the auto-close guard still refuses inspreview, for the stored boards', () => 
     { wos: WOS, inspections: INSP }), null);
 });
 
+
+// ---- the closure loop, which is what makes any of this move -----------------
+//
+// Until 2026-10-06 nothing wrote a closed status into maintenance_work_orders.
+// The 06:00 sync asks for OPEN codes only and drops anything closed before it
+// writes; wo_completed went to the disk store, not the table; and
+// reconcileWorkOrders was on no schedule. The auto-tick read that column, so a
+// card could never tick itself -- every closure the dry run found came from one
+// manual sweep.
+t('the loop runs the three steps in the order each one needs', () => {
+  const fn = server.slice(server.indexOf('async function workOrderClosureLoop'));
+  const body = fn.slice(0, fn.indexOf('cron.schedule'));
+  const open = body.indexOf("syncReport('wo_all')");
+  const comp = body.indexOf("syncReport('wo_completed')");
+  const rec = body.indexOf("'/api/maintenance/reconcile'");
+  assert.ok(open > 0 && comp > open && rec > comp,
+    'wo_all, then wo_completed, then reconcile -- each needs the one before it');
+});
+
+t('the reconcile step actually writes, since dryRun is the route default', () => {
+  const fn = server.slice(server.indexOf('async function workOrderClosureLoop'));
+  assert.ok(/'\/api\/maintenance\/reconcile', \{ write: true \}/.test(fn.slice(0, 1600)),
+    'without write:true the loop would do the measuring and none of the writing');
+});
+
+t('the two AppFolio calls are spaced, not fired together', () => {
+  const fn = server.slice(server.indexOf('async function workOrderClosureLoop'));
+  const body = fn.slice(0, fn.indexOf('cron.schedule'));
+  assert.strictEqual(body.split('await sleep(WO_LOOP_GAP_MS)').length - 1, 2);
+  assert.ok(/const WO_LOOP_GAP_MS = 2500;/.test(server));
+});
+
+t('it runs hourly through the working day, in Central time', () => {
+  assert.ok(/cron\.schedule\('0 7-19 \* \* \*'/.test(server));
+  const at = server.indexOf("cron.schedule('0 7-19 * * *'");
+  assert.ok(/timezone: LYNDSAY_TIMEZONE/.test(server.slice(at, at + 700)),
+    'on UTC this would run 02:00-14:00 CT, which is the wrong half of the day');
+});
+
+t('a failure is logged where the other jobs report, not only to console', () => {
+  const at = server.indexOf("cron.schedule('0 7-19 * * *'");
+  assert.ok(/logLine\(`\[wo-loop\] FAILED/.test(server.slice(at, at + 900)));
+});
+
+// ---- the nightly snapshot ---------------------------------------------------
+t('the day gets a row even when nobody opened the board', () => {
+  const fn = server.slice(server.indexOf('async function ccNightlySnapshot'));
+  const body = fn.slice(0, fn.indexOf('cron.schedule'));
+  assert.ok(/if \(!existing\)/.test(body));
+  assert.ok(/board_opened: false/.test(body),
+    'a missing row and a quiet day must not look the same in the history');
+  assert.ok(/completed_routine: 0/.test(body), 'zeros, not nulls -- nothing was ticked');
+});
+
+t('an opened board is recounted against the work orders as they stand now', () => {
+  const fn = server.slice(server.indexOf('async function ccNightlySnapshot'));
+  const body = fn.slice(0, fn.indexOf('cron.schedule'));
+  assert.ok(/ccAuto\.autoMap\(existing\.tasks/.test(body),
+    'the last save can be hours and several closure runs old');
+  assert.ok(/ccAuto\.countsFor\(existing\.tasks/.test(body));
+});
+
+t('if the closure data cannot be read, the stored counts are left alone', () => {
+  const fn = server.slice(server.indexOf('async function ccNightlySnapshot'));
+  const body = fn.slice(0, fn.indexOf('cron.schedule'));
+  const c = body.indexOf('catch (e)');
+  assert.ok(/return \{[\s\S]{0,200}skipped:/.test(body.slice(c)),
+    'overwriting with counts built from no closure data would be a wrong number, not a gap');
+});
+
+t('it runs at 23:30 Central, before midnight rolls the date', () => {
+  assert.ok(/cron\.schedule\('30 23 \* \* \*'/.test(server));
+  const at = server.indexOf("cron.schedule('30 23 * * *'");
+  assert.ok(/timezone: LYNDSAY_TIMEZONE/.test(server.slice(at, at + 400)));
+});
+
+t('the snapshot degrades if board_opened has not been added yet', () => {
+  const fn = server.slice(server.indexOf('async function ccNightlySnapshot'));
+  assert.ok(/\/board_opened\/\.test/.test(fn.slice(0, 2500)),
+    'the column is added by hand, and a missing one must not cost the whole row');
+});
+
+// ---- the false comment ------------------------------------------------------
+t('the comment that said the sync reconciles is gone', () => {
+  assert.ok(!/Runs AFTER the sync, inside the same request/.test(server));
+  assert.ok(/IT DOES NOT RUN AFTER THE SYNC/.test(server));
+  // And it is still true: the sync route must not call it.
+  const sync = server.slice(server.indexOf("app.post('/api/maintenance/sync'"));
+  const body = sync.slice(0, sync.indexOf('// ── Work-order reconciliation'));
+  assert.ok(!/reconcileWorkOrders/.test(body));
+});
+
+// ---- the rate limit ---------------------------------------------------------
+t('the Sync button goes in batches of four, not all seven at once', () => {
+  assert.ok(/const CC_SYNC_BATCH = 4;/.test(cc));
+  assert.ok(!/Promise\.all\(CC_SYNC_DEFS\.map/.test(cc),
+    'seven at once sat exactly on the AppFolio limit with no headroom');
+  assert.ok(/CC_SYNC_BATCH_PAUSE_MS/.test(cc), 'and the next batch waits out the window');
+});
+
+t('four plus the hourly job stays under seven in any fifteen seconds', () => {
+  // 4 from a click + 2 from the loop = 6. The loop also spaces its own two.
+  const m = cc.match(/const CC_SYNC_BATCH = (\d+);/);
+  assert.ok(Number(m[1]) + 2 <= 7, 'a click and the job must be able to overlap safely');
+});
+
+// ---- attribution ------------------------------------------------------------
+t('the three kinds of done are shown apart and never summed into one', () => {
+  const fn = cc.slice(cc.indexOf('function ccUpdateProgress'));
+  const body = fn.slice(0, fn.indexOf('const CC_ROUTINE'));
+  assert.ok(/closed in AppFolio/.test(body));
+  assert.ok(/ticked here/.test(body));
+  assert.ok(/daily routine/.test(body));
+});
+
+t('a closure is attributed to nobody, because AppFolio does not say', () => {
+  const fn = cc.slice(cc.indexOf('function ccUpdateProgress'));
+  const body = fn.slice(0, fn.indexOf('const CC_ROUTINE'));
+  assert.ok(!/by (a tech|the tech|Erick)/i.test(body),
+    'there is no field for who closed a work order; assigned_user is who it went to');
+  assert.ok(/no field for who closed/.test(body), 'and the reason is written down');
+});
+
+t('cancelled is broken out of the automatic figure', () => {
+  const fn = cc.slice(cc.indexOf('function ccUpdateProgress'));
+  const body = fn.slice(0, fn.indexOf('const CC_ROUTINE'));
+  assert.ok(/st\.kind === 'cancelled'/.test(body));
+  assert.ok(/cancelled\)/.test(body));
+});
+
 console.log(`\n${pass} passing`);
