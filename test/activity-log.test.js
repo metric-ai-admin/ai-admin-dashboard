@@ -149,8 +149,13 @@ const tick = () => new Promise(r => setImmediate(r));
 
   console.log('\nhow it is wired into the server');
   t('writes are recorded after the response, not during it', () => {
+    // Sliced to the END OF THE FUNCTION, not to a byte count. A fixed window
+    // stops covering what it was written for as soon as a line is added above
+    // its target — which is exactly what happened when property_name went in.
     const i = server.indexOf('function activityWriteLogger(');
-    const body = server.slice(i, i + 1400);
+    const end = server.indexOf('// ---- Auth helpers', i);
+    assert.ok(i > 0 && end > i, 'activityWriteLogger or its end marker moved');
+    const body = server.slice(i, end);
     assert.ok(/res\.on\('finish'/.test(body),
       'the row is written inside the request, which puts logging in the user path');
     assert.ok(/^\s*next\(\);/m.test(body), 'the middleware does not call next()');

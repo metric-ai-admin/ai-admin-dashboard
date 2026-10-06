@@ -78,7 +78,7 @@ t('never-signed-in is its own flag, not a null to be guessed from', () => {
 });
 t('a user with no rows reads as "not since <log start>", not "never"', () => {
   const i = appCode.indexOf('async function loadActivity');
-  const body = appCode.slice(i, appCode.indexOf('async function loadKpiRecaps'));
+  const body = appCode.slice(i, appCode.indexOf('let actOffset = 0;'));
   // "never" claims something about years the log cannot see — it starts when
   // phase 1 shipped. The honest statement is the window it does cover.
   assert.ok(/not since/.test(body), 'the UI still says never');
@@ -161,7 +161,7 @@ t('loadTab calls the loader', () => {
 });
 t('a failed panel says so instead of staying on Loading…', () => {
   const i = appCode.indexOf('async function loadActivity');
-  const body = appCode.slice(i, appCode.indexOf('async function loadKpiRecaps'));
+  const body = appCode.slice(i, appCode.indexOf('let actOffset = 0;'));
   assert.strictEqual((body.match(/Could not load:/g) || []).length, 2,
     'one of the two panels has no failure path');
   // Each panel has its own try, so one failing does not hide the other.

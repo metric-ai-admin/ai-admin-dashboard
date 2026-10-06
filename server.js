@@ -518,6 +518,57 @@ function activityActor(req) {
 // Mounted AFTER requireAuth has run on the routes that have it, so req.user is
 // populated; a request with no session records nothing, which is correct — an
 // API-key call is not a person.
+// B6. The property a route touched, set BY the route.
+//
+// Property names are business facts — they are on the sign outside — and
+// without one "Updated CRM property" cannot be acted on. But the body is
+// forbidden and always will be, so a route cannot be trusted to pass whatever
+// it likes: this takes a string, keeps only what a property name can contain,
+// and caps it. A resident's name would survive the charset, so the rule is
+// that routes call it with a property and nothing else, and the allowlist in
+// lib/activity-log.js is what actually governs the column.
+function activityProperty(res, name) {
+  const s = String(name || '').trim();
+  if (!s || s.length > 80) return;
+  res.locals = res.locals || {};
+  res.locals.activityProperty = s.split(' - ')[0].trim();   // drop the address
+}
+
+// B5. Exports, downloads and generated reports.
+//
+// Phase 1 logged writes only, which answers "what did somebody change" and not
+// "what did somebody take". Pulling the whole BD CRM to a spreadsheet changes
+// nothing and is the most consequential thing a person can do here with
+// prospect data.
+//
+// Only successful ones: a 403 on an export is already a guard's business, and
+// recording it as an export would say somebody took data they did not get.
+function activityReadLogger(req, res, next) {
+  if (req.method !== 'GET') return next();
+  const d = ACTS.describeRead(req.path);
+  if (!d) return next();
+  res.on('finish', () => {
+    try {
+      if (res.statusCode >= 400) return;
+      const who = activityActor(req);
+      if (!who) return;
+      activityLog.log({
+        ...who,
+        event: 'export',
+        action: d.label,
+        entity_type: d.entity,
+        entity_id: ACT.resourceOf(req.path),
+        section: ACT.sectionOf(req.path),
+        resource: ACT.resourceOf(req.path),
+        method: req.method,
+        status_code: res.statusCode,
+        property_name: (res.locals && res.locals.activityProperty) || null,
+      });
+    } catch { /* logging never reaches the caller */ }
+  });
+  next();
+}
+
 function activityWriteLogger(req, res, next) {
   if (!/^(POST|PUT|PATCH|DELETE)$/.test(req.method)) return next();
   res.on('finish', () => {
@@ -543,6 +594,7 @@ function activityWriteLogger(req, res, next) {
         resource: ACT.resourceOf(req.path),
         method: req.method,
         status_code: res.statusCode,
+        property_name: (res.locals && res.locals.activityProperty) || null,
       });
     } catch { /* logging never reaches the caller */ }
   });
@@ -625,6 +677,7 @@ function requireCallAnalyzer(req, res, next) {
 }
 
 // ---- POST /api/auth/login --------------------------------------------------
+app.use('/api', activityReadLogger);
 app.use('/api', activityWriteLogger);
 
 app.post('/api/auth/login', async (req, res) => {
@@ -12269,6 +12322,135 @@ app.get('/api/activity/weekly', requireAuth, requireRole(...ACTIVITY_ROLES), asy
       working_days: workingDays, working_days_counted: workingDays.length,
       sections: [...sections].sort(),
       people: out,
+      disclaimer: 'Measures dashboard use only — not performance or work done outside the dashboard.',
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/activity/detail — the filterable log. Newest first, paginated.
+//
+// Filters are applied in SQL, not after fetching everything: a 90-day table at
+// a few thousand rows a week would otherwise be pulled in full to show twenty
+// lines, and the page size would stop meaning anything.
+app.get('/api/activity/detail', requireAuth, requireRole(...ACTIVITY_ROLES), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const WEEKM = require('./lib/week.js');
+    const todayCT = WEEKM.toChicagoYMD(new Date());
+
+    // Shortcuts resolve to Central dates. "Today" has to mean the Austin day:
+    // resolved in UTC it would start at 7pm the evening before and a morning
+    // of activity would be missing from it.
+    const shortcut = String(req.query.range || '').toLowerCase();
+    const minus = (ymd, n) => {
+      const d = new Date(ymd + 'T12:00:00Z');
+      d.setUTCDate(d.getUTCDate() - n);
+      return d.toISOString().slice(0, 10);
+    };
+    let from = null, to = null;
+    if (shortcut === 'today') { from = to = todayCT; }
+    else if (shortcut === 'yesterday') { from = to = minus(todayCT, 1); }
+    else if (shortcut === 'this_week') {
+      from = WEEKM.weekStartYMD(todayCT, WEEKM.DASHBOARD); to = todayCT;
+    } else if (shortcut === 'last_week') {
+      const end = WEEKM.weekEndYMD(minus(WEEKM.weekStartYMD(todayCT, WEEKM.DASHBOARD), 1), WEEKM.DASHBOARD);
+      from = WEEKM.weekStartYMD(end, WEEKM.DASHBOARD); to = end;
+    } else {
+      const ok = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+      from = ok(req.query.from) ? String(req.query.from) : minus(todayCT, 7);
+      to = ok(req.query.to) ? String(req.query.to) : todayCT;
+    }
+
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    // Central days, converted to the instants that bound them. 'to' is
+    // inclusive of its whole day, so the range runs to the start of the next.
+    const startISO = WEEKM.chicagoStartOfDayISO(from);
+    const endISO = WEEKM.chicagoStartOfDayISO(minus(to, -1));
+
+    let q = db.from('activity_log')
+      .select('at,user_email,user_name,user_role,event,action,section,entity_type,entity_id,property_name,method,status_code', { count: 'exact' })
+      .gte('at', startISO).lt('at', endISO)
+      .order('at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (req.query.person) q = q.eq('user_email', String(req.query.person).toLowerCase());
+    if (req.query.section) q = q.eq('section', ACT.normalizeSection(req.query.section));
+    if (req.query.event) {
+      const ev = String(req.query.event).toLowerCase();
+      if (['login', 'logout', 'view', 'write', 'system', 'export', 'open'].includes(ev)) q = q.eq('event', ev);
+    }
+    // The dashboard's own chatter is out unless somebody asks for it: it is
+    // audited, not counted, and leaving it in would bury the human rows.
+    if (!req.query.includeSystem) q = q.neq('event', 'system');
+
+    const { data, error, count } = await q;
+    if (error) throw new Error(error.message);
+
+    if (String(req.query.format || '').toLowerCase() === 'csv') {
+      const cols = ['at', 'user_email', 'user_name', 'user_role', 'event', 'action',
+        'section', 'entity_type', 'entity_id', 'property_name', 'method', 'status_code'];
+      const esc = v => {
+        const s = v === null || v === undefined ? '' : String(v);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      };
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="activity_${from}_to_${to}.csv"`);
+      return res.send([cols.join(','), ...(data || []).map(r => cols.map(c => esc(r[c])).join(','))].join('\n'));
+    }
+
+    res.json({ from, to, limit, offset, total: count ?? null, rows: data || [],
+      disclaimer: 'Measures dashboard use only — not performance or work done outside the dashboard.' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/activity/day?person=&date= — one person's day, in order.
+//
+// B7 lives here rather than in a stored column: "session start" is the first
+// thing they did and "last activity" is the last, and both are a question
+// about a day, not a property of a row. Computing them means they are right
+// for any day asked about, including one still in progress, and nothing has to
+// be back-filled when the definition changes.
+app.get('/api/activity/day', requireAuth, requireRole(...ACTIVITY_ROLES), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const WEEKM = require('./lib/week.js');
+    const person = String(req.query.person || '').toLowerCase();
+    if (!person) return res.status(400).json({ error: 'person is required' });
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || ''))
+      ? String(req.query.date) : WEEKM.toChicagoYMD(new Date());
+
+    const next = new Date(date + 'T12:00:00Z');
+    next.setUTCDate(next.getUTCDate() + 1);
+    const { data, error } = await db.from('activity_log')
+      .select('at,user_name,user_role,event,action,section,entity_type,entity_id,property_name,status_code')
+      .eq('user_email', person)
+      .gte('at', WEEKM.chicagoStartOfDayISO(date))
+      .lt('at', WEEKM.chicagoStartOfDayISO(next.toISOString().slice(0, 10)))
+      .order('at', { ascending: true })
+      .limit(5000);
+    if (error) throw new Error(error.message);
+
+    // System rows are excluded from the summary for the same reason they are
+    // excluded from the counts — the Command Center autosave is not somebody
+    // arriving at work — but they stay in the timeline, flagged, so the day
+    // can still be read in full.
+    const human = (data || []).filter(r => r.event !== 'system');
+    const bySection = {};
+    human.forEach(r => { if (r.section) bySection[r.section] = (bySection[r.section] || 0) + 1; });
+
+    res.json({
+      person, date,
+      name: (data && data[0] && data[0].user_name) || null,
+      role: (data && data[0] && data[0].user_role) || null,
+      sessionStart: human.length ? human[0].at : null,
+      lastActivity: human.length ? human[human.length - 1].at : null,
+      actions: human.length,
+      bySection,
+      timeline: data || [],
       disclaimer: 'Measures dashboard use only — not performance or work done outside the dashboard.',
     });
   } catch (e) { res.status(500).json({ error: e.message }); }

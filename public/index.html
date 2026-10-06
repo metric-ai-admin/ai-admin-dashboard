@@ -2157,12 +2157,53 @@
       <div id="act-lastseen">Loading…</div>
     </div>
 
-    <div class="card">
+    <div class="card" style="margin-bottom:16px">
       <div class="view-head" style="margin-bottom:8px">
         <h3 style="margin:0">This week</h3>
         <p class="muted small" id="act-wk-note">—</p>
       </div>
       <div id="act-weekly">Loading…</div>
+    </div>
+
+    <div class="card">
+      <div class="view-head" style="margin-bottom:8px">
+        <h3 style="margin:0">Detail</h3>
+        <p class="muted small" id="act-dt-note">—</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+        <select id="act-f-range" class="input" style="max-width:150px">
+          <option value="today">Today</option>
+          <option value="yesterday">Yesterday</option>
+          <option value="this_week" selected>This week</option>
+          <option value="last_week">Last week</option>
+        </select>
+        <select id="act-f-person" class="input" style="max-width:220px"><option value="">Everyone</option></select>
+        <select id="act-f-section" class="input" style="max-width:180px"><option value="">All sections</option></select>
+        <select id="act-f-event" class="input" style="max-width:170px">
+          <option value="">All actions</option>
+          <option value="view">Section views</option>
+          <option value="write">Changes</option>
+          <option value="export">Exports</option>
+          <option value="open">Records opened</option>
+          <option value="login">Sign-ins</option>
+        </select>
+        <button id="act-csv" class="btn btn-sm">Export CSV</button>
+      </div>
+      <div id="act-detail">Loading…</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <button id="act-prev" class="btn btn-sm">‹ Newer</button>
+        <button id="act-next" class="btn btn-sm">Older ›</button>
+        <span class="muted small" id="act-page">—</span>
+      </div>
+    </div>
+
+    <!-- One person's day, opened by clicking a name anywhere above. -->
+    <div class="card hidden" id="act-day-card" style="margin-top:16px">
+      <div class="view-head" style="margin-bottom:8px">
+        <h3 style="margin:0" id="act-day-who">—</h3>
+        <p class="muted small" id="act-day-sum">—</p>
+      </div>
+      <div id="act-day"></div>
     </div>
   </section>
 

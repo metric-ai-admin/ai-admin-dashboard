@@ -11588,6 +11588,17 @@ async function loadActivity() {
           <td>${never ? `<span class="muted">${esc(since)}</span>` : (u.days_since_login === null ? '—' : u.days_since_login)}</td>
         </tr>`;
       }).join('')}</tbody></table>`;
+      // The person filter is built from the data already on screen, so it
+      // lists whoever actually has rows rather than a roster kept by hand that
+      // drifts the first time somebody joins or leaves.
+      const sel = $('#act-f-person');
+      if (sel && sel.options.length <= 1) {
+        d.users.filter(u => !u.never_signed_in).forEach(u => {
+          const o = document.createElement('option');
+          o.value = u.email; o.textContent = u.name || u.email;
+          sel.appendChild(o);
+        });
+      }
     }
   } catch (e) {
     if (ls) ls.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`;
@@ -11601,6 +11612,14 @@ async function loadActivity() {
         + `${d.working_days_counted} working day${d.working_days_counted === 1 ? '' : 's'} so far`;
     }
     if (!wk) return;
+    const ssel = $("#act-f-section");
+    if (ssel && ssel.options.length <= 1) {
+      (d.sections || []).forEach(sec => {
+        const o = document.createElement("option");
+        o.value = sec; o.textContent = sec;
+        ssel.appendChild(o);
+      });
+    }
     if (!d.people.length) {
       wk.innerHTML = '<p class="muted">No activity recorded this week yet.</p>';
       return;
@@ -11617,6 +11636,121 @@ async function loadActivity() {
   } catch (e) {
     if (wk) wk.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`;
   }
+
+  actWireFilters();
+  loadActivityDetail();
+}
+
+/* ---------------- Activity Logs: detail, timeline, CSV ---------------- */
+let actOffset = 0;
+const ACT_PAGE = 100;
+
+function actFilters() {
+  return {
+    range: $('#act-f-range')?.value || 'this_week',
+    person: $('#act-f-person')?.value || '',
+    section: $('#act-f-section')?.value || '',
+    event: $('#act-f-event')?.value || '',
+  };
+}
+function actQuery(extra) {
+  const f = actFilters();
+  const p = new URLSearchParams();
+  Object.entries(f).forEach(([k, v]) => { if (v) p.set(k, v); });
+  Object.entries(extra || {}).forEach(([k, v]) => p.set(k, v));
+  return p.toString();
+}
+
+/* The label a row shows. `action` is the catalogue's phrase and is what a
+ * person can read; event is the fallback for rows that predate it. Never built
+ * from anything the user typed — that is the whole reason the catalogue is a
+ * lookup table. */
+function actLabel(r) {
+  if (r.action) return r.action;
+  if (r.event === 'view') return 'Opened ' + (r.section || 'a section');
+  if (r.event === 'login') return 'Signed in';
+  if (r.event === 'logout') return 'Signed out';
+  if (r.event === 'open') return 'Opened a record';
+  return r.event || '—';
+}
+
+async function loadActivityDetail() {
+  const host = $('#act-detail');
+  if (host) host.innerHTML = 'Loading…';
+  try {
+    const d = await api('/api/activity/detail?' + actQuery({ limit: ACT_PAGE, offset: actOffset }));
+    const note = $('#act-dt-note');
+    if (note) note.textContent = `${d.from} to ${d.to} · ${d.total ?? '?'} rows`;
+    const pg = $('#act-page');
+    if (pg) pg.textContent = d.total
+      ? `${actOffset + 1}–${Math.min(actOffset + ACT_PAGE, d.total)} of ${d.total}`
+      : 'no rows';
+    if (!host) return;
+    if (!d.rows.length) { host.innerHTML = '<p class="muted">Nothing in this range.</p>'; return; }
+    host.innerHTML = `<table class="data-table"><thead><tr>
+      <th>When</th><th>Person</th><th>Action</th><th>Section</th><th>Property</th><th>Record</th>
+    </tr></thead><tbody>${d.rows.map(r => `<tr>
+      <td title="${esc(r.at)}">${esc(new Date(r.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}</td>
+      <td><a href="#" class="act-person" data-email="${esc(r.user_email)}">${esc(r.user_name || r.user_email)}</a></td>
+      <td>${esc(actLabel(r))}</td>
+      <td>${esc(r.section || '—')}</td>
+      <td>${esc(r.property_name || '—')}</td>
+      <td>${esc(r.entity_type ? r.entity_type + (r.entity_id ? ' ' + r.entity_id : '') : '—')}</td>
+    </tr>`).join('')}</tbody></table>`;
+    host.querySelectorAll('.act-person').forEach(a => a.addEventListener('click', e => {
+      e.preventDefault();
+      loadActivityDay(a.dataset.email);
+    }));
+  } catch (e) {
+    if (host) host.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`;
+  }
+}
+
+async function loadActivityDay(person, date) {
+  const card = $('#act-day-card'), host = $('#act-day');
+  if (!card || !host) return;
+  card.classList.remove('hidden');
+  host.innerHTML = 'Loading…';
+  try {
+    const p = new URLSearchParams({ person });
+    if (date) p.set('date', date);
+    const d = await api('/api/activity/day?' + p.toString());
+    const who = $('#act-day-who');
+    if (who) who.textContent = (d.name || d.person) + ' — ' + d.date;
+    const sum = $('#act-day-sum');
+    if (sum) {
+      const t = x => x ? new Date(x).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '—';
+      sum.textContent = `Session start ${t(d.sessionStart)} · last activity ${t(d.lastActivity)} · `
+        + `${d.actions} actions · ` + (Object.entries(d.bySection).map(([k, v]) => `${k} ${v}`).join(', ') || 'no sections');
+    }
+    if (!d.timeline.length) { host.innerHTML = '<p class="muted">Nothing that day.</p>'; return; }
+    host.innerHTML = `<table class="data-table"><thead><tr>
+      <th>Time</th><th>Action</th><th>Section</th><th>Property</th><th>Record</th>
+    </tr></thead><tbody>${d.timeline.map(r => `<tr${r.event === 'system' ? ' style="opacity:.5"' : ''}>
+      <td>${esc(new Date(r.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }))}</td>
+      <td>${esc(actLabel(r))}${r.event === 'system' ? ' <span class="muted small">(automatic)</span>' : ''}</td>
+      <td>${esc(r.section || '—')}</td>
+      <td>${esc(r.property_name || '—')}</td>
+      <td>${esc(r.entity_type ? r.entity_type + (r.entity_id ? ' ' + r.entity_id : '') : '—')}</td>
+    </tr>`).join('')}</tbody></table>`;
+  } catch (e) {
+    host.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`;
+  }
+}
+
+function actWireFilters() {
+  if (actWireFilters._done) return;
+  actWireFilters._done = true;
+  ['act-f-range', 'act-f-person', 'act-f-section', 'act-f-event'].forEach(id =>
+    $('#' + id)?.addEventListener('change', () => { actOffset = 0; loadActivityDetail(); }));
+  $('#act-prev')?.addEventListener('click', () => {
+    actOffset = Math.max(0, actOffset - ACT_PAGE); loadActivityDetail();
+  });
+  $('#act-next')?.addEventListener('click', () => { actOffset += ACT_PAGE; loadActivityDetail(); });
+  // The CSV is the FILTERED set, so what downloads is what is on screen.
+  $('#act-csv')?.addEventListener('click', () => {
+    window.location = '/api/activity/detail?' + actQuery({ format: 'csv', limit: 500 });
+  });
 }
 
 async function loadKpiRecaps() {
