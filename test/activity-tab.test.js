@@ -160,12 +160,26 @@ t('loadTab calls the loader', () => {
   assert.ok(/if \(tab === 'activity'\) loadActivity\(\);/.test(appCode));
 });
 t('a failed panel says so instead of staying on Loading…', () => {
+  // Named, not counted. Counting "Could not load:" inside a slice broke twice:
+  // once when the slice stopped reaching the end of the function, and again
+  // when another function was added inside the region and its own catch was
+  // counted too. What this actually means is that EACH panel has its own
+  // failure path, so that is what it asks.
   const i = appCode.indexOf('async function loadActivity');
   const body = appCode.slice(i, appCode.indexOf('let actOffset = 0;'));
-  assert.strictEqual((body.match(/Could not load:/g) || []).length, 2,
-    'one of the two panels has no failure path');
+  assert.ok(/if \(ls\) ls\.innerHTML = `<p class="muted">Could not load:/.test(body),
+    'the last-seen panel has no failure path');
+  assert.ok(/if \(wk\) wk\.innerHTML = `<p class="muted">Could not load:/.test(body),
+    'the weekly panel has no failure path');
   // Each panel has its own try, so one failing does not hide the other.
-  assert.strictEqual((body.match(/try \{/g) || []).length, 2);
+  // Checked by SHAPE rather than by counting, for the same reason as above:
+  // the count is of a region, and a region grows.
+  assert.ok(/const d = await api\('\/api\/activity\/last-seen'\)/.test(body));
+  assert.ok(/const d = await api\('\/api\/activity\/weekly'\)/.test(body));
+  const lastSeenAt = body.indexOf("api('/api/activity/last-seen')");
+  const weeklyAt = body.indexOf("api('/api/activity/weekly')");
+  const catchBetween = body.slice(lastSeenAt, weeklyAt).includes('} catch (e) {');
+  assert.ok(catchBetween, 'the two panels share one try, so a failure in the first hides the second');
 });
 
 console.log(`\n${pass} passing`);
