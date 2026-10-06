@@ -9431,6 +9431,10 @@ app.get('/api/billable/status', requireAuth, requireRole(...BILLABLE_ROLES), asy
       ready: slots.every(s => s.present),
       lastGenerated: manifest._lastGenerated || null,
       lastEmailed: manifest._lastEmailed || null,
+      // The confirmation banner, the refusal banner and the send history.
+      lastWorkbook: manifest._lastWorkbook || null,
+      uploadError: manifest._lastUploadError || null,
+      sendHistory: Array.isArray(manifest._sendHistory) ? manifest._sendHistory : [],
       recipients: BILLABLE_RECIPIENTS,
       cc: BILLABLE_CC,
     });
@@ -9467,6 +9471,10 @@ app.post('/api/billable/upload/:slot', requireAuth, requireRole(...BILLABLE_ROLE
         filename: req.file.originalname || null,
         rows: parsed.rows.length,
       };
+      // Replacing a slot by hand is the deliberate way out of a workbook that
+      // will not load, so it lifts the block. The per-slot export dates and
+      // staleDays stay on the page, so a slot left behind is still visible.
+      delete manifest._lastUploadError;
       await writeJSON(BILLABLE_MANIFEST, manifest);
 
       const dateRange = billableReport.exportDate(parsed.rows, cols);
@@ -9534,12 +9542,55 @@ app.get('/api/billable/debug/:slot', requireAuth, requireRole(...BILLABLE_ROLES)
 // work than exporting four CSVs. It is converted to the same four CSV slots the
 // rest of this module already reads, so nothing downstream changes and the
 // four-CSV route keeps working for anyone who prefers it.
+// Why a REFUSED upload is written down.
+//
+// Erick uploads the workbook and sees nothing. If the upload is rejected, the
+// four slots keep LAST week's numbers — and Generate still works, because it
+// only looks at whether the files exist. The report then goes out looking
+// perfectly normal and carrying stale data, and nobody can tell from the page
+// that anything went wrong. So the refusal is recorded, surfaced at the top of
+// the page, and blocks Generate and Send until an upload actually succeeds.
+// The block itself. Returns null when there is nothing to stop, or the body to
+// answer Generate and Send with. 409 rather than 400: the request is fine, the
+// state it would act on is not.
+async function billableUploadBlock() {
+  const manifest = await billableManifest();
+  const err = manifest._lastUploadError;
+  if (!err) return null;
+  return {
+    error: 'The last upload was refused, so the files on the server are still the previous ones. '
+      + 'Upload the workbook again before generating or sending.',
+    uploadError: err,
+    blocked: true,
+  };
+}
+
+async function billableRecordUploadFailure(req, res, reason) {
+  const entry = {
+    at: new Date().toISOString(),
+    filename: (req.file && req.file.originalname) || null,
+    by: (req.user && (req.user.name || req.user.username)) || 'unknown',
+    reason,
+  };
+  try {
+    await fsp.mkdir(BILLABLE_DIR, { recursive: true });
+    const manifest = await billableManifest();
+    manifest._lastUploadError = entry;
+    await writeJSON(BILLABLE_MANIFEST, manifest);
+  } catch (e) {
+    // Recording the failure must never replace reporting it.
+    console.error('[billable] could not record upload failure:', e.message);
+  }
+  console.error(`[billable] upload refused (${entry.filename || 'no file'}): ${reason}`);
+  return res.status(400).json({ error: reason, uploadError: entry });
+}
+
 app.post('/api/billable/upload-workbook', requireAuth, requireRole(...BILLABLE_ROLES),
   billableUpload.single('file'), async (req, res) => {
     try {
-      if (!req.file) return res.status(400).json({ error: 'No file received.' });
+      if (!req.file) return billableRecordUploadFailure(req, res, 'No file received.');
       if (!/\.xlsx?$/i.test(req.file.originalname || '')) {
-        return res.status(400).json({ error: 'That is not an Excel file. Use the CSV slots for a .csv.' });
+        return billableRecordUploadFailure(req, res, 'That is not an Excel file. Use the CSV slots for a .csv.');
       }
 
       let wb;
@@ -9549,33 +9600,43 @@ app.post('/api/billable/upload-workbook', requireAuth, requireRole(...BILLABLE_R
         // CSV export would have written them and the existing parsers apply.
         wb = XLSX.read(req.file.buffer, { type: 'buffer' });
       } catch (e) {
-        return res.status(400).json({ error: 'Could not read that workbook: ' + e.message });
+        return billableRecordUploadFailure(req, res, 'Could not read that workbook: ' + e.message);
       }
 
       const { sheets, missing, unused } = billableReport.matchSheets(wb.SheetNames);
       if (missing.length) {
-        return res.status(400).json({
-          error: `This workbook has no sheet for: ${missing.join(', ')}. Sheets found: ${wb.SheetNames.join(' | ')}`,
-          sheets: wb.SheetNames, missing,
-        });
+        return billableRecordUploadFailure(req, res,
+          `This workbook has no sheet for: ${missing.join(', ')}. Sheets found: ${wb.SheetNames.join(' | ')}`);
       }
 
       // Validate ALL FOUR before writing ANY. A workbook that half-loads leaves
       // the slots holding two new sheets and two from last week, and the report
       // would quietly mix them.
       const converted = {};
+      const notices = [];
       for (const [slot, name] of Object.entries(sheets)) {
         const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
         const csv = billableReport.sheetToCsv(aoa);
         const parsed = billableReport.parseCsv(csv);
-        if (!parsed.headers.length || !parsed.rows.length) {
-          return res.status(400).json({ error: `Sheet "${name}" has no rows below the header. Has it been refreshed?` });
+        // No HEADER is still a refusal: the sheet is the wrong shape, or was
+        // never refreshed at all, and nothing downstream could read it.
+        if (!parsed.headers.length) {
+          return billableRecordUploadFailure(req, res,
+            `Sheet "${name}" has no header row. Has it been refreshed?`);
+        }
+        // No ROWS is legitimate. A day with no billable work is a real day, and
+        // refusing it was what made the whole workbook bounce. It is accepted
+        // and said out loud, so an empty sheet is a fact on the page rather
+        // than a silent zero.
+        if (!parsed.rows.length) {
+          notices.push(`${BILLABLE_LABELS[slot]} came through empty — no billable work in that period.`);
+          converted[slot] = { csv, name, rows: 0, empty: true, dateRange: { first: null, last: null } };
+          continue;
         }
         const cols = billableReport.resolveColumns(parsed.headers);
         if (!cols.property) {
-          return res.status(400).json({
-            error: `Sheet "${name}" has no property column. Columns seen: ${parsed.headers.slice(0, 8).join(', ')}`,
-          });
+          return billableRecordUploadFailure(req, res,
+            `Sheet "${name}" has no property column. Columns seen: ${parsed.headers.slice(0, 8).join(', ')}`);
         }
         converted[slot] = { csv, name, rows: parsed.rows.length, dateRange: billableReport.exportDate(parsed.rows, cols) };
       }
@@ -9591,16 +9652,31 @@ app.post('/api/billable/upload-workbook', requireAuth, requireRole(...BILLABLE_R
           // The workbook AND the sheet, so "where did this come from" survives.
           filename: `${req.file.originalname} → ${out.name}`,
           rows: out.rows,
+          empty: !!out.empty,
         };
       }
-      manifest._lastWorkbook = { at: now, filename: req.file.originalname, sheets };
+      // Everything the confirmation at the top of the page needs, kept so it
+      // survives a reload — an upload you can only see for two seconds is the
+      // problem this is fixing.
+      manifest._lastWorkbook = {
+        at: now,
+        filename: req.file.originalname,
+        by: (req.user && (req.user.name || req.user.username)) || 'unknown',
+        sheets,
+        rows: Object.fromEntries(Object.entries(converted).map(([k, v]) => [k, v.rows])),
+        notices,
+      };
+      // The slots now hold THIS workbook, so the last refusal is history.
+      delete manifest._lastUploadError;
       await writeJSON(BILLABLE_MANIFEST, manifest);
 
       res.json({
         ok: true,
         filename: req.file.originalname,
-        slots: Object.fromEntries(Object.entries(converted).map(([k, v]) => [k, { sheet: v.name, rows: v.rows, dateRange: v.dateRange }])),
+        at: now,
+        slots: Object.fromEntries(Object.entries(converted).map(([k, v]) => [k, { sheet: v.name, rows: v.rows, empty: !!v.empty, dateRange: v.dateRange }])),
         unusedSheets: unused,
+        notices,
       });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -9611,6 +9687,8 @@ app.post('/api/billable/generate', requireAuth, requireRole(...BILLABLE_ROLES), 
     if (missing.length) {
       return res.status(400).json({ error: 'Still missing: ' + missing.map(m => BILLABLE_LABELS[m]).join(', ') });
     }
+    const blocked = await billableUploadBlock();
+    if (blocked) return res.status(409).json(blocked);
     // ctDateStr so "today" is Central business time, not the server's UTC.
     const report = billableReport.buildReport(files, { today: ctDateStr(0) });
     report.generatedAt = new Date().toISOString();
@@ -9792,6 +9870,10 @@ app.post('/api/billable/email', requireAuth, requireRole(...BILLABLE_ROLES), asy
   try {
     const report = await readJSON(path.join(BILLABLE_DIR, 'report.json'), null);
     if (!report) return res.status(400).json({ error: 'Generate the report before emailing it.' });
+    // Checked again here, not only on Generate: a report generated before a
+    // failed upload is still sitting on disk and would send perfectly happily.
+    const blocked = await billableUploadBlock();
+    if (blocked) return res.status(409).json(blocked);
 
     const mail = billableEmail(report);
     const token = await graphMailToken();
@@ -9816,6 +9898,25 @@ app.post('/api/billable/email', requireAuth, requireRole(...BILLABLE_ROLES), asy
     }
     const manifest = await billableManifest();
     manifest._lastEmailed = new Date().toISOString();
+    // Send history. "Did it go out, and what was in it?" was being answered by
+    // searching a mailbox. Each entry carries the period the report covered and
+    // the workbook it was built from, so a send can be tied back to a file.
+    // Capped at 30: this lives in the manifest, which is read on every status
+    // poll, and a year of sends has no reader.
+    const wb = manifest._lastWorkbook || null;
+    const history = Array.isArray(manifest._sendHistory) ? manifest._sendHistory : [];
+    history.unshift({
+      at: manifest._lastEmailed,
+      by: (req.user && (req.user.name || req.user.username)) || 'unknown',
+      subject: mail.subject,
+      to: BILLABLE_RECIPIENTS,
+      cc: BILLABLE_CC,
+      reportDate: report.today || null,
+      generatedAt: report.generatedAt || null,
+      workbook: wb && wb.filename || null,
+      workbookAt: wb && wb.at || null,
+    });
+    manifest._sendHistory = history.slice(0, 30);
     await writeJSON(BILLABLE_MANIFEST, manifest);
     res.json({ ok: true, sentTo: BILLABLE_RECIPIENTS, cc: BILLABLE_CC, at: manifest._lastEmailed });
   } catch (e) { res.status(500).json({ error: e.message }); }

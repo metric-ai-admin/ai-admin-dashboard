@@ -2935,3 +2935,19 @@ tr.ca-sel { background: var(--accent-glow); }
 .mkt-note { margin-top: 4px; font-size: 12px; line-height: 1.35; max-width: 34ch; }
 .mkt-note-info { color: var(--text-secondary); }
 .mkt-note-warn { color: var(--warning); font-weight: 500; }
+
+/* Send history. Collapsed by default: the useful state is "did today's go
+   out", which the stamp beside the buttons already answers; the table is for
+   the rarer question of what was sent last week and from which workbook. */
+.bl-sends { margin-top: 14px; font-size: 12px; }
+.bl-sends > summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
+.bl-sends > summary:hover { color: var(--text-primary); }
+.bl-sends-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.bl-sends-table th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 10px 4px 0; border-bottom: 1px solid var(--border); }
+.bl-sends-table td { padding: 5px 10px 5px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+/* The recipient list is the longest cell and the least urgent; let it wrap
+   rather than pushing the dates off the edge. */
+.bl-sends-table td:last-child { word-break: break-word; }
+
+/* The upload confirmation, above everything else on the page. */
+#bl-last-upload:not(:empty) { margin-bottom: 14px; }

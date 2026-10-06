@@ -78,7 +78,7 @@ function parseCsv(text) {
     headers.forEach((h, j) => { o[h] = r[j] === undefined ? '' : String(r[j]).trim(); });
     out.push(o);
   }
-  return dropSubtotalRows(expandGroups({ headers, rows: out }));
+  return dropSubtotalRows(expandGroups(normaliseExcelGroups({ headers, rows: out })));
 }
 
 // AppFolio's trailing subtotal rows.
@@ -122,6 +122,61 @@ function dropSubtotalRows(parsed) {
     rows.push(r);
   }
   return { ...parsed, rows, subtotalRows };
+}
+
+// ---- The same export, out of Excel Connect ----------------------------------
+//
+// AppFolio has two ways out of the same report and they group differently.
+//
+//   Web CSV:        Group,count(Work Order Number),Unit,...
+//                   -> Hyde Park Square,28,,,...
+//
+//   Excel Connect:  count(Work Order Number),Unit,Vendor,...
+//                   Hyde Park Square,,,...        <- name alone, no arrow
+//                   23086-1,8-116,Metric...,...
+//
+// There is no Group column and no "->" marker: the property is simply a row
+// whose first cell is filled and whose every other cell is empty. On the rows
+// beneath it, that same first column holds the work order number — which is
+// the duality resolveColumns already describes.
+//
+// Rather than teach expandGroups a second shape, this rewrites the Excel form
+// into the CSV form and lets the existing, much-tested logic run unchanged.
+// Status groups, subtotal detection and the per-property counts all keep
+// working because none of them can tell the difference afterwards.
+//
+// A FLAT sheet must pass through untouched. The labor sheet has a real
+// Property column and no group rows at all, so the detection below requires
+// actual group rows to be present before it rewrites anything.
+function normaliseExcelGroups(parsed) {
+  const headers = parsed.headers || [];
+  if (headers.find(h => norm(h) === 'group')) return parsed;        // already the CSV shape
+
+  // The column the property name hides in: "count(Work Order Number)".
+  const first = headers.find(h => /count.*work_order_number|work_order_count/.test(norm(h)))
+    || headers.find(h => norm(h).startsWith('count'));
+  if (!first) return parsed;
+
+  const others = headers.filter(h => h !== first);
+  const isGroupRow = r => {
+    const cell = String(r[first] == null ? '' : r[first]).trim();
+    if (!cell) return false;
+    // Everything else blank. A work order row always carries a unit, a vendor
+    // or a date beside its number, so this cannot mistake one for a heading.
+    return others.every(h => String(r[h] == null ? '' : r[h]).trim() === '');
+  };
+
+  const groupRows = (parsed.rows || []).filter(isGroupRow).length;
+  if (!groupRows) return parsed;                                   // flat sheet
+
+  const rows = (parsed.rows || []).map(r => {
+    if (!isGroupRow(r)) return { Group: '', ...r };
+    // The arrow is what expandGroups matches on, and blanking the first column
+    // stops the property name being read as a work order number.
+    return { ...r, Group: '-> ' + String(r[first]).trim(), [first]: '' };
+  });
+
+  return { ...parsed, headers: ['Group', ...headers], rows };
 }
 
 // ---- The grouped export -----------------------------------------------------
@@ -446,8 +501,16 @@ function exportDate(rows, cols) {
       // ISO first; then US M/D/YYYY, which is what the UI exports.
       const iso = d.match(/^(\d{4})-(\d{2})-(\d{2})/);
       if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
-      const us = d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-      if (us) return `${us[3]}-${String(us[1]).padStart(2, '0')}-${String(us[2]).padStart(2, '0')}`;
+      // M/D/YYYY from the web export, and M/D/YY from Excel Connect, which
+      // writes the short year the cell is formatted with. Requiring four digits
+      // meant every workbook upload had NO date range at all — and the
+      // staleness warning is built on that range, so it never fired on the one
+      // path that is actually used now.
+      const us = d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\b/);
+      if (us) {
+        const y = us[3].length === 2 ? String(2000 + Number(us[3])) : us[3];
+        return `${y}-${String(us[1]).padStart(2, '0')}-${String(us[2]).padStart(2, '0')}`;
+      }
       return null;
     })
     .filter(Boolean)

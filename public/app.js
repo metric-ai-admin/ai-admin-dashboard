@@ -5650,12 +5650,81 @@ async function loadBillableReport() {
   } catch (e) { /* nothing generated yet */ }
 }
 
+// Central time, written out. The rest of this module slices the ISO string,
+// which is UTC — five hours adrift, and in the evening a day adrift too. For a
+// stamp whose whole job is "did my upload just land?", that is the difference
+// between reassuring and confusing.
+function blWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso);
+  return d.toLocaleString('en-US', {
+    timeZone: 'America/Chicago',
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  }) + ' CT';
+}
+
+// Piece 5: the confirmation, and piece 3's refusal, in one place — they are
+// mutually exclusive answers to the same question.
+function blRenderLastUpload(st) {
+  const el = document.getElementById('bl-last-upload');
+  if (!el) return;
+  const err = st.uploadError;
+  if (err) {
+    el.innerHTML = `<div class="alert-box bad">
+      <strong>Your last upload was refused${err.filename ? ' — ' + blEsc(err.filename) : ''}.</strong><br>
+      ${blEsc(err.reason || 'No reason recorded.')}<br>
+      <span class="muted">${blEsc(blWhen(err.at))}${err.by ? ' &middot; ' + blEsc(err.by) : ''} &mdash;
+      the files on the server are still the previous ones, so Generate and Email are off until a
+      workbook loads.</span>
+    </div>`;
+    return;
+  }
+  const w = st.lastWorkbook;
+  if (!w) { el.innerHTML = ''; return; }
+  const sheets = Object.entries(w.sheets || {})
+    .map(([slot, name]) => {
+      const n = w.rows && w.rows[slot];
+      return `${blEsc(name)} <span class="muted">(${n === 0 ? 'empty' : blNum(n) + ' rows'})</span>`;
+    }).join(' &middot; ');
+  el.innerHTML = `<div class="alert-box ok">
+    <strong>Loaded ${blEsc(w.filename || 'workbook')}</strong>
+    <span class="muted">&mdash; ${blEsc(blWhen(w.at))}${w.by ? ' by ' + blEsc(w.by) : ''}</span><br>
+    <span class="muted">${sheets || 'no sheets recorded'}</span>
+    ${(w.notices || []).map(n => `<br><span class="muted">&#9888; ${blEsc(n)}</span>`).join('')}
+  </div>`;
+}
+
+// Piece 6: send history. Newest first, capped server-side at 30.
+function blRenderSends(st) {
+  const el = document.getElementById('bl-sends');
+  if (!el) return;
+  const hist = st.sendHistory || [];
+  if (!hist.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `<details class="bl-sends">
+    <summary>Send history (${hist.length})</summary>
+    <table class="bl-sends-table"><thead><tr>
+      <th>Sent</th><th>By</th><th>Period</th><th>From workbook</th><th>To</th>
+    </tr></thead><tbody>
+    ${hist.map(h => `<tr>
+      <td>${blEsc(blWhen(h.at))}</td>
+      <td>${blEsc(h.by || '')}</td>
+      <td>${blEsc(h.reportDate || '')}</td>
+      <td>${blEsc(h.workbook || '—')}</td>
+      <td class="muted">${blEsc([...(h.to || []), ...(h.cc || [])].join(', '))}</td>
+    </tr>`).join('')}
+    </tbody></table>
+  </details>`;
+}
+
 async function blLoadStatus() {
   const wrap = document.getElementById('bl-slots');
   if (!wrap) return;
   let st;
   try { st = await api('/api/billable/status'); }
   catch (e) { wrap.innerHTML = `<div class="alert-box bad">${blEsc(e.message)}</div>`; return; }
+  blRenderLastUpload(st);
+  blRenderSends(st);
 
   wrap.innerHTML = st.slots.map(s => {
     // The date INSIDE the file, not when it was uploaded: a file uploaded this
@@ -5687,10 +5756,14 @@ async function blLoadStatus() {
     b.addEventListener('click', () => blDiagnose(b.dataset.blDiag)));
   blWireDropTargets(wrap);
 
+  // A failed upload leaves the four slots holding the PREVIOUS week, so both
+  // Generate and Email would work and quietly ship stale numbers. The server
+  // refuses them too (409) — this only keeps the buttons from lying.
+  const blocked = !!st.uploadError;
   const gen = document.getElementById('bl-generate');
-  if (gen) gen.disabled = !st.ready;
+  if (gen) gen.disabled = !st.ready || blocked;
   const mail = document.getElementById('bl-email');
-  if (mail) mail.disabled = !st.lastGenerated;
+  if (mail) mail.disabled = !st.lastGenerated || blocked;
   const prev = document.getElementById('bl-preview');
   if (prev) prev.disabled = !st.lastGenerated;
   const stamp = document.getElementById('bl-generated');
@@ -5830,11 +5903,19 @@ async function blUploadWorkbook(file) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
     const lines = Object.entries(data.slots || {})
-      .map(([slot, s]) => `${slot}: ${blNum(s.rows)} rows from "${s.sheet}"`).join(' · ');
+      .map(([slot, s]) => `${slot}: ${s.empty ? 'empty' : blNum(s.rows) + ' rows'} from "${s.sheet}"`).join(' · ');
+    const notices = (data.notices || []).join('  ');
     blSay(`${file.name} — ${lines}`
-      + ((data.unusedSheets || []).length ? `  (ignored: ${data.unusedSheets.join(', ')})` : ''), 'ok');
+      + ((data.unusedSheets || []).length ? `  (ignored: ${data.unusedSheets.join(', ')})` : '')
+      + (notices ? '  ⚠ ' + notices : ''),
+      notices ? 'warn' : 'ok');
     await blLoadStatus();
-  } catch (e) { blSay(e.message, 'error'); }
+  } catch (e) {
+    blSay(e.message, 'error');
+    // Refresh regardless: the server has recorded the refusal and the banner
+    // at the top is what will still be there after a reload.
+    try { await blLoadStatus(); } catch { /* the message above already stands */ }
+  }
 }
 
 function blWireOnce() {
