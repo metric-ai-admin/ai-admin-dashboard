@@ -458,6 +458,25 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
    2026-10-05 Erick generated 243 tasks from a three-day-old sync because the
    age was a grey line of small print next to a green "restored" notice. */
 .banner-stale { border-color: var(--red); background: var(--red-bg); border-width: 2px; font-weight: 600; }
+/* Activity Logs — the person × section matrix.
+ *
+ * Fifteen sections ran past the right edge of the card and the last columns
+ * were off screen entirely. The scroller is INSIDE the card, so the card keeps
+ * its border and the table moves within it. Person is pinned because a row of
+ * numbers with no name attached cannot be read.
+ *
+ * The sticky cell needs its own background: without one the scrolled columns
+ * show through it, which looks like a rendering fault. */
+.act-scroll { overflow-x: auto; max-width: 100%; }
+.act-matrix { min-width: max-content; }
+.act-matrix th, .act-matrix td { white-space: nowrap; }
+.act-matrix .act-sticky {
+  position: sticky; left: 0; z-index: 1;
+  background: var(--bg-elevated);
+  box-shadow: 1px 0 0 var(--border);
+}
+.act-matrix thead .act-sticky { z-index: 2; }
+
 .banner code { background: var(--bg-base); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 
 @keyframes rs-spin-kf { to { transform: rotate(360deg); } }

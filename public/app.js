@@ -11626,15 +11626,23 @@ async function loadActivity() {
       wk.innerHTML = '<p class="muted">No activity recorded this week yet.</p>';
       return;
     }
+    // One column per section, busiest first, inside its own horizontal
+    // scroller: with fifteen sections the table ran past the right edge of the
+    // card and the last columns were simply not on screen. Person stays
+    // pinned, because a row of numbers with no name attached is unreadable.
     const cols = d.sections;
-    wk.innerHTML = `<table class="data-table"><thead><tr>
-      <th>Person</th><th>Rate</th><th>Days</th>${cols.map(c => `<th>${esc(c)}</th>`).join('')}
+    wk.innerHTML = `<div class="act-scroll"><table class="data-table act-matrix"><thead><tr>
+      <th class="act-sticky">Person</th><th>Rate</th><th>Days</th>${cols.map(c => `<th title="${esc(c)}">${esc(actSection(c))}</th>`).join('')}
     </tr></thead><tbody>${d.people.map(p => `<tr>
-      <td>${esc(p.name || p.email)}<div class="muted small">${esc(p.role || '')}</div></td>
+      <td class="act-sticky"><a href="#" class="act-person" data-email="${esc(p.email)}">${esc(p.name || p.email)}</a><div class="muted small">${esc(p.role || '')}</div></td>
       <td>${p.activity_rate === null ? '—' : Math.round(p.activity_rate * 100) + '%'}</td>
       <td>${actDaysCell(p, d.working_days)}</td>
       ${cols.map(c => `<td>${p.sections[c] || ''}</td>`).join('')}
-    </tr>`).join('')}</tbody></table>`;
+    </tr>`).join('')}</tbody></table></div>`;
+    wk.querySelectorAll('.act-person').forEach(a => a.addEventListener('click', e => {
+      e.preventDefault();
+      loadActivityDay(a.dataset.email);
+    }));
   } catch (e) {
     if (wk) wk.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`;
   }

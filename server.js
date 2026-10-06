@@ -12264,15 +12264,39 @@ app.get('/api/activity/weekly', requireAuth, requireRole(...ACTIVITY_ROLES), asy
       : WEEK.weekEndYMD(todayCT, WEEK.DASHBOARD);
     const start = WEEK.weekStartYMD(ending, WEEK.DASHBOARD);
 
-    const { data: rows, error } = await db.from('activity_log')
-      .select('user_email,user_name,user_role,event,section,at')
-      .gte('at', start + 'T00:00:00Z')
-      .lte('at', ending + 'T23:59:59Z')
+    // Central day bounds, not UTC ones. 'start + T00:00:00Z' begins at 7pm the
+    // previous evening in Austin and ends at 7pm on the Saturday, so the week
+    // picked up five hours of the week before and lost five of its own.
+    const nextDay = new Date(ending + 'T12:00:00Z');
+    nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+    const { data: rawRows, error } = await db.from('activity_log')
+      .select('user_email,user_name,user_role,event,action,section,at')
+      .gte('at', WEEK.chicagoStartOfDayISO(start))
+      .lt('at', WEEK.chicagoStartOfDayISO(nextDay.toISOString().slice(0, 10)))
+      .order('at', { ascending: true })
       .limit(50000);
     if (error) throw new Error(error.message);
 
+    // COUNT CLICKS, NOT REQUESTS.
+    //
+    // One "Sync from AppFolio" is seven parallel requests, so Erick showed 45
+    // in Maintenance for about six clicks and the column dwarfed every other
+    // section. Grouped PER PERSON first: groupRuns only folds consecutive
+    // rows, and with several people interleaved in one stream the same
+    // person's burst is not adjacent to itself.
+    const byPerson = new Map();
+    for (const r of rawRows || []) {
+      const k = String(r.user_email || '').toLowerCase();
+      if (!k) continue;
+      if (!byPerson.has(k)) byPerson.set(k, []);
+      byPerson.get(k).push(r);
+    }
+    const rows = [];
+    for (const list of byPerson.values()) rows.push(...ACTS.groupRuns(list));
+
     const people = new Map();
     const sections = new Set();
+    const sectionTotals = {};
     for (const r of rows || []) {
       const key = String(r.user_email || '').toLowerCase();
       if (!key) continue;
@@ -12283,6 +12307,7 @@ app.get('/api/activity/weekly', requireAuth, requireRole(...ACTIVITY_ROLES), asy
       if (!p.name && r.user_name) p.name = r.user_name;
       if (r.section) {
         sections.add(r.section);
+        sectionTotals[r.section] = (sectionTotals[r.section] || 0) + 1;
         p.sections[r.section] = (p.sections[r.section] || 0) + 1;
       }
       // The DAY in Central, not UTC: a 7pm Austin session is still that day.
@@ -12320,7 +12345,12 @@ app.get('/api/activity/weekly', requireAuth, requireRole(...ACTIVITY_ROLES), asy
     res.json({
       week_start: start, week_ending: ending,
       working_days: workingDays, working_days_counted: workingDays.length,
-      sections: [...sections].sort(),
+      // Busiest first. Alphabetical put Accounting in front of Maintenance on
+      // a screen that is read left to right and often cut off at the right
+      // edge, so the columns people actually use were the ones to scroll for.
+      sections: [...sections].sort((a, b) =>
+        (sectionTotals[b] || 0) - (sectionTotals[a] || 0) || a.localeCompare(b)),
+      sectionTotals,
       people: out,
       disclaimer: 'Measures dashboard use only — not performance or work done outside the dashboard.',
     });

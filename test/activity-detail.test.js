@@ -18,6 +18,7 @@ const html = read(path.join('public', 'index.html'));
 const strip = s => s.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
 const code = strip(server);
 const appCode = strip(app);
+const css = read(path.join('public', 'styles.css'));
 
 console.log('B5 — exports are recorded');
 t('an export, a download and a generate each get a label', () => {
@@ -274,6 +275,75 @@ t('no time in the detail or timeline renders in the browser zone', () => {
   const body = appCode.slice(i, appCode.indexOf('async function loadKpiRecaps'));
   const bare = body.match(/toLocale(Time|Date)?String\('en-US', \{(?![^}]*timeZone)[^}]*\}/g) || [];
   assert.deepStrictEqual(bare, [], 'these render in the reader’s zone: ' + bare.join(' | '));
+});
+
+console.log('\nthe weekly matrix');
+t('it counts clicks, not requests', () => {
+  // One "Sync from AppFolio" is seven parallel requests, so Erick showed 45 in
+  // Maintenance for about six clicks and the column dwarfed every other
+  // section.
+  const i = code.indexOf("app.get('/api/activity/weekly'");
+  const body = code.slice(i, code.indexOf('const KPI_RECAP_ROLES', i));
+  assert.ok(/ACTS\.groupRuns\(list\)/.test(body), 'the matrix still tallies raw requests');
+});
+t('it groups PER PERSON before tallying', () => {
+  // groupRuns only folds consecutive rows. With several people interleaved in
+  // one stream, the same person's burst is not adjacent to itself and most of
+  // it would not fold.
+  const i = code.indexOf("app.get('/api/activity/weekly'");
+  const body = code.slice(i, code.indexOf('const KPI_RECAP_ROLES', i));
+  assert.ok(/const byPerson = new Map\(\)/.test(body), 'rows are grouped across people');
+  assert.ok(/\.order\('at', \{ ascending: true \}\)/.test(body),
+    'rows arrive unordered, so consecutive means nothing');
+});
+t('it selects action, which grouping needs', () => {
+  const i = code.indexOf("app.get('/api/activity/weekly'");
+  const body = code.slice(i, code.indexOf('const KPI_RECAP_ROLES', i));
+  assert.ok(/select\('user_email,user_name,user_role,event,action,section,at'\)/.test(body),
+    'action is not selected, so every row would look unlabelled and never fold');
+});
+t('the week is bounded on CENTRAL days', () => {
+  // 'start + T00:00:00Z' begins at 7pm the previous evening in Austin: the
+  // week picked up five hours of the week before and lost five of its own.
+  const i = code.indexOf("app.get('/api/activity/weekly'");
+  const body = code.slice(i, code.indexOf('const KPI_RECAP_ROLES', i));
+  assert.ok(/chicagoStartOfDayISO\(start\)/.test(body), 'the week starts at a UTC midnight');
+  assert.ok(!/start \+ 'T00:00:00Z'/.test(body));
+});
+t('columns are ordered by use, busiest first', () => {
+  // Alphabetical put Accounting in front of Maintenance on a screen read left
+  // to right and often cut off at the right edge.
+  const i = code.indexOf("app.get('/api/activity/weekly'");
+  const body = code.slice(i, code.indexOf('const KPI_RECAP_ROLES', i));
+  assert.ok(/\(sectionTotals\[b\] \|\| 0\) - \(sectionTotals\[a\] \|\| 0\)/.test(body));
+  assert.ok(/\|\| a\.localeCompare\(b\)/.test(body), 'two equally used sections would order randomly');
+});
+
+console.log('\nthe matrix fits inside its card');
+t('it scrolls horizontally rather than overflowing', () => {
+  assert.ok(/\.act-scroll \{ overflow-x: auto/.test(css), 'there is no scroller');
+  assert.ok(/class="act-scroll"/.test(appCode), 'the table is not inside it');
+});
+t('the Person column is pinned', () => {
+  assert.ok(/\.act-matrix \.act-sticky \{[\s\S]*?position: sticky; left: 0/.test(css));
+  assert.ok(/<th class="act-sticky">Person<\/th>/.test(appCode));
+  assert.ok(/<td class="act-sticky">/.test(appCode));
+});
+t('the pinned cell has a background of its own', () => {
+  // Without one the scrolled columns show through it and it reads as a
+  // rendering fault.
+  const i = css.indexOf('.act-matrix .act-sticky');
+  const body = css.slice(i, i + 220);
+  assert.ok(/background: var\(--bg-elevated\)/.test(body), 'the sticky cell is transparent');
+});
+t('headers use the shared section names', () => {
+  assert.ok(/<th title="\$\{esc\(c\)\}">\$\{esc\(actSection\(c\)\)\}<\/th>/.test(appCode),
+    'the matrix prints raw section ids');
+});
+t('a name in the matrix opens that person’s day', () => {
+  const i = appCode.indexOf('act-matrix');
+  const body = appCode.slice(i, i + 1200);
+  assert.ok(/class="act-person" data-email/.test(body), 'the names are not clickable');
 });
 
 console.log(`\n${pass} passing`);

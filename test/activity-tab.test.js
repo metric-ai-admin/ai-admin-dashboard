@@ -100,7 +100,7 @@ t('the newest row wins, since rows come back newest first', () => {
 console.log('\nthe weekly matrix');
 t('the week is Sun–Sat, from the shared module', () => {
   const i = code.indexOf("app.get('/api/activity/weekly'");
-  const body = code.slice(i, i + 2600);
+  const body = code.slice(i, code.indexOf("const KPI_RECAP_ROLES", i));
   assert.ok(/WEEK\.weekEndYMD\(todayCT, WEEK\.DASHBOARD\)/.test(body), 'the week is computed locally');
   assert.ok(/WEEK\.weekStartYMD\(ending, WEEK\.DASHBOARD\)/.test(body));
 });
@@ -108,12 +108,12 @@ t('a day is a Central day, not a UTC one', () => {
   // A 7pm Austin session belongs to that day. Using the UTC date would move it
   // to tomorrow and inflate somebody's active days.
   const i = code.indexOf("app.get('/api/activity/weekly'");
-  const body = code.slice(i, i + 2600);
+  const body = code.slice(i, code.indexOf("const KPI_RECAP_ROLES", i));
   assert.ok(/WEEK\.toChicagoYMD\(new Date\(r\.at\)\)/.test(body));
 });
 t('the rate counts only working days that have happened', () => {
   const i = code.indexOf("app.get('/api/activity/weekly'");
-  const body = code.slice(i, i + 2600);
+  const body = code.slice(i, code.indexOf("const KPI_RECAP_ROLES", i));
   assert.ok(/dow >= 1 && dow <= 5/.test(body), 'weekends count against the rate');
   assert.ok(/ymd <= todayCT/.test(body), 'a week in progress is scored against days that have not happened');
 });
@@ -121,12 +121,12 @@ t('the rate cannot exceed 100%', () => {
   // Somebody who works Saturday is not 120% active, and a rate over 100 reads
   // as a target beaten.
   const i = code.indexOf("app.get('/api/activity/weekly'");
-  const body = code.slice(i, i + 2600);
+  const body = code.slice(i, code.indexOf("const KPI_RECAP_ROLES", i));
   assert.ok(/Math\.min\(1,/.test(body));
 });
 t('a week with no working days yet gives null, not a divide by zero', () => {
   const i = code.indexOf("app.get('/api/activity/weekly'");
-  const body = code.slice(i, i + 2600);
+  const body = code.slice(i, code.indexOf("const KPI_RECAP_ROLES", i));
   assert.ok(/workingDays\.length\s*\n?\s*\?/.test(body) && /: null,/.test(body));
 });
 t('the week can be asked for explicitly, and a bad value is ignored', () => {
