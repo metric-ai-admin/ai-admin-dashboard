@@ -6212,6 +6212,102 @@ function leasingRowFromReport(r, propMap = {}) {
 // It also reads `property` and property_id straight off the row rather than
 // going through APPFOLIO_LEASING_FIELDS.property, which points at a field
 // (`property_name`) this report does not return at all.
+// ── Lead interests, from guest_cards ────────────────────────────────────────
+//
+// A DIFFERENT REPORT from the one the leads sync reads. leasingFetchGuestCards
+// goes to guest_card_inquiries, which is one row per inquiry: 84 rows for
+// 09/27-10/03 where Katie's report has 136. guest_cards with
+// guest_card_statuses ['all'] is her report, and it returns the 136.
+//
+// The ['all'] is not decoration. Without it the API answers with active cards
+// only — 99 rows in that week — and her report runs with "Status: All". Four
+// numeric spellings were probed and ignored; the literal string is the one
+// that works.
+const LEAD_INTEREST_REPORT = '/api/v2/reports/guest_cards.json';
+
+// One extra day, then filtered back in Central.
+//
+// received_on_to is applied against UTC, and Central is five or six hours
+// behind it. A lead received at 10:14 PM on Saturday in Austin is already
+// Sunday in UTC, so asking for the week exactly loses every Saturday evening —
+// that is the Hyde Park row, W Williams, and it happens every week. So the
+// window is widened by a day at the API and narrowed again here, on the
+// Central date, which is the day everyone in the company means.
+async function leasingFetchGuestCardInterests(dateFrom, dateTo) {
+  const plusOne = new Date(dateTo + 'T12:00:00Z');
+  plusOne.setUTCDate(plusOne.getUTCDate() + 1);
+  const raw = await appfolioReportsFetch(LEAD_INTEREST_REPORT, {
+    guest_card_statuses: ['all'],
+    received_on_from: dateFrom,
+    received_on_to: plusOne.toISOString().slice(0, 10),
+    property_visibility: 'active',
+  });
+  const inWindow = (raw || []).filter(r => {
+    const day = WEEK.toChicagoYMD(new Date(r && r.received));
+    return !!day && day >= dateFrom && day <= dateTo;
+  });
+  return { raw: raw || [], inWindow, requestedTo: plusOne.toISOString().slice(0, 10) };
+}
+
+// Lyndsay's dedup key, keyed so it cannot be reversed.
+//
+// Her HTML builds: phone, else email, else name — each String(x).trim(), no
+// lowercasing and no digit-stripping, because normalising would change her
+// number. The HMAC preserves equality, so counting distinct keys gives exactly
+// what her screen shows, and stores nothing anybody can read back.
+//
+// A BARE SHA256 WOULD NOT DO. There are ten billion US phone numbers; a
+// complete table is hours of GPU time, and every row would be reversible to a
+// person. The secret is what makes the digest useless without Render's
+// environment.
+function leadDedupKey(r) {
+  const secret = process.env.LEAD_DEDUP_HMAC_KEY;
+  // Thrown, not defaulted. Falling back to an unkeyed hash would quietly
+  // produce the reversible digests this column exists to avoid, and they would
+  // be indistinguishable from the real ones afterwards.
+  if (!secret) throw new Error('LEAD_DEDUP_HMAC_KEY is not set — refusing to write interests with an unkeyed hash');
+  const phone = String(r.phone_number || r.phone || '').trim();
+  const email = String(r.email_address || r.email || '').trim();
+  const name = String(r.name || '').trim();
+  const basis = phone || email || name;
+  if (!basis) return null;              // nothing to key on; the row is skipped
+  return require('crypto').createHmac('sha256', secret).update(basis).digest('hex');
+}
+
+// One row of leasing_lead_interests (migration 080).
+function leadInterestRow(r) {
+  const uuid = String((r && r.guest_card_uuid) || '').trim();
+  const received = r && r.received;
+  if (!uuid || !received) return null;  // the primary key; without both there is no row
+  const iso = v => {
+    if (!v) return null;
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  };
+  const receivedIso = iso(received);
+  if (!receivedIso) return null;
+  const dedup = leadDedupKey(r);
+  if (!dedup) return null;
+  const int = v => {
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    const n = parseInt(String(v).replace(/[^0-9-]/g, ''), 10);
+    return isNaN(n) ? null : n;
+  };
+  return {
+    guest_card_uuid: uuid,
+    interest_received: receivedIso,
+    property: r.property || null,
+    property_id: int(r.property_id),
+    first_contact_date: iso(r.first_contact_date),
+    source: r.source || null,
+    lead_type: r.lead_type || null,
+    status: r.status || null,
+    dedup_key: dedup,
+    last_activity_date: iso(r.last_activity_date),
+    synced_at: new Date().toISOString(),
+  };
+}
+
 function leasingInterestFromReport(r) {
   const inq = leasingVal(r, 'inquiry_id');
   const uuid = leasingVal(r, 'guest_card_uuid');
@@ -6544,19 +6640,27 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
     // leasing_leads above is untouched — same rows, same key, same filter.
     // This is additive, and it is deliberately AFTER that upsert: the leads
     // sync succeeding must not depend on this one.
-    let interests = 0, interestsError = null;
+    let interests = 0, interestsError = null, interestsFetched = null;
     try {
-      const seenInq = new Set();
+      // Its OWN pull. `raw` above is guest_card_inquiries, a different
+      // population — 84 rows against the 136 Katie's report shows.
+      const got = await leasingFetchGuestCardInterests(date_from, date_to);
+      interestsFetched = { returned: got.raw.length, inCentralWindow: got.inWindow.length,
+        requestedTo: got.requestedTo };
+
+      const seenKey = new Set();
       const iRows = [];
-      for (const r of raw) {
-        const rec = leasingInterestFromReport(r);
-        if (!rec || seenInq.has(rec.inquiry_id)) continue;
-        seenInq.add(rec.inquiry_id);
+      for (const r of got.inWindow) {
+        const rec = leadInterestRow(r);
+        if (!rec) continue;
+        const k = rec.guest_card_uuid + '|' + rec.interest_received;
+        if (seenKey.has(k)) continue;   // the primary key, deduped before the upsert
+        seenKey.add(k);
         iRows.push(rec);
       }
       for (let i = 0; i < iRows.length; i += 500) {
         const { error } = await db.from('leasing_lead_interests')
-          .upsert(iRows.slice(i, i + 500), { onConflict: 'inquiry_id' });
+          .upsert(iRows.slice(i, i + 500), { onConflict: 'guest_card_uuid,interest_received' });
         if (error) throw new Error(error.message);
         interests += Math.min(500, iRows.length - i);
       }
@@ -6571,7 +6675,7 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
     // `received` and `out_of_range` are reported, not just logged: a sync that
     // quietly discards 87% of what it was handed should say so on screen.
     res.json({ ok: true, synced, received, out_of_range: outOfRange, seen: stamped, excluded,
-      interests, interestsError, date_from, date_to, source });
+      interests, interestsError, interestsFetched, date_from, date_to, source });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Leasing sync failed: ' + err.message });
   }
