@@ -419,7 +419,9 @@ async function apiCall(path,opts){
 }
 const REMOTE={
   enabled:true,
-  async loadAll(){ const d=await apiCall("/docs"); return (d&&d.docs)||{}; },
+  /* The whole response, not just docs: it also carries whether this link may
+     write, which the page declared and then never read. */
+  async loadAll(){ return await apiCall("/docs")||{}; },
   async set(path,data){ await apiCall("/docs",{method:"PUT",body:JSON.stringify({path:path,data:data})}); },
   async remove(path){ await apiCall("/docs",{method:"DELETE",body:JSON.stringify({path:path})}); },
   subscribe(onChange){ return function(){}; }
@@ -471,19 +473,73 @@ function refreshSync(){
   if(mode==="local"){setSync("local","Saved on this device");return}
   if(mode==="connecting"){setSync("connecting","Connecting");return}
   const busy=Object.keys(timers).some(k=>timers[k])||Object.keys(inflight).some(k=>inflight[k]);
-  if(readOnly) setSync("error","Read only");
-  else setSync(busy?"saving":"live",busy?"Saving":"All responses saved");
+  if(readOnly){setSync("error","Read only");return}
+  /* A failed write used to end with the page saying "All responses saved",
+     because this only ever looked at whether anything was in flight and never
+     at whether a write succeeded. Someone whose answers were not reaching the
+     database was told, in those words, that they were. The failure state is
+     sticky: it stays until a write for that path actually lands. */
+  if(FAILED.size){setSync("error",busy?"Not saved — retrying":"Not saved — saved on this device only");return}
+  setSync(busy?"saving":"live",busy?"Saving":"All responses saved");
 }
 function notice(msg,info){const n=$("#notice");n.textContent=msg;n.classList.toggle("on",!!msg);n.classList.toggle("info",!!info)}
 
 /* ---------- storage backend ---------- */
-function localLoad(){
+function localRead(){
+  const out={};
   try{
     for(let i=0;i<localStorage.length;i++){
       const k=localStorage.key(i);
-      if(k&&k.startsWith("metricRebrand:doc:")) docs[k.slice(18)]=JSON.parse(localStorage.getItem(k));
+      if(k&&k.startsWith("metricRebrand:doc:")){
+        const v=JSON.parse(localStorage.getItem(k));
+        if(v&&typeof v==="object") out[k.slice(18)]=v;
+      }
     }
   }catch(e){}
+  return out;
+}
+function localLoad(){const l=localRead();Object.keys(l).forEach(k=>{docs[k]=l[k]})}
+
+const filled=v=>v!=null&&String(typeof v==="object"?JSON.stringify(v):v).trim()!==""&&JSON.stringify(v)!=="{}";
+
+/* Everything this browser saved that the server does not have.
+   backendSet writes to localStorage BEFORE it calls the server and regardless
+   of whether that call succeeds, so a refused or dropped write still leaves a
+   complete copy here. Until now localLoad() ran only in the offline fallback,
+   so in normal use that copy was never read back: reload the page and the
+   field was blank, which is exactly what "my answers were erased" looks like.
+
+   Merged field by field, and only where the server has NOTHING. A value the
+   server already holds always wins, so a stale local copy can never overwrite
+   something written later from another device. Nothing is ever removed. */
+function mergeLocal(){
+  const local=localRead(),recovered=[];
+  Object.keys(local).forEach(path=>{
+    const l=local[path],srv=docs[path]||{},out=Object.assign({},srv);
+    let gained=false;
+    Object.keys(l).forEach(f=>{
+      if(f==="updated") return;
+      if(filled(l[f])&&!filled(srv[f])){out[f]=l[f];gained=true}
+    });
+    if(gained){docs[path]=out;recovered.push(path)}
+  });
+  return recovered;
+}
+
+/* Which of those this link is allowed to write back.
+   Re-queueing someone else’s answer would earn a 403 and light up the error
+   state for a write that SHOULD be refused, so the rule the server applies is
+   applied here first. Lyndsay’s read-only link re-queues nothing at all; her
+   recovered values are still merged, so she can see them. */
+function mineToResave(paths){
+  if(readOnly||!me) return [];
+  const slugMe=slug(me);
+  return paths.filter(p=>{
+    let m=/^reviews\/[^/]*?--([a-z0-9_-]+)$/.exec(p); if(m) return m[1]===slugMe;
+    m=/^(?:rankings|final)\/([a-z0-9_-]+)$/.exec(p); if(m) return m[1]===slugMe;
+    if(/^ideas\//.test(p)) return slug((docs[p]||{}).by||"")===slugMe;
+    return false;
+  });
 }
 async function backendSet(path,data){
   try{localStorage.setItem("metricRebrand:doc:"+path,JSON.stringify(data))}catch(e){}
@@ -503,21 +559,35 @@ function queue(path,delay){
 async function flush(path){
   if(inflight[path]){again[path]=true;return}
   inflight[path]=true;refreshSync();
-  try{await backendSet(path,docs[path]||{})}
-  catch(e){handleWriteError(e,()=>flush(path))}
+  try{
+    await backendSet(path,docs[path]||{});
+    /* Only a write that actually returned clears the failure. */
+    FAILED.delete(path);retries[path]=0;
+    if(!FAILED.size) notice("");
+  }
+  catch(e){handleWriteError(e,()=>flush(path),path)}
   finally{
     inflight[path]=false;
     if(again[path]){again[path]=false;flush(path)}
     refreshSync();
   }
 }
-let retried=false;
-function handleWriteError(e,retry){
-  const code=e&&e.code;
-  if(!retried){
-    retried=true;setTimeout(()=>{retried=false;retry()},800+Math.random()*800);
+/* Retries are counted PER PATH, not once for the whole page.
+   `retried` used to be a single module-level flag, so a burst of failures
+   across four documents produced one retry and one notice between them: the
+   other three gave up without ever saying so. */
+const retries={};
+const FAILED=new Set();          // paths whose last write did not land
+function handleWriteError(e,retry,path){
+  FAILED.add(path);refreshSync();
+  const n=retries[path]||0;
+  if(n<3){
+    retries[path]=n+1;
+    /* Backed off, because the likeliest causes -- the per-token rate limit and
+       a dropped connection -- both get worse if everything retries at once. */
+    setTimeout(retry,(600*Math.pow(2,n))+Math.random()*600);
   }else{
-    notice("A change didn’t reach the shared database. It’s still saved on this device; edit the field again to retry, or export your responses and send them to Lyndsay.");
+    notice("Some answers haven’t reached the shared database yet. They ARE saved in this browser — keep this tab open, stay on this device, and they will be sent when the connection recovers. Do not clear your browser data.");
   }
 }
 function applyReadOnly(){
@@ -551,7 +621,7 @@ function panelHTML(target,name,modeKind){
       <div class="scores" role="group" aria-labelledby="${target}-score-l">
         ${Array.from({length:10},(_,i)=>`<button type="button" data-score="${i+1}" aria-pressed="false">${i+1}</button>`).join("")}
       </div>
-      ${isFull?`<details class="deep"><summary class="deep-sum">Optional deeper questions</summary><div class="deep-body"></div></details>`:""}
+      ${isFull?`<details class="deep" open><summary class="deep-sum">Optional deeper questions</summary><div class="deep-body"></div></details>`:""}
     </div>
     <div class="others"></div>
   </div>`;
@@ -589,12 +659,28 @@ function choosePerson(panel,person,userAction){
   const path=reviewPath(target,person);
   panel.querySelectorAll("[data-field]").forEach(el=>{el.dataset.path=path;el.dataset.panel="1"});
   const deep=panel.querySelector(".deep-body");
-  if(deep){
-    panel.querySelector(".deep-sum").textContent=person+"’s deeper questions for "+panel.dataset.name;
+  /* prompts has a list for each REVIEWER, and nothing for anyone else. `me` is
+     restored from localStorage, so a value that is not one of the three -- a
+     stale key, a renamed reviewer -- used to throw here and leave the whole
+     page blank, with no answers visible and nothing to type into. The section
+     is simply left out instead. */
+  if(deep&&!prompts[person]) deep.closest("details").hidden=true;
+  if(deep&&prompts[person]){
+    deep.closest("details").hidden=false;
+    paintDeepSummary(panel);
     deep.innerHTML=prompts[person].map((q,i)=>`<label for="${target}-q${i}">${esc(q.replace("[BRAND]",panel.dataset.name))}</label><textarea id="${target}-q${i}" data-field="q${i}" data-path="${path}" data-panel="1"></textarea>`).join("");
     if(readOnly) deep.querySelectorAll("textarea").forEach(t=>t.disabled=true);
   }
   fillInputs(panel,true);paintScore(panel);paintOthers(panel);
+}
+function paintDeepSummary(panel){
+  const sum=panel.querySelector(".deep-sum"),person=panel.dataset.person;
+  if(!sum||!person||!prompts[person]) return;
+  const qn=prompts[person].length;
+  const d=docs[reviewPath(panel.dataset.target,person)]||{};
+  const done=prompts[person].filter((q,i)=>String(d["q"+i]||"").trim()).length;
+  sum.textContent=qn+" deeper questions about "+panel.dataset.name+" — "
+    +(done?done+" of "+qn+" answered":"optional, none answered yet");
 }
 function paintScore(panel){
   if(!panel.dataset.person) return;
@@ -639,7 +725,7 @@ document.addEventListener("input",e=>{
   if(path.startsWith("final/")) extra.person=path.split("/")[1];
   docs[path]=Object.assign({},docs[path]||{},extra,{[el.dataset.field]:el.value,updated:Date.now()});
   queue(path);
-  if(el.dataset.panel){const panel=el.closest(".fb");paintOthers(panel);paintDone(panel);renderRollup()}
+  if(el.dataset.panel){const panel=el.closest(".fb");paintOthers(panel);paintDone(panel);paintDeepSummary(panel);renderRollup()}
 });
 
 /* ---------- ideas ---------- */
@@ -767,7 +853,10 @@ function renderFinalForms(){
 function renderDerived(){renderRollup();renderVoteTally()}
 function renderAll(){
   renderIdeas();renderRankingForms();renderDerived();
-  document.querySelectorAll(".fb").forEach(p=>{paintOthers(p);paintDone(p);paintScore(p)});
+  /* paintDeepSummary too: the panels are mounted before the server copy
+     arrives, so without this the count is painted from an empty docs and every
+     name reads "none answered yet" however much is stored. */
+  document.querySelectorAll(".fb").forEach(p=>{paintOthers(p);paintDone(p);paintScore(p);paintDeepSummary(p)});
   fillInputs();
 }
 
@@ -862,11 +951,28 @@ function goLocal(){
 (async function(){
   if(!REMOTE.enabled){goLocal();return}
   try{
-    const all=await REMOTE.loadAll()||{};
+    const res=await REMOTE.loadAll()||{};
+    const all=res.docs||{};
+    /* readOnly was declared `false` at the top of this file and never assigned
+       anywhere. The server has always answered with it, and the page has always
+       thrown it away -- so Lyndsay’s read-only link rendered every field as
+       editable and tried to save every keystroke. The server refused each one,
+       which the page then reported as "All responses saved". */
+    readOnly=!!res.readOnly;
     Object.keys(all).forEach(k=>{if(all[k]&&typeof all[k]==="object")docs[k]=JSON.parse(JSON.stringify(all[k]))});
     mode="live";
     $("#storageNote").textContent="Responses save automatically and are shared with everyone who opens this page.";
-    ideasSig="";rankSig="";renderAll();refreshSync();
+    /* AFTER the server copy is in, so the server always wins where it has a
+       value, and BEFORE the first render, so nothing recovered flashes in. */
+    const recovered=mergeLocal();
+    ideasSig="";rankSig="";renderAll();
+    if(readOnly) applyReadOnly();
+    refreshSync();
+    const resave=mineToResave(recovered);
+    if(resave.length){
+      notice("Recovered "+resave.length+" answer"+(resave.length===1?"":"s")+" this browser had saved but the shared database did not. Sending "+(resave.length===1?"it":"them")+" now — nothing was lost.",true);
+      resave.forEach(p=>queue(p,0));
+    }
     REMOTE.subscribe((path,data)=>{
       if(typeof path!=="string"||pending(path))return;
       if(data==null) delete docs[path]; else docs[path]=JSON.parse(JSON.stringify(data));
