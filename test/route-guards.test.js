@@ -39,6 +39,15 @@ const ALLOWED = new Map([
   // that no longer exists. A 401 would send whoever still holds the URL
   // looking for credentials instead of for the retirement.
   // test/retired-endpoints.test.js asserts both do nothing.
+  // The rebrand review. Public ON PURPOSE: Zach is external and has no
+  // dashboard account, so there is no session to require. The guard is a
+  // per-person token checked by rebrandGuard() on every one of these — derived
+  // by HMAC, compared with timingSafeEqual, rate limited, and answering 404
+  // rather than 401 so a wrong token is told there is nothing there.
+  ['GET /review/:token',           'public review page; per-person token, 404 otherwise'],
+  ['GET /api/review/:token/docs',  'public review page; per-person token, 404 otherwise'],
+  ['PUT /api/review/:token/docs',  'public review page; per-person token, 404 otherwise'],
+  ['DELETE /api/review/:token/docs', 'public review page; per-person token, 404 otherwise'],
   ['POST /api/triage/log-session', 'retired 2026-10-05; answers 410 and touches nothing'],
   ['POST /api/lyndsay/import',     'retired 2026-10-05; answers 410 and touches nothing'],
   ['GET /health',                 'liveness; reports no data and is the anti-hibernation ping'],

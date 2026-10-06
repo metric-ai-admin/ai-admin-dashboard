@@ -12491,6 +12491,176 @@ app.get('/api/activity/day', requireAuth, requireRole(...ACTIVITY_ROLES), async 
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// =====================================================================
+// REBRAND LEADERSHIP REVIEW — a public page behind a per-person token
+// =====================================================================
+// Kara, Bekah and Zach fill this in; Zach has no dashboard account and never
+// will, so there is no login to put in front of it. The token IS the identity:
+// it says who you are, which answers you load, and whose name goes on an edit.
+//
+// DERIVED, NOT STORED. Each token is HMAC(REBRAND_REVIEW_SECRET, person),
+// truncated. That means no token table to leak, no rows to keep in sync, the
+// four links are reproducible from the secret alone, and rotating the secret
+// revokes all four at once. It also means a token cannot be guessed from
+// another: knowing Kara's tells you nothing about Zach's.
+//
+// A WRONG TOKEN IS A 404, never a 401. A 401 confirms the URL shape is right
+// and invites a second attempt; a 404 says there is nothing here, which is
+// what somebody who should not have the link ought to be told.
+const REBRAND_PEOPLE = ['Kara', 'Bekah', 'Zach', 'Lyndsay'];
+// Lyndsay reads, she does not fill one in. Kept in the token list so her link
+// works the same way as everyone else's.
+const REBRAND_READONLY = new Set(['Lyndsay']);
+
+function rebrandToken(person) {
+  const secret = process.env.REBRAND_REVIEW_SECRET;
+  if (!secret) return null;
+  return require('crypto').createHmac('sha256', secret)
+    .update(String(person).toLowerCase()).digest('hex').slice(0, 32);
+}
+function rebrandPersonFor(token) {
+  const t = String(token || '');
+  // Length-checked first so a malformed token costs nothing, then compared
+  // with timingSafeEqual: a plain === leaks how much of a guess was right.
+  if (!/^[0-9a-f]{32}$/.test(t)) return null;
+  for (const p of REBRAND_PEOPLE) {
+    const expected = rebrandToken(p);
+    if (!expected) return null;
+    const a = Buffer.from(expected), b = Buffer.from(t);
+    if (a.length === b.length && require('crypto').timingSafeEqual(a, b)) return p;
+  }
+  return null;
+}
+
+// Rate limit, per token, in memory.
+//
+// Deliberately simple: this is one page used by four people for a few days,
+// and the thing worth stopping is somebody walking the token space, not a
+// determined attacker with a botnet. 120 requests a minute is far above what
+// typing into a form produces and far below what a scan needs.
+const rebrandHits = new Map();
+function rebrandRateLimited(key) {
+  const now = Date.now(), windowMs = 60000, max = 120;
+  const hits = (rebrandHits.get(key) || []).filter(t => now - t < windowMs);
+  hits.push(now);
+  rebrandHits.set(key, hits);
+  if (rebrandHits.size > 500) {
+    // Bounded: an unbounded map keyed on attacker-supplied values is a slow
+    // memory leak with a trigger anybody can pull.
+    for (const [k, v] of rebrandHits) if (!v.length || now - v[v.length - 1] > windowMs) rebrandHits.delete(k);
+  }
+  return hits.length > max;
+}
+
+function rebrandGuard(req, res) {
+  const ip = String(req.ip || '-');
+  if (rebrandRateLimited(ip)) { res.status(429).json({ error: 'Too many requests' }); return null; }
+  const person = rebrandPersonFor(req.params.token);
+  if (!person) { res.status(404).send('Not found'); return null; }
+  return person;
+}
+
+// The page itself. The token is injected into the copy that is sent, so the
+// file on disk never contains one.
+app.get('/review/:token', (req, res) => {
+  const person = rebrandGuard(req, res);
+  if (!person) return;
+  fs.readFile(path.join(__dirname, 'public', 'tools', 'rebrand-review.html'), 'utf8', (err, html) => {
+    if (err) return res.status(404).send('Not found');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    // Not indexed and not cached: a shared link in a browser cache on a
+    // borrowed laptop is the likeliest way this leaks.
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(html.replace(/__REVIEW_TOKEN__/g, encodeURIComponent(req.params.token)));
+  });
+});
+
+app.get('/api/review/:token/docs', async (req, res) => {
+  const person = rebrandGuard(req, res);
+  if (!person) return;
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('rebrand_review').select('path,data').limit(2000);
+    if (error) throw new Error(error.message);
+    // Everyone sees everyone's answers — the page is a shared review and that
+    // is what it was built to show. The token decides who you WRITE as.
+    const docs = {};
+    (data || []).forEach(r => { docs[r.path] = r.data; });
+    res.json({ docs, person, readOnly: REBRAND_READONLY.has(person) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/review/:token/docs', async (req, res) => {
+  const person = rebrandGuard(req, res);
+  if (!person) return;
+  if (REBRAND_READONLY.has(person)) return res.status(403).json({ error: 'Read only' });
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const p = String((req.body && req.body.path) || '');
+    // The path becomes a primary key and is echoed into the review screen, so
+    // it is checked against the shape the page documents rather than trusted.
+    if (!/^[A-Za-z0-9_\-/]{1,120}$/.test(p)) return res.status(400).json({ error: 'bad path' });
+    const data = (req.body && req.body.data);
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+      return res.status(400).json({ error: 'data must be an object' });
+    }
+    if (JSON.stringify(data).length > 100000) return res.status(413).json({ error: 'too large' });
+    const db = supabaseAdmin || supabasePublic;
+    const { error } = await db.from('rebrand_review').upsert([{
+      path: p, data,
+      // From the TOKEN, never from the body: a reviewer editing the request
+      // must not be able to sign somebody else's name to an answer.
+      updated_by: person, updated_at: new Date().toISOString(),
+    }], { onConflict: 'path' });
+    if (error) throw new Error(error.message);
+    res.status(204).end();
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/review/:token/docs', async (req, res) => {
+  const person = rebrandGuard(req, res);
+  if (!person) return;
+  if (REBRAND_READONLY.has(person)) return res.status(403).json({ error: 'Read only' });
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const p = String((req.body && req.body.path) || '');
+    if (!/^[A-Za-z0-9_\-/]{1,120}$/.test(p)) return res.status(400).json({ error: 'bad path' });
+    const db = supabaseAdmin || supabasePublic;
+    const { error } = await db.from('rebrand_review').delete().eq('path', p);
+    if (error) throw new Error(error.message);
+    res.status(204).end();
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// The dashboard side: every answer, side by side. admin and ceo only.
+app.get('/api/rebrand/responses', requireAuth, requireRole('admin', 'ceo'), async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('rebrand_review')
+      .select('path,data,updated_by,updated_at').order('updated_at', { ascending: false }).limit(2000);
+    if (error) throw new Error(error.message);
+    res.json({ rows: data || [], people: REBRAND_PEOPLE.filter(p => !REBRAND_READONLY.has(p)) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// The four links, for admin only, so they are read off the running service
+// rather than reconstructed by hand from the secret.
+app.get('/api/rebrand/links', requireAuth, requireRole('admin'), (req, res) => {
+  if (!process.env.REBRAND_REVIEW_SECRET) {
+    return res.status(503).json({ error: 'REBRAND_REVIEW_SECRET is not set' });
+  }
+  const base = process.env.PUBLIC_URL || `https://${req.get('host')}`;
+  res.json({
+    links: REBRAND_PEOPLE.map(p => ({
+      person: p, readOnly: REBRAND_READONLY.has(p),
+      url: `${base}/review/${rebrandToken(p)}`,
+    })),
+  });
+});
+
 const KPI_RECAP_ROLES = ['admin', 'ceo'];
 
 // The list deliberately does NOT carry transcript_text. A transcript is tens of

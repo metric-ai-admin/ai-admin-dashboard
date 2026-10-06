@@ -81,8 +81,8 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy', 'marketing', 'kpirecaps', 'activity'],
-  ceo:         ['crm', 'platform', 'eod', 'reports', 'marketing', 'kpirecaps', 'activity'],
+  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy', 'marketing', 'kpirecaps', 'activity', 'rebrand'],
+  ceo:         ['crm', 'platform', 'eod', 'reports', 'marketing', 'kpirecaps', 'activity', 'rebrand'],
   // 'calls' (Call Analyzer) removed 2026-09-18: call transcripts and grades are
   // employee performance data about named staff, alongside resident PII, so the
   // tab is admin-only — Arturo and Lyndsay. Widening it later is a role change
@@ -396,6 +396,7 @@ function loadTab(tab) {
   if (tab === 'marketing') loadMarketing();
   if (tab === 'kpirecaps') loadKpiRecaps();
   if (tab === 'activity') loadActivity();
+  if (tab === 'rebrand') loadRebrand();
   if (window.innerWidth <= 820) $('#sidebar').classList.remove('open');
 }
 
@@ -11649,6 +11650,80 @@ async function loadActivity() {
 
   actWireFilters();
   loadActivityDetail();
+}
+
+/* ---------------- Rebrand Review — every answer side by side ----------------
+ *
+ * EVERYTHING HERE GOES THROUGH esc(). The answers are free text typed by four
+ * people into a public page; rendering any of it as HTML would turn a review
+ * form into a way to run script in the CEO's session. There is no innerHTML in
+ * this file that touches an answer without esc() around it.
+ *
+ * Grouped BY QUESTION rather than by person, because the question Lyndsay is
+ * asking is "what did everyone say about this", and a per-person layout makes
+ * her read four screens and hold the comparison in her head. */
+async function loadRebrand() {
+  const links = $('#rb-links'), host = $('#rb-responses');
+  if (links) {
+    try {
+      const d = await api('/api/rebrand/links');
+      links.innerHTML = '<h3 style="margin:0 0 8px">Links</h3>'
+        + d.links.map(l => `<div style="margin:4px 0">
+            <b>${esc(l.person)}</b>${l.readOnly ? ' <span class="muted small">(read only)</span>' : ''}
+            <div class="muted small" style="word-break:break-all">${esc(l.url)}</div>
+          </div>`).join('');
+    } catch (e) {
+      // Admin-only; the CEO sees the answers without the links.
+      links.innerHTML = `<p class="muted small">${esc(e.message)}</p>`;
+    }
+  }
+
+  if (!host) return;
+  try {
+    const d = await api('/api/rebrand/responses');
+    if (!d.rows.length) { host.innerHTML = '<p class="muted">Nobody has answered yet.</p>'; return; }
+
+    // path is "collection/id" — reviews/signal--zach, rankings/kara, final/zach.
+    // Grouped by collection, then by the id inside it.
+    const byCollection = {};
+    d.rows.forEach(r => {
+      const [coll, ...rest] = String(r.path).split('/');
+      (byCollection[coll] = byCollection[coll] || []).push({ ...r, id: rest.join('/') });
+    });
+
+    const when = iso => iso
+      ? new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago' }) + ' CT'
+      : '—';
+    const valueCell = v => {
+      if (v === null || v === undefined || v === '') return '<span class="muted">—</span>';
+      if (typeof v === 'object') {
+        return Object.entries(v).map(([k, x]) =>
+          `<div><b>${esc(k)}</b>: ${esc(String(x))}</div>`).join('');
+      }
+      // nl2br on ESCAPED text: the line breaks survive and the angle brackets
+      // do not.
+      return esc(String(v)).replace(/\n/g, '<br>');
+    };
+
+    host.innerHTML = Object.entries(byCollection).map(([coll, rows]) => `
+      <div class="card" style="margin-bottom:16px">
+        <h3 style="margin:0 0 10px">${esc(coll)}</h3>
+        ${rows.map(r => `
+          <div style="border-top:1px solid var(--border);padding:10px 0">
+            <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
+              <b>${esc(r.id)}</b>
+              <span class="muted small">${esc(r.updated_by || 'unknown')} · ${esc(when(r.updated_at))}</span>
+            </div>
+            ${Object.entries(r.data || {}).map(([k, v]) => `
+              <div style="margin-top:6px">
+                <div class="muted small">${esc(k)}</div>
+                <div>${valueCell(v)}</div>
+              </div>`).join('')}
+          </div>`).join('')}
+      </div>`).join('');
+  } catch (e) {
+    host.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`;
+  }
 }
 
 /* ---------------- Activity Logs: detail, timeline, CSV ---------------- */

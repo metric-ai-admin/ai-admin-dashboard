@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Metric Rebrand Leadership Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,800;1,9..144,400;1,9..144,600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --navy:#0D1F3C; --navy-2:#1B3358; --gold:#C9972E; --gold-hi:#F5A623;
+  --bg:#F2F4F7; --card:#FFFFFF; --text:#14213A; --muted:#5E6B80; --line:#D9DEE6;
+  --tint:#F8F5EC; --field:#FFFFFF; --field-line:#C7CEDA; --chip:#E9EDF3;
+  --good:#EAF5EE; --danger:#9B2C2C; --danger-bg:#FBECEC;
+  --display:"Fraunces", Georgia, "Times New Roman", serif;
+  --ui:"Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#08111F; --card:#0F1D33; --text:#E6EAF1; --muted:#9AA6B8; --line:#24344F;
+    --tint:#16243B; --field:#0B1729; --field-line:#2E4163; --chip:#1A2A44;
+    --good:#13301F; --danger:#F19C9C; --danger-bg:#3A1A1A; --gold:#E0AE4A;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#08111F; --card:#0F1D33; --text:#E6EAF1; --muted:#9AA6B8; --line:#24344F;
+  --tint:#16243B; --field:#0B1729; --field-line:#2E4163; --chip:#1A2A44;
+  --good:#13301F; --danger:#F19C9C; --danger-bg:#3A1A1A; --gold:#E0AE4A;
+}
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:calc(env(safe-area-inset-top,0px) + 64px)}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--body);font-size:1rem;line-height:1.6;-webkit-font-smoothing:antialiased}
+img{max-width:100%}
+:focus-visible{outline:3px solid var(--gold-hi);outline-offset:2px}
+
+header.hero{background:var(--navy);color:#fff;padding:56px 22px 46px;position:relative;overflow:hidden}
+header.hero::after{content:"";position:absolute;left:0;right:0;bottom:0;height:4px;background:var(--gold)}
+.wrap{max-width:1040px;margin:0 auto}
+.hero .from{font-family:var(--ui);font-weight:700;color:var(--gold-hi);font-size:.95rem;margin:0 0 10px}
+.hero h1{font-family:var(--display);font-weight:600;font-size:clamp(2.3rem,6vw,4.4rem);line-height:1.02;margin:0 0 16px;letter-spacing:-.015em;font-variation-settings:"opsz" 144}
+.hero p{max-width:66ch;color:#D3DAE6;font-size:1.08rem;margin:0}
+
+nav.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:color-mix(in srgb,var(--card) 92%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+nav.bar .inner{max-width:1040px;margin:0 auto;display:flex;align-items:center;gap:14px;padding:10px 16px}
+nav.bar .links{display:flex;gap:18px;overflow-x:auto;white-space:nowrap;flex:1;scrollbar-width:none}
+nav.bar .links::-webkit-scrollbar{display:none}
+nav.bar a{font-family:var(--ui);color:var(--text);text-decoration:none;font-weight:600;font-size:.92rem;padding:4px 0;border-bottom:2px solid transparent}
+nav.bar a:hover{border-bottom-color:var(--gold)}
+.sync{font-family:var(--ui);font-size:.8rem;font-weight:600;color:var(--muted);white-space:nowrap;display:flex;align-items:center;gap:6px}
+.sync i{width:8px;height:8px;border-radius:50%;background:var(--muted);display:inline-block}
+.sync[data-s="live"] i{background:#2E9E5B}
+.sync[data-s="saving"] i{background:var(--gold-hi)}
+.sync[data-s="local"] i,.sync[data-s="error"] i{background:#C0392B}
+
+main{padding:30px 16px 64px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:30px;margin:0 0 22px}
+@media(max-width:700px){.card{padding:20px}}
+.step{font-family:var(--ui);font-weight:700;font-size:.9rem;color:var(--gold);margin:0 0 6px}
+h2{font-family:var(--display);font-weight:600;font-size:clamp(1.6rem,3.6vw,2.1rem);line-height:1.15;margin:0 0 14px;letter-spacing:-.01em}
+h3{font-family:var(--display);font-weight:600;font-size:1.3rem;margin:26px 0 10px}
+h4{font-family:var(--ui);font-size:1rem;margin:18px 0 8px}
+p,li{max-width:72ch}
+.lead{font-size:1.12rem}
+.callout{padding:16px 20px;border-left:4px solid var(--gold);background:var(--tint);border-radius:0 10px 10px 0;margin:18px 0}
+.pill{display:inline-block;padding:5px 11px;border-radius:999px;background:var(--chip);font-family:var(--ui);font-weight:600;font-size:.84rem;margin:3px 2px}
+ul{padding-left:20px}
+.tbl{overflow-x:auto;margin:14px 0}
+table{width:100%;border-collapse:collapse;min-width:520px}
+th,td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-family:var(--ui);font-size:.88rem;background:var(--tint)}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+hr{border:none;border-top:1px solid var(--line);margin:28px 0}
+.small{font-size:.9rem;color:var(--muted)}
+
+/* Brand name treatment */
+.brand-name{font-family:var(--display);font-weight:800;font-size:clamp(3.2rem,11vw,6.4rem);line-height:.95;letter-spacing:-.03em;margin:4px 0 6px;color:var(--navy);font-variation-settings:"opsz" 144}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .brand-name{color:#fff}}
+:root[data-theme="dark"] .brand-name{color:#fff}
+.tagline{font-family:var(--display);font-style:italic;font-weight:400;font-size:clamp(1.25rem,3vw,1.6rem);color:var(--gold);margin:0 0 18px}
+.reaction{font-family:var(--display);font-style:italic;font-size:1.1rem;border-top:1px solid var(--line);padding-top:16px;margin-top:22px}
+
+/* Forms */
+label,.lbl{display:block;font-family:var(--ui);font-weight:600;font-size:.93rem;margin:14px 0 6px}
+input[type="text"],textarea,select{width:100%;padding:11px 12px;border:1px solid var(--field-line);border-radius:9px;font:inherit;font-size:1rem;background:var(--field);color:var(--text)}
+textarea{min-height:96px;resize:vertical}
+input:disabled,textarea:disabled,select:disabled,button:disabled{opacity:.55;cursor:not-allowed}
+button{font-family:var(--ui);border:none;border-radius:9px;padding:11px 16px;font-size:.95rem;font-weight:700;cursor:pointer}
+.primary{background:var(--navy);color:#fff}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .primary{background:var(--gold);color:#0D1F3C}}
+:root[data-theme="dark"] .primary{background:var(--gold);color:#0D1F3C}
+.secondary{background:var(--chip);color:var(--text)}
+.danger{background:var(--danger-bg);color:var(--danger)}
+.button-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+
+/* Feedback panel — the space below each name */
+.fb{margin-top:28px;border:2px solid var(--gold);border-radius:14px;padding:22px;background:var(--tint)}
+.fb h3{margin:0 0 4px}
+.fb .hint{margin:0 0 14px;color:var(--muted);font-size:.93rem}
+.who{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.who .lbl{margin:0 6px 0 0}
+.who button{background:var(--card);color:var(--text);border:1.5px solid var(--field-line);padding:9px 16px;border-radius:999px}
+.who button[aria-pressed="true"]{background:var(--navy);border-color:var(--navy);color:#fff}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .who button[aria-pressed="true"]{background:var(--gold);border-color:var(--gold);color:#0D1F3C}}
+:root[data-theme="dark"] .who button[aria-pressed="true"]{background:var(--gold);border-color:var(--gold);color:#0D1F3C}
+.who .done{font-size:.75rem;margin-left:4px;color:#2E9E5B}
+.fields[hidden]{display:none}
+.scores{display:flex;gap:6px;flex-wrap:wrap}
+.scores button{width:42px;height:42px;padding:0;background:var(--card);border:1.5px solid var(--field-line);color:var(--text);border-radius:8px}
+.scores button[aria-pressed="true"]{background:var(--gold);border-color:var(--gold);color:#0D1F3C}
+details.deep{margin-top:18px;border:1px solid var(--line);border-radius:10px;background:var(--card);padding:4px 16px}
+details.deep summary{cursor:pointer;font-family:var(--ui);font-weight:700;padding:10px 0}
+details.deep[open]{padding-bottom:14px}
+.others{margin-top:22px}
+.others h4{margin:0 0 10px}
+.said{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:0 0 10px}
+.said .top{display:flex;justify-content:space-between;gap:10px;font-family:var(--ui);font-weight:700}
+.said .score{color:var(--gold)}
+.said p{margin:6px 0 0;font-size:.95rem}
+.said b{font-family:var(--ui);font-size:.85rem}
+
+/* Ideas, rankings, tally */
+.idea{border:1px solid var(--line);border-radius:12px;padding:18px;margin:14px 0;background:var(--card)}
+.idea h3{margin:0}
+.idea .meta{color:var(--muted);font-size:.9rem;margin:2px 0 10px}
+.idea .fb{margin-top:18px}
+details.person{border:1px solid var(--line);border-radius:10px;padding:4px 16px;margin-top:12px;background:var(--card)}
+details.person summary{cursor:pointer;font-family:var(--ui);font-weight:700;padding:10px 0}
+details.person[open]{padding-bottom:16px}
+.rank-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 14px}
+@media(max-width:700px){.rank-grid{grid-template-columns:1fr}}
+.winner td{background:var(--good);font-weight:700}
+.roll{border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:12px 0;background:var(--card)}
+.roll h4{font-family:var(--display);font-size:1.25rem;margin:0 0 8px}
+.roll .p{margin:12px 0 0;padding-top:12px;border-top:1px solid var(--line)}
+.roll .p:first-of-type{border-top:none;padding-top:0}
+details[hidden]{display:none}
+.notice{display:none;margin:0 0 18px;padding:12px 16px;border-radius:10px;background:var(--danger-bg);color:var(--danger);font-weight:600}
+.notice.on{display:block}
+.notice.info{background:var(--tint);color:var(--text);border-left:4px solid var(--gold);font-weight:500}
+
+footer{color:var(--muted);text-align:center;padding:0 20px 36px;font-family:var(--ui);font-size:.9rem}
+@media print{
+  nav.bar,.button-row,#ideaForm,.who,.scores,.screen-only,.notice{display:none!important}
+  body{background:#fff}
+  .card{break-inside:avoid;border-color:#ccc}
+  details{display:block}
+}
+@media (prefers-reduced-motion: reduce){*{scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <p class="from">Metric Property Management</p>
+    <h1>Rebrand Leadership Review</h1>
+    <p>A working decision tool for Zach, Kara, Bekah, and Lyndsay to evaluate the strongest brand directions, explain the thinking behind them, challenge assumptions, and add better ideas.</p>
+  </div>
+</header>
+
+<nav class="bar" aria-label="Sections">
+  <div class="inner">
+    <div class="links">
+      <a href="#origin">Why We’re Here</a>
+      <a href="#criteria">What the Brand Must Do</a>
+      <a href="#signal">Signal</a>
+      <a href="#logic">Logic</a>
+      <a href="#axiom">Axiom</a>
+      <a href="#method">Method</a>
+      <a href="#newideas">Other Names</a>
+      <a href="#final">Final Comparison</a>
+    </div>
+    <span class="sync" id="sync" data-s="connecting"><i></i><span>Connecting</span></span>
+  </div>
+</nav>
+
+<main class="wrap">
+<div class="notice" id="notice"></div>
+
+<section id="origin" class="card">
+  <p class="step">Starting point</p>
+  <h2>Why Metric was chosen — and why we are considering changing it now</h2>
+  <p class="lead">The original name <strong>Metric</strong> was intentional. It was meant to communicate that we wanted to be a KPI-driven operator: a company that managed assets based on measurable information, logic, accountability, and performance rather than habit or instinct.</p>
+  <div class="callout"><strong>The original belief:</strong><br>Better measurement should lead to better decisions, and better decisions should lead to better asset performance.</div>
+  <p>That philosophy has not changed. What <em>has</em> changed is the company. Over the last seven years, our operating model has expanded well beyond simply measuring performance. We now place major emphasis on centralization, workflow design, automation, artificial intelligence, specialization, data analysis, process discipline, and continuous optimization.</p>
+  <p>At the same time, the company has been through difficult business periods. A rebrand creates an opportunity to reintroduce ourselves to the multifamily industry with a fresh identity that reflects where we are going rather than only where we began.</p>
+  <h3>Why these four names were selected</h3>
+  <p>The names below were not selected because they merely sounded modern. Each one grew directly out of the original idea behind <strong>Metric</strong>, but represents a different evolution of it:</p>
+  <div class="tbl"><table>
+    <tr><th>Name</th><th>The idea behind it</th><th>Evolution from Metric</th></tr>
+    <tr><td><strong>Signal</strong></td><td>Find the information that actually matters and act on it early.</td><td>Metric measured. Signal interprets.</td></tr>
+    <tr><td><strong>Logic</strong></td><td>Make disciplined decisions for a reason, not because “that’s how we’ve always done it.”</td><td>Metric measured. Logic decides.</td></tr>
+    <tr><td><strong>Axiom</strong></td><td>Build operations on strong, repeatable principles.</td><td>Metric measured. Axiom establishes the principles behind the decisions.</td></tr>
+    <tr><td><strong>Method</strong></td><td>Create a better, repeatable system for operating assets.</td><td>Metric measured. Method turns the entire operating philosophy into a system.</td></tr>
+  </table></div>
+  <p><strong>The goal is not to abandon what Metric stood for.</strong> The goal is to choose a brand that represents the next generation of that same philosophy.</p>
+</section>
+
+<section id="criteria" class="card">
+  <p class="step">Audience and positioning</p>
+  <h2>What the new brand needs to communicate</h2>
+  <p>Our primary audience is <strong>multifamily owners, investors, brokers, developers, asset managers, and capital partners</strong> — not residents. The brand should feel credible to someone trusting us with a multimillion-dollar asset.</p>
+  <div>
+    <span class="pill">Intelligence</span><span class="pill">Operational Discipline</span><span class="pill">Performance</span>
+    <span class="pill">Modernization</span><span class="pill">Systems</span><span class="pill">Technology</span>
+    <span class="pill">Data</span><span class="pill">Efficiency</span><span class="pill">Accountability</span>
+    <span class="pill">Forward Thinking</span>
+  </div>
+  <p>AI is strategically important, but it should <strong>not</strong> be in the company name. AI, automation, data, and centralization are tools. The product we sell is <strong>better asset performance</strong>.</p>
+  <div class="callout" style="margin-top:26px">
+    <strong>Important — how to review this document</strong><br><br>
+    Please read <strong>all four name recommendations in full before deciding which one you prefer</strong>. Each concept is intentionally built around a different part of the company’s strategy, and the names make more sense when compared side by side.<br><br>
+    After reading each recommendation, complete the <strong>Your feedback</strong> space directly underneath it. Pick your name (Zach, Kara, or Bekah) and your answers save automatically as you type.<br><br>
+    Please do not skip straight to the final ranking. The goal is to understand what each brand communicates, what it would require us to live up to, and what concerns or opportunities you see before choosing a favorite.
+  </div>
+  <h3>How to use this tool</h3>
+  <p>Do not simply answer, “Do I like the name?” Evaluate what kind of company the name suggests, whether we can credibly live up to that promise, whether an owner would remember it, and whether it gives us a compelling story for the next five to ten years.</p>
+</section>
+
+<section id="signal" class="card">
+  <div class="callout"><strong>Read this recommendation first.</strong> Then complete the <strong>Your feedback</strong> space at the bottom before moving to the next name.</div>
+  <p class="step">Brand direction 1</p>
+  <div class="brand-name">Signal</div>
+  <p class="tagline">See it sooner. Act on it smarter.</p>
+  <p><strong>Core idea:</strong> Signal sees what matters first.</p>
+  <p>Multifamily assets generate endless information: leads, traffic, applications, pricing, renewals, delinquency, maintenance, payroll, marketing, concessions, expenses, resident sentiment, and occupancy trends. Most operators have access to data. The advantage is knowing what matters, recognizing it early, and acting before a manageable problem becomes expensive.</p>
+  <div class="callout"><strong>Brand promise:</strong> Signal turns property data into operating action.</div>
+  <h3>Possible language</h3>
+  <ul>
+    <li>Your property is giving you signals. The question is whether anyone is listening.</li>
+    <li>Occupancy problems rarely happen overnight. The signals were already there.</li>
+    <li>Data without action is just another spreadsheet.</li>
+    <li>More reports don’t create better performance. Better decisions do.</li>
+  </ul>
+  <h3>Brand architecture possibilities</h3>
+  <p>SignalOS, Signal Leasing, Signal Revenue, Signal Maintenance, Signal Intelligence, Signal Reporting, Signal Dashboard, Early Signals.</p>
+  <p class="reaction"><strong>Desired owner reaction:</strong> “These people are paying attention to my asset, and they are likely to see problems before I do.”</p>
+  <div class="fb-slot" data-target="signal" data-name="Signal" data-mode="full"></div>
+</section>
+
+<section id="logic" class="card">
+  <div class="callout"><strong>Read this recommendation first.</strong> Then complete the <strong>Your feedback</strong> space at the bottom before moving to the next name.</div>
+  <p class="step">Brand direction 2</p>
+  <div class="brand-name">Logic</div>
+  <p class="tagline">Operate with Logic.</p>
+  <p><strong>Core idea:</strong> Every important operating decision should have a reason behind it.</p>
+  <p>Logic directly challenges reactive management and “that’s how we’ve always done it.” It positions us as an organization that diagnoses, analyzes, tests, measures, and then acts.</p>
+  <div class="callout"><strong>Brand promise:</strong> Logic replaces reactive property management with disciplined decision-making.</div>
+  <h3>Possible language</h3>
+  <ul>
+    <li>Tradition isn’t a strategy.</li>
+    <li>“We’ve always done it this way” is not a KPI.</li>
+    <li>Hope is not a leasing strategy.</li>
+    <li>Every decision should survive one question: Why?</li>
+    <li>Good management isn’t magic. It’s Logic.</li>
+  </ul>
+  <h3>Brand architecture possibilities</h3>
+  <p>The Logic Model, Leasing Logic, Marketing Logic, Revenue Logic, Staffing Logic, Portfolio Logic.</p>
+  <p class="reaction"><strong>Desired owner reaction:</strong> “These people are going to make decisions for a reason — and they are not going to bullshit me.”</p>
+  <div class="fb-slot" data-target="logic" data-name="Logic" data-mode="full"></div>
+</section>
+
+<section id="axiom" class="card">
+  <div class="callout"><strong>Read this recommendation first.</strong> Then complete the <strong>Your feedback</strong> space at the bottom before moving to the next name.</div>
+  <p class="step">Brand direction 3</p>
+  <div class="brand-name">Axiom</div>
+  <p class="tagline">Principles that perform.</p>
+  <p><strong>Core idea:</strong> Better performance begins with better operating principles.</p>
+  <p>An axiom is a foundational principle from which other reasoning follows. This direction is more institutional and positions the organization as disciplined, sophisticated, stable, and grounded in clearly defined operating principles.</p>
+  <div class="callout"><strong>Brand promise:</strong> Axiom combines disciplined operating principles, technology, data, and execution to create repeatable multifamily performance.</div>
+  <h3>Possible language</h3>
+  <ul>
+    <li>Built on better principles.</li>
+    <li>Performance starts with principle.</li>
+    <li>Disciplined operations. Measurable results.</li>
+    <li>Intelligence in operation.</li>
+  </ul>
+  <h3>Brand architecture possibilities</h3>
+  <p>The Axiom Model, Axiom Operating Principles, Measure What Matters, Diagnose Before Acting, Automate Repetition, Escalate Exceptions, Optimize Continuously.</p>
+  <p class="reaction"><strong>Desired owner reaction:</strong> “This is a disciplined organization built for serious ownership.”</p>
+  <div class="fb-slot" data-target="axiom" data-name="Axiom" data-mode="full"></div>
+</section>
+
+<section id="method" class="card">
+  <div class="callout"><strong>Read this recommendation first.</strong> Then complete the <strong>Your feedback</strong> space at the bottom before moving to the next name.</div>
+  <p class="step">Brand direction 4</p>
+  <div class="brand-name">Method</div>
+  <p class="tagline">There’s a better Method.</p>
+  <p><strong>Core idea:</strong> Great performance should be repeatable.</p>
+  <p>Method shifts the story from individual technologies to the operating model itself. Data, centralization, automation, AI, specialization, process, and accountability are not isolated initiatives — together, they form a method.</p>
+  <div class="callout"><strong>Brand promise:</strong> Method creates repeatable multifamily performance through better systems, better information, and disciplined execution.</div>
+  <h3>Possible language</h3>
+  <ul>
+    <li>Great operators don’t rely on heroics. They build systems.</li>
+    <li>If the process only works when your best employee is there, you don’t have a process.</li>
+    <li>Technology doesn’t fix bad operations. Better systems do.</li>
+    <li>Better outcomes shouldn’t happen by accident.</li>
+  </ul>
+  <h3>Brand architecture possibilities</h3>
+  <p><strong>The Method:</strong> Measure → Diagnose → Prioritize → Automate → Execute → Optimize.</p>
+  <p>The Method: Leasing, Revenue, Marketing, Maintenance, Staffing, Owner Reporting.</p>
+  <p class="reaction"><strong>Desired owner reaction:</strong> “These people have figured out a better way to run this business.”</p>
+  <div class="fb-slot" data-target="method" data-name="Method" data-mode="full"></div>
+</section>
+
+<section id="newideas" class="card">
+  <p class="step">Open naming round</p>
+  <h2>Other name recommendations</h2>
+  <p>This section is intentionally open. If you think one of the four current directions is missing something — or you simply have a stronger idea — add it here. Every submission must include the person recommending it so we know where the idea originated.</p>
+  <div id="ideaForm">
+    <div class="grid">
+      <div>
+        <label for="ideaBy">Recommended by</label>
+        <select id="ideaBy">
+          <option value="">Choose person</option>
+          <option>Lyndsay</option><option>Zach</option><option>Kara</option><option>Bekah</option><option>Other</option>
+        </select>
+      </div>
+      <div>
+        <label for="ideaName">Proposed name</label>
+        <input id="ideaName" type="text" placeholder="Example: Vector">
+      </div>
+    </div>
+    <label for="ideaReason">Why are you recommending it?</label>
+    <textarea id="ideaReason" placeholder="What does the name communicate? Why might it fit our strategy, audience, or culture?"></textarea>
+    <div class="grid">
+      <div>
+        <label for="ideaPros">Pros</label>
+        <textarea id="ideaPros" placeholder="Memorability, credibility, brand platform, audience fit, scalability, etc."></textarea>
+      </div>
+      <div>
+        <label for="ideaCons">Cons / risks</label>
+        <textarea id="ideaCons" placeholder="Confusion, generic feel, trademark concerns, hard to spell, too techy, weak story, etc."></textarea>
+      </div>
+    </div>
+    <label for="ideaTagline">Optional tagline / positioning thought</label>
+    <input id="ideaTagline" type="text" placeholder="Optional">
+    <p class="small" id="ideaMsg" role="status"></p>
+    <div class="button-row">
+      <button class="primary" id="addIdeaBtn" type="button">Add recommendation</button>
+    </div>
+  </div>
+  <div id="ideaList"></div>
+</section>
+
+<section id="final" class="card">
+  <p class="step">Final decision exercise</p>
+  <h2>Cross-brand comparison</h2>
+  <div class="callout"><strong>Complete this section only after you have read and responded to all four recommendations above.</strong> The final ranking should reflect your reaction to the full brand platform — not just which word you liked first.</div>
+  <div class="tbl"><table>
+    <tr><th>Brand</th><th>Simple story</th><th>Primary promise</th></tr>
+    <tr><td><strong>Signal</strong></td><td>We see what matters.</td><td>Better visibility → earlier action → better performance.</td></tr>
+    <tr><td><strong>Logic</strong></td><td>We make better decisions.</td><td>Better reasoning → better decisions → better assets.</td></tr>
+    <tr><td><strong>Axiom</strong></td><td>We operate from better principles.</td><td>Better principles → disciplined execution → repeatable performance.</td></tr>
+    <tr><td><strong>Method</strong></td><td>We built a better system.</td><td>Better systems → consistent execution → scalable performance.</td></tr>
+  </table></div>
+
+  <div id="rollup"></div>
+  <hr>
+  <h3>Individual Rankings</h3>
+  <p>Each reviewer should rank every active candidate. Rank 1 is your first choice. Added recommendations automatically appear here.</p>
+  <div id="rankingForms"></div>
+  <hr>
+  <h3>Live Vote Tally</h3>
+  <div id="voteTally"></div>
+  <hr>
+  <h3>Final Reflection</h3>
+  <div id="finalForms"></div>
+
+  <div class="button-row screen-only">
+    <button class="secondary" type="button" id="printBtn">Print / Save as PDF</button>
+    <button class="secondary" type="button" id="exportBtn">Export responses as JSON</button>
+    <button class="secondary" type="button" id="importBtn">Import responses from JSON</button>
+    <button class="danger" type="button" id="clearBtn">Clear all responses</button>
+  </div>
+  <input type="file" id="importFile" accept=".json,application/json" hidden>
+  <details class="person screen-only" id="pasteBox">
+    <summary>Or paste an exported JSON file</summary>
+    <label for="pasteJson">Paste the full contents of the exported file</label>
+    <textarea id="pasteJson" placeholder='{"exported": "...", "reviews": { ... } }'></textarea>
+    <div class="button-row"><button class="primary" type="button" id="pasteImportBtn">Import pasted responses</button></div>
+  </details>
+  <p class="small" id="importMsg" role="status"></p>
+  <p class="small" id="storageNote"></p>
+</section>
+</main>
+
+<footer>Metric Rebrand Leadership Review Tool</footer>
+
+<script>
+(function(){
+"use strict";
+
+/* =====================================================================
+   DATA SOURCE — connect your backend here
+   ---------------------------------------------------------------------
+   Until REMOTE.enabled is true, responses save in each person's own
+   browser and are collected with Export / Import JSON.
+
+   To share responses live, set enabled:true and fill in the functions.
+   Every record is a plain JSON object stored under a path
+   "collection/id". Collections: reviews, ideas, rankings, final.
+     reviews/signal--zach   one reviewer's feedback on one name
+     ideas/<id>             an added name recommendation
+     rankings/<person>      { person, ranks: { candidateId: rank } }
+     final/<person>         final-reflection answers
+   A single table with columns (path text primary key, data jsonb)
+   is enough for Supabase, Firebase, SharePoint lists, etc.
+   ===================================================================== */
+const REVIEW_TOKEN="__REVIEW_TOKEN__";
+const API="/api/review/"+REVIEW_TOKEN;
+async function apiCall(path,opts){
+  const r=await fetch(API+path,Object.assign({headers:{"Content-Type":"application/json"}},opts||{}));
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.status===204?null:r.json();
+}
+const REMOTE={
+  enabled:true,
+  async loadAll(){ const d=await apiCall("/docs"); return (d&&d.docs)||{}; },
+  async set(path,data){ await apiCall("/docs",{method:"PUT",body:JSON.stringify({path:path,data:data})}); },
+  async remove(path){ await apiCall("/docs",{method:"DELETE",body:JSON.stringify({path:path})}); },
+  subscribe(onChange){ return function(){}; }
+};
+
+const people=["Zach","Kara","Bekah"];
+const brands=["Signal","Logic","Axiom","Method"];
+const prompts={
+  Zach:["What is your immediate gut reaction to this name?","What kind of company do you picture when you hear it?","Does it sound credible enough for a sophisticated multifamily owner or broker?","Imagine a broker saying, “You should talk to [BRAND].” Does that sound natural and memorable?","What do you believe this name promises a client?","Does that promise match what we do today? Does it match where we are going?","What sales conversations could this brand make easier? What could it make harder?","What is the strongest argument against this name?","Would you personally advocate for this name? Why or why not?"],
+  Kara:["Does this brand genuinely describe how we operate today, or mostly how we aspire to operate?","Where are we already delivering on this brand promise?","Where would operations have to improve before we could credibly make this promise publicly?","Could this concept become useful internal language for management, training, and accountability?","Could departments or processes naturally adopt terminology based on this brand?","What pressure would this brand put on leadership and operations — and would that pressure be healthy?","What cultural risks do you see?","What would need to be true operationally for us to fully earn this brand?"],
+  Bekah:["Forget strategy for a moment: how does this name make you feel?","What three adjectives immediately come to mind?","If you saw this name on a website with no context, what would you expect?","Does it feel memorable after hearing it once?","Does it have enough personality?","What creative possibilities do you see for social, website, graphics, campaigns, and storytelling?","What would make this brand feel unique rather than generic?","What would absolutely ruin this name visually or verbally?","Would you be excited to launch this publicly? Why or why not?"]
+};
+const finalQs=[
+  ["drawn","Which name are you most drawn to, and why?"],
+  ["credible","Which sounds most credible to a sophisticated multifamily owner, and why?"],
+  ["broker","Which would a broker be most likely to remember, and why?"],
+  ["today","Which best describes who we are TODAY?"],
+  ["future","Which best represents the company we want to become?"],
+  ["different","Which creates the strongest competitive differentiation?"],
+  ["marketing","Which gives us the strongest marketing platform?"],
+  ["culture","Which gives us the strongest internal culture platform?"],
+  ["because","Finish this: “I want us to be ______ because…”"],
+  ["against","Now argue AGAINST your favorite. What might we regret or overlook?"],
+  ["defend","Now defend your least favorite. Why could it actually be the right answer?"],
+  ["missing","What are we missing? Is there something none of these names communicate?"]
+];
+const COLLECTIONS=["reviews","ideas","rankings","final"];
+
+/* ---------- state ---------- */
+const docs={};            // "collection/id" -> plain object
+const timers={}, inflight={}, again={};
+let mode="connecting", readOnly=false, isOwner=false;
+const selected={};
+const edited=new Set(); // paths this viewer changed this visit
+// selected: target -> person
+let me=null;
+try{me=localStorage.getItem("metricRebrand:me")}catch(e){}
+
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+const nl2br=s=>esc(s).replace(/\n/g,"<br>");
+const slug=s=>String(s).toLowerCase().replace(/[^a-z0-9_-]/g,"");
+const reviewPath=(t,p)=>"reviews/"+t+"--"+slug(p);
+const inColl=c=>Object.keys(docs).filter(k=>k.startsWith(c+"/")).map(k=>({id:k.slice(c.length+1),data:docs[k]}));
+
+/* ---------- status ---------- */
+function setSync(s,text){const el=$("#sync");el.dataset.s=s;el.lastElementChild.textContent=text}
+function refreshSync(){
+  if(mode==="local"){setSync("local","Saved on this device");return}
+  if(mode==="connecting"){setSync("connecting","Connecting");return}
+  const busy=Object.keys(timers).some(k=>timers[k])||Object.keys(inflight).some(k=>inflight[k]);
+  if(readOnly) setSync("error","Read only");
+  else setSync(busy?"saving":"live",busy?"Saving":"All responses saved");
+}
+function notice(msg,info){const n=$("#notice");n.textContent=msg;n.classList.toggle("on",!!msg);n.classList.toggle("info",!!info)}
+
+/* ---------- storage backend ---------- */
+function localLoad(){
+  try{
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k&&k.startsWith("metricRebrand:doc:")) docs[k.slice(18)]=JSON.parse(localStorage.getItem(k));
+    }
+  }catch(e){}
+}
+async function backendSet(path,data){
+  try{localStorage.setItem("metricRebrand:doc:"+path,JSON.stringify(data))}catch(e){}
+  if(mode==="live") return REMOTE.set(path,JSON.parse(JSON.stringify(data)));
+}
+async function backendDelete(path){
+  try{localStorage.removeItem("metricRebrand:doc:"+path)}catch(e){}
+  if(mode==="live") return REMOTE.remove(path);
+}
+function queue(path,delay){
+  if(readOnly) return;
+  edited.add(path);
+  clearTimeout(timers[path]);
+  timers[path]=setTimeout(()=>{timers[path]=null;flush(path)},delay==null?650:delay);
+  refreshSync();
+}
+async function flush(path){
+  if(inflight[path]){again[path]=true;return}
+  inflight[path]=true;refreshSync();
+  try{await backendSet(path,docs[path]||{})}
+  catch(e){handleWriteError(e,()=>flush(path))}
+  finally{
+    inflight[path]=false;
+    if(again[path]){again[path]=false;flush(path)}
+    refreshSync();
+  }
+}
+let retried=false;
+function handleWriteError(e,retry){
+  const code=e&&e.code;
+  if(!retried){
+    retried=true;setTimeout(()=>{retried=false;retry()},800+Math.random()*800);
+  }else{
+    notice("A change didn’t reach the shared database. It’s still saved on this device; edit the field again to retry, or export your responses and send them to Lyndsay.");
+  }
+}
+function applyReadOnly(){
+  document.querySelectorAll("main input, main textarea, main select, .fb button, #addIdeaBtn, .rm").forEach(el=>{el.disabled=true});
+  refreshSync();
+}
+function pending(path){return !!(timers[path]||inflight[path])}
+
+/* ---------- feedback panel (the space under each name) ---------- */
+function panelHTML(target,name,modeKind){
+  const isFull=modeKind==="full";
+  const opt=(f,l,ph)=>`<label for="${target}-${f}">${l}</label><textarea id="${target}-${f}" data-field="${f}" placeholder="${esc(ph)}"></textarea>`;
+  return `
+  <div class="fb" data-target="${target}" data-name="${esc(name)}" data-mode="${modeKind}">
+    <h3>Your feedback on ${esc(name)}</h3>
+    <p class="hint">Pick your name, then answer below. Everything saves as you type.</p>
+    <div class="who" role="group" aria-label="Who is completing this review?">
+      <span class="lbl">I’m</span>
+      ${people.map(p=>`<button type="button" data-person="${p}" aria-pressed="false">${p}<span class="done" hidden aria-label="has feedback">●</span></button>`).join("")}
+    </div>
+    <div class="fields" hidden>
+      ${opt("overall","Overall reaction / comments","What do you think about this name and the brand platform overall?")}
+      <div class="grid">
+        <div>${opt("pros","Pros — What do you like about "+name+"?","What feels strong, memorable, credible, differentiated, or useful?")}</div>
+        <div>${opt("cons","Cons / Risks — What concerns you about "+name+"?","What feels weak, confusing, generic, risky, hard to own, or potentially limiting?")}</div>
+      </div>
+      ${isFull?opt("feel","What does this name make you think or feel?","Describe the type of company you picture when you hear this name.")
+        +opt("promise","What do you think this name promises an owner or investor?","What expectation would this brand create in the market?")
+        +opt("earn","What would we need to do operationally to fully live up to this brand?","What would have to be true inside the company for this name to feel authentic?"):""}
+      <span class="lbl" id="${target}-score-l">Overall score — 1 to 10</span>
+      <div class="scores" role="group" aria-labelledby="${target}-score-l">
+        ${Array.from({length:10},(_,i)=>`<button type="button" data-score="${i+1}" aria-pressed="false">${i+1}</button>`).join("")}
+      </div>
+      ${isFull?`<details class="deep"><summary class="deep-sum">Optional deeper questions</summary><div class="deep-body"></div></details>`:""}
+    </div>
+    <div class="others"></div>
+  </div>`;
+}
+function mountPanel(slot){
+  slot.innerHTML=panelHTML(slot.dataset.target,slot.dataset.name,slot.dataset.mode);
+  const panel=slot.firstElementChild;
+  panel.addEventListener("click",e=>{
+    const pb=e.target.closest("button[data-person]");
+    if(pb){choosePerson(panel,pb.dataset.person,true);return}
+    const sb=e.target.closest("[data-score]");
+    if(sb&&panel.dataset.person&&!readOnly){
+      const path=reviewPath(panel.dataset.target,panel.dataset.person);
+      const cur=docs[path]||{};
+      const v=String(cur.score)===sb.dataset.score?"":sb.dataset.score;
+      docs[path]=Object.assign({},cur,meta(panel),{score:v,updated:Date.now()});
+      paintScore(panel);paintOthers(panel);paintDone(panel);queue(path,0);renderDerived();
+    }
+  });
+  const want=selected[panel.dataset.target]||me;
+  if(want) choosePerson(panel,want,false);
+  paintOthers(panel);paintDone(panel);
+  if(readOnly) applyReadOnly();
+}
+function meta(panel){return{target:panel.dataset.target,name:panel.dataset.name,person:panel.dataset.person}}
+function choosePerson(panel,person,userAction){
+  const target=panel.dataset.target;
+  panel.dataset.person=person;selected[target]=person;
+  if(userAction){me=person;try{localStorage.setItem("metricRebrand:me",person)}catch(e){}
+    document.querySelectorAll(".fb").forEach(p=>{if(!p.dataset.person)choosePerson(p,person,false)});
+    const sel=$("#ideaBy");if(sel&&!sel.value)sel.value=person;
+  }
+  panel.querySelectorAll("[data-person]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.person===person)));
+  panel.querySelector(".fields").hidden=false;
+  const path=reviewPath(target,person);
+  panel.querySelectorAll("[data-field]").forEach(el=>{el.dataset.path=path;el.dataset.panel="1"});
+  const deep=panel.querySelector(".deep-body");
+  if(deep){
+    panel.querySelector(".deep-sum").textContent=person+"’s deeper questions for "+panel.dataset.name;
+    deep.innerHTML=prompts[person].map((q,i)=>`<label for="${target}-q${i}">${esc(q.replace("[BRAND]",panel.dataset.name))}</label><textarea id="${target}-q${i}" data-field="q${i}" data-path="${path}" data-panel="1"></textarea>`).join("");
+    if(readOnly) deep.querySelectorAll("textarea").forEach(t=>t.disabled=true);
+  }
+  fillInputs(panel,true);paintScore(panel);paintOthers(panel);
+}
+function paintScore(panel){
+  if(!panel.dataset.person) return;
+  const d=docs[reviewPath(panel.dataset.target,panel.dataset.person)]||{};
+  panel.querySelectorAll("[data-score]").forEach(b=>b.setAttribute("aria-pressed",String(String(d.score)===b.dataset.score)));
+}
+function hasContent(d){return d&&Object.keys(d).some(k=>!["target","name","person","updated"].includes(k)&&String(d[k]||"").trim())}
+function paintDone(panel){
+  panel.querySelectorAll("[data-person]").forEach(b=>{
+    b.querySelector(".done").hidden=!hasContent(docs[reviewPath(panel.dataset.target,b.dataset.person)]);
+  });
+}
+function paintOthers(panel){
+  const box=panel.querySelector(".others");
+  const items=people.map(p=>({p,d:docs[reviewPath(panel.dataset.target,p)]})).filter(x=>hasContent(x.d));
+  if(!items.length){box.innerHTML=`<p class="small">No feedback on ${esc(panel.dataset.name)} yet.</p>`;return}
+  box.innerHTML=`<h4>What the team has said</h4>`+items.map(({p,d})=>`
+    <div class="said">
+      <div class="top"><span>${p}</span><span class="score">${d.score?esc(d.score)+" / 10":"No score yet"}</span></div>
+      ${d.overall?`<p>${nl2br(d.overall)}</p>`:""}
+      ${d.pros?`<p><b>Pros</b><br>${nl2br(d.pros)}</p>`:""}
+      ${d.cons?`<p><b>Cons / risks</b><br>${nl2br(d.cons)}</p>`:""}
+    </div>`).join("");
+}
+function fillInputs(scope,force){
+  (scope||document).querySelectorAll("[data-path][data-field]").forEach(el=>{
+    if(el.tagName==="BUTTON") return;
+    if(!force&&(el===document.activeElement||pending(el.dataset.path))) return;
+    const d=docs[el.dataset.path]||{};
+    const v=d[el.dataset.field]==null?"":String(d[el.dataset.field]);
+    if(el.value!==v) el.value=v;
+  });
+}
+
+/* generic input binding */
+document.addEventListener("input",e=>{
+  const el=e.target;
+  if(!el.dataset||!el.dataset.path||!el.dataset.field||readOnly) return;
+  const path=el.dataset.path;
+  const extra={};
+  if(el.dataset.panel){const panel=el.closest(".fb");Object.assign(extra,meta(panel))}
+  if(path.startsWith("final/")) extra.person=path.split("/")[1];
+  docs[path]=Object.assign({},docs[path]||{},extra,{[el.dataset.field]:el.value,updated:Date.now()});
+  queue(path);
+  if(el.dataset.panel){const panel=el.closest(".fb");paintOthers(panel);paintDone(panel);renderRollup()}
+});
+
+/* ---------- ideas ---------- */
+function ideasSorted(){return inColl("ideas").sort((a,b)=>(a.data.createdTs||0)-(b.data.createdTs||0))}
+let ideasSig="";
+function renderIdeas(){
+  const ideas=ideasSorted();
+  const sig=JSON.stringify(ideas.map(x=>[x.id,x.data.name,x.data.by,x.data.reason,x.data.pros,x.data.cons,x.data.tagline]));
+  if(sig===ideasSig) return; ideasSig=sig;
+  const list=$("#ideaList");
+  if(!ideas.length){list.innerHTML='<p class="small">No additional name recommendations have been added yet. Add one above.</p>';return}
+  list.innerHTML=ideas.map(({id,data:x})=>`
+    <div class="idea">
+      <h3>${esc(x.name)}</h3>
+      <div class="meta">Recommended by <strong>${esc(x.by)}</strong>, ${esc(x.created||"")}</div>
+      ${x.tagline?`<p><strong>Tagline / positioning:</strong> ${esc(x.tagline)}</p>`:""}
+      <p><strong>Why:</strong><br>${nl2br(x.reason)}</p>
+      <div class="grid">
+        <div><strong>Original recommender’s pros</strong><br>${nl2br(x.pros||"—")}</div>
+        <div><strong>Original recommender’s cons / risks</strong><br>${nl2br(x.cons||"—")}</div>
+      </div>
+      <div class="fb-slot" data-target="idea-${esc(id)}" data-name="${esc(x.name)}" data-mode="short"></div>
+      <button class="danger screen-only rm" type="button" data-remove="${esc(id)}" style="margin-top:14px">Remove ${esc(x.name)}</button>
+    </div>`).join("");
+  list.querySelectorAll(".fb-slot").forEach(mountPanel);
+  if(readOnly) applyReadOnly();
+}
+$("#ideaList").addEventListener("click",async e=>{
+  const b=e.target.closest("[data-remove]");if(!b||readOnly)return;
+  const path="ideas/"+b.dataset.remove;const name=(docs[path]||{}).name||"this recommendation";
+  if(!confirm("Remove "+name+" and its feedback for everyone?"))return;
+  const victims=[path].concat(Object.keys(docs).filter(k=>k.startsWith("reviews/idea-"+b.dataset.remove+"--")));
+  victims.forEach(k=>delete docs[k]);
+  renderAll();
+  for(const k of victims){try{await backendDelete(k)}catch(err){handleWriteError(err,()=>{})}}
+});
+$("#addIdeaBtn").addEventListener("click",async()=>{
+  const v=id=>$("#"+id).value.trim();
+  const by=v("ideaBy"),name=v("ideaName"),reason=v("ideaReason");
+  const msg=$("#ideaMsg");
+  if(!by||!name||!reason){msg.textContent="Add who recommended it, the proposed name, and why before adding.";return}
+  const id="i"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  const path="ideas/"+id;
+  docs[path]={by,name,reason,pros:v("ideaPros"),cons:v("ideaCons"),tagline:v("ideaTagline"),created:new Date().toLocaleString(),createdTs:Date.now()};
+  ["ideaName","ideaReason","ideaPros","ideaCons","ideaTagline"].forEach(i=>$("#"+i).value="");
+  msg.textContent=name+" added. Feedback space is ready below.";
+  renderAll();queue(path,0);
+});
+
+/* ---------- candidates, rankings, tally, rollup ---------- */
+function candidates(){
+  return brands.map(b=>({id:"base-"+b.toLowerCase(),name:b,target:b.toLowerCase()}))
+    .concat(ideasSorted().map(x=>({id:x.id,name:x.data.name,target:"idea-"+x.id})));
+}
+function ranks(person){return((docs["rankings/"+slug(person)]||{}).ranks)||{}}
+let rankSig="";
+function renderRankingForms(force){
+  const c=candidates();
+  const sig=JSON.stringify(c.map(x=>x.id))+JSON.stringify(people.map(ranks));
+  if(sig===rankSig&&!force) return; rankSig=sig;
+  const box=$("#rankingForms");
+  const open=new Set([...box.querySelectorAll("details[open]")].map(d=>d.dataset.p));
+  box.innerHTML=people.map(person=>{
+    const r=ranks(person);
+    return `<details class="person" data-p="${person}" ${open.has(person)?"open":""}>
+      <summary>${person} — Rank all candidates</summary>
+      <p class="small">Use each number once. 1 = first choice, ${c.length} = last choice.</p>
+      <div class="rank-grid">
+        ${c.map(x=>`<div><label for="rk-${person}-${esc(x.id)}">${esc(x.name)}</label>
+          <select id="rk-${person}-${esc(x.id)}" data-rank-person="${person}" data-cand="${esc(x.id)}">
+            <option value="">Not ranked</option>
+            ${c.map((_,i)=>`<option value="${i+1}" ${Number(r[x.id])===i+1?"selected":""}>${i+1}</option>`).join("")}
+          </select></div>`).join("")}
+      </div>
+    </details>`}).join("");
+  if(readOnly) applyReadOnly();
+}
+$("#rankingForms").addEventListener("change",e=>{
+  const s=e.target.closest("[data-rank-person]");if(!s||readOnly)return;
+  const path="rankings/"+slug(s.dataset.rankPerson);
+  const cur=docs[path]||{};
+  const r=Object.assign({},cur.ranks||{});
+  if(s.value) r[s.dataset.cand]=parseInt(s.value,10); else delete r[s.dataset.cand];
+  docs[path]={person:s.dataset.rankPerson,ranks:r,updated:Date.now()};
+  rankSig=JSON.stringify(candidates().map(x=>x.id))+JSON.stringify(people.map(ranks));
+  queue(path,0);renderVoteTally();
+});
+function renderVoteTally(){
+  const c=candidates();
+  const res=c.map(x=>{
+    let first=0,points=0,ranked=0,sum=0;
+    people.forEach(p=>{const r=Number(ranks(p)[x.id]);if(r){ranked++;sum+=r;if(r===1)first++;points+=c.length-r+1}});
+    return Object.assign({},x,{first,points,ranked,avg:ranked?sum/ranked:null});
+  }).sort((a,b)=>b.first-a.first||b.points-a.points||(a.avg??999)-(b.avg??999));
+  const mf=Math.max(0,...res.map(r=>r.first)),mp=Math.max(0,...res.map(r=>r.points));
+  $("#voteTally").innerHTML=`<div class="tbl"><table>
+    <tr><th>Candidate</th><th>1st-place votes</th><th>Ranking points</th><th>Average rank</th><th>Ranked by</th></tr>
+    ${res.map(r=>`<tr class="${r.first===mf&&r.points===mp&&r.ranked>0?"winner":""}"><td><strong>${esc(r.name)}</strong></td><td>${r.first}</td><td>${r.points}</td><td>${r.avg?r.avg.toFixed(2):"—"}</td><td>${r.ranked}/${people.length}</td></tr>`).join("")}
+  </table></div>
+  <p class="small"><strong>Ranking points:</strong> with ${c.length} candidates, a #1 rank earns ${c.length} points, #2 earns ${Math.max(c.length-1,0)}, and so on. This shows broader consensus in addition to first-place votes.</p>`;
+}
+function renderRollup(){
+  let out='<h3>Feedback Roll-Up: Pros, Cons &amp; Comments</h3><p>This section automatically summarizes the feedback entered directly underneath each candidate.</p>';
+  candidates().forEach(x=>{
+    const idea=x.target.startsWith("idea-")?docs["ideas/"+x.id]:null;
+    out+=`<div class="roll"><h4>${esc(x.name)}${idea?` <span class="small">— added by ${esc(idea.by)}</span>`:""}</h4>`;
+    if(idea) out+=`<p><strong>Why added:</strong> ${nl2br(idea.reason)}</p>`;
+    people.forEach(p=>{
+      const r=docs[reviewPath(x.target,p)]||{};
+      out+=`<div class="p"><strong>${p}</strong>${r.score?` <span class="small">score ${esc(r.score)}/10</span>`:""}
+        <div class="grid" style="margin-top:6px"><div><strong class="small">Pros</strong><br>${nl2br(r.pros||"—")}</div><div><strong class="small">Cons / Risks</strong><br>${nl2br(r.cons||"—")}</div></div>
+        ${r.overall?`<p style="margin:8px 0 0"><strong class="small">Overall comments</strong><br>${nl2br(r.overall)}</p>`:""}</div>`;
+    });
+    out+="</div>";
+  });
+  $("#rollup").innerHTML=out;
+}
+function renderFinalForms(){
+  $("#finalForms").innerHTML=people.map(p=>`
+    <details class="person">
+      <summary>${p}’s final comparison</summary>
+      ${finalQs.map(([k,q])=>`<label for="fin-${p}-${k}">${esc(q)}</label><textarea id="fin-${p}-${k}" data-path="final/${slug(p)}" data-field="${k}"></textarea>`).join("")}
+    </details>`).join("");
+}
+function renderDerived(){renderRollup();renderVoteTally()}
+function renderAll(){
+  renderIdeas();renderRankingForms();renderDerived();
+  document.querySelectorAll(".fb").forEach(p=>{paintOthers(p);paintDone(p);paintScore(p)});
+  fillInputs();
+}
+
+/* ---------- buttons ---------- */
+$("#printBtn").addEventListener("click",()=>{document.querySelectorAll("details").forEach(d=>d.open=true);setTimeout(()=>window.print(),50)});
+$("#exportBtn").addEventListener("click",async()=>{
+  const data={exported:new Date().toISOString(),reviews:{},ideas:{},rankings:{},final:{}};
+  COLLECTIONS.forEach(c=>inColl(c).forEach(x=>data[c][x.id]=x.data));
+  const text=JSON.stringify(data,null,2);
+  const name="rebrand-responses"+(me?"-"+slug(me):"")+".json";
+  try{
+    const url=URL.createObjectURL(new Blob([text],{type:"application/json"}));
+    const a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),2000);
+  }catch(e){
+    try{await navigator.clipboard.writeText(text);alert("Download isn’t available here, so your responses were copied to the clipboard. Paste them into an email to Lyndsay.")}catch(_){alert("Export isn’t available in this browser.")}
+  }
+});
+$("#clearBtn").addEventListener("click",async()=>{
+  if(!confirm(mode==="live"?"Delete every response, ranking, and added name for everyone? This can’t be undone.":"Delete every response, ranking, and added name saved in this browser? This can’t be undone."))return;
+  const keys=Object.keys(docs);keys.forEach(k=>delete docs[k]);
+  ideasSig="";rankSig="";renderAll();fillInputs(null,true);
+  for(const k of keys){try{await backendDelete(k)}catch(e){handleWriteError(e,()=>{})}}
+});
+
+/* ---------- import ---------- */
+const SEG=/^[A-Za-z0-9_\-.~:@+]{1,200}$/;
+const prim=v=>typeof v==="string"||typeof v==="number";
+function cleanFlat(o){const r={};if(o&&typeof o==="object")for(const k of Object.keys(o)){if(SEG.test(k)&&prim(o[k]))r[k]=typeof o[k]==="string"?o[k].slice(0,20000):o[k]}return r}
+function importData(obj){
+  if(!obj||typeof obj!=="object"||!COLLECTIONS.some(c=>obj[c]&&typeof obj[c]==="object")) throw new Error("shape");
+  let count=0;const names=new Set();const paths=[];
+  COLLECTIONS.forEach(c=>{
+    const coll=obj[c];if(!coll||typeof coll!=="object")return;
+    Object.keys(coll).forEach(id=>{
+      if(!SEG.test(id)||id==="."||id==="..")return;
+      const path=c+"/"+id;const cur=docs[path]||{};const inc=coll[id]||{};
+      let merged;
+      if(c==="rankings"){
+        const r=Object.assign({},cur.ranks||{});
+        const ir=inc.ranks&&typeof inc.ranks==="object"?inc.ranks:{};
+        Object.keys(ir).forEach(k=>{const n=parseInt(ir[k],10);if(SEG.test(k)&&n>0)r[k]=n});
+        if(!Object.keys(ir).length)return;
+        merged={person:String(inc.person||cur.person||id),ranks:r,updated:Date.now()};
+      }else if(c==="ideas"){
+        if(docs[path])return; // already here
+        const f=cleanFlat(inc);if(!f.name)return;merged=f;
+      }else{
+        const f=cleanFlat(inc);
+        const filled=Object.keys(f).filter(k=>!["target","name","person","updated"].includes(k)&&String(f[k]).trim()!=="");
+        if(!filled.length)return;
+        merged=Object.assign({},cur);filled.forEach(k=>merged[k]=f[k]);
+        ["target","name","person"].forEach(k=>{if(f[k]&&!merged[k])merged[k]=f[k]});
+        merged.updated=Date.now();
+      }
+      if(merged.person)names.add(String(merged.person));
+      docs[path]=merged;paths.push(path);count++;
+    });
+  });
+  ideasSig="";rankSig="";
+  renderAll();fillInputs(null,true);
+  paths.forEach((p,i)=>queue(p,i*150));
+  return {count,names:[...names]};
+}
+function runImport(text){
+  const msg=$("#importMsg");
+  let obj;
+  try{obj=JSON.parse(text)}catch(e){msg.textContent="That isn’t valid JSON. Use the file made by “Export responses as JSON.”";return}
+  try{
+    const r=importData(obj);
+    msg.textContent=r.count?`Imported ${r.count} response${r.count===1?"":"s"}${r.names.length?" from "+r.names.join(", "):""}. Existing answers were kept; blank fields in the file didn’t overwrite anything.`:"Nothing new to import. Every answer in that file is blank or already here.";
+  }catch(e){msg.textContent="That file isn’t a rebrand review export. Use the file made by “Export responses as JSON.”"}
+}
+$("#importBtn").addEventListener("click",()=>$("#importFile").click());
+$("#importFile").addEventListener("change",async e=>{
+  const f=e.target.files&&e.target.files[0];if(!f)return;
+  try{runImport(await f.text())}catch(err){$("#importMsg").textContent="That file couldn’t be read. Try pasting its contents instead."}
+  e.target.value="";
+});
+$("#pasteImportBtn").addEventListener("click",()=>{const t=$("#pasteJson").value.trim();if(!t){$("#importMsg").textContent="Paste the exported JSON first.";return}runImport(t);$("#pasteJson").value=""});
+
+/* ---------- boot ---------- */
+document.querySelectorAll("section .fb-slot").forEach(mountPanel);
+renderFinalForms();renderAll();refreshSync();
+
+function goLocal(){
+  mode="local";localLoad();
+  $("#storageNote").textContent="Responses save in this browser only. When you’re finished, tap “Export responses as JSON” and email the file to Lyndsay.";
+  notice("Your answers save automatically in this browser. When you’re finished, scroll to the bottom and tap “Export responses as JSON,” then email the file to Lyndsay.",true);
+  renderAll();refreshSync();
+}
+(async function(){
+  if(!REMOTE.enabled){goLocal();return}
+  try{
+    const all=await REMOTE.loadAll()||{};
+    Object.keys(all).forEach(k=>{if(all[k]&&typeof all[k]==="object")docs[k]=JSON.parse(JSON.stringify(all[k]))});
+    mode="live";
+    $("#storageNote").textContent="Responses save automatically and are shared with everyone who opens this page.";
+    ideasSig="";rankSig="";renderAll();refreshSync();
+    REMOTE.subscribe((path,data)=>{
+      if(typeof path!=="string"||pending(path))return;
+      if(data==null) delete docs[path]; else docs[path]=JSON.parse(JSON.stringify(data));
+      renderIdeas();renderRankingForms();renderDerived();
+      document.querySelectorAll(".fb").forEach(p=>{paintOthers(p);paintDone(p);paintScore(p)});
+      fillInputs();
+    });
+  }catch(e){
+    goLocal();
+    notice("The shared database couldn’t be reached, so answers are saving in this browser. Export them when you’re finished and email the file to Lyndsay.");
+  }
+})();
+})();
+</script>
+</body>
+</html>
