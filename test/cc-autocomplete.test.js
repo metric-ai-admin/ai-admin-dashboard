@@ -246,4 +246,68 @@ t('the open counts read the three states, not the raw checks object', () => {
   assert.ok(/const ccIsDone = t => ccStateOf\(t\)\.done;/.test(cc));
 });
 
+
+// ---- inspreview stopped being a task ---------------------------------------
+//
+// The probe on 2026-10-06 read inspection_detail directly: beyond the eleven
+// columns the sync keeps it returns only inspected_on, occupancy_id, unit_id
+// and unit_turn_id -- nothing about a review, an approval or an update -- and
+// "Erick" appears in no column of any row. marked_done_by holds whoever marked
+// it FIRST, always the tech. So the review can be done perfectly and the card
+// can never clear, and a checkbox that doing the job cannot satisfy teaches
+// the person to ignore the board.
+t('inspreview is no longer a task category at all', () => {
+  assert.ok(!/key:\s*'inspreview'/.test(cc), 'it must not be in CC_CATS');
+  assert.ok(/cat: 'insppending'/.test(cc), 'pending inspections are still tasks');
+});
+
+t('reviewed inspections go to their own list, not into the task list', () => {
+  assert.ok(/CC_INSP_REVIEW\.push\(/.test(cc));
+  const fn = cc.slice(cc.indexOf('function ccInspectionTasks'));
+  const body = fn.slice(0, fn.indexOf('function ccRenderInspReview'));
+  assert.ok(!/insprev:/.test(body),
+    'nothing may be pushed onto the task list for a reviewed inspection');
+});
+
+t('the list is rendered without a checkbox', () => {
+  const fn = cc.slice(cc.indexOf('function ccRenderInspReview'));
+  const body = fn.slice(0, fn.indexOf('host.appendChild(c);', 10) + 20);
+  assert.ok(!/cc-tck|type="checkbox"/.test(body), 'a tick here could never be satisfied');
+  assert.ok(/Inspections marked by techs/.test(body));
+  assert.ok(/Not a task and not counted/.test(body), 'the page has to say why');
+});
+
+t('an entry drops off seven days after it was marked done', () => {
+  assert.ok(/const CC_INSP_REVIEW_DAYS = 7;/.test(cc));
+  assert.ok(/age != null && age > CC_INSP_REVIEW_DAYS/.test(cc));
+});
+
+t('an entry with NO date is kept, not silently dropped', () => {
+  // There is no clock to have run out, and hiding it would repeat the failure
+  // this whole change is about.
+  assert.ok(/age != null &&/.test(cc),
+    'the expiry must require a date rather than treating null as expired');
+  assert.ok(/no date/.test(cc), 'and it must say so on screen');
+});
+
+t('the date it counts from is carried through the sync path too', () => {
+  assert.ok(/markedDoneOn:\['markeddoneon'/.test(cc), 'a column candidate');
+  assert.ok(/'Marked Done On': r\.marked_done_on/.test(cc),
+    'without this the sync-fed board has no clock and nothing would ever expire');
+  const hdr = cc.slice(cc.indexOf('CC_INSP_HEADERS'), cc.indexOf('CC_INSP_HEADERS') + 400);
+  assert.ok(/'Marked Done On'/.test(hdr), 'the header list must offer it, or ccIngest will not map it');
+});
+
+t('old boards stop contributing invisible tasks', () => {
+  // Eight stored boards carry 46 inspreview cards each. Left in CC_TASKS they
+  // would render nowhere and still count against the day's total.
+  assert.ok(/state\.tasks\.filter\(t => t && t\.cat !== 'inspreview'\)/.test(cc));
+});
+
+t('the auto-close guard still refuses inspreview, for the stored boards', () => {
+  assert.ok(A.NEVER_AUTO.has('inspreview'));
+  assert.strictEqual(A.autoFor({ id: 'insprev:1431', cat: 'inspreview', wo: {} },
+    { wos: WOS, inspections: INSP }), null);
+});
+
 console.log(`\n${pass} passing`);

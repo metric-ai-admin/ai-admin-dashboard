@@ -38,6 +38,8 @@ const CC_TODAY_KEY = CC_TODAY.toISOString().slice(0, 10);
 const CC_TRANSLATION_CUTOFF = new Date('2026-06-10T00:00:00');
 const CC_INSPECTION_CUTOFF = new Date('2026-06-23T00:00:00');
 const CC_COORD_NAME = 'Erick';
+const CC_INSP_REVIEW_DAYS = 7;   // an entry drops off by itself this long after marked_done_on
+let CC_INSP_REVIEW = [];
 const CC_LOW_HOURS = 6;
 const CC_LABOR_RATES = 'Standard override: $34/hr for most techs; Josue $42/hr; Raul $50/hr.';
 const CC_STD_REMINDER = 'Then remind the tech about any policy violation and update the work-order notes.';
@@ -70,6 +72,7 @@ const CC_COLS = {
   inspector:['inspector','assignedtechnician'],
   template:['inspectiontemplate','template','inspectionname','inspectiontype'],
   inspId:['inspectionid','inspectionnumber'],
+  markedDoneOn:['markeddoneon','markedcompletedon','doneon'],
   hours:['workedhours','billablehours','hours','laborhours','totalhours'],
   afterhours:['markedafterhours','afterhours'], codeviolation:['codeviolation'],
   lifesafety:['lifesafetyissue','lifesafety'],
@@ -305,7 +308,7 @@ function ccWoRowFromSynced(w) {
 }
 /* Per-slot header names are chosen to match each slot's CC_COLS candidates, so
    ccIngest routes them correctly and every field the slot reads is populated. */
-const CC_INSP_HEADERS = ['Inspection Name', 'Property Name', 'Unit', 'Status', 'Inspection Date', 'Marked Done By', 'Created On', 'Inspection ID'];
+const CC_INSP_HEADERS = ['Inspection Name', 'Property Name', 'Unit', 'Status', 'Inspection Date', 'Marked Done By', 'Marked Done On', 'Created On', 'Inspection ID'];
 function ccInspRow(r) {
   return {
     'Inspection Name': r.inspection_name || '',  // → template
@@ -314,6 +317,7 @@ function ccInspRow(r) {
     'Status': r.status || '',
     'Inspection Date': r.inspection_date || '',
     'Marked Done By': r.marked_done_by || '',     // → completedBy
+    'Marked Done On': r.marked_done_on || '',     // → markedDoneOn, the 7-day clock
     'Created On': r.created_on || '',             // → created
     'Inspection ID': r.inspection_id || '',       // → inspId
   };
@@ -576,7 +580,6 @@ const CC_CATS = [
   { key:'assign',      label:'Assign work orders',                 tone:'navy',   desc:'Every work order must be assigned — by priority, property, and tech skill.' },
   { key:'cancelbucket',label:'Cancelled, still unassigned',        tone:'grey',   desc:'Clear from the Unassigned bucket without un-cancelling.' },
   { key:'waiting',     label:'Waiting status — audit',             tone:'gold',   desc:'Completed work held for a billing issue — a QC concern or missing photos/detail.' },
-  { key:'inspreview',  label:'Inspections to review & re-mark done', tone:'blue', desc:'Marked done by someone other than ' + CC_COORD_NAME + ' — review, create work orders, then re-mark Done.' },
   { key:'insppending', label:'Pending inspections — remind tech',   tone:'gold',   desc:'Not started or not completed. WhatsApp the tech to finish; the Coordinator marks it Done afterward.' },
   { key:'hours',       label:'Low hours — remind tech',            tone:'gold',   desc:'Under ' + CC_LOW_HOURS + ' hours logged the previous business day.' },
   { key:'parts',       label:'Parts needed / ordered',             tone:'teal',   desc:'Follow up by parts status.' },
@@ -766,9 +769,26 @@ function ccRealmXTasks(list) {
     });
   });
 }
+/* Inspections.
+   PENDING ones are tasks: a tech has to finish them, and AppFolio says when
+   that happened (status DONE), so the card closes itself.
+
+   REVIEWED ones are NOT tasks any more, and this is the reason. The card used
+   to say "re-mark it Done once you have reviewed it", and would have cleared
+   when marked_done_by became Erick. It never can. The probe on 2026-10-06 read
+   inspection_detail directly: its only columns beyond the eleven we store are
+   inspected_on, occupancy_id, unit_id and unit_turn_id -- nothing about a
+   review, an approval or an update -- and "Erick" appears in no column of any
+   row. marked_done_by holds whoever marked it FIRST, which is always the tech.
+
+   So the work can be done perfectly and the card can never clear. A checkbox
+   that cannot be satisfied by doing the job is worse than no checkbox: it
+   trains the person to ignore the board. They are a list now, each entry
+   dropping off by itself seven days after it was marked. */
 function ccInspectionTasks(list) {
   const rep = ccReports.insp; if (!rep) return;
   const m = rep.map;
+  CC_INSP_REVIEW = [];
   rep.rows.forEach(r => {
     const created = ccParseDate(ccVal(r, m, 'created'));
     if (created && created < CC_INSPECTION_CUTOFF) return;
@@ -777,11 +797,15 @@ function ccInspectionTasks(list) {
     const completedBy = ccVal(r, m, 'completedBy'), inspector = ccVal(r, m, 'inspector');
     const link = ccInspLink(inspId);
     if (/done|complete|submitted|approved|finished/.test(status)) {
-      if ((completedBy || '').toLowerCase().indexOf(CC_COORD_NAME.toLowerCase()) === -1)
-        list.push({ id: 'insprev:' + (inspId || prop + unit + tmpl), cat: 'inspreview',
-          title: 'Review inspection' + (tmpl ? ': ' + tmpl : ''),
-          instr: 'Marked done by ' + (completedBy || 'a tech') + '. Review it, create work orders for any items needed, then re-mark it Done — the Maintenance Coordinator marks inspections done, not techs.',
-          wo: { property: prop, unit, tech: completedBy }, desc: '', age: null, link });
+      if ((completedBy || '').toLowerCase().indexOf(CC_COORD_NAME.toLowerCase()) !== -1) return;
+      const doneOn = ccParseDate(ccVal(r, m, 'markedDoneOn'));
+      const age = doneOn ? ccDaysOld(doneOn) : null;
+      /* Seven days after it was marked it leaves on its own. An entry with no
+         date is KEPT rather than dropped: there is no clock to have run out,
+         and silently hiding it would be the same failure as the checkbox. */
+      if (age != null && age > CC_INSP_REVIEW_DAYS) return;
+      CC_INSP_REVIEW.push({ inspId, property: prop, unit, template: tmpl,
+        by: completedBy || 'a tech', doneOn, age, link });
     } else {
       list.push({ id: 'insppend:' + (inspId || prop + unit + tmpl), cat: 'insppending',
         title: 'Pending inspection' + (tmpl ? ': ' + tmpl : ''),
@@ -789,7 +813,9 @@ function ccInspectionTasks(list) {
         wo: { property: prop, unit, tech: inspector }, desc: '', age: null, link });
     }
   });
+  CC_INSP_REVIEW.sort((a, b) => (b.doneOn ? b.doneOn.getTime() : 0) - (a.doneOn ? a.doneOn.getTime() : 0));
 }
+
 function ccLaborLines() {
   const out = [], rep = ccReports.bill || ccReports.labor;
   if (!rep) return out;
@@ -894,7 +920,45 @@ function ccRenderTasks() {
     items.forEach(t => body.appendChild(ccTaskRow(t)));
     host.appendChild(c);
   });
+  ccRenderInspReview(host);
   ccUpdateProgress();
+}
+
+/* Inspections a tech marked done. Information, not work: no checkbox, no count
+   against the day's total, and each one leaves on its own seven days after it
+   was marked. See the note above ccInspectionTasks for why this cannot be a
+   task -- AppFolio records nothing when Erick reviews one, so the card could
+   never be cleared by doing the job. */
+function ccRenderInspReview(host) {
+  if (!host || !CC_INSP_REVIEW.length) return;
+  const c = document.createElement('div');
+  c.className = 'cc-cat cc-tone-blue cc-info';
+  c.id = 'cc-cat-inspreview';
+  const rows = CC_INSP_REVIEW.map(e => {
+    const when = e.doneOn ? ccFmtD(e.doneOn) : 'date not given';
+    const age = e.age != null ? `${e.age}d ago` : 'no date — stays until one arrives';
+    return `<div class="cc-inforow">
+      <div class="cc-body">
+        <div class="cc-ttl">${esc(e.template || 'Inspection')}${e.unit ? ' — ' + esc(e.unit) : ''}</div>
+        <div class="cc-meta">
+          ${e.property ? `<span class="cc-chip">${esc(e.property)}</span>` : ''}
+          <span class="cc-chip">👤 ${esc(e.by)}</span>
+          <span class="cc-chip">${esc(when)} · ${esc(age)}</span>
+        </div>
+      </div>
+      ${e.link ? `<a class="cc-open" href="${esc(e.link)}" target="_blank" rel="noopener">Open ↗</a>`
+               : '<span class="cc-open muted">no link</span>'}
+    </div>`;
+  }).join('');
+  c.innerHTML = `<div class="cc-cat-head"><span class="cc-acc"></span>
+      <h4>Inspections marked by techs — for review</h4>
+      <span class="cc-count">${CC_INSP_REVIEW.length} listed</span><span class="cc-chev">▾</span></div>
+    <div class="cc-cat-desc">Not a task and not counted. AppFolio records nothing when you review one,
+      so there is no tick that could ever clear it — each entry drops off by itself
+      ${CC_INSP_REVIEW_DAYS} days after it was marked done.</div>
+    <div class="cc-cat-body">${rows}</div>`;
+  c.querySelector('.cc-cat-head').onclick = () => c.classList.toggle('collapsed');
+  host.appendChild(c);
 }
 
 /* Cards AppFolio has already closed.
@@ -1215,7 +1279,11 @@ async function ccRestoreState() {
   } catch { return; }
   if (!state || !Array.isArray(state.tasks) || !state.tasks.length) return;
 
-  CC_TASKS = state.tasks;
+  /* Boards saved before 2026-10-06 carry inspreview cards, which are no longer
+     tasks. Left in, they would render nowhere and still be counted in the
+     day's total -- 46 invisible tasks that can never be done. Dropped on
+     restore; the stored rows keep them, because that is what the board WAS. */
+  CC_TASKS = state.tasks.filter(t => t && t.cat !== 'inspreview');
   ccGeneratedAt = state.generated_at || null;
   /* The server copy wins rather than merging with localStorage. It was written
      from this same browser and is at most one debounce behind; a union would

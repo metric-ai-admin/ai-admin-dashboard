@@ -2963,3 +2963,12 @@ tr.ca-sel { background: var(--accent-glow); }
 /* Cancelled ends the card without the work having happened, so it never wears
    the colour that means "done well". */
 .cc-auto.cancelled { background: transparent; color: var(--muted); font-weight: 500; }
+
+/* Inspections marked by techs: a list, not a task list.
+   Flatter than a category of cards on purpose — no checkbox column, nothing to
+   tick, so it should not look like work waiting to be claimed. */
+.cc-cat.cc-info .cc-cat-body { padding-top: 2px; }
+.cc-inforow { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0;
+  border-bottom: 1px solid var(--border); }
+.cc-inforow:last-child { border-bottom: none; }
+.cc-inforow .cc-ttl { font-weight: 600; }
