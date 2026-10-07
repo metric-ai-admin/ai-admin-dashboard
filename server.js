@@ -10260,6 +10260,228 @@ app.post('/api/billable/email', requireAuth, requireRole(...BILLABLE_ROLES), asy
 });
 
 // =====================================================================
+// KPI REPORT — the combined weekly report (phase 2)
+// =====================================================================
+//
+// Phase 1 settled that our numbers agree with Lyndsay's workbook. This is the
+// report built FROM them, so the comparison on Monday 2026-10-12 can be the
+// last one against Katie's Excel.
+//
+// The week defaults to the LAST COMPLETE WEEK, from the same
+// leasingLastCompleteWeekEnding() the Leasing Goal Board uses. One function
+// decides what "this week" means across the dashboard; two would drift and
+// nobody would notice until a Monday.
+const kpiReport = require('./lib/kpi-report.js');
+const KPI = require('./lib/kpi-lyndsay.js');
+
+const KPI_REPORT_ROLES = ['admin', 'regional_director', 'resident_success', 'operations'];
+
+// Who may adjust a number by hand — people, not roles.
+//
+// Jay decided on 2026-10-02 that this is Bekah's and Kara's. By name for the
+// same reason as the Call Analyzer: these numbers go to owners, and the next
+// person given regional_director should not inherit the ability to change them
+// because of a role they were handed for something else.
+const KPI_EDITORS = (process.env.KPI_EDITORS || 'bekah,kara')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+// EMPTY ON PURPOSE, and it stays empty until Bekah and Kara say which numbers
+// they need to adjust (Kara was asked 2026-10-07). The mechanism is built and
+// accepts nothing: a PATCH naming any field is refused, so there is no window
+// where somebody can change a figure nobody agreed was changeable. Adding one
+// later is adding a string to this array.
+const KPI_EDITABLE_FIELDS = [];
+
+const mayEditKpi = user =>
+  !!(user && user.username) && KPI_EDITORS.includes(String(user.username).toLowerCase());
+
+app.get('/api/kpi/report', requireAuth, requireRole(...KPI_REPORT_ROLES), async (req, res) => {
+  try {
+    const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+    const week_ending = isDay(req.query.week_ending)
+      ? req.query.week_ending
+      : WEEK.leasingLastCompleteWeekEnding();
+    const weekStart = WEEK.addDaysYMD(week_ending, -6);
+
+    if (!CRM_CONFIGURED) {
+      return res.status(503).json({ error: 'Supabase not configured' });
+    }
+    const db = supabaseAdmin || supabasePublic;
+
+    // The same six tables scripts/kpi-compare-lyndsay.js reads, in the same
+    // shape, so the report and the comparison that validates it cannot drift
+    // apart. If they ever disagree it is a bug in one of them, not in which
+    // columns were asked for.
+    const gaps = [];
+    const grab = async (t, cols) => {
+      const { data, error } = await db.from(t).select(cols).limit(20000);
+      // An unreadable table yields an empty array and a named gap rather than
+      // a 500 — a missing source should cost its own metrics, not the report.
+      if (error) { gaps.push(t + ': ' + error.message); return []; }
+      return data || [];
+    };
+    const [occupancy, leads, showings, applications, leaseHistory, workOrders] = await Promise.all([
+      grab('leasing_occupancy', 'property_name,total_units,occupied_units,vacant_rented,notice_units,as_of'),
+      grab('leasing_leads', 'property,interest_received'),
+      grab('leasing_showings', 'property_name,showing_date,status'),
+      grab('leasing_applications', 'property_name,application_date,status,detailed_status'),
+      grab('leasing_lease_history', 'property_name,move_in_date,move_out_date,renewal'),
+      grab('maintenance_work_orders', 'property_name,status,created_at_appfolio,updated_at'),
+    ]);
+    // Move-outs come from unit_turn_detail, which lives in the saved-report
+    // store rather than in Supabase.
+    let unitTurns = [];
+    try {
+      const d = await require('./appfolio-reports.js').readReportData('unit_turn_detail');
+      unitTurns = (d && d.rows) || [];
+    } catch (e) { gaps.push('unit_turn_detail: ' + e.message); }
+    let delinquency = [];
+    try {
+      const d = await require('./appfolio-reports.js').readReportData('delinquency_kpi');
+      delinquency = (d && d.rows) || [];
+    } catch (e) { gaps.push('delinquency_kpi: ' + e.message); }
+
+    const built = KPI.build(
+      { occupancy, leads, showings, applications, leaseHistory, workOrders, unitTurns, delinquency },
+      { weekStart: weekStart, weekEnd: week_ending, asOf: week_ending });
+
+    // What is still only in Katie's Excel, and what a person adjusted.
+    const [wbRes, ovRes] = await Promise.all([
+      db.from('kpi_workbook_data').select('*').eq('week_ending', week_ending),
+      db.from('kpi_manual_overrides').select('*').eq('week_ending', week_ending),
+    ]);
+    // A missing table is not a failure: the report is useful without either,
+    // and saying "needs the workbook" beats a 500 on a Monday morning.
+    const workbook = kpiWorkbookByProperty(wbRes.error ? [] : (wbRes.data || []));
+    const overrides = {};
+    (ovRes.error ? [] : (ovRes.data || [])).forEach(r => {
+      if (!overrides[r.property]) overrides[r.property] = {};
+      overrides[r.property][r.field] = r;
+    });
+
+    // Real properties, minus the three that are not ours to report on.
+    const byProperty = built.byProperty || {};
+    const real = Object.keys(byProperty).filter(p => !kpiReport.isExcluded(p));
+
+    const out = {};
+    real.forEach(p => {
+      out[p] = kpiReport.sectionsFor(byProperty[p], {
+        workbook: workbook[p] || {}, overrides: overrides[p] || {},
+      });
+    });
+
+    // Round Rock and Greystone, summed from their members. Never averaged:
+    // occPct and prePct are recomputed from the summed numerator and
+    // denominator inside rollUp.
+    const groups = [kpiReport.ROUND_ROCK.name].concat(Object.keys(kpiReport.VIRTUAL_GROUPS));
+    groups.forEach(g => {
+      const members = kpiReport.groupMembers(g, real);
+      const rolled = kpiReport.rollUp(members.map(m => byProperty[m]), kpiReport.CARD_METRICS.concat(['units']));
+      if (!rolled) return;                       // no member has data this week
+      out[g] = kpiReport.sectionsFor(rolled, {
+        workbook: workbook[g] || kpiReport.rollUp(members.map(m => workbook[m]), ['mtdIncome', 'mtdExpenses', 'laborBilled', 'laborUnbilled', 'followUps']) || {},
+        overrides: overrides[g] || {},
+      });
+      out[g].__members = members;
+    });
+
+    const portfolio = kpiReport.sectionsFor(
+      kpiReport.rollUp(real.map(p => byProperty[p]), kpiReport.CARD_METRICS.concat(['units'])) || {},
+      { workbook: workbook.Portfolio || {}, overrides: overrides.Portfolio || {} });
+
+    res.json({
+      week_ending,
+      range: { from: weekStart, to: week_ending },
+      // Said out loud: a reader should not have to work out whether this is the
+      // week they meant.
+      defaulted: !isDay(req.query.week_ending),
+      columns: kpiReport.columnOrder(real),
+      portfolio,
+      properties: out,
+      excluded: kpiReport.EXCLUDED_PROPERTIES,
+      workbook: kpiWorkbookStatus(wbRes.error ? [] : (wbRes.data || [])),
+      // Named, not swallowed. A source that could not be read makes its own
+      // metrics unavailable, and the page must be able to say which.
+      gaps: gaps,
+      canEdit: mayEditKpi(req.user),
+      editableFields: KPI_EDITABLE_FIELDS,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// The workbook rows, reshaped to {property: {metric: value}}.
+function kpiWorkbookByProperty(rows) {
+  const out = {};
+  const put = (prop, key, value) => {
+    if (!prop) return;
+    if (!out[prop]) out[prop] = {};
+    out[prop][key] = value;
+  };
+  rows.forEach(r => {
+    const d = r.data || {};
+    const map = {
+      mtd_cash: 'mtdIncome',
+      mtd_accrual: 'mtdExpenses',
+      occupancy_goals: 'followUps',
+    }[r.sheet];
+    if (!map) return;
+    Object.keys(d).forEach(prop => put(prop, map, d[prop]));
+  });
+  return out;
+}
+
+function kpiWorkbookStatus(rows) {
+  if (!rows.length) {
+    return { loaded: false, sheets: [], note: 'The MTD figures and Occupancy Goals need Katie’s workbook for this week.' };
+  }
+  return {
+    loaded: true,
+    sheets: rows.map(r => r.sheet),
+    filename: rows[0].filename || null,
+    uploaded_by: rows[0].uploaded_by || null,
+    uploaded_at: rows[0].uploaded_at || null,
+  };
+}
+
+// Adjusting a number by hand.
+//
+// Refuses everything today, because KPI_EDITABLE_FIELDS is empty. Written now
+// so the shape is settled and reviewed before the Monday comparison, rather
+// than added in a hurry afterwards.
+app.patch('/api/kpi/report/:week_ending', requireAuth, async (req, res) => {
+  if (!mayEditKpi(req.user)) {
+    return res.status(403).json({ error: 'Only Bekah and Kara can adjust KPI figures.' });
+  }
+  const b = req.body || {};
+  const field = String(b.field || '');
+  if (!KPI_EDITABLE_FIELDS.includes(field)) {
+    return res.status(400).json({
+      error: KPI_EDITABLE_FIELDS.length
+        ? 'That field cannot be adjusted by hand.'
+        : 'No KPI field is adjustable yet — Bekah and Kara have not said which ones they need.',
+      editableFields: KPI_EDITABLE_FIELDS,
+    });
+  }
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { error } = await db.from('kpi_manual_overrides').upsert({
+      week_ending: req.params.week_ending,
+      property: String(b.property || 'Portfolio'),
+      field,
+      value: b.value === undefined ? null : b.value,
+      // The calculated figure, kept beside the adjustment, so the report can
+      // always show what it would have said.
+      computed: b.computed === undefined ? null : b.computed,
+      note: String(b.note || '').trim() || null,
+      updated_by: actorName(req),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'week_ending,property,field' });
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// =====================================================================
 // SOP LIBRARY v2 — sop_documents / sop_versions / sop_departments
 // =====================================================================
 //

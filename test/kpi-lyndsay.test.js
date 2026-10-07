@@ -227,13 +227,22 @@ t('a missing week is an error, not a silent default to today', () => {
   assert.throws(() => K.build({}, {}), /weekStart and weekEnd/);
 });
 
-console.log('\nnothing user-facing was wired up');
-t('the module is not imported by the server or the browser yet', () => {
-  // Phase 1 is backend only: no tab, no change to the KPI Report or Goal Board.
+console.log('\nwhere the module is wired in');
+t('the server builds the report from it; the browser still does not', () => {
+  // Phase 1 was backend only and this asserted that NOTHING imported it.
+  // Phase 2 (2026-10-07) is exactly the wiring-up: /api/kpi/report builds from
+  // this module, and scripts/kpi-compare-lyndsay.js validates it against
+  // Katie's workbook. Both must keep using the SAME module, or the comparison
+  // stops being evidence about the report.
   const fs = require('fs'), path = require('path');
   const read = p => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
-  ['server.js', 'public/app.js', 'public/index.html'].forEach(f => {
-    assert.ok(!/kpi-lyndsay/.test(read(f)), `${f} already wires the module in`);
+  assert.ok(/kpi-lyndsay/.test(read('server.js')), 'the report route must build from this module');
+  assert.ok(/kpi-lyndsay/.test(read('scripts/kpi-compare-lyndsay.js')),
+    'and so must the comparison that validates it');
+  // The page renders what the route returns. A second implementation in the
+  // browser is how two numbers for one metric start.
+  ['public/app.js', 'public/index.html'].forEach(f => {
+    assert.ok(!/kpi-lyndsay/.test(read(f)), `${f} should render the route's answer, not recompute it`);
   });
 });
 
