@@ -197,4 +197,87 @@ t('they land under the SOP Library section', () => {
   assert.strictEqual(ACTS.sectionLabel('sop'), 'SOP Library');
 });
 
+
+// ---- numbered lists pasted from Slab ---------------------------------------
+//
+// Slab's export puts a blank line between list items. Closing the list on
+// sight of one gave every item its own <ol>, so a numbered procedure rendered
+// as a column of "1." all the way down.
+t('a spaced numbered list is one list, numbered through', () => {
+  const html = L.renderMarkdown('1. First\n\n2. Second\n\n3. Third\n');
+  assert.strictEqual((html.match(/<ol/g) || []).length, 1, html);
+  assert.strictEqual((html.match(/<li>/g) || []).length, 3, html);
+});
+
+t('"1. 1. 1." in the source still renders 1, 2, 3', () => {
+  // Which is the whole point of an <ol>: the browser numbers it.
+  const html = L.renderMarkdown('1. a\n\n1. b\n\n1. c\n');
+  assert.strictEqual((html.match(/<ol/g) || []).length, 1);
+  assert.ok(!/start=/.test(html), 'a list starting at 1 needs no start attribute');
+});
+
+t('a list that starts at another number keeps it', () => {
+  assert.ok(/<ol start="4">/.test(L.renderMarkdown('4. Fourth\n\n5. Fifth\n')));
+});
+
+t('spaced bullets are one list too', () => {
+  const html = L.renderMarkdown('- a\n\n- b\n');
+  assert.strictEqual((html.match(/<ul/g) || []).length, 1, html);
+});
+
+t('a paragraph between items DOES end the list', () => {
+  const html = L.renderMarkdown('1. a\n\nSome prose.\n\n1. b\n');
+  assert.strictEqual((html.match(/<ol/g) || []).length, 2, html);
+  assert.ok(/<p>Some prose\.<\/p>/.test(html));
+});
+
+t('a bulleted list after a numbered one is not merged into it', () => {
+  const html = L.renderMarkdown('1. a\n\n- b\n');
+  assert.strictEqual((html.match(/<ol/g) || []).length, 1, html);
+  assert.strictEqual((html.match(/<ul/g) || []).length, 1, html);
+});
+
+t('a list at the end of the document is closed', () => {
+  const html = L.renderMarkdown('1. a\n\n2. b');
+  assert.strictEqual((html.match(/<\/ol>/g) || []).length, 1, html);
+});
+
+// ---- the count -------------------------------------------------------------
+t('the list is counted by the database, not measured off the array', () => {
+  const list = server.slice(server.indexOf("app.get('/api/sop/documents'"),
+    server.indexOf("app.post('/api/sop/documents', requireAuth"));
+  assert.ok(/select\('\*', \{ count: 'exact' \}\)/.test(list));
+  assert.ok(/\.range\(from, from \+ PAGE - 1\)/.test(list), 'and read in pages');
+  // Comments stripped: the note on that query explains the fix by naming the
+  // limit it replaced, and an assertion matching my own prose would pass or
+  // fail on how the comment is worded.
+  assert.ok(!/\.limit\(2000\)/.test(list.replace(/^\s*\/\/.*$/gm, '')),
+    'the bare limit is gone');
+});
+
+t('a list that could not be read in full says so', () => {
+  const list = server.slice(server.indexOf("app.get('/api/sop/documents'"),
+    server.indexOf("app.post('/api/sop/documents', requireAuth"));
+  assert.ok(/const truncated = total !== null && all\.length < total/.test(list));
+  assert.ok(/truncated,/.test(list), 'and it reaches the page');
+  assert.ok(/list truncated \u2014 not all SOPs are shown/.test(appjs),
+    'a library that silently stops listing SOPs is worse than one that says it cannot');
+});
+
+// ---- owner ------------------------------------------------------------------
+t('owner is editable, and sits with the fields people look for it in', () => {
+  const fn = appjs.slice(appjs.indexOf('function slEditForm'));
+  const body = fn.slice(0, fn.indexOf('const back = () =>'));
+  assert.ok(/name="owner"/.test(body));
+  // Next to Category, not third in the Status/Interval row where it was missed.
+  assert.ok(body.indexOf('name="category"') < body.indexOf('name="owner"'));
+  assert.ok(body.indexOf('name="owner"') < body.indexOf('name="status"'));
+  assert.ok(/owner: f\.get\('owner'\)/.test(fn), 'and it is sent on save');
+});
+
+t('the server accepts an owner change and can clear it', () => {
+  const patch = server.slice(server.indexOf("app.patch('/api/sop/documents/:id'"));
+  assert.ok(/if \(b\.owner !== undefined\) patch\.owner = String\(b\.owner \|\| ''\)\.trim\(\) \|\| null;/
+    .test(patch));
+});
 console.log(`\n${pass} passing`);

@@ -6344,8 +6344,17 @@ function slRender() {
   const overdue = (slData.documents || []).filter(d => d.review && d.review.overdue).length;
   const count = document.getElementById('sl-count');
   if (count) {
-    count.innerHTML = `${docs.length} of ${slData.total} shown`
-      + (overdue ? ` · <span class="sl-count-bad">${overdue} overdue</span>` : '');
+    // slData.total is what came back after the search; matching is what the
+    // database counted for the department filter. Shown together so "500 of
+    // 500" is a statement about the library and not about the array length.
+    const of = slData.matching != null && slData.matching !== slData.total
+      ? `${docs.length} of ${slData.total} shown · ${slData.matching} in this department`
+      : `${docs.length} of ${slData.total} shown`;
+    count.innerHTML = of
+      + (overdue ? ` · <span class="sl-count-bad">${overdue} overdue</span>` : '')
+      // Only ever rendered if the server could not list everything. It never
+      // should; if it does, it must not look like a complete list.
+      + (slData.truncated ? ` · <span class="sl-count-bad">list truncated — not all SOPs are shown</span>` : '');
   }
 
   if (!docs.length) {
@@ -6465,6 +6474,9 @@ function slEditForm() {
         <label>Department<select name="department">${(depts.length ? depts : [{ name: d.department }]).map(x =>
     `<option value="${slEsc(x.name)}"${x.name === d.department ? ' selected' : ''}>${slEsc(x.name)}</option>`).join('')}</select></label>
         <label>Category<input name="category" value="${slEsc(d.category || '')}"></label>
+        <!-- Owner sat third in the Status/Interval row and was being missed.
+             It has always saved; it was just hard to find. -->
+        <label>Owner<input name="owner" value="${slEsc(d.owner || '')}" placeholder="who maintains this SOP"></label>
       </div>
       <div class="sl-form-row">
         <label>Status<select name="status">${statuses.map(x =>
@@ -6474,7 +6486,6 @@ function slEditForm() {
           ${intervals.map(n =>
     `<option value="${n}"${Number(d.review_interval_days) === n ? ' selected' : ''}>${n} days</option>`).join('')}
         </select></label>
-        <label>Owner<input name="owner" value="${slEsc(d.owner || '')}"></label>
       </div>
       <label>Body (markdown)<textarea name="body_md" rows="22" spellcheck="true">${slEsc(d.body_md || '')}</textarea></label>
       <label>What changed (optional)<input name="note" placeholder="kept with the previous version"></label>

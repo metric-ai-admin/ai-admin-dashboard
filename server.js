@@ -10042,14 +10042,35 @@ app.get('/api/sop/documents', requireAuth, async (req, res) => {
     const allowed = sopLib.readableDepartments(role, departments);
     if (!allowed.length) return res.json({ documents: [], departments: [], total: 0, readable: [] });
 
-    let q = db.from('sop_documents').select('*').in('department', allowed).limit(2000);
+    // count: 'exact' and a PAGED read.
+    //
+    // This was a bare .limit(2000) and `total` was the length of what came
+    // back — so if the limit, or PostgREST's own max-rows ceiling, which is
+    // lower and not ours to set, ever truncated the result, the page would
+    // report "N of N shown" about a number that was already short. A library
+    // that silently stops listing SOPs is worse than one that says it cannot
+    // list them all. 501 documents today, so nothing is hidden; this is so
+    // that stays true at 1,500.
+    let q = db.from('sop_documents').select('*', { count: 'exact' }).in('department', allowed);
     if (req.query.department && allowed.includes(req.query.department)) q = q.eq('department', req.query.department);
     if (req.query.status) q = q.eq('status', req.query.status);
     if (req.query.archived !== 'true') q = q.eq('archived', false);
-    const { data, error } = await q;
-    const missing = sopErr(error);
-    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
-    if (error) throw new Error(error.message);
+    const PAGE = 500, MAX = 10000;
+    let all = [], total = null;
+    for (let from = 0; from < MAX; from += PAGE) {
+      const { data: page, error, count } = await q.range(from, from + PAGE - 1);
+      const missing = sopErr(error);
+      if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+      if (error) throw new Error(error.message);
+      if (total === null) total = count;
+      all = all.concat(page || []);
+      if (!page || page.length < PAGE || (total !== null && all.length >= total)) break;
+    }
+    const data = all;
+    // Only ever true if the cap above was reached. It never should be; if it
+    // is, this must not go out looking like a complete list.
+    const truncated = total !== null && all.length < total;
+    if (truncated) console.warn(`[sop] listed ${all.length} of ${total} documents — the page cap was hit`);
 
     const today = ctDateStr(0);
     // Search and excerpting happen here rather than in the browser: the bodies
@@ -10075,6 +10096,11 @@ app.get('/api/sop/documents', requireAuth, async (req, res) => {
     res.json({
       documents: rows,
       total: rows.length,
+      // What the DEPARTMENT filter alone matches, straight from the database.
+      // "12 of 500" is only meaningful next to a 500 that was counted rather
+      // than measured off the length of the array above it.
+      matching: total,
+      truncated,
       today,
       readable: allowed,
       departments: departments.map(d => ({ name: d.name, canEdit: sopLib.canEdit(role, d.name, departments) })),

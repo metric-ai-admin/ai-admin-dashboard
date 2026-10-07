@@ -176,7 +176,8 @@ function renderMarkdown(md) {
   const closeQuote = () => { if (inQuote) { out.push('</blockquote>'); inQuote = false; } };
   const closeTable = () => { if (inTable) { out.push('</table>'); inTable = false; tableRow = 0; } };
 
-  for (const raw of lines) {
+  for (let li = 0; li < lines.length; li++) {
+    const raw = lines[li];
     const line = raw.replace(/\s+$/, '');
 
     if (/^```/.test(line)) {
@@ -187,7 +188,26 @@ function renderMarkdown(md) {
     }
     if (inCode) { out.push(esc(raw)); continue; }
 
-    if (!line.trim()) { closeList(); closeQuote(); closeTable(); continue; }
+    if (!line.trim()) {
+      // A blank line does NOT always end a list.
+      //
+      // Slab's export puts a blank line between list items, and closing the
+      // list on sight of one gave every item its own <ol> — so a numbered
+      // procedure rendered as a column of "1." all the way down. That is a
+      // loose list in every markdown dialect: the items are still one list,
+      // they are just spaced.
+      //
+      // Looked ahead past the blanks: the list only closes if what follows is
+      // not another item of the same kind.
+      if (list) {
+        let j = li + 1;
+        while (j < lines.length && !lines[j].trim()) j++;
+        const nxt = j < lines.length ? lines[j] : '';
+        const same = list === 'ul' ? /^\s*[-*+]\s+/.test(nxt) : /^\s*\d+[.)]\s+/.test(nxt);
+        if (same) { closeQuote(); closeTable(); continue; }
+      }
+      closeList(); closeQuote(); closeTable(); continue;
+    }
 
     const h = line.match(/^(#{1,6})\s+(.*)$/);
     if (h) { closeList(); closeQuote(); closeTable(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
@@ -222,7 +242,16 @@ function renderMarkdown(md) {
     const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
     if (ul || ol) {
       const want = ul ? 'ul' : 'ol';
-      if (list !== want) { closeList(); out.push(`<${want}>`); list = want; }
+      if (list !== want) {
+        closeList();
+        // An ordered list that starts somewhere other than 1 keeps its own
+        // number — a procedure pasted in starting at step 4 is still step 4.
+        // Everything after it is numbered by the browser, which is the whole
+        // point of an <ol> and the reason "1. 1. 1." in the source is fine.
+        const first = ol ? parseInt(line.match(/^\s*(\d+)/)[1], 10) : 1;
+        out.push(ol && first > 1 ? `<ol start="${first}">` : `<${want}>`);
+        list = want;
+      }
       out.push(`<li>${inline((ul || ol)[1])}</li>`);
       continue;
     }
