@@ -10295,8 +10295,11 @@ const KPI_EDITABLE_FIELDS = [];
 const mayEditKpi = user =>
   !!(user && user.username) && KPI_EDITORS.includes(String(user.username).toLowerCase());
 
-app.get('/api/kpi/report', requireAuth, requireRole(...KPI_REPORT_ROLES), async (req, res) => {
-  try {
+// Built once, used by the JSON route and by both exports.
+//
+// Extracted so the Excel an owner receives and the page Lyndsay reads cannot
+// be assembled by two different pieces of code. One of them would get fixed.
+async function kpiBuildReport(req) {
     const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
     const week_ending = isDay(req.query.week_ending)
       ? req.query.week_ending
@@ -10389,7 +10392,7 @@ app.get('/api/kpi/report', requireAuth, requireRole(...KPI_REPORT_ROLES), async 
       kpiReport.rollUp(real.map(p => byProperty[p]), kpiReport.CARD_METRICS.concat(['units'])) || {},
       { workbook: workbook.Portfolio || {}, overrides: overrides.Portfolio || {} });
 
-    res.json({
+    return {
       week_ending,
       range: { from: weekStart, to: week_ending },
       // Said out loud: a reader should not have to work out whether this is the
@@ -10405,7 +10408,12 @@ app.get('/api/kpi/report', requireAuth, requireRole(...KPI_REPORT_ROLES), async 
       gaps: gaps,
       canEdit: mayEditKpi(req.user),
       editableFields: KPI_EDITABLE_FIELDS,
-    });
+    };
+}
+
+app.get('/api/kpi/report', requireAuth, requireRole(...KPI_REPORT_ROLES), async (req, res) => {
+  try {
+    res.json(await kpiBuildReport(req));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -10441,6 +10449,252 @@ function kpiWorkbookStatus(rows) {
     uploaded_by: rows[0].uploaded_by || null,
     uploaded_at: rows[0].uploaded_at || null,
   };
+}
+
+// The workbook upload — the three sheets the report cannot compute.
+//
+// Same pattern as the Billable Labor Report, which learned the hard way what
+// matters here: a visible confirmation that survives a reload, a refusal that
+// says WHICH sheet and why, and a failed upload that cannot be mistaken for a
+// quiet success.
+const kpiWorkbook = require('./lib/kpi-workbook.js');
+
+app.post('/api/kpi/workbook', requireAuth, requireRole(...KPI_REPORT_ROLES),
+  billableUpload.single('file'), async (req, res) => {
+    const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+    const week_ending = isDay(req.body && req.body.week_ending)
+      ? req.body.week_ending
+      : WEEK.leasingLastCompleteWeekEnding();
+    try {
+      if (!req.file) return res.status(400).json({ error: 'No file received.', week_ending });
+      if (!/\.xlsx?$/i.test(req.file.originalname || '')) {
+        return res.status(400).json({ error: 'That is not an Excel file.', week_ending });
+      }
+      let wb;
+      try {
+        wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+      } catch (e) {
+        return res.status(400).json({ error: 'Could not read that workbook: ' + e.message, week_ending });
+      }
+
+      const { sheets, missing } = kpiWorkbook.matchSheets(wb.SheetNames);
+      if (missing.length) {
+        // Named, with what WAS found. "Upload failed" on a 19-tab workbook is
+        // not something anyone can act on.
+        return res.status(400).json({
+          error: 'This workbook has no tab for: '
+            + missing.map(m => kpiWorkbook.LABELS[m]).join(', ')
+            + '. Tabs found: ' + wb.SheetNames.join(' | '),
+          missing, week_ending,
+        });
+      }
+
+      const aoa = name => XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
+      const parsed = {
+        mtd_cash: kpiWorkbook.parseMtdCash(aoa(sheets.mtd_cash)),
+        mtd_accrual: kpiWorkbook.parseMtdAccrual(aoa(sheets.mtd_accrual)),
+        occupancy_goals: kpiWorkbook.parseOccupancyGoals(aoa(sheets.occupancy_goals)),
+      };
+
+      // A tab that parsed to NOTHING is a refusal, not a warning. These three
+      // feed the only section of the report with no other source, and an empty
+      // Income Snapshot that looks deliberate is worse than a failed upload.
+      const empty = [];
+      if (!Object.keys(parsed.mtd_cash).length) empty.push('MTD Cash (no "Total Operating Income" row under an "Account Name" header)');
+      if (!Object.keys(parsed.mtd_accrual.total).length) empty.push('MTD Accrual (none of the seven expense categories found)');
+      if (!Object.keys(parsed.occupancy_goals).length) empty.push('Occupancy Goals (no Property / Goal columns, or every goal is 0)');
+      if (empty.length) {
+        return res.status(400).json({
+          error: 'These tabs are there but nothing could be read from them: ' + empty.join('; '),
+          week_ending,
+        });
+      }
+
+      const db = supabaseAdmin || supabasePublic;
+      const now = new Date().toISOString();
+      const who = actorName(req);
+      const rows = [
+        { sheet: 'mtd_cash', data: parsed.mtd_cash },
+        // Both the per-property total and the category breakdown: the section
+        // shows the expense boxes as well as the headline.
+        { sheet: 'mtd_accrual', data: { total: parsed.mtd_accrual.total, categories: parsed.mtd_accrual.categories } },
+        { sheet: 'occupancy_goals', data: parsed.occupancy_goals },
+      ].map(r => ({ ...r, week_ending, filename: req.file.originalname, uploaded_by: who, uploaded_at: now }));
+
+      const { error } = await db.from('kpi_workbook_data')
+        .upsert(rows, { onConflict: 'week_ending,sheet' });
+      if (error) throw new Error(error.message);
+
+      res.json({
+        ok: true, week_ending, filename: req.file.originalname, uploaded_at: now, by: who,
+        // Counts rather than a bare success, so a workbook that parsed into
+        // two properties instead of nine is visible immediately.
+        parsed: {
+          mtd_cash: Object.keys(parsed.mtd_cash).length,
+          mtd_accrual: Object.keys(parsed.mtd_accrual.total).length,
+          occupancy_goals: Object.keys(parsed.occupancy_goals).length,
+        },
+        properties: Object.keys(parsed.mtd_cash).sort(),
+      });
+    } catch (err) { res.status(500).json({ error: err.message, week_ending }); }
+  });
+
+// The KPI exports.
+//
+//   /api/kpi/report/export/xlsx                 combined: Summary + Backup
+//   /api/kpi/report/export/xlsx?property=NAME   the one an owner receives
+//   /api/kpi/report/export/pdf[?property=NAME]  the printable version
+//
+// Both modes, because Lyndsay sends both today: one file per property to that
+// property's owner, and a combined one with every column for the portfolio
+// view. Excel is the primary — it is what they already open, and the Summary's
+// column-per-property layout does not fit on a page.
+app.get('/api/kpi/report/export/:format', requireAuth, requireRole(...KPI_REPORT_ROLES), async (req, res) => {
+  const format = String(req.params.format || 'xlsx').toLowerCase();
+  if (!['xlsx', 'pdf'].includes(format)) {
+    return res.status(400).json({ error: 'format must be xlsx or pdf' });
+  }
+  try {
+    const report = await kpiBuildReport(req);
+    const only = req.query.property ? String(req.query.property) : null;
+    if (only && !report.properties[only] && only !== 'Portfolio') {
+      return res.status(404).json({ error: 'No column for ' + only + ' in this week.' });
+    }
+    const name = 'Metric_KPI_' + report.week_ending + (only ? '_' + only.replace(/[^A-Za-z0-9]+/g, '_') : '');
+
+    if (format === 'xlsx') {
+      const wb = XLSX.utils.book_new();
+      const columns = only ? [only] : report.columns;
+      XLSX.utils.book_append_sheet(wb, kpiSummarySheet(report, columns), 'Summary');
+      // Backup: every card as a row, with WHERE EACH NUMBER CAME FROM. The
+      // Summary is what people read; this is what they check it against, and
+      // "appfolio / workbook / manual / unavailable" is the column that makes
+      // a disagreement answerable instead of an argument.
+      XLSX.utils.book_append_sheet(wb, kpiBackupSheet(report, columns), 'Backup');
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + name + '.xlsx"');
+      return res.send(buf);
+    }
+
+    const PDFDocument = require('pdfkit');
+    const doc = new PDFDocument({ size: 'LETTER', layout: 'landscape', margin: 30 });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + name + '.pdf"');
+    doc.pipe(res);
+    kpiPdf(doc, report, only);
+    doc.end();
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Summary: a row per card, a column per property, in her column order.
+function kpiSummarySheet(report, columns) {
+  const aoa = [
+    ['Metric Property Management — Executive KPI Dashboard'],
+    ['Leasing Week:', report.range.from + ' .. ' + report.range.to],
+    ['Generated:', new Date().toISOString().slice(0, 10) + ' — Metric AI Admin Dashboard'],
+    [],
+  ];
+  const colOf = name => (name === 'Portfolio' ? report.portfolio : report.properties[name]);
+  kpiReport.SECTIONS.forEach((sec, si) => {
+    aoa.push([sec.title].concat(columns.map(() => '')));
+    aoa.push(['Metric'].concat(columns));
+    const cards = (sec.cards || []).concat(sec.funnel || []);
+    cards.forEach(card => {
+      aoa.push([card.label].concat(columns.map(c => {
+        const col = colOf(c);
+        if (!col) return '';
+        const found = (col[si].cards.concat(col[si].funnel || []))
+          .find(x => x.metric === card.metric);
+        // An empty cell, not a 0. A number that could not be worked out must
+        // not look like a measured zero on a page going to an owner.
+        return !found || found.value === null || found.value === undefined ? '' : found.value;
+      })));
+    });
+    aoa.push([]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{ wch: 36 }].concat(columns.map(() => ({ wch: 16 })));
+  return ws;
+}
+
+// Backup: one row per property per card, with the provenance beside it.
+function kpiBackupSheet(report, columns) {
+  const aoa = [['Property', 'Section', 'Metric', 'Label', 'Value', 'Source', 'Computed', 'Adjusted by', 'Note']];
+  const colOf = name => (name === 'Portfolio' ? report.portfolio : report.properties[name]);
+  columns.forEach(c => {
+    const col = colOf(c);
+    if (!col) return;
+    col.forEach(sec => {
+      (sec.cards || []).concat(sec.funnel || []).forEach(card => {
+        aoa.push([c, sec.title, card.metric, card.label,
+          card.value === null || card.value === undefined ? '' : card.value,
+          card.source,
+          card.computed === undefined ? '' : card.computed,
+          card.adjusted_by || '', card.note || card.reason || '']);
+      });
+    });
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = [{ wch: 22 }, { wch: 22 }, { wch: 20 }, { wch: 34 }, { wch: 14 },
+    { wch: 13 }, { wch: 12 }, { wch: 16 }, { wch: 46 }];
+  return ws;
+}
+
+function kpiPdf(doc, report, only) {
+  const L = doc.page.margins.left;
+  const W = doc.page.width - L - doc.page.margins.right;
+  const columns = only ? [only] : report.columns;
+  const colOf = name => (name === 'Portfolio' ? report.portfolio : report.properties[name]);
+
+  doc.fontSize(16).font('Helvetica-Bold').text('Metric Property Management — Executive KPI Dashboard');
+  doc.fontSize(9).font('Helvetica').fillColor('#555')
+    .text('Leasing week ' + report.range.from + ' .. ' + report.range.to
+      + (only ? '  ·  ' + only : '') + '  ·  generated from the Metric AI Admin Dashboard', { width: W });
+  if (!report.workbook.loaded) {
+    // On its face, because the Income Snapshot is empty without it and an
+    // owner should not be left to wonder whether the month was zero.
+    doc.fillColor('#a00').text(report.workbook.note, { width: W });
+  }
+  doc.fillColor('#000').moveDown(0.6);
+
+  const labelW = 190;
+  const cw = Math.max(52, Math.min(96, (W - labelW) / Math.max(1, columns.length)));
+  const row = (cells, bold) => {
+    doc.font(bold ? 'Helvetica-Bold' : 'Helvetica');
+    let x = L; const y = doc.y;
+    cells.forEach((c, i) => {
+      doc.text(String(c), x, y, { width: (i === 0 ? labelW : cw) - 4, ellipsis: true });
+      x += i === 0 ? labelW : cw;
+    });
+    doc.y = y + 12;
+  };
+
+  kpiReport.SECTIONS.forEach((sec, si) => {
+    if (doc.y > doc.page.height - doc.page.margins.bottom - 90) doc.addPage();
+    doc.fontSize(11).font('Helvetica-Bold').fillColor('#13294b').text(sec.title).moveDown(0.15);
+    doc.fillColor('#000').fontSize(7.5);
+    row(['Metric'].concat(columns), true);
+    (sec.cards || []).concat(sec.funnel || []).forEach(card => {
+      row([card.label].concat(columns.map(c => {
+        const col = colOf(c);
+        if (!col) return '';
+        const f = (col[si].cards.concat(col[si].funnel || [])).find(x => x.metric === card.metric);
+        if (!f || f.value === null || f.value === undefined) return '—';
+        const v = typeof f.value === 'number'
+          ? (f.money ? '$' + Math.round(f.value).toLocaleString('en-US')
+            : (Math.abs(f.value) < 1 && f.value !== 0 ? (f.value * 100).toFixed(1) + '%' : String(f.value)))
+          : String(f.value);
+        // A hand-adjusted figure is marked wherever it is shown.
+        return f.source === 'manual' ? v + ' *' : v;
+      })));
+    });
+    doc.moveDown(0.5);
+  });
+
+  doc.fontSize(7.5).fillColor('#555')
+    .text('—  no value for this week.   *  adjusted by hand; the calculated figure is on the Backup sheet of the Excel export.',
+      L, doc.y + 6, { width: W });
 }
 
 // Adjusting a number by hand.

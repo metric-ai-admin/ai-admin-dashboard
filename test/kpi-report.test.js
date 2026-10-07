@@ -21,8 +21,10 @@ let pass = 0;
 const t = (name, fn) => { fn(); pass++; console.log('  ok  ' + name); };
 
 const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-const ROUTE = server.slice(server.indexOf("app.get('/api/kpi/report'"),
-  server.indexOf("app.patch('/api/kpi/report/:week_ending'"));
+// The BUILDER, not the one-line route: after the refactor the route just
+// returns what this assembles, and both exports call the same function.
+const ROUTE = server.slice(server.indexOf('async function kpiBuildReport(req)'),
+  server.indexOf("app.get('/api/kpi/report'"));
 const PATCH = server.slice(server.indexOf("app.patch('/api/kpi/report/:week_ending'"),
   server.indexOf("app.patch('/api/kpi/report/:week_ending'") + 2200);
 
@@ -235,4 +237,151 @@ t('the two tables are in a migration, not created on the fly', () => {
   assert.ok(/computed\s+jsonb/.test(sql), 'the replaced figure must be storable');
 });
 
+
+// ---- the workbook parsers ---------------------------------------------------
+//
+// Ports of parseMTDCash / parseMTDAccrual / parseOccupancyGoals from her HTML,
+// deliberately ports and not improvements: on Monday these numbers are held up
+// against the ones her page produces, and a better parser that disagreed would
+// make the comparison about the parser instead of about the report.
+const WB = require('../lib/kpi-workbook.js');
+
+t('MTD Cash reads the Total Operating Income row, per property', () => {
+  const out = WB.parseMtdCash([
+    ['Month to Date Cash'], [],
+    ['Account Name', 'Ascent at Northgate - 9315 Northgate', 'Sunset Palms', 'Total'],
+    ['Rent Income', '100', '50', '150'],
+    ['Total Operating Income', '$125,000.00', '(1,200.00)', '123800'],
+  ]);
+  assert.deepStrictEqual(out, { 'Ascent at Northgate': 125000, 'Sunset Palms': -1200 });
+});
+
+t('the Total column is never read as a property', () => {
+  const out = WB.parseMtdCash([
+    ['Account Name', 'Ascent at Northgate', 'Total'],
+    ['Total Operating Income', '10', '10'],
+  ]);
+  assert.deepStrictEqual(Object.keys(out), ['Ascent at Northgate']);
+});
+
+t('a pivot with no Account Name header yields nothing, not a guess', () => {
+  assert.deepStrictEqual(WB.parseMtdCash([['Something else'], ['x', 'y']]), {});
+});
+
+t('MTD Accrual totals only the seven categories, aliases included', () => {
+  const a = WB.parseMtdAccrual([
+    ['Account Name', 'Ascent at Northgate', 'Total'],
+    ['Total Utilities', '1,000', '1000'],
+    ['Total Monthly Contract Services', '200', '200'],
+    ['Total Something Else', '999', '999'],
+    ['Total Repairs & Maintenance', '300', '300'],
+  ]);
+  assert.strictEqual(a.total['Ascent at Northgate'], 1500, '999 must not be counted');
+  assert.strictEqual(a.categories['Ascent at Northgate']['Monthly Contract Expenses'], 200);
+  assert.ok(!('Something Else' in a.categories['Ascent at Northgate']));
+});
+
+t('a goal of 0 is not a goal', () => {
+  // Her parser drops them, and a 0 would make "units needed" come out negative.
+  const g = WB.parseOccupancyGoals([
+    ['Property', 'Goal %'], ['Ascent at Northgate', '0.95'], ['Sunset Palms', '0'],
+  ]);
+  assert.deepStrictEqual(g, { 'Ascent at Northgate': 0.95 });
+});
+
+t('the tabs are matched on a substring, as hers are', () => {
+  const m = WB.matchSheets(['MTD Cash ', 'Month To Date Accrual', 'occupancy goal', 'Rent Roll']);
+  assert.deepStrictEqual(m.missing, []);
+  assert.strictEqual(m.sheets.mtd_cash, 'MTD Cash ');
+  assert.strictEqual(m.sheets.occupancy_goals, 'occupancy goal');
+});
+
+t('a missing tab is named, not a generic failure', () => {
+  const m = WB.matchSheets(['Rent Roll', 'Renewals']);
+  assert.deepStrictEqual(m.missing.slice().sort(), ['mtd_accrual', 'mtd_cash', 'occupancy_goals']);
+  assert.strictEqual(WB.LABELS.mtd_cash, 'MTD Cash');
+});
+
+t('accounting negatives and currency parse', () => {
+  assert.strictEqual(WB.num('(1,200.00)'), -1200);
+  assert.strictEqual(WB.num('$125,000.00'), 125000);
+  assert.strictEqual(WB.num(''), 0);
+  assert.strictEqual(WB.num('junk'), 0);
+});
+
+// ---- the upload -------------------------------------------------------------
+const UPLOAD = server.slice(server.indexOf("app.post('/api/kpi/workbook'"),
+  server.indexOf("app.get('/api/kpi/report/export/:format'"));
+
+t('a tab that is present but unreadable is a refusal, not a warning', () => {
+  // These three feed the only section with no other source. An empty Income
+  // Snapshot that looks deliberate is worse than a failed upload.
+  assert.ok(/nothing could be read from them/.test(UPLOAD));
+  assert.ok(/no "Total Operating Income" row/.test(UPLOAD));
+});
+
+t('a missing tab says which, and what was found', () => {
+  assert.ok(/This workbook has no tab for: /.test(UPLOAD));
+  assert.ok(/Tabs found: /.test(UPLOAD),
+    'upload failed on a 19-tab workbook is not something anyone can act on');
+});
+
+t('the confirmation carries counts, not a bare ok', () => {
+  assert.ok(/parsed: \{/.test(UPLOAD));
+  assert.ok(/properties: Object\.keys\(parsed\.mtd_cash\)\.sort\(\)/.test(UPLOAD),
+    'a workbook that parsed into two properties instead of nine must be visible at once');
+});
+
+t('the upload defaults to the same week as the report', () => {
+  assert.ok(/WEEK\.leasingLastCompleteWeekEnding\(\)/.test(UPLOAD));
+});
+
+// ---- the exports ------------------------------------------------------------
+const EXPORT = server.slice(server.indexOf("app.get('/api/kpi/report/export/:format'"));
+
+t('both modes exist: one property, or every column', () => {
+  assert.ok(/req\.query\.property/.test(EXPORT));
+  assert.ok(/const columns = only \? \[only\] : report\.columns/.test(EXPORT));
+});
+
+t('the Excel carries Summary and Backup', () => {
+  assert.ok(/'Summary'\)/.test(EXPORT) && /'Backup'\)/.test(EXPORT));
+});
+
+t('the Backup sheet records where every number came from', () => {
+  const fn = server.slice(server.indexOf('function kpiBackupSheet'));
+  const body = fn.slice(0, fn.indexOf('function kpiPdf'));
+  assert.ok(/'Source'/.test(body) && /'Computed'/.test(body) && /'Adjusted by'/.test(body));
+  assert.ok(/card\.source/.test(body));
+});
+
+t('a value that could not be worked out is blank, never 0', () => {
+  const fn = server.slice(server.indexOf('function kpiSummarySheet'));
+  const body = fn.slice(0, fn.indexOf('function kpiBackupSheet'));
+  assert.ok(/found\.value === null \|\| found\.value === undefined \? '' : found\.value/.test(body),
+    'a measured zero and an unknown must not look the same on a page going to an owner');
+});
+
+t('the PDF marks a hand-adjusted figure wherever it appears', () => {
+  assert.ok(/f\.source === 'manual' \? v \+ ' \*' : v/.test(EXPORT));
+  assert.ok(/adjusted by hand/.test(EXPORT), 'and the key explains it');
+});
+
+t('a PDF without the workbook says so on its face', () => {
+  assert.ok(/if \(!report\.workbook\.loaded\)/.test(EXPORT),
+    'an owner should not be left wondering whether the month was zero');
+});
+
+t('one builder feeds the page and both exports', () => {
+  assert.ok(/async function kpiBuildReport\(req\)/.test(server));
+  assert.ok(/res\.json\(await kpiBuildReport\(req\)\)/.test(server));
+  assert.ok(/const report = await kpiBuildReport\(req\)/.test(EXPORT),
+    'two assemblers would mean only one of them ever gets fixed');
+});
+
+t('exporting and uploading are named in Activity Logs', () => {
+  assert.strictEqual(ACTS.describe('POST', '/api/kpi/workbook').label, 'Uploaded the KPI workbook');
+  assert.strictEqual(ACTS.describeRead('/api/kpi/report/export/xlsx').label, 'Exported Excel');
+  assert.strictEqual(ACTS.describeRead('/api/kpi/report/export/pdf').label, 'Exported PDF');
+});
 console.log(`\n${pass} passing`);
