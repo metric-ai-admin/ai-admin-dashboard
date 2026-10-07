@@ -83,11 +83,15 @@ const TAB_ACCESS = {
   // there is no role to grant — revisit when Jay confirms theirs.
   admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy', 'marketing', 'kpirecaps', 'activity', 'rebrand'],
   ceo:         ['crm', 'platform', 'eod', 'reports', 'marketing', 'kpirecaps', 'activity', 'rebrand'],
-  // 'calls' (Call Analyzer) removed 2026-09-18: call transcripts and grades are
-  // employee performance data about named staff, alongside resident PII, so the
-  // tab is admin-only — Arturo and Lyndsay. Widening it later is a role change
-  // in dashboard_users plus adding 'calls' back to a role here; the endpoints
-  // are gated with requireRole('admin') too, so this list alone is not the lock.
+  // 'calls' (Call Analyzer) is NOT governed by role. Call transcripts, grades,
+  // red flags and coaching notes are employee performance data about named
+  // staff sitting alongside resident PII, so the lock is a list of people —
+  // CALL_ANALYZER_USERS in server.js — and the tab renders only when the
+  // session carries currentUser.callAnalyzer. Arturo, Lyndsay, and from
+  // 2026-10-07 Jay, Bekah and Kara (Lyndsay's decision, full access).
+  //
+  // The endpoints no longer require admin, because Bekah and Kara are not
+  // admins; the named list is the whole lock on both sides now.
   operations:  ['tasks', 'sops', 'platform', 'email', 'eod', 'reports', 'sixpm'],
   // Erick: the Maintenance tab and its twelve sub-views, nothing else.
   maintenance: ['maintenance'],
@@ -106,9 +110,14 @@ const TAB_ACCESS = {
   // 'kpi' added 2026-09-23: Regional Performance and the Monday Brief moved out
   // of the Collections tab, where they sat below the Collections Review
   // generator — a different job for a different person.
-  regional_director:   ['maintenance', 'reports', 'leasing', 'collections', 'kpi'],   // Rebekah Tuckner
+  // 'calls' added 2026-10-07 (Lyndsay): full Call Analyzer, red flags and
+  // coaching notes included. The tab only renders if currentUser.callAnalyzer
+  // is also true, and that is a list of NAMED people on the server — so adding
+  // it here widens nothing by itself. A second regional_director would see the
+  // tab key allowed and still get nothing, because they would not be named.
+  regional_director:   ['maintenance', 'reports', 'leasing', 'collections', 'kpi', 'calls'],   // Rebekah Tuckner
   // Kara oversees maintenance, leasing and collections as of 2026-09-21.
-  resident_success:    ['maintenance', 'reports', 'evictions', 'leasing', 'collections'],   // Kara Garst
+  resident_success:    ['maintenance', 'reports', 'evictions', 'leasing', 'collections', 'calls'],   // Kara Garst
   collections_leasing: ['reports', 'collections'],   // Rocío Hunsberger
   // Rocío's collections role — Collections Review tab.
   collections_agent:   ['collections'],

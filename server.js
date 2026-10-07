@@ -664,17 +664,44 @@ function requireRole(...roles) {
 // became an admin on 2026-09-21 without the Call Analyzer, so the two are now
 // separated and the named allowlist is the actual lock.
 //
-// Admin is still required on top of this — being listed here is not a way in.
-// To grant someone access, add their username here; overridable per environment
-// via CALL_ANALYZER_USERS (comma-separated usernames) without a deploy.
-const CALL_ANALYZER_USERS = (process.env.CALL_ANALYZER_USERS || 'arturo,lyndsay')
+// ADMIN IS NO LONGER REQUIRED ON TOP. Until 2026-10-07 every route was
+// requireRole('admin') AND this allowlist, so the list could only ever narrow
+// the set of admins. Lyndsay granted full access — grades, red flags and
+// coaching notes — to Jay, Bekah and Kara on 2026-10-07, and two of those three
+// are not admins: Bekah is regional_director, Kara is resident_success. Keeping
+// the admin check would have made adding them to this list do nothing at all,
+// which is the kind of change that looks applied and is not.
+//
+// So the named list is now the whole lock, and it is a list of PEOPLE, not
+// roles, deliberately. Bekah and Kara each hold their role alone today; grant
+// by role and the next person given regional_director inherits call recordings
+// and coaching notes about named staff without anyone deciding that.
+//
+// Every /api/calls/* route carries requireCallAnalyzer, and a test fails the
+// build if one does not — with admin gone, a route that loses this guard is
+// open to every logged-in user rather than merely to every admin.
+//
+// Overridable per environment via CALL_ANALYZER_USERS (comma-separated
+// usernames), which REPLACES this list rather than adding to it. If that
+// variable is already set in Render to the old pair, this deploy changes
+// nothing for Jay, Bekah and Kara — so the effective list is logged at startup.
+const CALL_ANALYZER_DEFAULT_USERS = 'arturo,lyndsay,jay,bekah,kara';
+const CALL_ANALYZER_USERS = (process.env.CALL_ANALYZER_USERS || CALL_ANALYZER_DEFAULT_USERS)
   .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const mayUseCallAnalyzer = user =>
-  CALL_ANALYZER_USERS.includes(String(user?.username || '').toLowerCase());
+  // An authenticated user is required, not merely a listed username: without
+  // the admin check in front, a route reached with no session must not fall
+  // through to a match on an empty string if the list ever contains one.
+  !!(user && user.username)
+  && CALL_ANALYZER_USERS.includes(String(user.username).toLowerCase());
 function requireCallAnalyzer(req, res, next) {
   if (!mayUseCallAnalyzer(req.user)) return res.status(403).json({ error: 'Access denied' });
   next();
 }
+// Said out loud at boot, because the env var silently wins over the default
+// and "I deployed it and she still cannot see the tab" is otherwise a puzzle.
+console.log(`[call-analyzer] access: ${CALL_ANALYZER_USERS.join(', ')}`
+  + (process.env.CALL_ANALYZER_USERS ? '  (from CALL_ANALYZER_USERS, overriding the default)' : '  (default)'));
 
 // ---- POST /api/auth/login --------------------------------------------------
 app.use('/api', activityReadLogger);
@@ -8535,7 +8562,7 @@ async function saveCallGrade(db, row) {
 
 // Grade the given transcript and save. One grade per recording_id: a re-grade
 // replaces the prior row (schema has no unique key, so delete-then-insert).
-app.post('/api/calls/grade', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.post('/api/calls/grade', requireAuth, requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   const b = req.body || {};
   if (!b.recording_id) return res.status(400).json({ error: 'recording_id is required' });
@@ -8567,7 +8594,7 @@ app.post('/api/calls/grade', requireAuth, requireRole('admin'), requireCallAnaly
 });
 
 // List grades (light columns), newest first, with optional filters.
-app.get('/api/calls/grades', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.get('/api/calls/grades', requireAuth, requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ grades: [] });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -8638,7 +8665,7 @@ async function callFlagMap(db) {
   return { missing: null, map: Object.fromEntries((data || []).map(r => [r.recording_id, r])) };
 }
 
-app.get('/api/calls/flags', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.get('/api/calls/flags', requireAuth, requireCallAnalyzer, async (req, res) => {
   try {
     const { missing, map } = await callFlagMap(supabaseAdmin || supabasePublic);
     if (missing) return res.status(503).json({ error: missing, needsMigration: true });
@@ -8646,7 +8673,7 @@ app.get('/api/calls/flags', requireAuth, requireRole('admin'), requireCallAnalyz
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/calls/flag', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.post('/api/calls/flag', requireAuth, requireCallAnalyzer, async (req, res) => {
   const recording_id = String((req.body && req.body.recording_id) || '').trim();
   if (!recording_id) return res.status(400).json({ error: 'recording_id is required' });
   // The note is optional by design — the flag itself is the signal, and making
@@ -8669,7 +8696,7 @@ app.post('/api/calls/flag', requireAuth, requireRole('admin'), requireCallAnalyz
 // Unflag. A DELETE rather than resolved=true: clicking the button again means
 // "I did not mean to flag this", which is different from "this was dealt with".
 // Resolving is the PATCH below and keeps the row.
-app.delete('/api/calls/flag/:recording_id', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.delete('/api/calls/flag/:recording_id', requireAuth, requireCallAnalyzer, async (req, res) => {
   try {
     const db = supabaseAdmin || supabasePublic;
     const { error } = await db.from('call_grade_flags').delete().eq('recording_id', req.params.recording_id);
@@ -8680,7 +8707,7 @@ app.delete('/api/calls/flag/:recording_id', requireAuth, requireRole('admin'), r
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.patch('/api/calls/flag/:recording_id', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.patch('/api/calls/flag/:recording_id', requireAuth, requireCallAnalyzer, async (req, res) => {
   const resolved = !!(req.body && req.body.resolved);
   const patch = { resolved, updated_at: new Date().toISOString() };
   if (resolved) { patch.resolved_by = actorName(req); patch.resolved_at = new Date().toISOString(); }
@@ -8707,7 +8734,7 @@ const COACHING_NO_TABLE = 'Coaching review is not set up yet — run supabase/mi
 const coachErr = err => (err && /does not exist|schema cache/i.test(err.message || '') ? COACHING_NO_TABLE : null);
 
 // All reviews for one call, keyed by criterion so the UI can mark each note.
-app.get('/api/calls/:recording_id/coaching-reviews', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.get('/api/calls/:recording_id/coaching-reviews', requireAuth, requireCallAnalyzer, async (req, res) => {
   try {
     const db = supabaseAdmin || supabasePublic;
     const { data, error } = await db.from('coaching_reviews').select('*')
@@ -8719,7 +8746,7 @@ app.get('/api/calls/:recording_id/coaching-reviews', requireAuth, requireRole('a
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/calls/:recording_id/coaching-reviews', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.post('/api/calls/:recording_id/coaching-reviews', requireAuth, requireCallAnalyzer, async (req, res) => {
   const { criterion, verdict, note, original_note, criterion_score } = req.body || {};
   if (!String(criterion || '').trim()) return res.status(400).json({ error: 'criterion is required' });
   if (!['accepted', 'needs_revision'].includes(verdict)) {
@@ -8759,7 +8786,7 @@ app.post('/api/calls/:recording_id/coaching-reviews', requireAuth, requireRole('
 });
 
 // Undo — removes the verdict entirely rather than recording a third state.
-app.delete('/api/calls/:recording_id/coaching-reviews', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.delete('/api/calls/:recording_id/coaching-reviews', requireAuth, requireCallAnalyzer, async (req, res) => {
   const criterion = String(req.query.criterion || '').trim();
   if (!criterion) return res.status(400).json({ error: 'criterion is required' });
   try {
@@ -8776,7 +8803,7 @@ app.delete('/api/calls/:recording_id/coaching-reviews', requireAuth, requireRole
 // The queue behind the badge: rejected coaching that has not been folded into
 // the rubric yet. Ordered oldest first — a suggestion sitting for three weeks
 // is the one worth looking at.
-app.get('/api/calls/rubric-suggestions', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.get('/api/calls/rubric-suggestions', requireAuth, requireCallAnalyzer, async (req, res) => {
   try {
     const db = supabaseAdmin || supabasePublic;
     let q = db.from('coaching_reviews').select('*')
@@ -8793,7 +8820,7 @@ app.get('/api/calls/rubric-suggestions', requireAuth, requireRole('admin'), requ
 });
 
 // Mark a suggestion as folded into the rubric.
-app.patch('/api/calls/rubric-suggestions/:id', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.patch('/api/calls/rubric-suggestions/:id', requireAuth, requireCallAnalyzer, async (req, res) => {
   const applied = !!(req.body && req.body.applied);
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -8823,7 +8850,7 @@ app.patch('/api/calls/rubric-suggestions/:id', requireAuth, requireRole('admin')
 // grade yet — and has no bearing here, where every exported row is by definition
 // already graded. N/S is exposed as a grade value so it can be selected or
 // excluded alongside A-F.
-app.get('/api/calls/export', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.get('/api/calls/export', requireAuth, requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -8906,7 +8933,7 @@ app.get('/api/calls/export', requireAuth, requireRole('admin'), requireCallAnaly
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/calls/grade-progress', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.get('/api/calls/grade-progress', requireAuth, requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ graded: 0, pending: 0, skipped: 0, archived: 0 });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -8972,7 +8999,7 @@ app.get('/api/calls/grade-progress', requireAuth, requireRole('admin'), requireC
 
 // Full grade for one recording (the transcript panel checks this to show an
 // existing grade, and the Grades dashboard fetches it on row-expand).
-app.get('/api/calls/grades/:recording_id', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.get('/api/calls/grades/:recording_id', requireAuth, requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ grade: null });
   try {
     const db = supabaseAdmin || supabasePublic;
@@ -9281,7 +9308,7 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
 // reach call data. Nothing actually used the key path here (the dashboard's own
 // button is the only caller), so closing it cost nothing. Restore
 // requireMetricAdmin if an MCP tool ever needs to trigger a backfill.
-app.post('/api/sv/grade/backfill', requireAuth, requireRole('admin'), requireCallAnalyzer, async (req, res) => {
+app.post('/api/sv/grade/backfill', requireAuth, requireCallAnalyzer, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   if (!simplevoip.isConfigured()) return res.status(400).json({ ok: false, error: 'SimpleVOIP is not configured.' });
   let days = parseInt(req.query.days, 10);
