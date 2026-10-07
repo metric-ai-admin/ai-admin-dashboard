@@ -104,9 +104,13 @@ t('it is off unless asked for', () => {
   assert.ok(/sweep = false/.test(REC), 'the sweep runs by default');
   assert.ok(/req\.body\.sweep === true/.test(server), 'the route cannot turn it on');
 });
-t('an Unknown row is only reconsidered under a sweep', () => {
-  assert.ok(/if \(WOS\.isUnknown\(r\.status\) && !sweep\) return;/.test(REC),
-    'either Unknowns are never revisited, or they are churned on every ordinary run');
+t('an Unknown row is only changed when a feed can say what happened', () => {
+  // It may now be resolved by a stored feed as well as by a sweep — that is
+  // why wo_canceled exists. What must not happen is churn: a row no feed can
+  // explain falls out untouched rather than being stamped Unknown again.
+  assert.ok(/if \(WOS\.isUnknown\(r\.status\)\) return;\s*\/\/ still unresolved/.test(REC));
+  assert.ok(/if \(!found\) return;/.test(REC),
+    'and one in the open feed with no reported status still says nothing');
 });
 t('a sweep never writes Unknown over Unknown', () => {
   // Re-marking a row that is still in neither feed would stamp a new run_at on

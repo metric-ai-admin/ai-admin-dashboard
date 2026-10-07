@@ -489,4 +489,24 @@ t('cancelled is broken out of the automatic figure', () => {
   assert.ok(/cancelled\)/.test(body));
 });
 
+
+t('an Unknown row can be resolved by a stored feed, not only by a sweep', () => {
+  const fn = server.slice(server.indexOf('async function reconcileWorkOrders'));
+  const body = fn.slice(0, fn.indexOf('const summary = {'));
+  const code = body.replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(!/isUnknown\(r\.status\) && !sweep/.test(code),
+    'four rows sat in Unknown while wo_canceled held the answer for all four, '
+    + 'and the dry run reported nothing to do');
+  // The two protections that made it safe to let them through must remain.
+  assert.ok(/if \(!found\) return;/.test(code),
+    'a row in the open feed with no status from the sweep must still say nothing');
+  assert.ok(/if \(WOS\.isUnknown\(r\.status\)\) return;/.test(code),
+    'and a row in neither feed must never be rewritten as Unknown a second time');
+});
+
+t('a cancellation date is read from canceled_on', () => {
+  // wo_canceled rows carry completed_on: null and the real date in canceled_on.
+  const fn = server.slice(server.indexOf('async function reconcileWorkOrders'));
+  assert.ok(/c\.completed_on \|\| c\.work_completed_on \|\| c\.canceled_on/.test(fn));
+});
 console.log(`\n${pass} passing`);

@@ -7656,11 +7656,18 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null, sweep = fal
   const changes = [];
   (table || []).forEach(r => {
     if (WOS.isClosed(r.status)) return;                               // already settled
-    // An Unknown row is settled too, EXCEPT under a sweep — resolving those is
-    // the only reason the sweep exists. It can only move a row to a known
-    // state: a row that is still in neither feed falls out below rather than
-    // being rewritten as Unknown a second time.
-    if (WOS.isUnknown(r.status) && !sweep) return;
+    // An Unknown row used to be skipped here unless a sweep was running, on
+    // the reasoning that only the sweep could say anything new about it. That
+    // stopped being true on 2026-10-07, when cancellations got their own
+    // stored feed: four rows sat in Unknown while wo_canceled held the answer
+    // for all four, and a dry run reported nothing to do.
+    //
+    // It is safe to let them through because each branch below already refuses
+    // to say anything it cannot support. A row in the open feed needs a status
+    // from the sweep, and openStatus is empty without one, so it still falls
+    // out. A row in neither feed hits the Unknown guard further down and is
+    // never rewritten as Unknown a second time. What changes is only this: a
+    // row a stored feed CAN explain now gets explained.
     const k = key(r);
     if (openNow.has(k)) {
       if (!WOS.isUnknown(r.status)) return;                           // still open, nothing to say
