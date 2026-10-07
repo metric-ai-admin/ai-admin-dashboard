@@ -21,10 +21,10 @@ let pass = 0;
 const t = (name, fn) => { fn(); pass++; console.log('  ok  ' + name); };
 
 const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-// The BUILDER, not the one-line route: after the refactor the route just
-// returns what this assembles, and both exports call the same function.
-const ROUTE = server.slice(server.indexOf('async function kpiBuildReport(req)'),
-  server.indexOf("app.get('/api/kpi/report'"));
+// The builder, which now lives in its own module so the Friday comparison can
+// run the same function the route runs rather than a copy of it.
+const ROUTE = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-build.js'), 'utf8');
+
 const PATCH = server.slice(server.indexOf("app.patch('/api/kpi/report/:week_ending'"),
   server.indexOf("app.patch('/api/kpi/report/:week_ending'") + 2200);
 
@@ -169,13 +169,17 @@ t('the default week is the last COMPLETE week, same as the Goal Board', () => {
 });
 
 t('the response says whether the week was chosen or defaulted', () => {
-  assert.ok(/defaulted: !isDay\(req\.query\.week_ending\)/.test(ROUTE));
+  assert.ok(/defaulted: !isDay\(opts\.week_ending\)/.test(ROUTE));
 });
 
 // ---- manual edits, locked shut ----------------------------------------------
 t('no field is adjustable yet', () => {
-  assert.ok(/const KPI_EDITABLE_FIELDS = \[\];/.test(server),
+  // Declared once, in the builder module, and re-exported to the route — two
+  // lists could disagree and the route's would be the one that let a write in.
+  assert.ok(/const KPI_EDITABLE_FIELDS = \[\];/.test(ROUTE),
     'it stays empty until Bekah and Kara say which numbers they need');
+  assert.ok(/KPI_EDITABLE_FIELDS = kpiBuild\.KPI_EDITABLE_FIELDS/.test(server),
+    'the route must not keep a second copy of the allow-list');
 });
 
 t('a PATCH is refused whatever field it names', () => {
@@ -375,6 +379,7 @@ t('a PDF without the workbook says so on its face', () => {
 t('one builder feeds the page and both exports', () => {
   assert.ok(/async function kpiBuildReport\(req\)/.test(server));
   assert.ok(/res\.json\(await kpiBuildReport\(req\)\)/.test(server));
+  assert.ok(/kpiBuild\.buildKpiReport\(db,/.test(server), 'the route wraps the module');
   assert.ok(/const report = await kpiBuildReport\(req\)/.test(EXPORT),
     'two assemblers would mean only one of them ever gets fixed');
 });
