@@ -23,6 +23,12 @@ const ROUTE = server.slice(server.indexOf("app.post('/api/kpi/compare'"),
 
 // Her Aged Receivable Detail, in miniature: a group header is a row with text
 // in column A and nothing else; the charge lines under it belong to it.
+// Her Aged Receivable Detail, in miniature.
+//
+// The shape that matters and that I got wrong twice: a section header names
+// "Property - Address - Unit N - Payer", the CHARGE LINES under it are skipped,
+// and the tenant's figure is the row with a BLANK payer name — the subtotal,
+// already net of that tenant's credits.
 const DQ_ROWS = [
   ['Data: Delinquency as of last week'], [], [], [], [],
   ['Payer Name', 'Charge Date', 'Posting Date', 'GL', 'GL Name', 'Amount Receivable', '0-30', '31-60', '61-90', '91+'],
@@ -30,43 +36,71 @@ const DQ_ROWS = [
   ['Ascent at Northgate - 9315 Northgate Blvd - Unit 10-124 - Castilla, Dulce P.'],
   ['Castilla, Dulce P.', '10/1/26', '10/1/26', '4110', 'Rent Income', '839', '839', '0', '0', '0'],
   ['Castilla, Dulce P.', '10/1/26', '10/1/26', '4402', 'Utility Fee', '3', '3', '0', '0', '0'],
+  ['', '', '', '', '', '842', '842', '0', '0', '0'],
   ['Ascent at Northgate - 9315 Northgate Blvd - Unit 10-125 - Someone Else'],
   ['Someone Else', '10/1/26', '10/1/26', '4110', 'Rent Income', '500', '500', '0', '0', '0'],
-  ['Someone Else', '10/1/26', '10/1/26', '4900', 'Concession', '(100)', '0', '0', '0', '0'],
+  ['Someone Else', '10/1/26', '10/1/26', '4900', 'Concession', '(100)', '(100)', '0', '0', '0'],
+  ['', '', '', '', '', '400', '400', '0', '0', '0'],
+  ['Ascent at Northgate - 9315 Northgate Blvd - Unit 10-126 - In Credit, Ivan'],
+  ['In Credit, Ivan', '10/1/26', '10/1/26', '4900', 'Concession', '(103.69)', '(103.69)', '0', '0', '0'],
+  ['', '', '', '', '', '(103.69)', '(103.69)', '0', '0', '0'],
   ['Sunset Palms - 902 Romeria - Unit 109 - A Tenant'],
   ['A Tenant', '10/1/26', '10/1/26', '4110', 'Rent Income', '1,200.50', '1200.5', '0', '0', '0'],
+  ['', '', '', '', '', '1,200.50', '1200.5', '0', '0', '0'],
 ];
 
 // ---- her delinquency --------------------------------------------------------
-t('her sheet is grouped by property-unit-payer, and the groups are followed', () => {
+//
+// Her page was run over the real workbook in jsdom to settle this. It produces
+// 106,616.31; so does this parser. Two wrong readings got there first and each
+// one is a trap worth naming:
+//
+//   per charge line, positives only -> 112,952.96
+//   per tenant, everything          -> 106,512.62
+//   per tenant, positives only      -> 106,616.31
+t('the tenant subtotal is read, not the charge lines', () => {
   const d = C.herDelinquency(DQ_ROWS);
-  assert.strictEqual(d.groups, 3);
-  assert.strictEqual(Object.keys(d.byProperty).sort().join(','), 'Ascent at Northgate,Sunset Palms');
-  assert.strictEqual(d.byProperty['Ascent at Northgate'].total, 1342);
+  assert.strictEqual(d.sections, 4);
+  assert.strictEqual(d.byProperty['Ascent at Northgate'].total, 1242, '842 + 400');
   assert.strictEqual(d.byProperty['Sunset Palms'].total, 1200.5);
 });
 
-t('a payer counts once however many charge lines they have', () => {
+t('a tenant counts once however many charge lines they have', () => {
   const d = C.herDelinquency(DQ_ROWS);
-  assert.strictEqual(d.byProperty['Ascent at Northgate'].residents, 2, 'four lines, two payers');
+  // Three sections at Ascent, but the one in credit is not delinquent.
+  assert.strictEqual(d.byProperty['Ascent at Northgate'].residents, 3);
+  assert.strictEqual(d.byProperty['Ascent at Northgate'].list.length, 3);
 });
 
-t('concessions are left out, not netted off', () => {
-  // Netting them would report LESS delinquency than there is, which is the
-  // direction that matters on a report about money owed.
+t('a concession reduces its own tenant and no one else', () => {
+  // "Someone Else" owes 500 and was credited 100: their subtotal is 400, and
+  // that is what counts. The credit does not come off another tenant.
   const d = C.herDelinquency(DQ_ROWS);
-  assert.strictEqual(d.negativeRows, 1);
-  assert.strictEqual(d.negatives, -100);
-  assert.strictEqual(d.byProperty['Ascent at Northgate'].total, 1342, 'the -100 must not reduce it');
+  const list = d.byProperty['Ascent at Northgate'].list;
+  assert.strictEqual(list.find(x => x.tenant === 'Someone Else').amount, 400);
 });
 
-t('it sums Amount Receivable, not the aging buckets', () => {
-  // Reading the buckets instead gave $332k against her $106k: the two columns
-  // do not agree on every row.
-  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-compare.js'), 'utf8');
-  const fn = src.slice(src.indexOf('function herDelinquency'), src.indexOf('// ---- her occupancy'));
-  assert.ok(/num\(r\[5\]\)/.test(fn));
-  assert.ok(!/r\[6\]|r\[7\]|r\[8\]|r\[9\]/.test(fn), 'the buckets must not be summed');
+t('a tenant whose balance is NEGATIVE is listed but not totalled', () => {
+  // Evan D. Boyd at Hyde Park Square nets -103.69 in the real sheet. Her page
+  // keeps him in the tenant list and out of the total, so the property reads
+  // 11,880.97 and not 11,777.28. A credit is not negative delinquency.
+  const d = C.herDelinquency(DQ_ROWS);
+  const a = d.byProperty['Ascent at Northgate'];
+  assert.strictEqual(a.credits, -103.69);
+  assert.strictEqual(a.total, 1242, 'the credit must not reduce the property');
+  assert.ok(a.list.some(x => x.tenant === 'In Credit, Ivan'));
+});
+
+t('a spacer row with no aging total is not a tenant', () => {
+  // A blank-payer row inside a section, with nothing in the aging columns, is
+  // formatting. Only a row with a non-zero aging sum is a subtotal.
+  // Right after a section header, where `current` is set and the row could be
+  // mistaken for that tenant's subtotal.
+  const withSpacer = DQ_ROWS.slice(0, 8)
+    .concat([['', '', '', '', '', '', '', '', '', '']], DQ_ROWS.slice(8));
+  const d = C.herDelinquency(withSpacer);
+  assert.strictEqual(d.skippedZero, 1);
+  assert.strictEqual(d.byProperty['Ascent at Northgate'].total, 1242, 'and it changes nothing');
 });
 
 t('money with symbols, commas and parentheses parses', () => {
