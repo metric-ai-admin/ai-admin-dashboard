@@ -335,11 +335,60 @@ t('the reconcile step actually writes, since dryRun is the route default', () =>
     'without write:true the loop would do the measuring and none of the writing');
 });
 
-t('the two AppFolio calls are spaced, not fired together', () => {
+t('every AppFolio call in the loop is spaced, not fired together', () => {
   const fn = server.slice(server.indexOf('async function workOrderClosureLoop'));
   const body = fn.slice(0, fn.indexOf('cron.schedule'));
-  assert.strictEqual(body.split('await sleep(WO_LOOP_GAP_MS)').length - 1, 2);
+  // Counted against the calls rather than fixed at a number, so adding a
+  // fourth feed one day cannot quietly skip its gap.
+  const calls = (body.match(/af\.syncReport\(/g) || []).length;
+  assert.strictEqual(calls, 3, 'open, completed, canceled');
+  assert.strictEqual(body.split('await sleep(WO_LOOP_GAP_MS)').length - 1, calls,
+    'one gap after each call, including the last before the reconcile');
   assert.ok(/const WO_LOOP_GAP_MS = 2500;/.test(server));
+});
+
+t('cancellations have their own feed and are not folded into completions', () => {
+  const reports = fs.readFileSync(path.join(__dirname, '..', 'appfolio-reports.js'), 'utf8');
+  assert.ok(/id: 'wo_canceled'/.test(reports));
+  assert.ok(/work_order_statuses: \['5'\]/.test(reports));
+  // wo_completed must stay 4 + 7: the EOD counts today's completions out of
+  // that store and the scheduling feed measures cycle time from it. A
+  // cancellation is neither.
+  assert.ok(/params: \{ work_order_statuses: \['4', '7'\] \}/.test(reports));
+});
+
+t('the reconciliation reads the cancellations, and survives an empty store', () => {
+  const fn = server.slice(server.indexOf('async function reconcileWorkOrders'));
+  const body = fn.slice(0, fn.indexOf('const { data: table'));
+  assert.ok(/readReportData\('wo_canceled'\)/.test(body));
+  assert.ok(!/canceledRows\.length\) return/.test(body),
+    'an unsynced cancellation store must not stop the work orders it already can close');
+  assert.ok(/canceledRows\.forEach[\s\S]{0,160}!closedBy\.has\(k\)/.test(body),
+    'completed wins a collision');
+});
+
+t('a click plus the hourly job stays under the limit', () => {
+  const batch = Number(/const CC_SYNC_BATCH = (\d+);/.exec(cc)[1]);
+  assert.ok(batch + 3 <= 7, batch + ' + 3 calls from the loop exceeds 7 per 15s');
+});
+
+t('the nightly snapshot names the Central day, not the server one', () => {
+  const fn = server.slice(server.indexOf('async function ccNightlySnapshot'));
+  const head = fn.slice(0, fn.indexOf('const { data: existing'));
+  assert.ok(/WEEK\.toChicagoYMD\(new Date\(\)\)/.test(head));
+  // Comments stripped first: the note above this line explains the bug by
+  // NAMING reportDateStr(), and an assertion that matched my own prose would
+  // pass or fail on how the comment is worded.
+  const code = head.replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(!/reportDateStr\(\)/.test(code),
+    'Render runs on UTC: at 23:30 CT reportDateStr() is already tomorrow, and the '
+    + 'first run wrote a board_opened:false row for a day that had not happened yet');
+});
+
+t('a board that someone opened stops claiming nobody did', () => {
+  const post = server.slice(server.indexOf("app.post('/api/maintenance/command-center/state'"));
+  const row = post.slice(post.indexOf('const row = {'), post.indexOf('upsert(row'));
+  assert.ok(/board_opened: true/.test(row));
 });
 
 t('it runs hourly through the working day, in Central time', () => {
@@ -403,17 +452,17 @@ t('the comment that said the sync reconciles is gone', () => {
 });
 
 // ---- the rate limit ---------------------------------------------------------
-t('the Sync button goes in batches of four, not all seven at once', () => {
-  assert.ok(/const CC_SYNC_BATCH = 4;/.test(cc));
+t('the Sync button goes in batches, not all seven at once', () => {
+  assert.ok(/const CC_SYNC_BATCH = \d+;/.test(cc));
   assert.ok(!/Promise\.all\(CC_SYNC_DEFS\.map/.test(cc),
     'seven at once sat exactly on the AppFolio limit with no headroom');
   assert.ok(/CC_SYNC_BATCH_PAUSE_MS/.test(cc), 'and the next batch waits out the window');
 });
 
-t('four plus the hourly job stays under seven in any fifteen seconds', () => {
-  // 4 from a click + 2 from the loop = 6. The loop also spaces its own two.
+t('a click plus the hourly job stays under seven in any fifteen seconds', () => {
+  // The loop makes three calls now, so the batch came down from four to three.
   const m = cc.match(/const CC_SYNC_BATCH = (\d+);/);
-  assert.ok(Number(m[1]) + 2 <= 7, 'a click and the job must be able to overlap safely');
+  assert.ok(Number(m[1]) + 3 <= 7, 'a click and the job must be able to overlap safely');
 });
 
 // ---- attribution ------------------------------------------------------------

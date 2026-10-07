@@ -404,7 +404,11 @@ const CC_SYNC_DEFS = [
   { key: 'inv',   name: 'Inventory Usage',     ep: '/api/maintenance/sync/inventory',     headers: () => CC_INV_HEADERS,   row: ccInvRow },
   { key: 'audit', name: 'Audit: unbilled',     ep: '/api/maintenance/sync/audit',         headers: () => CC_AUDIT_HEADERS, row: ccAuditRow },
 ];
-const CC_SYNC_BATCH = 4;              // of 7 allowed per 15s, leaving room for the hourly job
+/* Three, not four. The hourly closure job now makes THREE AppFolio calls
+   (open, completed, canceled) spaced 2.5s apart, so all three land inside one
+   15-second window. 4 + 3 would sit exactly on the limit of 7; 3 + 3 leaves
+   one spare. */
+const CC_SYNC_BATCH = 3;
 const CC_SYNC_BATCH_PAUSE_MS = 15000; // the limit's own window
 async function ccSyncFromAppFolio() {
   const btn = $('#cc-sync'), status = $('#cc-sync-status'), st = $('#cc-status');

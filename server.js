@@ -7596,10 +7596,28 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null, sweep = fal
   const completedRows = (comp && comp.rows) || (Array.isArray(comp) ? comp : []);
   if (!completedRows.length) return { error: 'wo_completed store is empty — sync it first' };
 
+  // Cancellations, from their own feed.
+  //
+  // wo_completed asks for codes 4 and 7 only, so a canceled work order left the
+  // open feed, appeared in neither store, and became "Unknown — not in feed":
+  // four of Hyde Park Square's did on 2026-10-06. Not folded into wo_completed,
+  // because the EOD counts today's completions out of that store and a
+  // cancellation is not a completion — it has none to count.
+  //
+  // MISSING IS NOT FATAL. The store is empty until this report syncs for the
+  // first time, and a reconciliation that refused to run until then would stop
+  // closing the work orders it already can. Those rows stay Unknown, which is
+  // where they already were.
+  const canc = await af.readReportData('wo_canceled');
+  const canceledRows = (canc && canc.rows) || (Array.isArray(canc) ? canc : []);
+
   const key = r => String(r.work_order_number == null ? '' : r.work_order_number).trim();
   const openNow = new Set(open.map(key).filter(Boolean));
   const closedBy = new Map();
   completedRows.forEach(r => { const k = key(r); if (k) closedBy.set(k, r); });
+  // Layered after, so a work order somehow in both reads as completed rather
+  // than canceled: if they ever overlap, the one saying work happened wins.
+  canceledRows.forEach(r => { const k = key(r); if (k && !closedBy.has(k)) closedBy.set(k, r); });
 
   // The sweep, when asked for. Its rows are layered UNDER the two stored pulls
   // — wo_all and wo_completed are what the rest of the dashboard runs on, so
@@ -13455,6 +13473,11 @@ app.post('/api/maintenance/command-center/state', requireAuth, async (req, res) 
       state_date, tasks, checks,
       total_tasks: tasks.length,
       ...counts,
+      // Somebody is here. Without this, a row the nightly job wrote as "nobody
+      // opened the board" keeps saying so for ever once the browser starts
+      // putting tasks into it — which is what 2026-10-07 looked like all
+      // morning: 153 tasks on a row flagged board_opened:false.
+      board_opened: true,
       generated_at: body.generated_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -13489,7 +13512,20 @@ app.post('/api/maintenance/command-center/state', requireAuth, async (req, res) 
 // 23:30 CT, after the working day and before midnight rolls the date.
 async function ccNightlySnapshot() {
   const client = supabaseAdmin || supabasePublic;
-  const state_date = reportDateStr();
+  // The Central date, NOT reportDateStr().
+  //
+  // reportDateStr() reads the SERVER's local date, and Render runs on UTC. At
+  // 23:30 America/Chicago it is already 04:30 UTC the next day, so the first
+  // run of this job — the night of 2026-10-06 — looked up 2026-10-07, found no
+  // board, and wrote a board_opened:false row for a day that had not happened
+  // yet. The 6th never got its recount, and the 7th carried a stale "nobody
+  // opened it" that Erick's morning save then sat on top of.
+  //
+  // The browser writes rows keyed by reportDateStr() too, but it only runs
+  // during the working day, when the UTC and Central dates agree. This cron is
+  // the one moment they do not, which is exactly why it is the one that has to
+  // say which day it means.
+  const state_date = WEEK.toChicagoYMD(new Date());
   const { data: existing, error } = await client.from('cc_daily_state')
     .select('*').eq('state_date', state_date).maybeSingle();
   if (error) throw new Error(error.message);
@@ -16535,7 +16571,10 @@ cron.schedule('0 6 * * *', () => {
 //
 // Three steps in one run, in this order, because each needs the one before it:
 //   wo_all        the open feed, as AppFolio has it right now
-//   wo_completed  what closed — the ONLY source of a closed status
+//   wo_completed  what finished
+//   wo_canceled   what was called off — its own feed, because the EOD counts
+//                 today's completions out of wo_completed and a cancellation
+//                 is not a completion
 //   reconcile     compares the two against the table and writes the difference
 //
 // Spaced, not parallel. AppFolio allows 7 requests per 15 seconds and the
@@ -16555,6 +16594,12 @@ async function workOrderClosureLoop() {
   const c = await af.syncReport('wo_completed');
   out.completed = c && c.rowCount;
   await sleep(WO_LOOP_GAP_MS);
+  // Cancellations, on their own feed. Without this a canceled work order
+  // leaves the open pull, appears in neither store, and lands in "Unknown —
+  // not in feed" — where four of Hyde Park Square's went on 2026-10-06.
+  const x = await af.syncReport('wo_canceled');
+  out.canceled = x && x.rowCount;
+  await sleep(WO_LOOP_GAP_MS);
   // write:true — this is the step that was missing. dryRun is the default on
   // the route, so it has to be asked for explicitly.
   const r = await callOwnRoute('/api/maintenance/reconcile', { write: true });
@@ -16567,7 +16612,7 @@ async function workOrderClosureLoop() {
 cron.schedule('0 7-19 * * *', () => {
   if (!CRM_CONFIGURED) return;
   workOrderClosureLoop()
-    .then(o => logLine(`[wo-loop] ${o.open} open, ${o.completed} completed — `
+    .then(o => logLine(`[wo-loop] ${o.open} open, ${o.completed} completed, ${o.canceled} canceled — `
       + `closed ${o.closed}, reopened ${o.reopened}, new unknown ${o.unknown}, unknown total ${o.stillUnknown}`))
     // Logged through logLine, not console.error: a step that stops working
     // should be visible in the same place the other jobs report, or a silent

@@ -150,6 +150,28 @@ const REPORTS = [
   },
 
   {
+    // Canceled work orders, on their own and NOT folded into wo_completed.
+    //
+    // A canceled work order leaves the open feed and never appears in
+    // wo_completed, so the reconciliation could say nothing about it and the
+    // row became "Unknown — not in feed". Four of Hyde Park Square's did
+    // exactly that on 2026-10-06, all canceled that afternoon.
+    //
+    // Adding code 5 to wo_completed would have fixed that and broken two
+    // things quietly: the EOD counts today's completions out of that store,
+    // and the WO Scheduling feed measures cycle time from it. A cancellation
+    // is not a completion, and it has no completion to measure. Separate feed,
+    // separate meaning, and the reconciliation reads both.
+    id: 'wo_canceled',
+    resource: 'work_order',
+    label: 'WO — Canceled',
+    group: 'Work Orders',
+    priority: 6,
+    feeds: 'Work-order reconciliation — closes a canceled WO as cancelled rather than Unknown',
+    params: { work_order_statuses: ['5'] },
+  },
+
+  {
     // The UI's "Move Out Directory" (buffered_reports/689) is a configured
     // view of AppFolio's standard Tenant Tickler report. Saved-report UUIDs
     // are unreachable from the public API (see README), but the BASE report
