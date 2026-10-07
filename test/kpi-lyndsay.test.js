@@ -246,4 +246,50 @@ t('the server builds the report from it; the browser still does not', () => {
   });
 });
 
+
+console.log('\nthe week is counted in Central days, not UTC days');
+t('an instant late on Saturday Central stays in that week', () => {
+  // Kenneth W Williams, Hyde Park Square: interest received 10:14 PM Central
+  // on Saturday 2026-10-03, which is 03:14 UTC on Sunday the 4th. Taking the
+  // leading YYYY-MM-DD of the timestamp gave the UTC day and dropped him, so
+  // Hyde Park read 14 against her 15 and the portfolio 104 against 105.
+  assert.strictEqual(K.dayOf('2026-10-04T03:14:00+00:00'), '2026-10-03');
+  assert.strictEqual(K.inWeek('2026-10-04T03:14:00+00:00', '2026-09-27', '2026-10-03'), true);
+});
+
+t('a BARE date is left exactly as it is', () => {
+  // The other half of the rule, and the one that bites if you forget it:
+  // new Date('2026-10-03') is UTC midnight, which is 7pm on the 2nd in
+  // Chicago. Converting a value that is already a local day moves it a day
+  // backwards. first_contact_date is stored this way.
+  assert.strictEqual(K.dayOf('2026-10-03'), '2026-10-03');
+  assert.strictEqual(K.dayOf('2026-01-01'), '2026-01-01');
+  assert.strictEqual(K.inWeek('2026-09-27', '2026-09-27', '2026-10-03'), true);
+  assert.strictEqual(K.inWeek('2026-10-04', '2026-09-27', '2026-10-03'), false);
+});
+
+t('an instant early on Sunday Central belongs to the NEXT week', () => {
+  // 2026-10-04 06:00 UTC is 1am Sunday in Chicago — out of the week that
+  // ended on the Saturday, and it must stay out.
+  assert.strictEqual(K.dayOf('2026-10-04T06:00:00+00:00'), '2026-10-04');
+  assert.strictEqual(K.inWeek('2026-10-04T06:00:00+00:00', '2026-09-27', '2026-10-03'), false);
+});
+
+t('an instant just before midnight UTC on the Saturday is still that Saturday', () => {
+  assert.strictEqual(K.dayOf('2026-10-03T23:59:00+00:00'), '2026-10-03');
+});
+
+t('nothing without a time component can be shifted by this', () => {
+  // Verified against the data on 2026-10-07: of the seven date columns inWeek
+  // is applied to, only the two interest_received ones carry a time. The rest
+  // are bare dates and this rule leaves them untouched.
+  ['2026-09-27', '2026-10-03', '2026-02-29'].forEach(d =>
+    assert.strictEqual(K.dayOf(d), d));
+});
+
+t('a null or empty value is still null, not today', () => {
+  assert.strictEqual(K.dayOf(null), null);
+  assert.strictEqual(K.dayOf(''), null);
+  assert.strictEqual(K.inWeek(null, '2026-09-27', '2026-10-03'), false);
+});
 console.log(`\n${pass} passing`);
