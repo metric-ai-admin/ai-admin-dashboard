@@ -241,6 +241,25 @@
     <div class="view-head">
       <div><h2>KPI Report</h2><p class="muted small">Portfolio performance and the week ahead.</p></div>
     </div>
+
+    <!-- Admin only, and hidden until the session says so. The comparison runs
+         on the SERVER because delinquency_kpi and unit_turn_detail live on the
+         Render disk; run anywhere else those metrics read zero and every
+         difference involving them is an artefact of where it ran. -->
+    <div id="kc-wrap" class="kc-wrap hidden">
+      <div class="dq-head">
+        <div>
+          <h2 class="dq-title">Compare with Katie&rsquo;s workbook</h2>
+          <p class="muted small">Upload the week&rsquo;s Data Source .xlsx. The file is parsed and discarded &mdash; nothing is stored.</p>
+        </div>
+        <label class="btn">
+          Choose workbook
+          <input type="file" accept=".xlsx,.xls" id="kc-file" hidden>
+        </label>
+      </div>
+      <div id="kc-msg"></div>
+      <div id="kc-out"></div>
+    </div>
     <div id="rp-wrap" class="rp-wrap" hidden>
       <div class="dq-head">
         <div>

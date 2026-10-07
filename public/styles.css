@@ -2999,3 +2999,18 @@ tr.ca-sel { background: var(--accent-glow); }
   background: none; border: 0; color: var(--text-primary); font: inherit;
   padding: 8px 10px; border-radius: 6px; cursor: pointer; }
 .cvx-export-menu button:hover { background: var(--accent-glow, rgba(0,0,0,.06)); }
+
+/* Compare with Katie's workbook. */
+.kc-wrap { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 18px; }
+.kc-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0 18px; }
+.kc-table th { text-align: left; font-weight: 600; color: var(--muted);
+  border-bottom: 1px solid var(--border); padding: 5px 8px 5px 0; }
+.kc-table th.n, .kc-table td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.kc-table td { padding: 4px 8px 4px 0; border-bottom: 1px solid var(--border); }
+/* Three outcomes, three colours — and "gap" is deliberately not the same as a
+   disagreement: one side having no value is a different thing from the two
+   sides disagreeing, and they must not read alike. */
+.kc-table tr.ok td:first-child { box-shadow: inset 3px 0 0 var(--ok, #059669); }
+.kc-table tr.bad td:first-child { box-shadow: inset 3px 0 0 var(--critical, #dc2626); }
+.kc-table tr.gap td:first-child { box-shadow: inset 3px 0 0 var(--muted); }
+.kc-table tr.gap td { color: var(--muted); }

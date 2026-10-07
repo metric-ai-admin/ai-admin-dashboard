@@ -399,7 +399,7 @@ function loadTab(tab) {
   if (tab === 'evictions') loadEvictions();
   if (tab === 'vacancy') loadVacancy();
   if (tab === 'collections') { loadCollections(); loadDecisionQueue(); }
-  if (tab === 'kpi') { loadRegional(); loadBrief(); }
+  if (tab === 'kpi') { loadRegional(); loadBrief(); kcInit(); }
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
   if (tab === 'marketing') loadMarketing();
@@ -12245,3 +12245,93 @@ document.addEventListener('click', e => {
   if (e.target.closest?.('#krc-close')) $('#krc-detail-card').hidden = true;
 });
 $('#krc-refresh')?.addEventListener('click', loadKpiRecaps);
+
+/* ── Compare with Katie's workbook (admin only) ────────────────────────────
+   The comparison runs on the server, where delinquency_kpi and
+   unit_turn_detail actually are. The file is sent, parsed and dropped; the
+   browser keeps nothing either. */
+const kcEsc = t => String(t == null ? '' : t)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const kcNum = v => {
+  if (v === null || v === undefined) return '—';
+  if (typeof v !== 'number') return kcEsc(v);
+  if (Math.abs(v) > 0 && Math.abs(v) < 1) return (v * 100).toFixed(1) + '%';
+  return (Math.round(v * 100) / 100).toLocaleString('en-US');
+};
+
+function kcInit() {
+  const wrap = document.getElementById('kc-wrap');
+  if (!wrap) return;
+  // Admin only. The route refuses anyone else, so this just keeps a dead
+  // panel out of view.
+  if (!currentUser || currentUser.role !== 'admin') return;
+  wrap.classList.remove('hidden');
+  const input = document.getElementById('kc-file');
+  if (input && !input.dataset.wired) {
+    input.dataset.wired = '1';
+    input.addEventListener('change', e => kcCompare(e.target.files[0]));
+  }
+}
+
+function kcSay(html, kind) {
+  const el = document.getElementById('kc-msg');
+  if (el) el.innerHTML = html ? `<div class="alert-box ${kind || 'ok'}">${html}</div>` : '';
+}
+
+async function kcCompare(file) {
+  if (!file) return;
+  kcSay('Comparing ' + kcEsc(file.name) + ' …', 'warn');
+  document.getElementById('kc-out').innerHTML = '';
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    // Not through api(): FormData must keep its own multipart boundary.
+    const res = await fetch('/api/kpi/compare', { method: 'POST', body: fd });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || ('Comparison failed (' + res.status + ')'));
+    kcRender(d);
+  } catch (e) {
+    kcSay(kcEsc(e.message), 'bad');
+  }
+}
+
+function kcRender(d) {
+  const gaps = (d.gaps || []).length
+    ? `<div class="alert-box bad"><b>${d.gaps.length} source could not be read</b> — every metric that depends on
+       ${d.gaps.length === 1 ? 'it' : 'them'} is a gap, not a disagreement:<br>${d.gaps.map(kcEsc).join('<br>')}</div>`
+    : '';
+  kcSay(`<b>${kcEsc(d.filename)}</b> — week ${kcEsc(d.range.from)} .. ${kcEsc(d.range.to)} ·
+    ${d.disagreements} difference${d.disagreements === 1 ? '' : 's'},
+    ${d.unexplained} without an explanation`, d.unexplained ? 'warn' : 'ok');
+
+  const table = rows => `<table class="kc-table"><thead><tr>
+      <th>Property</th><th>Metric</th><th class="n">Hers</th><th class="n">Ours</th>
+      <th class="n">Diff</th><th>Source</th><th>Why</th></tr></thead><tbody>${
+    rows.map(r => `<tr class="${r.agrees ? 'ok' : (r.diff === null ? 'gap' : 'bad')}">
+      <td>${kcEsc(r.property)}</td><td>${kcEsc(r.metric)}</td>
+      <td class="n">${kcNum(r.hers)}</td><td class="n">${kcNum(r.ours)}</td>
+      <td class="n">${r.diff === null ? '—' : kcNum(r.diff)}</td>
+      <td>${kcEsc(r.source || '')}</td>
+      <td>${r.agrees ? '' : kcEsc(r.why || (r.diff === null ? 'one side has no value' : 'not explained — worth chasing'))}</td>
+    </tr>`).join('')}</tbody></table>`;
+
+  const scope = (d.onlyHers || []).length || (d.onlyOurs || []).length
+    ? `<p class="small muted">Only in her workbook: ${(d.onlyHers || []).map(kcEsc).join(', ') || '—'}<br>
+       Only in our report: ${(d.onlyOurs || []).map(kcEsc).join(', ') || '—'}</p>` : '';
+
+  const dq = d.delinquency || {};
+  document.getElementById('kc-out').innerHTML = gaps
+    + '<h4>Portfolio</h4>'
+    + '<p class="small muted">Summed over the ' + (d.shared || []).length
+    + ' properties both sides carry — comparing our whole portfolio against her subset '
+    + 'would manufacture a difference out of scope rather than out of data.</p>'
+    + table(d.portfolio || [])
+    + '<h4>By property</h4>' + scope + table(d.rows || [])
+    + `<h4>Her delinquency sheet, as read</h4>
+       <p class="small muted">Aged Receivable Detail: ${dq.herGroups || 0} groups, ${dq.herChargeLines || 0}
+       charge lines. Amount Receivable, positives only — ${kcNum(dq.herPositives)}.
+       ${dq.herNegativeRows || 0} negative row${dq.herNegativeRows === 1 ? '' : 's'}
+       (${kcNum(dq.herNegatives)}) left out: those are concessions, and netting them off
+       would report less delinquency than there is.</p>`;
+}

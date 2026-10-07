@@ -10401,6 +10401,73 @@ app.post('/api/kpi/workbook', requireAuth, requireRole(...KPI_REPORT_ROLES),
     } catch (err) { res.status(500).json({ error: err.message, week_ending }); }
   });
 
+// Compare with Katie's workbook — admin only.
+//
+// The comparison has to run HERE, not on a laptop: delinquency_kpi and
+// unit_turn_detail live on the Render disk, and without them DQ Total and
+// move-outs read zero and every difference involving them is an artefact of
+// where the script ran.
+//
+// THE FILE IS NOT STORED. It is parsed out of the upload buffer and dropped.
+// This is a workbook of resident-level receivables; keeping a copy to save a
+// re-upload would be the wrong trade, and nothing here needs it after the
+// response is written.
+const kpiCompare = require('./lib/kpi-compare.js');
+
+app.post('/api/kpi/compare', requireAuth, requireRole('admin'),
+  billableUpload.single('file'), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'No file received.' });
+      if (!/\.xlsx?$/i.test(req.file.originalname || '')) {
+        return res.status(400).json({ error: 'That is not an Excel file.' });
+      }
+      if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+
+      let wb;
+      try { wb = XLSX.read(req.file.buffer, { type: 'buffer' }); }
+      catch (e) { return res.status(400).json({ error: 'Could not read that workbook: ' + e.message }); }
+
+      const find = pats => wb.SheetNames.find(n =>
+        pats.some(p => kpiCompare.norm(n).includes(kpiCompare.norm(p))));
+      const rowsOf = name => (name ? XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' }) : []);
+
+      const occName = find(['occupancy']);
+      const dqName = find(['delinquency']);
+      // Named individually: "could not compare" over a 19-tab workbook is not
+      // something anyone can act on.
+      const missing = [];
+      if (!occName) missing.push('occupancy');
+      if (!dqName) missing.push('delinquency');
+      if (missing.length) {
+        return res.status(400).json({
+          error: 'This workbook has no tab for: ' + missing.join(', ')
+            + '. Tabs found: ' + wb.SheetNames.join(' | '),
+        });
+      }
+
+      const her = {
+        occupancy: kpiCompare.herOccupancy(rowsOf(occName)),
+        delinquency: kpiCompare.herDelinquency(rowsOf(dqName)),
+      };
+
+      const db = supabaseAdmin || supabasePublic;
+      // The SAME function the route and the exports call.
+      const report = await kpiBuild.buildKpiReport(db, { week_ending: req.body && req.body.week_ending });
+      const result = kpiCompare.compare(report, her);
+
+      res.json({
+        week_ending: report.week_ending,
+        range: report.range,
+        filename: req.file.originalname,
+        tabs: wb.SheetNames,
+        // Carried through, because a metric that reads zero because its store
+        // is missing must never be presented as a disagreement.
+        gaps: report.gaps,
+        ...result,
+      });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
 // The KPI exports.
 //
 //   /api/kpi/report/export/xlsx                 combined: Summary + Backup
