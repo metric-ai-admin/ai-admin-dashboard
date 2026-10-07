@@ -40,6 +40,35 @@ function readableDepartments(role, departments) {
   return (departments || []).filter(d => (d.read_roles || []).includes(role)).map(d => d.name);
 }
 
+// Which departments a role may WRITE in.
+//
+// Separate from readableDepartments because the two differ for everyone except
+// admin: Operations reads several departments and edits one. The New SOP form
+// offers only these, so nobody picks a department and then discovers on save
+// that it was never theirs — and the create route checks the same function, so
+// the form is a convenience and not the lock.
+function editableDepartments(role, departments) {
+  if (role === 'admin') return (departments || []).map(d => d.name);
+  return (departments || []).filter(d => (d.edit_roles || []).includes(role)).map(d => d.name);
+}
+
+// A url-safe id from a title, made unique against what is already there.
+//
+// Slugs are a primary-key-ish column, and two people creating "Move-Out
+// Process" on the same morning must not collide — the second becomes
+// move-out-process-2 rather than failing with a database error nobody can act
+// on. `taken` is a Set of existing slugs.
+function uniqueSlug(title, taken) {
+  const base = String(title || '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'sop';
+  if (!taken || !taken.has(base)) return base;
+  for (let i = 2; i < 500; i++) {
+    const s = base + '-' + i;
+    if (!taken.has(s)) return s;
+  }
+  return base + '-' + Date.now();
+}
+
 // ---- Review scheduling -----------------------------------------------------
 
 function isoDay(d) {
@@ -219,7 +248,7 @@ function excerpt(md, chars = 180) {
 
 module.exports = {
   STATUSES, REVIEW_INTERVALS,
-  canRead, canEdit, readableDepartments,
+  canRead, canEdit, readableDepartments, editableDepartments, uniqueSlug,
   nextReviewDate, reviewState, markReviewed, isoDay,
   matches, renderMarkdown, excerpt, safeUrl,
 };

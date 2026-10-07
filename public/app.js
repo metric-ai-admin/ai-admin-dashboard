@@ -6180,7 +6180,7 @@ function blRender() {
 // the one that matters for safety is the one furthest from the browser.
 
 let slData = null;
-let slFilters = { q: '', department: '', status: '', overdue: false };
+let slFilters = { q: '', department: '', status: '', overdue: false, archived: false };
 let slCurrent = null;
 let slWired = false;
 
@@ -6212,6 +6212,8 @@ async function loadSopLibrary() {
   if (slFilters.q) qs.set('q', slFilters.q);
   if (slFilters.department) qs.set('department', slFilters.department);
   if (slFilters.status) qs.set('status', slFilters.status);
+  // The server defaults to active only; this is the one way to see the rest.
+  if (slFilters.archived) qs.set('archived', 'true');
   try {
     slData = await api('/api/sop/documents' + (qs.toString() ? '?' + qs : ''));
   } catch (err) {
@@ -6219,7 +6221,95 @@ async function loadSopLibrary() {
     return;
   }
   slFillFilters();
+  slShowNewButton();
   slRender();
+}
+
+// Which departments this person may write in. The server sends canEdit per
+// department and checks it again on create, so this only decides what the
+// form offers — nobody should pick a department and find out on save that it
+// was never theirs.
+const slEditable = () => (slData.departments || []).filter(d => d.canEdit).map(d => d.name);
+
+function slShowNewButton() {
+  const btn = document.getElementById('sl-new');
+  if (!btn) return;
+  btn.classList.toggle('hidden', !slEditable().length);
+}
+
+function slNewForm() {
+  const host = document.getElementById('sl-new-form');
+  if (!host) return;
+  const depts = slEditable();
+  if (!depts.length) return;
+  if (!host.classList.contains('hidden')) { slCloseNewForm(); return; }
+  host.classList.remove('hidden');
+  host.innerHTML = `
+    <h4>New SOP</h4>
+    <label for="sl-n-title">Title</label>
+    <input id="sl-n-title" type="text" maxlength="300" placeholder="SOP: …">
+    <label for="sl-n-dept">Department</label>
+    <select id="sl-n-dept">${depts.map(d => `<option value="${slEsc(d)}">${slEsc(d)}</option>`).join('')}</select>
+    <p class="muted small">Only the departments you can edit are listed.</p>
+    <label for="sl-n-cat">Category <span class="muted">(optional)</span></label>
+    <input id="sl-n-cat" type="text" maxlength="120">
+    <label for="sl-n-body">Content <span class="muted">(Markdown)</span></label>
+    <textarea id="sl-n-body" rows="14" placeholder="## Purpose&#10;…"></textarea>
+    <div class="sl-form-actions">
+      <button id="sl-n-save" class="btn">Create SOP</button>
+      <button id="sl-n-cancel" class="btn btn-ghost">Cancel</button>
+      <span id="sl-n-msg" class="muted"></span>
+    </div>`;
+  document.getElementById('sl-n-cancel').addEventListener('click', slCloseNewForm);
+  document.getElementById('sl-n-save').addEventListener('click', slCreate);
+  document.getElementById('sl-n-title').focus();
+}
+
+function slCloseNewForm() {
+  const host = document.getElementById('sl-new-form');
+  if (host) { host.classList.add('hidden'); host.innerHTML = ''; }
+}
+
+async function slCreate() {
+  const msg = document.getElementById('sl-n-msg');
+  const title = document.getElementById('sl-n-title').value.trim();
+  if (!title) { msg.textContent = 'A title is required.'; return; }
+  const btn = document.getElementById('sl-n-save');
+  btn.disabled = true; msg.textContent = 'Creating…';
+  try {
+    const r = await api('/api/sop/documents', { method: 'POST', body: {
+      title,
+      department: document.getElementById('sl-n-dept').value,
+      category: document.getElementById('sl-n-cat').value.trim(),
+      body_md: document.getElementById('sl-n-body').value,
+    } });
+    slCloseNewForm();
+    await loadSopLibrary();
+    // Said out loud rather than swallowed: the document exists either way, and
+    // somebody should know its history did not start.
+    toast(r.versionError ? 'SOP created, but version 1 was not recorded' : 'SOP created ✅',
+      r.versionError ? 'error' : 'success');
+    if (r.document && r.document.id) slOpen(r.document.id);
+  } catch (e) {
+    msg.textContent = e.message;
+    btn.disabled = false;
+  }
+}
+
+async function slArchive(id, archived) {
+  const what = archived ? 'Archive' : 'Restore';
+  if (!confirm(`${what} this SOP?` + (archived
+    ? '\n\nIt stays in the library with its full history and comes back under "Show archived".'
+    : ''))) return;
+  try {
+    await api('/api/sop/documents/' + encodeURIComponent(id) + '/archive',
+      { method: 'POST', body: { archived } });
+    toast(archived ? 'SOP archived' : 'SOP restored', 'success');
+    slCurrent = null;
+    document.getElementById('sl-article')?.classList.add('hidden');
+    document.getElementById('sl-list')?.classList.remove('hidden');
+    await loadSopLibrary();
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 function slFillFilters() {
@@ -6324,7 +6414,9 @@ function slRenderArticle() {
         ${d.canEdit ? `<div class="sl-side-actions">
           <button class="btn" id="sl-reviewed">Mark as Reviewed</button>
           <button class="btn btn-ghost" id="sl-edit">Edit</button>
+          <button class="btn btn-ghost" id="sl-archive">${d.archived ? 'Restore' : 'Archive'}</button>
         </div>` : '<p class="muted sl-readonly">You have read access to this department.</p>'}
+        ${d.archived ? '<p class="sl-archived-note">Archived — kept with its full history, hidden from the active list.</p>' : ''}
         ${(d.versions || []).length ? `<div class="sl-versions"><b>History</b>${
     d.versions.slice(0, 6).map(v => `<div>v${v.version} · ${slEsc(slDay(v.changed_at))} · ${slEsc(v.changed_by || '—')}</div>`).join('')}</div>` : ''}
       </aside>
@@ -6338,6 +6430,7 @@ function slRenderArticle() {
   });
   document.getElementById('sl-reviewed')?.addEventListener('click', slMarkReviewed);
   document.getElementById('sl-edit')?.addEventListener('click', slEditForm);
+  document.getElementById('sl-archive')?.addEventListener('click', () => slArchive(d.id, !d.archived));
 }
 
 async function slMarkReviewed() {
@@ -6430,6 +6523,10 @@ function slWireOnce() {
   document.getElementById('sl-dept')?.addEventListener('change', e => { slFilters.department = e.target.value; loadSopLibrary(); });
   document.getElementById('sl-status')?.addEventListener('change', e => { slFilters.status = e.target.value; loadSopLibrary(); });
   document.getElementById('sl-overdue')?.addEventListener('change', e => { slFilters.overdue = e.target.checked; slRender(); });
+  // Archived is a SERVER filter, not a client one: the list route excludes
+  // them before they are sent, so this has to re-fetch rather than re-render.
+  document.getElementById('sl-archived')?.addEventListener('change', e => { slFilters.archived = e.target.checked; loadSopLibrary(); });
+  document.getElementById('sl-new')?.addEventListener('click', slNewForm);
 }
 
 async function loadMaintenance() {

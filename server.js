@@ -10121,6 +10121,134 @@ app.get('/api/sop/documents/:id', requireAuth, async (req, res) => {
 
 // Edit. Every change writes the PREVIOUS body to sop_versions first — a version
 // written after the fact is a copy of the new text, not a record of the old.
+// Create. Version 1 is written with the document, not on the first edit.
+//
+// The library's promise is that every body it has ever held can be recovered,
+// and a document whose history starts at its SECOND state breaks that for the
+// one version people are most likely to want back: what it said on the day it
+// was written. The edit route below writes the PREVIOUS body on every change,
+// so without a version 1 here the original text would exist nowhere once
+// somebody edited it.
+app.post('/api/sop/documents', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const departments = await sopDepartments(db);
+    const b = req.body || {};
+
+    const title = String(b.title || '').trim();
+    if (!title) return res.status(400).json({ error: 'A title is required.' });
+    if (title.length > 300) return res.status(400).json({ error: 'That title is too long.' });
+
+    const department = String(b.department || '').trim();
+    if (!departments.some(d => d.name === department)) {
+      return res.status(400).json({ error: 'Pick a department.' });
+    }
+    // The same check the form uses to build its dropdown. Checked here too,
+    // because the form is a convenience and this is the lock.
+    if (!sopLib.canEdit(req.user?.role, department, departments)) {
+      return res.status(403).json({ error: 'You cannot create SOPs in that department.' });
+    }
+
+    const body_md = String(b.body_md || '');
+    const status = sopLib.STATUSES.includes(b.status) ? b.status : 'Current';
+    let review_interval_days = null;
+    if (b.review_interval_days !== undefined && b.review_interval_days !== null && b.review_interval_days !== '') {
+      const n = Number(b.review_interval_days);
+      if (!isFinite(n) || n <= 0) return res.status(400).json({ error: 'Review interval must be a positive number of days, or empty.' });
+      review_interval_days = n;
+    }
+
+    // Slugs collide when two people write about the same thing on the same
+    // morning, and a unique-constraint error is not something either of them
+    // can act on.
+    const { data: existing, error: slugErr } = await db.from('sop_documents').select('slug').limit(5000);
+    const missing = sopErr(slugErr);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (slugErr) throw new Error(slugErr.message);
+    const slug = sopLib.uniqueSlug(title, new Set((existing || []).map(d => d.slug)));
+
+    const now = new Date().toISOString();
+    const who = actorName(req);
+    const row = {
+      slug, title, body_md, department,
+      category: String(b.category || '').trim() || null,
+      owner: String(b.owner || '').trim() || who,
+      tags: (Array.isArray(b.tags) ? b.tags : String(b.tags || '').split(','))
+        .map(x => String(x).trim()).filter(Boolean).slice(0, 25),
+      status,
+      archived: status === 'Archived',
+      review_interval_days,
+      last_reviewed_at: ctDateStr(0),
+      next_review_at: sopLib.nextReviewDate(ctDateStr(0), review_interval_days),
+      author: who,
+      // 'dashboard', never 'slab': the importer matches on source to decide
+      // what it may overwrite, and a hand-written SOP must never look like
+      // something it is free to replace on the next run.
+      source: 'dashboard',
+      source_path: null,
+      content_hash: sopCrypto.createHash('sha1').update(body_md.trim()).digest('hex'),
+      created_at: now, updated_at: now, updated_by: who,
+    };
+
+    const { data, error } = await db.from('sop_documents').insert(row).select();
+    if (error) throw new Error(error.message);
+    const doc = data && data[0];
+
+    // Version 1. A failure here is reported but does not undo the document:
+    // losing the SOP somebody just typed, because its history could not be
+    // started, would be the worse of the two outcomes — and the body is still
+    // on the document itself.
+    let versionError = null;
+    const { error: vErr } = await db.from('sop_versions').insert({
+      document_id: doc.id, version: 1, title, body_md,
+      changed_by: who, changed_at: now, note: 'Created',
+    });
+    if (vErr) {
+      versionError = vErr.message;
+      console.error('[sop] version 1 not recorded for', doc.id, vErr.message);
+    }
+
+    res.status(201).json({ ok: true, document: doc, versionError });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Archive and restore.
+//
+// Archiving KEEPS the document — it drops out of the active list and comes
+// back under "Show archived". Deliberately not a delete: an SOP that stopped
+// applying is a record of how the company used to work, and the version
+// history underneath it would go with it.
+app.post('/api/sop/documents/:id/archive', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const departments = await sopDepartments(db);
+    const { data: rows, error: readErr } = await db.from('sop_documents').select('*').eq('id', req.params.id).limit(1);
+    const missing = sopErr(readErr);
+    if (missing) return res.status(503).json({ error: missing, needsMigration: true });
+    if (readErr) throw new Error(readErr.message);
+    if (!rows || !rows.length) return res.status(404).json({ error: 'No such document.' });
+    const doc = rows[0];
+    if (!sopLib.canEdit(req.user?.role, doc.department, departments)) {
+      return res.status(403).json({ error: 'You can read this department but not edit it.' });
+    }
+
+    // Default true so a bare POST archives; pass {archived:false} to restore.
+    const archived = req.body && req.body.archived === false ? false : true;
+    const patch = {
+      archived,
+      // status and archived are two views of one fact and were already kept in
+      // step by the edit route. Restoring returns it to Current rather than
+      // leaving a document that is visible and still labelled Archived.
+      status: archived ? 'Archived' : (doc.status === 'Archived' ? 'Current' : doc.status),
+      updated_at: new Date().toISOString(),
+      updated_by: actorName(req),
+    };
+    const { data, error } = await db.from('sop_documents').update(patch).eq('id', doc.id).select();
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, document: data && data[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.patch('/api/sop/documents/:id', requireAuth, async (req, res) => {
   try {
     const db = supabaseAdmin || supabasePublic;

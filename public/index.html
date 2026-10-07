@@ -403,8 +403,15 @@
           <select id="sl-dept"><option value="">All departments</option></select>
           <select id="sl-status"><option value="">All statuses</option></select>
           <label class="sl-check"><input type="checkbox" id="sl-overdue"> Overdue only</label>
+          <!-- Archived SOPs are kept, not deleted: an SOP that stopped applying
+               is a record of how the company used to work, and its version
+               history hangs off it. This is how you get them back. -->
+          <label class="sl-check"><input type="checkbox" id="sl-archived"> Show archived</label>
           <span id="sl-count" class="muted"></span>
+          <!-- Rendered only when this person can edit at least one department. -->
+          <button id="sl-new" class="btn btn-sm hidden">+ New SOP</button>
         </div>
+        <div id="sl-new-form" class="sl-form hidden"></div>
         <div id="sl-list"></div>
         <div id="sl-article" class="hidden"></div>
       </div>
