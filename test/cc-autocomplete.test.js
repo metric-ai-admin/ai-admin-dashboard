@@ -509,4 +509,34 @@ t('a cancellation date is read from canceled_on', () => {
   const fn = server.slice(server.indexOf('async function reconcileWorkOrders'));
   assert.ok(/c\.completed_on \|\| c\.work_completed_on \|\| c\.canceled_on/.test(fn));
 });
+
+// ---- the repair script ------------------------------------------------------
+//
+// cc_daily_state is the only record of what Erick was asked to do each day, so
+// a script that rewrites rows in it is worth a few assertions of its own.
+t('the repair writes nothing unless asked', () => {
+  const fix = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'fix-cc-snapshot-2026-10-06.js'), 'utf8');
+  assert.ok(/const WRITE = process\.argv\.includes\('--write'\)/.test(fix));
+  assert.ok(/if \(!WRITE\)[\s\S]{0,200}return;/.test(fix), 'the dry run must stop before writing');
+});
+
+t('the repair touches only the counts, never the tasks or the ticks', () => {
+  const fix = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'fix-cc-snapshot-2026-10-06.js'), 'utf8');
+  const writes = fix.match(/\.update\(\{[^}]*\}\)/g) || [];
+  assert.ok(writes.length >= 1, 'expected at least one update');
+  writes.forEach(w => {
+    assert.ok(!/tasks|checks|generated_at|total_tasks/.test(w), 'too wide: ' + w);
+  });
+  assert.ok(!/\.upsert\(/.test(fix),
+    'an upsert on an existing row is a chance to lose tasks or checks for nothing');
+});
+
+t('the repair counts the day as that day, not as today', () => {
+  const fix = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'fix-cc-snapshot-2026-10-06.js'), 'utf8');
+  assert.ok(/on: '2026-10-06'/.test(fix),
+    "autoMap must be given the board's date, or a work order closed since would count");
+});
 console.log(`\n${pass} passing`);
