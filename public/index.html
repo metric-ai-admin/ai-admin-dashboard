@@ -1835,7 +1835,20 @@
       <div id="cvx-conflicts"></div>
           <p class="muted small" id="cvx-sub">One row per cited deficiency.</p>
         </div>
-        <button class="btn btn-ghost" id="cvx-refresh">&#8635; Refresh</button>
+        <div class="cvx-head-actions">
+          <!-- Erick had no way to hand Katie anything. Three formats because
+               they are three different asks: the workbook to work in, a PDF to
+               print, a CSV to drop somewhere else. -->
+          <div class="cvx-export">
+            <button class="btn" id="cvx-export">Export &#9662;</button>
+            <div class="cvx-export-menu hidden" id="cvx-export-menu">
+              <button data-cvx-format="xlsx">Excel (.xlsx) &mdash; full workbook</button>
+              <button data-cvx-format="pdf">PDF &mdash; landscape, by property</button>
+              <button data-cvx-format="csv">CSV &mdash; every row, one file</button>
+            </div>
+          </div>
+          <button class="btn btn-ghost" id="cvx-refresh">&#8635; Refresh</button>
+        </div>
       </div>
       <div id="cvx-summary"></div>
       <div id="cvx-filters"></div>

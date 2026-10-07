@@ -11418,6 +11418,26 @@ document.getElementById('maint-view-code-violations')?.addEventListener('click',
   }
   if (e.target.id === 'cvx-refresh') loadCodeViolations();
 
+  if (e.target.id === 'cvx-export') {
+    document.getElementById('cvx-export-menu')?.classList.toggle('hidden');
+    return;
+  }
+  const fmt = e.target.closest && e.target.closest('[data-cvx-format]');
+  if (fmt) {
+    document.getElementById('cvx-export-menu')?.classList.add('hidden');
+    /* A plain navigation, not fetch(): the session cookie rides along, the
+       browser handles the download and names the file from the server's
+       Content-Disposition. Fetching it would mean holding a whole workbook in
+       memory to rebuild a download the browser already does. */
+    window.location.href = '/api/code-violations/export/' + encodeURIComponent(fmt.dataset.cvxFormat);
+    toast('Preparing the export…', 'info');
+    return;
+  }
+  // Clicking anywhere else closes the menu.
+  if (!e.target.closest || !e.target.closest('.cvx-export')) {
+    document.getElementById('cvx-export-menu')?.classList.add('hidden');
+  }
+
   const resolve = e.target.closest && e.target.closest('[data-cvx-resolve]');
   if (resolve) {
     const decision = resolve.dataset.cvxResolve;

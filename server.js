@@ -5668,6 +5668,258 @@ app.get('/api/code-violations', requireAuth, requireRole(...CODE_VIOLATION_ROLES
 // Update one deficiency. Only the fields a person is allowed to change by hand;
 // the key, the property and the citation text are not among them, because
 // editing those would quietly make the row a different row.
+// Export — xlsx | pdf | csv.
+//
+// Katie asks Erick for updates and there was no way to hand her anything. The
+// workbook this section was built from is what people already read, so the
+// export rebuilds that shape rather than inventing a new one.
+//
+// Same guard as the tab: a person who cannot open Code Violations cannot
+// export them either. requireRole, not a check in the UI — a download URL is
+// the easiest thing in a dashboard to reach without the page around it.
+const cvExport = require('./lib/code-violations-export.js');
+
+async function cvExportData(db) {
+  const [v, w] = await Promise.all([
+    db.from('code_violations').select('*').limit(5000),
+    db.from('code_violation_watchlist').select('*').order('property_name').limit(1000),
+  ]);
+  const missing = cvErr(v.error) || cvErr(w.error);
+  if (missing) { const e = new Error(missing); e.needsMigration = true; throw e; }
+  if (v.error) throw new Error(v.error.message);
+  return { violations: v.data || [], watchlist: w.data || [] };
+}
+
+app.get('/api/code-violations/export/:format', requireAuth, requireRole(...CODE_VIOLATION_ROLES), async (req, res) => {
+  // The format is in the PATH, not the query string: the activity logger reads
+  // req.path, so ?format=pdf and ?format=xlsx would have been the same row.
+  const format = String(req.params.format || 'xlsx').toLowerCase();
+  if (!['xlsx', 'pdf', 'csv'].includes(format)) {
+    return res.status(400).json({ error: 'format must be xlsx, pdf or csv' });
+  }
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { violations, watchlist } = await cvExportData(db);
+    const today = ctDateStr(0);
+    const name = cvExport.fileStamp(today);
+    const PROPS = codeViolations.PROPERTIES;
+    const STATUSES = codeViolations.STATUSES;
+    const header = cvExport.COLUMNS.map(c => c[0]);
+
+    if (format === 'csv') {
+      const csv = cvExport.toCsv(header, cvExport.flatRows(violations, PROPS));
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + name + '.csv"');
+      // A BOM, so Excel opens it as UTF-8 and the section symbols in the
+      // descriptions do not arrive as mojibake.
+      return res.send('﻿' + csv);
+    }
+
+    if (format === 'xlsx') {
+      const wb = XLSX.utils.book_new();
+
+      // --- Summary: counts only. The original's narrative notes were
+      // hand-written analysis and are not carried forward stale.
+      const sum = cvExport.summary(violations, PROPS, STATUSES);
+      const sheet = [
+        ['Metric Property Management - Code Violations Summary'],
+        [],
+        ['Updated:', today],
+        ['Source:', 'Metric AI Admin Dashboard, Code Violations — live data at export. '
+          + 'Statuses are seeded from AppFolio work-order state, not field verification.'],
+        [],
+        ['Property'].concat(STATUSES, ['TOTAL']),
+      ];
+      sum.rows.forEach(r => sheet.push([r.property].concat(STATUSES.map(s => r.counts[s]), [r.total])));
+      sheet.push(['GRAND TOTAL'].concat(STATUSES.map(s => sum.totals[s]), [sum.grand]));
+      // Only written when it happens. A status outside the seven means a row
+      // is uncounted, which is how a violation gets forgotten.
+      if (sum.unknown) {
+        sheet.push([], ['WARNING', sum.unknown + ' row(s) carry a status outside the seven and are in TOTAL but in no status column.']);
+      }
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sheet), 'Summary');
+
+      // --- One tab per property, in portfolio order, empty tabs included.
+      const WIDTHS = [22, 18, 12, 38, 14, 60, 26, 16, 38, 38, 38, 32, 22, 12, 12, 8, 46, 14, 14, 12];
+      const groups = cvExport.byProperty(violations, PROPS);
+      for (const [property, list] of groups) {
+        const aoa = [header].concat(list.map(v => cvExport.rowFor(v)));
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        cvDateFormat(ws, aoa.length);
+        ws['!cols'] = header.map((h, i) => ({ wch: WIDTHS[i] || 16 }));
+        // Excel caps a sheet name at 31 characters and rejects : \ / ? * [ ].
+        XLSX.utils.book_append_sheet(wb, ws, property.replace(/[:\\/?*[\]]/g, '-').slice(0, 31));
+      }
+
+      // --- Watchlist, from the table. The original's third row (The Sidney)
+      // is not in it and is not invented.
+      const wl = [['Property', 'Item', 'Authority', 'Work Order', 'Why it is not in the AppFolio feed', 'Status']];
+      watchlist.forEach(r => wl.push([r.property_name || '', r.title || '', r.authority || '',
+        r.work_order || '', r.detail || '', r.status || '']));
+      const wlWs = XLSX.utils.aoa_to_sheet(wl);
+      wlWs['!cols'] = [{ wch: 22 }, { wch: 44 }, { wch: 26 }, { wch: 12 }, { wch: 70 }, { wch: 18 }];
+      XLSX.utils.book_append_sheet(wb, wlWs, 'Watchlist');
+
+      // --- Closed Cases, DERIVED. Said on the sheet, not only in a commit.
+      const closed = cvExport.closedCases(violations);
+      const cc = [
+        ['Closed Cases'],
+        ['Derived from each case’s status. The dashboard does not record who closed a case or when, '
+          + 'so "Closed" below is the day the row last changed, not a verified closing date.'],
+        [],
+        ['Property', 'Case Number', 'Work Order', 'Deficiency', 'Status', 'Resolution / Completed Items', 'Closed (row last changed)', 'Last updated by'],
+      ];
+      closed.forEach(c => cc.push([c.property, c.case_number, c.work_order, c.description,
+        c.status, c.resolution, c.closed, c.closed_by]));
+      if (!closed.length) cc.push(['No case is in a Completed or Closed status today.']);
+      const ccWs = XLSX.utils.aoa_to_sheet(cc);
+      ccWs['!cols'] = [{ wch: 22 }, { wch: 18 }, { wch: 12 }, { wch: 60 }, { wch: 26 }, { wch: 46 }, { wch: 22 }, { wch: 18 }];
+      XLSX.utils.book_append_sheet(wb, ccWs, 'Closed Cases');
+
+      // --- Legend and Read Me, labelled as a copy of known age.
+      const lg = [['Property / Officer / Vendor Legend'], [cvExport.REFERENCE_NOTE], []].concat(cvExport.LEGEND);
+      const lgWs = XLSX.utils.aoa_to_sheet(lg);
+      lgWs['!cols'] = [{ wch: 24 }, { wch: 56 }, { wch: 64 }];
+      XLSX.utils.book_append_sheet(wb, lgWs, 'Legend');
+
+      const rm = [['How to read this workbook'], [cvExport.REFERENCE_NOTE], []].concat(cvExport.READ_ME);
+      const rmWs = XLSX.utils.aoa_to_sheet(rm);
+      rmWs['!cols'] = [{ wch: 26 }, { wch: 110 }];
+      XLSX.utils.book_append_sheet(wb, rmWs, 'Read Me');
+
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + name + '.xlsx"');
+      return res.send(buf);
+    }
+
+    // --- PDF: landscape, a section per property, built to be printed.
+    const PDFDocument = require('pdfkit');
+    const doc = new PDFDocument({ size: 'LETTER', layout: 'landscape', margin: 28 });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + name + '.pdf"');
+    doc.pipe(res);
+    cvPdf(doc, { violations, watchlist, today, PROPS, STATUSES });
+    doc.end();
+  } catch (err) {
+    if (err.needsMigration) return res.status(503).json({ error: err.message, needsMigration: true });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Real Excel dates, not text.
+//
+// aoa_to_sheet writes "2026-06-08" as a string, and a column of date-shaped
+// text cannot be sorted or filtered as dates — which is the first thing anyone
+// does with this file. Each date cell becomes a serial number with a date
+// format, so Excel treats it as the date it is.
+function cvDateFormat(ws, rowCount) {
+  const dateCols = cvExport.COLUMNS
+    .map((c, i) => (c[2] === 'date' ? i : -1)).filter(i => i >= 0);
+  for (let r = 1; r < rowCount; r++) {
+    for (const c of dateCols) {
+      const ref = XLSX.utils.encode_cell({ r: r, c: c });
+      const cell = ws[ref];
+      if (!cell || typeof cell.v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(cell.v)) continue;
+      const parts = cell.v.split('-').map(Number);
+      // Excel's 1900 serial, counted in UTC so no timezone can shift the day.
+      const serial = Math.round((Date.UTC(parts[0], parts[1] - 1, parts[2]) - Date.UTC(1899, 11, 30)) / 86400000);
+      ws[ref] = { t: 'n', v: serial, z: 'mm/dd/yyyy' };
+    }
+  }
+}
+
+// The printable version. Columns chosen for a landscape page rather than all
+// twenty: a 20-column table on Letter is unreadable, and the long remarks are
+// what people actually read, so those get the width.
+const CV_PDF_COLUMNS = [
+  ['Case Number', 'case_number', 78],
+  ['WO', 'work_order', 52],
+  ['Address/Unit', 'address_unit', 130],
+  ['Deficiency Date', 'deficiency_date', 58],
+  ['Deficiency Description', 'deficiency_description', 190],
+  ['Status', 'status', 92],
+  ['Pending Items', 'pending_items', 130],
+  ['Due Date', 'due_date', 52],
+];
+
+function cvPdf(doc, opts) {
+  const violations = opts.violations, watchlist = opts.watchlist;
+  const today = opts.today, PROPS = opts.PROPS, STATUSES = opts.STATUSES;
+  const L = doc.page.margins.left;
+  const W = doc.page.width - L - doc.page.margins.right;
+
+  doc.fontSize(16).font('Helvetica-Bold').text('Metric Property Management — Code Violations');
+  doc.fontSize(9).font('Helvetica').fillColor('#555')
+    .text('Updated ' + today + ' · Metric AI Admin Dashboard, live data at export. '
+      + 'Statuses are seeded from AppFolio work-order state, not field verification.', { width: W });
+  doc.fillColor('#000').moveDown(0.6);
+
+  const sum = cvExport.summary(violations, PROPS, STATUSES);
+  doc.fontSize(11).font('Helvetica-Bold').text('Summary').moveDown(0.2);
+  doc.fontSize(8).font('Helvetica');
+  const sw = [150].concat(STATUSES.map(() => 78), [48]);
+  const srow = (cells, bold) => {
+    doc.font(bold ? 'Helvetica-Bold' : 'Helvetica');
+    let x = L;
+    const y = doc.y;
+    cells.forEach((c, i) => { doc.text(String(c), x, y, { width: sw[i] - 4, ellipsis: true }); x += sw[i]; });
+    doc.y = y + 12;
+  };
+  srow(['Property'].concat(STATUSES, ['TOTAL']), true);
+  sum.rows.forEach(r => srow([r.property].concat(STATUSES.map(s => r.counts[s]), [r.total])));
+  srow(['GRAND TOTAL'].concat(STATUSES.map(s => sum.totals[s]), [sum.grand]), true);
+
+  const groups = cvExport.byProperty(violations, PROPS);
+  for (const [property, list] of groups) {
+    doc.addPage();
+    doc.fontSize(13).font('Helvetica-Bold').fillColor('#000').text(property);
+    doc.fontSize(8).font('Helvetica').fillColor('#555')
+      .text(list.length + ' deficienc' + (list.length === 1 ? 'y' : 'ies')).moveDown(0.3);
+    doc.fillColor('#000');
+    if (!list.length) { doc.fontSize(9).text('No cases.'); continue; }
+
+    const head = () => {
+      doc.fontSize(7.5).font('Helvetica-Bold');
+      let x = L; const y = doc.y;
+      CV_PDF_COLUMNS.forEach(col => { doc.text(col[0], x, y, { width: col[2] - 4 }); x += col[2]; });
+      doc.y = y + 11;
+      doc.moveTo(L, doc.y - 2).lineTo(L + W, doc.y - 2).strokeColor('#bbb').stroke();
+    };
+    head();
+    doc.font('Helvetica').fontSize(7.5);
+    for (const v of list) {
+      // Measured before it is drawn, so a tall row moves to the next page
+      // whole instead of being cut across the fold.
+      const cellText = col => (col[1].endsWith('_date')
+        ? (cvExport.ymd(v[col[1]]) || '')
+        : (v[col[1]] == null ? '' : String(v[col[1]])));
+      const h = Math.max.apply(null, CV_PDF_COLUMNS.map(col =>
+        doc.heightOfString(cellText(col), { width: col[2] - 4 })));
+      if (doc.y + h > doc.page.height - doc.page.margins.bottom) {
+        doc.addPage(); head(); doc.font('Helvetica').fontSize(7.5);
+      }
+      let x = L; const y = doc.y;
+      CV_PDF_COLUMNS.forEach(col => { doc.text(cellText(col), x, y, { width: col[2] - 4 }); x += col[2]; });
+      doc.y = y + h + 3;
+      doc.moveTo(L, doc.y - 1.5).lineTo(L + W, doc.y - 1.5).strokeColor('#eee').stroke();
+    }
+  }
+
+  if (watchlist.length) {
+    doc.addPage();
+    doc.fontSize(13).font('Helvetica-Bold').fillColor('#000').text('Watchlist');
+    doc.fontSize(8).font('Helvetica').fillColor('#555')
+      .text('Tracked outside the AppFolio feed.').moveDown(0.3);
+    doc.fillColor('#000').fontSize(8);
+    watchlist.forEach(r => {
+      doc.font('Helvetica-Bold').text((r.property_name || '—') + ' — ' + (r.title || ''));
+      doc.font('Helvetica').text([r.authority, r.work_order && 'WO ' + r.work_order, r.detail]
+        .filter(Boolean).join(' · '), { width: W }).moveDown(0.3);
+    });
+  }
+}
+
 app.patch('/api/code-violations/:key', requireAuth, requireRole(...CODE_VIOLATION_ROLES), async (req, res) => {
   const { status, due_date, pending_items, progress_notes, clearFlag,
     city_notice_url, completion_photo_url } = req.body || {};
