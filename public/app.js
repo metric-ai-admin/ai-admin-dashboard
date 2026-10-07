@@ -12320,6 +12320,20 @@ function kcRender(d) {
     ? `<p class="small muted">Only in her workbook: ${(d.onlyHers || []).map(kcEsc).join(', ') || '—'}<br>
        Only in our report: ${(d.onlyOurs || []).map(kcEsc).join(', ') || '—'}</p>` : '';
 
+  // Delinquency, name by name. Ours reads lower at every property; this is the
+  // list that says whether that is residents her report carries and ours does
+  // not, or the same residents with different balances.
+  const res = d.residents && !d.residents.error ? d.residents : null;
+  const resBlock = res ? Object.keys(res).filter(p => res[p].onlyHers.length || res[p].onlyOurs.length)
+    .map(p => `<details class="kc-res"><summary>${kcEsc(p)} —
+        ${res[p].onlyHers.length} on her sheet only (${kcNum(res[p].onlyHersTotal)}),
+        ${res[p].onlyOurs.length} on ours only, ${kcNum(res[p].both)} on both</summary>
+      <table class="kc-table"><thead><tr><th>Side</th><th>Resident</th><th class="n">Amount</th></tr></thead><tbody>
+      ${res[p].onlyHers.map(r => `<tr class="bad"><td>hers only</td><td>${kcEsc(r.name)}</td><td class="n">${kcNum(r.hers)}</td></tr>`).join('')}
+      ${res[p].onlyOurs.map(r => `<tr class="gap"><td>ours only</td><td>${kcEsc(r.name)}</td><td class="n">${kcNum(r.ours)}</td></tr>`).join('')}
+      </tbody></table></details>`).join('')
+    : `<p class="small muted">${kcEsc((d.residents && d.residents.error) || 'No resident-level comparison available.')}</p>`;
+
   const dq = d.delinquency || {};
   document.getElementById('kc-out').innerHTML = gaps
     + '<h4>Portfolio</h4>'
@@ -12333,5 +12347,6 @@ function kcRender(d) {
        charge lines. Amount Receivable, positives only — ${kcNum(dq.herPositives)}.
        ${dq.herNegativeRows || 0} negative row${dq.herNegativeRows === 1 ? '' : 's'}
        (${kcNum(dq.herNegatives)}) left out: those are concessions, and netting them off
-       would report less delinquency than there is.</p>`;
+       would report less delinquency than there is.</p>
+       <h4>Delinquency, resident by resident</h4>` + resBlock;
 }

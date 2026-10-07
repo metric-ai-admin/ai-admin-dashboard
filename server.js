@@ -10445,15 +10445,32 @@ app.post('/api/kpi/compare', requireAuth, requireRole('admin'),
         });
       }
 
-      const her = {
-        occupancy: kpiCompare.herOccupancy(rowsOf(occName)),
-        delinquency: kpiCompare.herDelinquency(rowsOf(dqName)),
-      };
+      // Every sheet we can read with her rules, not only the two. The parser is
+      // ported from the one that reproduced her screen on 16 of 16 metrics;
+      // the tabs it cannot read on this export (apps, renewals, new work
+      // orders) are left out and show as gaps on her side.
+      const sheets = {};
+      wb.SheetNames.forEach(n => {
+        sheets[n.toLowerCase()] = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: false, defval: '' });
+      });
+      const weekEnd = (req.body && req.body.week_ending) || WEEK.leasingLastCompleteWeekEnding();
+      const her = kpiCompare.herAll(sheets, WEEK.addDaysYMD(weekEnd, -6), weekEnd);
 
       const db = supabaseAdmin || supabasePublic;
       // The SAME function the route and the exports call.
-      const report = await kpiBuild.buildKpiReport(db, { week_ending: req.body && req.body.week_ending });
+      const report = await kpiBuild.buildKpiReport(db, { week_ending: weekEnd });
       const result = kpiCompare.compare(report, her);
+
+      // Delinquency name by name, for the properties where the two sides differ
+      // most. Ours reads lower everywhere, and the suspicion is that her report
+      // carries tenant statuses delinquency_kpi does not ask for — which only a
+      // list of names can settle.
+      let residents = null;
+      try {
+        const dqStore = await require('./appfolio-reports.js').readReportData('delinquency_kpi');
+        residents = kpiCompare.residentDiff(her.delinquency.byProperty, (dqStore && dqStore.rows) || [],
+          Object.keys(her.delinquency.byProperty));
+      } catch (e) { residents = { error: e.message }; }
 
       res.json({
         week_ending: report.week_ending,
@@ -10463,6 +10480,7 @@ app.post('/api/kpi/compare', requireAuth, requireRole('admin'),
         // Carried through, because a metric that reads zero because its store
         // is missing must never be presented as a disagreement.
         gaps: report.gaps,
+        residents,
         ...result,
       });
     } catch (err) { res.status(500).json({ error: err.message }); }

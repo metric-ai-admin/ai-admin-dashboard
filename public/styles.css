@@ -3014,3 +3014,5 @@ tr.ca-sel { background: var(--accent-glow); }
 .kc-table tr.bad td:first-child { box-shadow: inset 3px 0 0 var(--critical, #dc2626); }
 .kc-table tr.gap td:first-child { box-shadow: inset 3px 0 0 var(--muted); }
 .kc-table tr.gap td { color: var(--muted); }
+.kc-res { margin: 6px 0; }
+.kc-res > summary { cursor: pointer; padding: 5px 0; font-size: 12px; }
