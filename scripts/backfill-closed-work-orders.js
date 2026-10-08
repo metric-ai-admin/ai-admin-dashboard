@@ -79,7 +79,6 @@ function rowFrom(r, source) {
     last_seen_in_feed: null,
     synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-    updated_by: 'backfill-closed-work-orders',
   };
 }
 
