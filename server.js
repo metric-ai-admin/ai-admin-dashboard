@@ -53,6 +53,9 @@ const { registerAllTools } = require('./mcp-tools.cjs');
 // One definition of a week for the server, the browser and the Goal Board.
 // The browser is served this same file at /lib/week.js — not a copy.
 const WEEK = require('./lib/week.js');
+// Reads a whole table past PostgREST's 1000-row ceiling. See lib/db-page.js.
+const { selectAll, selectAllResult } = require('./lib/db-page.js');
+const CORDER = require('./lib/collections-order.js');
 const DUE = require('./lib/due-date.js');
 const followups = require('./email-followups.js');
 const kpiRecap = require('./kpi-recap.js');
@@ -5162,9 +5165,17 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
     const DELINQ_CAP = 25;
     const topByBalance = rows => [...rows].sort((a, b) => bal(b) - bal(a)).slice(0, DELINQ_CAP);
     const truncated = current.length > DELINQ_CAP || prior.length > DELINQ_CAP;
+
+    // ---- Ordering (Kara, 2026-10-08) -------------------------------------
+    // Balance ranking by default; by property and unit on request. The twenty-
+    // five accounts shown are chosen by BALANCE either way — see the note in
+    // lib/collections-order.js for why selection and order must stay separate.
+    const sortMode = CORDER.normalizeMode(req.body && req.body.sort);
+
     // Pre-summarized rows only — tenant | unit | property | balance | days delinquent.
-    const delinqText = rows => topByBalance(rows)
-      .map(r => `${r.name} | ${r.unit} | ${r.property} | ${tenantStatusLabel(r.status)} | $${Math.round(bal(r))}${r.days_delinquent != null ? ` | ${r.days_delinquent}d` : ''}`).join('\n');
+    const line = r => `${r.name} | ${r.unit} | ${r.property} | ${tenantStatusLabel(r.status)} | $${Math.round(bal(r))}${r.days_delinquent != null ? ` | ${r.days_delinquent}d` : ''}`;
+    const delinqText = rows => CORDER.render(topByBalance(rows), sortMode, line);
+
     // Calls: datetime | caller | duration | direction | result.
     const callText = calls.slice(0, 150)
       .map(c => `${new Date((c.datetime || 0) * 1000).toISOString().slice(0, 16).replace('T', ' ')} | ${c.caller || ''} | ${c.duration}s | ${c.direction} | ${c.status}`).join('\n');
@@ -5192,6 +5203,12 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       + `Columns: tenant | unit | property | prior_balance | current_balance | current_status\n`
       + `=== PAID OFF / RESOLVED — owed last month, $0 now (${resolved.length} accounts, top ${COMPARE_CAP}) ===\n${resolvedText || '[none]'}\n\n`
       + `\nDelinquency columns: tenant | unit | property | resident_status | balance | days_delinquent\n`
+      + (sortMode === 'property'
+        ? 'ORDERING: the two delinquency lists below are GROUPED BY PROPERTY and sorted by unit '
+          + 'within each one, under "-- Property --" headings. Keep that grouping and that order in '
+          + 'your output — do not re-rank them by balance. The accounts listed are still the top '
+          + `${DELINQ_CAP} by balance; only their order changed.\n`
+        : `ORDERING: the two delinquency lists below are ranked by balance, highest first. Keep that order.\n`)
       + `=== CURRENT MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${todayCT}) ===\n${delinqText(current) || '[none]'}\n\n`
       + `=== PRIOR MONTH DELINQUENCY — top ${DELINQ_CAP} by balance (${priorCT}) ===\n${delinqText(prior) || '[none]'}\n\n`
       + `=== PER-AGENT CALL SUMMARY (last 90 days) ===\n${agentBreakdown}\n\n`
@@ -5205,7 +5222,7 @@ app.post('/api/collections/generate', requireAuth, requireRole(...COLLECTIONS_RO
       + `=== SIMPLEVOIP CALL LOG — last 90 days, up to 50/agent ===\n${callText || '[none]'}\n\n`
       + `=== WEEKLY REVIEW CALL TRANSCRIPT ===\n${transcript || '[not provided]'}\n`;
 
-    console.log(`[collections] payload ${user.length} chars — current=${current.length} prior=${prior.length} calls=${calls.length} agents=${agentCount} transcript=${transcript.length}`);
+    console.log(`[collections] payload ${user.length} chars — sort=${sortMode} current=${current.length} prior=${prior.length} calls=${calls.length} agents=${agentCount} transcript=${transcript.length}`);
 
     let html;
     try {
@@ -6788,11 +6805,14 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
       //
       // Reported per property_id so the gap is a named property and a row
       // count rather than a total.
-      const { data: known } = await (supabaseAdmin || supabasePublic)
+      // PAGED. leasing_leads is at 761 rows and climbing; .limit(10000) would
+      // not stop it truncating at 1,000, only stop anyone noticing.
+      const known = await selectAll(() => (supabaseAdmin || supabasePublic)
         .from('leasing_leads').select('property_id,property')
-        .not('property', 'is', null).not('property_id', 'is', null).limit(10000);
+        .not('property', 'is', null).not('property_id', 'is', null),
+        { label: 'lead property map' });
       const resolvable = {};
-      (known || []).forEach(k => { resolvable[String(k.property_id)] = k.property; });
+      known.forEach(k => { resolvable[String(k.property_id)] = k.property; });
 
       const byProp = {};
       rows.forEach(r => {
@@ -6875,8 +6895,8 @@ app.post('/api/leasing/sync', requireMetricAccess, async (req, res) => {
       if (pid != null && pn) propMap[String(pid)] = pn;
     }
     try {
-      const { data: known } = await db.from('leasing_leads').select('property_id,property').not('property', 'is', null).not('property_id', 'is', null).limit(10000);
-      for (const k of (known || [])) if (k.property_id != null && k.property && !propMap[String(k.property_id)]) propMap[String(k.property_id)] = k.property;
+      const known = await selectAll(() => db.from('leasing_leads').select('property_id,property').not('property', 'is', null).not('property_id', 'is', null), { label: 'propMap seed' });
+      for (const k of known) if (k.property_id != null && k.property && !propMap[String(k.property_id)]) propMap[String(k.property_id)] = k.property;
     } catch { /* propMap seed from batch is enough */ }
 
     const seen = new Set();
@@ -7020,16 +7040,20 @@ app.get('/api/leasing/leads', requireMetricAccess, async (req, res) => {
   const { date_from, date_to, week_ending } = req.query;
   try {
     const db = supabaseAdmin || supabasePublic;
-    let q = db.from('leasing_leads').select('*');
-    if (week_ending) {
-      q = q.eq('week_ending', week_ending);
-    } else {
-      if (date_from) q = q.gte('interest_received', new Date(date_from + 'T00:00:00').toISOString());
-      if (date_to)   q = q.lte('interest_received', new Date(date_to + 'T23:59:59').toISOString());
-    }
-    const { data, error } = await q.order('interest_received', { ascending: false }).limit(10000);
-    if (error) throw new Error(error.message);
-    res.json({ leads: data || [] });
+    // A factory, so selectAll can page it: this route feeds the KPI roll-ups,
+    // and a range with no week_ending can match most of the table.
+    const mkLeads = () => {
+      let q = db.from('leasing_leads')./* paged */select('*');
+      if (week_ending) {
+        q = q.eq('week_ending', week_ending);
+      } else {
+        if (date_from) q = q.gte('interest_received', new Date(date_from + 'T00:00:00').toISOString());
+        if (date_to)   q = q.lte('interest_received', new Date(date_to + 'T23:59:59').toISOString());
+      }
+      return q.order('interest_received', { ascending: false });
+    };
+    const data = await selectAll(mkLeads, { label: 'leasing leads' });
+    res.json({ leads: data });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -7039,10 +7063,11 @@ app.get('/api/leasing/weeks', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.json({ weeks: [] });
   try {
     const db = supabaseAdmin || supabasePublic;
-    const { data, error } = await db.from('leasing_leads')
+    // PAGED: the whole point is the DISTINCT set of weeks, and a truncated
+    // read drops the oldest ones off the end of the picker.
+    const data = await selectAll(() => db.from('leasing_leads')
       .select('week_ending').not('week_ending', 'is', null)
-      .order('week_ending', { ascending: false }).limit(10000);
-    if (error) throw new Error(error.message);
+      .order('week_ending', { ascending: false }), { label: 'leasing weeks' });
     const weeks = [...new Set((data || []).map(r => r.week_ending))];
     res.json({ weeks });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -7194,11 +7219,14 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
     ].join(',');
 
     const [leadsRes, occRes, showRes, appRes, lhRes] = await Promise.all([
-      db.from('leasing_leads').select('*').or(leadsFilter).limit(10000),
-      db.from('leasing_occupancy').select('*').limit(10000),
-      db.from('leasing_showings').select('property_name,property_id,showing_date,status').gte('showing_date', weekStart).lte('showing_date', weekEnd).limit(10000),
-      db.from('leasing_applications').select('property_name,property_id,application_date,status').gte('application_date', weekStart).lte('application_date', weekEnd).limit(10000),
-      db.from('leasing_lease_history').select('property_name,property_id,move_in_date,status').gte('move_in_date', weekStart).lte('move_in_date', weekEnd).limit(10000),
+      // PAGED. leasing_leads is at 761 rows and gains a few hundred a quarter;
+      // .limit(10000) would NOT stop it truncating at 1,000, it would just stop
+      // anyone noticing. These feed the Goal Board, which Katie reports from.
+      selectAllResult(() => db.from('leasing_leads').select('*').or(leadsFilter), { label: 'goal board leads' }),
+      selectAllResult(() => db.from('leasing_occupancy').select('*'), { label: 'goal board occupancy' }),
+      selectAllResult(() => db.from('leasing_showings').select('property_name,property_id,showing_date,status').gte('showing_date', weekStart).lte('showing_date', weekEnd), { label: 'goal board showings' }),
+      selectAllResult(() => db.from('leasing_applications').select('property_name,property_id,application_date,status').gte('application_date', weekStart).lte('application_date', weekEnd), { label: 'goal board applications' }),
+      selectAllResult(() => db.from('leasing_lease_history').select('property_name,property_id,move_in_date,status').gte('move_in_date', weekStart).lte('move_in_date', weekEnd), { label: 'goal board lease history' }),
     ]);
     if (leadsRes.error) throw new Error(leadsRes.error.message);
     if (occRes.error) throw new Error(occRes.error.message);
@@ -7486,7 +7514,37 @@ const leasingSyncLog = (label, raw, rows) =>
 app.post('/api/leasing/sync/showings', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   try {
-    const raw = await appfolioReportsFetch(APPFOLIO_SHOWINGS_REPORT, { property_visibility: 'active', paginate_results: false });
+    // A DATE RANGE, because without one this report answers with whatever
+    // AppFolio considers current and completed showings fall out of it. That is
+    // the whole of the 18-against-26 gap on Katie's 09/27-10/03 sheet: The
+    // Highlander's two Completed and three of Windy Hill's nine were not
+    // mismapped, they were never in the response.
+    //
+    // Ninety days back and sixty forward, off the CENTRAL day. Back far enough
+    // that a week we are still reconciling is never near the edge; forward
+    // because showings are scheduled ahead and the Goal Board shows them.
+    const today = WEEK.toChicagoYMD(new Date());
+    const from_date = (req.body && req.body.from_date) || WEEK.addDaysYMD(today, -90);
+    const to_date   = (req.body && req.body.to_date)   || WEEK.addDaysYMD(today, 60);
+
+    // The parameter NAME is not verified — no showings probe has run, and the
+    // work-order report ignored seven spellings of its own date filter. So the
+    // range is attempted and, if the API refuses it, the call is repeated
+    // exactly as it ran before. The sync cannot come out worse than it is
+    // today, and `dateFilter` in the response says which path ran rather than
+    // leaving us to infer it from a row count.
+    const base = { property_visibility: 'active', paginate_results: false };
+    let dateFilter = 'applied';
+    let raw;
+    try {
+      raw = await appfolioReportsFetch(APPFOLIO_SHOWINGS_REPORT, { ...base, from_date, to_date });
+    } catch (e) {
+      if (e.code >= 400 && e.code < 500) {
+        console.warn('[leasing-sync] showings: date range refused (' + e.code + ': ' + e.message + ') — retrying without it');
+        dateFilter = 'rejected: ' + e.code + ' ' + e.message;
+        raw = await appfolioReportsFetch(APPFOLIO_SHOWINGS_REPORT, base);
+      } else throw e;
+    }
     const now = new Date().toISOString();
     const seen = new Set();
     const rows = [];
@@ -7508,7 +7566,8 @@ app.post('/api/leasing/sync/showings', requireMetricAccess, async (req, res) => 
     }
     leasingSyncLog('showings', raw, rows);
     const synced = await leasingSyncUpsert('leasing_showings', rows, 'showing_id');
-    res.json({ ok: true, synced, mapped: rows.length, raw: raw.length, serviceRole: !!supabaseAdmin, timestamp: now });
+    res.json({ ok: true, synced, mapped: rows.length, raw: raw.length, serviceRole: !!supabaseAdmin,
+      from_date, to_date, dateFilter, timestamp: now });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Showings sync failed: ' + err.message });
   }
@@ -7896,10 +7955,15 @@ async function reconcileWorkOrders({ dryRun = true, feedRows = null, sweep = fal
     } catch (e) { sweepStatus = 'failed: ' + e.message; }
   }
 
-  const { data: table, error: readErr } = await db.from('maintenance_work_orders')
-    .select('id,work_order_number,property_name,status,work_order_type,created_at_appfolio')
-    .limit(50000);
-  if (readErr) return { error: 'read: ' + readErr.message };
+  // PAGED. The reconciliation decides which rows have gone stale, so reading
+  // a prefix of the table means the rest is never examined at all — and that
+  // looks exactly like a clean run.
+  let table;
+  try {
+    table = await selectAll(() => db.from('maintenance_work_orders')
+      .select('id,work_order_number,property_name,status,work_order_type,created_at_appfolio'),
+      { label: 'reconcile' });
+  } catch (e) { return { error: 'read: ' + e.message }; }
 
   // The feed is a snapshot. A work order created after it was taken is not a
   // ghost — we have it and the feed predates it — so it is left alone.
@@ -8279,6 +8343,53 @@ app.post('/api/collections/probe-tenant-statuses', requireMetricAdmin, async (re
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// POST /api/leasing/probe-showings-window — READ ONLY. Which date-parameter
+// spelling, if any, the showings report honours.
+//
+// The showings sync now asks for a 90/60 window on from_date/to_date, the pair
+// the applications sync uses. Nobody has verified that this report reads them:
+// the work-order report ignored seven spellings of its own. A spelling that is
+// ignored looks exactly like one that works until you count the rows, so this
+// counts them — row totals and the actual min/max showing_time per variant,
+// against a baseline with no dates at all.
+app.post('/api/leasing/probe-showings-window', requireMetricAdmin, async (req, res) => {
+  try {
+    const base = { property_visibility: 'active', paginate_results: false };
+    const FROM = '2026-07-01', TO = '2026-12-31';
+    const CUSTOM = Array.isArray(req.body && req.body.extra) ? req.body.extra : [];
+    const VARIANTS = [
+      { name: '(baseline - no date params)', extra: {} },
+      ...CUSTOM.filter(c => c && c.name && c.params).slice(0, 20)
+        .map(c => ({ name: String(c.name), extra: c.params })),
+      { name: 'from_date / to_date', extra: { from_date: FROM, to_date: TO } },
+      { name: 'showing_date_from / _to', extra: { showing_date_from: FROM, showing_date_to: TO } },
+      { name: 'showing_time_from / _to', extra: { showing_time_from: FROM, showing_time_to: TO } },
+      { name: 'from / to', extra: { from: FROM, to: TO } },
+    ];
+    const out = [];
+    let baseline = null;
+    for (const v of VARIANTS) {
+      try {
+        const rows = await appfolioReportsFetch(APPFOLIO_SHOWINGS_REPORT, { ...base, ...v.extra });
+        const days = rows.map(r => String(r.showing_time || '').slice(0, 10))
+          .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+        const week = days.filter(d => d >= '2026-09-27' && d <= '2026-10-03').length;
+        if (v.name.startsWith('(baseline')) baseline = rows.length;
+        out.push({ variant: v.name, rows: rows.length,
+          range: days.length ? days[0] + ' .. ' + days[days.length - 1] : null,
+          inKatieWeek: week,
+          sameAsBaseline: baseline === null ? null : rows.length === baseline });
+      } catch (e) {
+        out.push({ variant: v.name, error: (e.code || '') + ' ' + e.message });
+      }
+      await new Promise(r => setTimeout(r, 2500)); // 7 requests / 15s
+    }
+    res.json({ ok: true, note: 'read only; nothing written', katieWeek: '2026-09-27..2026-10-03 = 26 on her sheet', variants: out });
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 app.post('/api/maintenance/probe-wo-window', requireMetricAdmin, async (req, res) => {
   try {
     // appfolioReportsFetch, NOT appfolio-client's fetchReport. Two reasons,
@@ -8428,10 +8539,12 @@ app.post('/api/maintenance/work-orders/backfill', requireMetricAdmin, async (req
     }
 
     const db = supabaseAdmin || supabasePublic;
-    const { data: existing, error } = await db.from('maintenance_work_orders')
-      .select('work_order_number').limit(50000);
-    if (error) throw new Error(error.message);
-    const have = new Set((existing || []).map(r => String(r.work_order_number).trim()));
+    // PAGED, and this is the one that mattered most: `have` is what stops the
+    // backfill re-inserting a work order already on file. A short read makes it
+    // believe up to 557 existing work orders are missing.
+    const existing = await selectAll(() => db.from('maintenance_work_orders')
+      .select('work_order_number'), { label: 'backfill: existing' });
+    const have = new Set(existing.map(r => String(r.work_order_number).trim()));
 
     const now = new Date().toISOString();
     const { rows, summary } = woBackfill.plan(completed.rows, canceled.rows, have, now);
@@ -8632,11 +8745,14 @@ app.get('/api/maintenance/work-orders', requireMetricAccess, async (req, res) =>
   if (!CRM_CONFIGURED) return res.json({ work_orders: [], last_synced: null });
   try {
     const db = supabaseAdmin || supabasePublic;
-    const { data, error } = await db.from('maintenance_work_orders')
-      .select('*').order('created_at_appfolio', { ascending: false }).limit(10000);
-    if (error) throw new Error(error.message);
-    const last = (data || []).reduce((m, r) => (r.synced_at && r.synced_at > m ? r.synced_at : m), '');
-    res.json({ work_orders: data || [], last_synced: last || null });
+    // PAGED, not .limit(10000): that limit never raised PostgREST's 1000-row
+    // ceiling, so with the table at 1,557 the Command Center was being served
+    // the thousand NEWEST work orders and silently missing the rest.
+    const data = await selectAll(() => db.from('maintenance_work_orders')
+      .select('*').order('created_at_appfolio', { ascending: false }),
+      { label: 'work-orders list' });
+    const last = data.reduce((m, r) => (r.synced_at && r.synced_at > m ? r.synced_at : m), '');
+    res.json({ work_orders: data, last_synced: last || null });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -8965,17 +9081,23 @@ app.get('/api/calls/grades', requireAuth, requireCallAnalyzer, async (req, res) 
   if (!CRM_CONFIGURED) return res.json({ grades: [] });
   try {
     const db = supabaseAdmin || supabasePublic;
-    let q = db.from('call_grades').select(CALL_GRADE_LIST_COLS)
-      .order('graded_at', { ascending: false }).limit(2000);
-    if (req.query.agent && req.query.agent !== 'All') q = q.eq('agent_name', req.query.agent);
-    if (req.query.grade && req.query.grade !== 'All') {
-      if (req.query.grade === 'DF') q = q.in('overall_grade', ['D', 'F']);
-      else q = q.eq('overall_grade', req.query.grade);
-    }
-    if (req.query.direction && req.query.direction !== 'All') q = q.eq('call_direction', req.query.direction);
-    const { data, error } = await q;
-    if (error) throw new Error(error.message);
-    let grades = data || [];
+    // PAGED. This said .limit(2000) and delivered 1,000: call_grades is at
+    // 1,765, so the list — and every filter applied below it in app code —
+    // was working off the newest thousand grades only.
+    //
+    // A factory, because a PostgREST builder cannot be awaited twice.
+    const mkQ = () => {
+      let q = db.from('call_grades')./* paged */select(CALL_GRADE_LIST_COLS)
+        .order('graded_at', { ascending: false });
+      if (req.query.agent && req.query.agent !== 'All') q = q.eq('agent_name', req.query.agent);
+      if (req.query.grade && req.query.grade !== 'All') {
+        if (req.query.grade === 'DF') q = q.in('overall_grade', ['D', 'F']);
+        else q = q.eq('overall_grade', req.query.grade);
+      }
+      if (req.query.direction && req.query.direction !== 'All') q = q.eq('call_direction', req.query.direction);
+      return q;
+    };
+    let grades = await selectAll(mkQ, { label: 'call grades list' });
     // "flagged" spans four boolean/array conditions, so filter it in app code.
     if (req.query.flagged === 'true') {
       grades = grades.filter(g => g.legal_violation || g.fair_housing_flag || g.liability_flag
@@ -12251,26 +12373,32 @@ app.get('/api/crm/completed', requireCRM, requireAuth, async (req, res) => {
   const agentLc = agent.toLowerCase();
 
   // Apply the (optional) lower bound + upper bound to a table date column.
-  const range = (q, col, ts) => {
-    q = q.lte(col, ts ? toTs : to);
+  // PAGED, and it takes a FACTORY because every page needs a fresh builder.
+  //
+  // This said .limit(10000) and delivered 1,000. The default range here is ALL
+  // TIME, and bd_dm_reviews is at 1,499 rows, so the archive half of every
+  // agent's completed count has been short by whatever fell past the ceiling —
+  // and the total looked perfectly reasonable.
+  const range = (mk, col, ts) => selectAll(() => {
+    let q = mk().lte(col, ts ? toTs : to);
     if (from) q = q.gte(col, ts ? fromTs : from);
-    return q.limit(10000);
-  };
+    return q;
+  }, { label: 'crm/completed ' + col });
   try {
     const [phone, online, fups, dms, bphone, bonline, bfups, bdms] = await Promise.all([
-      range(client.from('phone_shops').select('agent_name, shop_date, property_id'), 'shop_date'),
-      range(client.from('online_shops').select('agent_name, shop_date, property_id'), 'shop_date'),
-      range(client.from('follow_ups').select('agent_name, follow_up_date, property_id'), 'follow_up_date'),
-      range(client.from('dm_reviews').select('agent_name, updated_at, property_id'), 'updated_at', true),
-      range(client.from('bd_phone_shops').select('agent, shop_date, property, property_id'), 'shop_date'),
-      range(client.from('bd_online_shops').select('agent, shop_date, property, property_id'), 'shop_date'),
-      range(client.from('bd_follow_ups').select('agent, follow_up_date, property, property_id'), 'follow_up_date'),
-      range(client.from('bd_dm_reviews').select('agent, last_updated, updated_at, property, property_id'), 'updated_at', true),
+      range(() => client.from('phone_shops').select('agent_name, shop_date, property_id'), 'shop_date'),
+      range(() => client.from('online_shops').select('agent_name, shop_date, property_id'), 'shop_date'),
+      range(() => client.from('follow_ups').select('agent_name, follow_up_date, property_id'), 'follow_up_date'),
+      range(() => client.from('dm_reviews').select('agent_name, updated_at, property_id'), 'updated_at', true),
+      range(() => client.from('bd_phone_shops').select('agent, shop_date, property, property_id'), 'shop_date'),
+      range(() => client.from('bd_online_shops').select('agent, shop_date, property, property_id'), 'shop_date'),
+      range(() => client.from('bd_follow_ups').select('agent, follow_up_date, property, property_id'), 'follow_up_date'),
+      range(() => client.from('bd_dm_reviews')./* paged */select('agent, last_updated, updated_at, property, property_id'), 'updated_at', true),
     ]);
-    for (const r of [phone, online, fups, dms, bphone, bonline, bfups, bdms]) if (r.error) throw new Error(r.error.message);
 
-    const { data: props } = await client.from('properties').select('id, property_name').limit(5000);
-    const nameOf = {}; (props || []).forEach(p => { nameOf[p.id] = p.property_name; });
+    const props = await selectAll(() => client.from('properties').select('id, property_name'),
+      { label: 'crm/completed properties' });
+    const nameOf = {}; props.forEach(p => { nameOf[p.id] = p.property_name; });
 
     const items = [];
     // agentKey: 'agent_name' (live) or 'agent' (bd_). dateKey: a column name or a
@@ -12289,15 +12417,17 @@ app.get('/api/crm/completed', requireCRM, requireAuth, async (req, res) => {
         property_name: (propField && r[propField]) ? r[propField] : (nameOf[r.property_id] || null) });
     });
     // Live tables
-    add(phone.data, 'phone', 'agent_name', 'shop_date');
-    add(online.data, 'online', 'agent_name', 'shop_date');
-    add(fups.data, 'follow_up', 'agent_name', 'follow_up_date');
-    add(dms.data, 'dm', 'agent_name', 'updated_at');
+    // Plain arrays now, not { data, error }: selectAll throws on an error
+    // rather than handing back a short list with the reason attached.
+    add(phone, 'phone', 'agent_name', 'shop_date');
+    add(online, 'online', 'agent_name', 'shop_date');
+    add(fups, 'follow_up', 'agent_name', 'follow_up_date');
+    add(dms, 'dm', 'agent_name', 'updated_at');
     // Imported archive (bd_*): agent + property columns
-    add(bphone.data, 'phone', 'agent', 'shop_date', 'property');
-    add(bonline.data, 'online', 'agent', 'shop_date', 'property');
-    add(bfups.data, 'follow_up', 'agent', 'follow_up_date', 'property');
-    add(bdms.data, 'dm', 'agent', r => r.last_updated || r.updated_at, 'property');
+    add(bphone, 'phone', 'agent', 'shop_date', 'property');
+    add(bonline, 'online', 'agent', 'shop_date', 'property');
+    add(bfups, 'follow_up', 'agent', 'follow_up_date', 'property');
+    add(bdms, 'dm', 'agent', r => r.last_updated || r.updated_at, 'property');
     items.sort((x, y) => String(y.date).localeCompare(String(x.date)));
 
     const perMap = {};
@@ -13073,7 +13203,7 @@ async function leasingWeeklyRollup(db) {
     // An equality, not a range: week_ending is a stored Saturday, so the week
     // IS the value. A range on a bucket column invites exactly the off-by-one
     // this is fixing.
-    db.from('leasing_leads').select('property,week_ending').eq('week_ending', weekEnd),
+    selectAllResult(() => db.from('leasing_leads').select('property,week_ending').eq('week_ending', weekEnd), { label: 'leads for week' }),
     // Bounded at BOTH ends, same as the leads query above. These were open
     // upwards, and on 2026-09-29 four rows in leasing_lease_history were dated
     // past the current week — so the card and the EOD reported 9 move-ins for a
@@ -14338,16 +14468,20 @@ const ccAuto = require('./lib/cc-autocomplete.js');
 // stored with the board: a work order closed at 4pm should close its card
 // without the board being regenerated.
 async function ccClosureSources(client) {
+  // PAGED. maintenance_work_orders passed 1000 rows on 2026-10-08 — the
+  // closure backfill took it to 1,557 — and an unpaged read here would have
+  // handed the auto-tick two thirds of the table: ~557 work orders whose cards
+  // could never close, with nothing in the logs to say so.
   const [wo, insp] = await Promise.all([
-    client.from('maintenance_work_orders').select('work_order_id, status, completed_on'),
-    client.from('maintenance_inspections').select('inspection_id, status, marked_done_on'),
+    selectAll(() => client.from('maintenance_work_orders').select('work_order_id, status, completed_on'),
+      { label: 'cc closure: work orders' }),
+    selectAll(() => client.from('maintenance_inspections').select('inspection_id, status, marked_done_on'),
+      { label: 'cc closure: inspections' }),
   ]);
-  if (wo.error) throw new Error('work orders: ' + wo.error.message);
-  if (insp.error) throw new Error('inspections: ' + insp.error.message);
   const wos = new Map();
-  (wo.data || []).forEach(r => { if (r.work_order_id) wos.set(String(r.work_order_id).trim(), r); });
+  wo.forEach(r => { if (r.work_order_id) wos.set(String(r.work_order_id).trim(), r); });
   const inspections = new Map();
-  (insp.data || []).forEach(r => { if (r.inspection_id) inspections.set(String(r.inspection_id).trim(), r); });
+  insp.forEach(r => { if (r.inspection_id) inspections.set(String(r.inspection_id).trim(), r); });
   return { wos, inspections };
 }
 
@@ -16490,11 +16624,15 @@ async function eodGather() {
 
   // 5 — MAINTENANCE (AppFolio work orders + labor)
   try {
-    const [woR, laborR] = await Promise.all([
-      db.from('maintenance_work_orders').select('work_order_number,property_name,unit,issue,status,priority,assigned_user,created_at_appfolio,updated_at'),
-      db.from('maintenance_labor').select('work_order_number,worked_hours,labor_date'),
+    // PAGED. The EOD counts open, unknown and closed work orders; taken off
+    // 1,000 of 1,557 rows those counts are wrong in a way nobody can see from
+    // the report itself.
+    const [wos, laborRows] = await Promise.all([
+      selectAll(() => db.from('maintenance_work_orders').select('work_order_number,property_name,unit,issue,status,priority,assigned_user,created_at_appfolio,updated_at'),
+        { label: 'eod: work orders' }),
+      selectAll(() => db.from('maintenance_labor').select('work_order_number,worked_hours,labor_date'),
+        { label: 'eod: labor' }),
     ]);
-    const wos = woR.data || [];
     // Three states, from lib/work-order-status.js. The exact-match test this
     // replaces called "Completed No Need To Bill" open — 113 rows of it.
     const openWos = wos.filter(w => WOS.isOpen(w.status));
@@ -16505,7 +16643,7 @@ async function eodGather() {
     const prank = p => ({ critical: 3, high: 2, normal: 1 }[String(p || '').toLowerCase()] || 0);
     openWos.sort((a, b) => prank(b.priority) - prank(a.priority) || String(b.created_at_appfolio || '').localeCompare(String(a.created_at_appfolio || '')));
     // NOTE: a "completed today" count from this table is always 0 — see below.
-    const laborToday = (laborR.data || []).filter(l => String(l.labor_date || '').slice(0, 10) === today);
+    const laborToday = laborRows.filter(l => String(l.labor_date || '').slice(0, 10) === today);
     // ---- Redesigned 2026-09-22. What the data actually supports:
     //
     // maintenance_work_orders holds ONLY open work orders — its status values
@@ -16529,7 +16667,7 @@ async function eodGather() {
     const urgent = openWos.filter(w => /urgent|emergency|critical/i.test(String(w.priority || '')));
 
     // Assigned a week or more ago with not one hour booked against it.
-    const laborByWo = new Set((laborR.data || []).map(l => l.work_order_number).filter(Boolean));
+    const laborByWo = new Set(laborRows.map(l => l.work_order_number).filter(Boolean));
     const stalled = openWos.filter(w => w.assigned_user && (ageDays(w) ?? 0) >= 7 && !laborByWo.has(w.work_order_number));
 
     const byProperty = {};

@@ -59,9 +59,11 @@ const dateOf = r => String(r.completed_on || r.work_completed_on || r.canceled_o
   console.log('READ-ONLY. Pauses are handled by the shared 7-req/15s limiter.\n');
 
   // ---- 1. The rows we cannot speak for ------------------------------------
-  const { data: table, error } = await db.from('maintenance_work_orders')
-    .select('work_order_number,status,property_name,created_at_appfolio').limit(50000);
-  if (error) throw new Error('supabase: ' + error.message);
+  // PAGED: .limit(50000) never raised PostgREST's 1000-row ceiling, and this
+  // probe's whole job is to say which rows are Unknown.
+  const { selectAll } = require('../lib/db-page.js');
+  const table = await selectAll(() => db.from('maintenance_work_orders')
+    .select('work_order_number,status,property_name,created_at_appfolio'), { label: 'probe' });
 
   const unknown = table.filter(r => WOS.isUnknown(r.status));
   console.log(`=== 1. Our table ===================================================`);

@@ -776,11 +776,29 @@ const SEED_MOVEIN={
 };
 
 const PEOPLE=["Rocio","Oscar","Yeni","Sammy"];
+
+// WHO COVERS WHAT (Kara, 2026-10-08): Rocio, Oscar and Yeni cover every
+// community except Windy Hill; Sammy covers Windy Hill and nothing else.
+//
+// This is COVERAGE — who may be assigned to a property — and it is deliberately
+// separate from LEAD below, which is who a property's numbers belong to.
+// They cannot be the same list. The Team Scorecard totals each person's
+// properties, so three people sharing all eight would report the portfolio
+// three times over and a reader would have no way to tell. Coverage decides
+// what the assignment dropdowns offer; LEAD stays one person per property so
+// the scorecard still adds up.
+const SAMMY_ONLY="Windy Hill Apartment";
+const SHARED_TEAM=["Rocio","Oscar","Yeni"];
+const coverFor = p => (p===SAMMY_ONLY ? ["Sammy"] : SHARED_TEAM);
 const PCOLOR={Rocio:"var(--r1)",Oscar:"var(--r2)",Yeni:"var(--r3)",Sammy:"var(--r4)"};
 let LEAD={
  "The Chateau":"Rocio","Hyde Park Square":"Rocio","The Sidney":"Rocio",
  "Sunset Palms":"Oscar","The Highlander":"Oscar","iConic Round Rock":"Oscar","iConic Downtown":"Oscar",
  "Ascent at Northgate":"Yeni","Windy Hill Apartment":"Sammy"};
+// A lead must be somebody who covers the property. Every current value already
+// is; this keeps it that way after an edit rather than trusting that it stays
+// true, because a lead outside coverage drops silently out of the scorecard.
+Object.keys(LEAD).forEach(p=>{ if(!coverFor(p).includes(LEAD[p])) LEAD[p]=coverFor(p)[0]; });
 const GROUPS=[
  {name:"Greystone",props:["The Highlander","The Chateau","Hyde Park Square","Sunset Palms"]},
  {name:"Round Rock",props:["iConic Round Rock","iConic Downtown"]}];
@@ -1333,7 +1351,8 @@ function propCardHtml(p){
     return `<span class="tag tag-${t.k}"${tip}>${t.label}</span>`;
   }).join("");
 
-  const leadSel = `<select class="leadsel-input" data-prop="${p}">${PEOPLE.map(pp=>`<option value="${pp}" ${LEAD[p]===pp?"selected":""}>${pp}</option>`).join("")}</select>`;
+  // Only the people who cover this property, per Kara's assignment.
+  const leadSel = `<select class="leadsel-input" data-prop="${p}">${coverFor(p).map(pp=>`<option value="${pp}" ${LEAD[p]===pp?"selected":""}>${pp}</option>`).join("")}</select>`;
 
   const promoV=getPromo(p);
 
@@ -1422,7 +1441,7 @@ function propCardHtml(p){
       <h4>Facebook Marketplace Links — add daily</h4>
       <div class="fbrow">
         <input type="date" class="fb-date" data-prop="${p}" value="${today}">
-        <select class="fb-by" data-prop="${p}"><option value="">Shared by...</option>${PEOPLE.map(pp=>`<option value="${pp}">${pp}</option>`).join("")}</select>
+        <select class="fb-by" data-prop="${p}"><option value="">Shared by...</option>${coverFor(p).map(pp=>`<option value="${pp}">${pp}</option>`).join("")}</select>
         <input type="url" class="fb-url" data-prop="${p}" placeholder="https://facebook.com/marketplace/item/...">
         <button class="btn gold small fb-add" data-prop="${p}">+ Add Link</button>
       </div>

@@ -99,10 +99,13 @@ function rowFrom(r, source) {
     process.exit(2);
   }
 
-  const { data: existing, error } = await db.from('maintenance_work_orders')
-    .select('work_order_number').limit(50000);
-  if (error) throw new Error(error.message);
-  const have = new Set((existing || []).map(r => String(r.work_order_number).trim()));
+  // PAGED. .limit(50000) does not raise PostgREST's 1000-row ceiling, and
+  // `have` is the only thing stopping this re-inserting work orders already on
+  // file — a short read here is how a backfill duplicates the table.
+  const { selectAll } = require('../lib/db-page.js');
+  const existing = await selectAll(() => db.from('maintenance_work_orders')
+    .select('work_order_number'), { label: 'backfill: existing' });
+  const have = new Set(existing.map(r => String(r.work_order_number).trim()));
   console.log('\nmaintenance_work_orders: ' + have.size + ' work orders on file');
 
   const seen = new Set();

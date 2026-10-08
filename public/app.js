@@ -499,7 +499,8 @@ async function collectionsGenerate() {
       headers: { 'Content-Type': 'application/json' },
       // transcript stays in the payload and stays empty: the upload was removed,
       // the server field is optional, and dropping it would change the contract.
-      body: JSON.stringify({ transcript: '' }),
+      // sort: 'balance' (default) or 'property' — see the note in index.html.
+      body: JSON.stringify({ transcript: '', sort: ($('#col-sort')?.value === 'property' ? 'property' : 'balance') }),
     });
     // The endpoint keep-alives past Render's 60s cap, so it always returns 200 with
     // either { html } or { error } in the body — surface an error field as a throw.

@@ -1,0 +1,44 @@
+#!/bin/sh
+#
+# Blocks a push whose tests do not pass.
+#
+# WHY THIS EXISTS. On 2026-10-08 commit 13f1fd0 went to main with an
+# unterminated regex in it. The suite had caught it. The command that was
+# supposed to gate the push was shaped like
+#
+#     npm test | grep -q "0 FAILED" && git commit …
+#
+# and in a pipeline the shell reports the exit code of the LAST command, so
+# what was being checked was whether grep found a string — not whether node
+# exited 0. A suite that crashes before printing its summary prints no "FAILED"
+# line at all, grep says "no match", and the push proceeds.
+#
+# So this hook runs `npm test` on its own and branches on $?. Nothing is piped,
+# nothing is grepped, and the output goes straight to the terminal so a failure
+# is readable rather than swallowed.
+#
+# Install (once per clone):   npm run hooks:install
+# Skip deliberately:          git push --no-verify
+#   (--no-verify is for a push that cannot run tests at all — an empty repo, a
+#   broken node_modules. It is not for "the failure is unrelated": an unrelated
+#   failure on main is still a failure on main.)
+
+echo "pre-push: running the full suite…"
+
+npm test
+status=$?
+
+if [ $status -ne 0 ]; then
+  echo ""
+  echo "  ──────────────────────────────────────────────────────────────"
+  echo "  PUSH BLOCKED — npm test exited $status."
+  echo ""
+  echo "  Fix the failures above and push again."
+  echo "  To push anyway (you had better have a reason):"
+  echo "      git push --no-verify"
+  echo "  ──────────────────────────────────────────────────────────────"
+  exit 1
+fi
+
+echo "pre-push: suite green — pushing."
+exit 0

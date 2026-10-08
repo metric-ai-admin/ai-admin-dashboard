@@ -7,7 +7,8 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "check": "node --check server.js",
-    "test": "node test/run-all.js"
+    "test": "node test/run-all.js",
+    "hooks:install": "git config core.hooksPath .githooks && git update-index --chmod=+x .githooks/pre-push || true"
   },
   "author": "Arturo Mendoza",
   "license": "MIT",
