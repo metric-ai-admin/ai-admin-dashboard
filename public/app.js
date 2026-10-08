@@ -9545,7 +9545,157 @@ const REPORT_STATUS_BADGE = {
   pending:   '<span class="badge badge-gray">Pending</span>',
 };
 
+// ---- Daily Report history (Jay, 2026-10-09) -------------------------------
+// Read-only. Every figure is what was stored that day; nothing is recomputed
+// from the current state of anything. A day with no report says so, and a
+// counter that did not exist yet says so rather than printing 0.
+const DRH_NO_RECORD = 'no record for this day';
+let drhWired = false;
+let drhDays = [];
+
+const drhVal = v => (v === DRH_NO_RECORD || v === null || v === undefined)
+  ? `<span class="muted" title="Not written down on this day">—</span>`
+  : `<b>${esc(String(v))}</b>`;
+
+function drhList(title, arr) {
+  if (!arr || !arr.length) return '';
+  return `<div style="margin-top:8px"><div class="small muted">${esc(title)} (${arr.length})</div>`
+    + '<ul class="small" style="margin:4px 0 0 18px">'
+    + arr.map(x => `<li>${esc(String(x))}</li>`).join('') + '</ul></div>';
+}
+
+function drhPersonCard(p) {
+  const head = `<div class="view-head" style="margin:0 0 6px">
+      <div><h4 style="margin:0">${esc(p.icon || '')} ${esc(p.title)}</h4>
+      <p class="muted small" style="margin:2px 0 0">${esc(p.owner)}</p></div></div>`;
+  if (!p.filled) {
+    return `<div class="mailbox-section">${head}<p class="muted small">${esc(p.note || 'pending')}</p></div>`;
+  }
+  let body = '';
+  if (p.commandCenter) {
+    const cc = p.commandCenter;
+    body += `<p class="small">Command Center — tasks ${drhVal(cc.total_tasks)}`
+      + ` · completed ${drhVal(cc.completed_tasks)}`
+      + (cc.pct !== undefined ? ` · ${drhVal(cc.pct)}%` : '') + '</p>';
+    if (cc.byCategory) {
+      body += '<p class="small muted">'
+        + Object.entries(cc.byCategory).sort((a, b) => b[1] - a[1])
+          .map(([k, n]) => esc(k) + ' ' + n).join(' · ') + '</p>';
+    }
+  }
+  if (p.board) {
+    body += `<p class="small">Board — open ${drhVal(p.board.total_open)}`
+      + ` · completed ${drhVal(p.board.completed_today)}`
+      + (p.board.severity ? ` · severity ${esc(p.board.severity)}` : '') + '</p>'
+      + drhList('Critical', p.board.critical) + drhList('Follow-up', p.board.followup);
+  }
+  if (p.asana) {
+    body += `<p class="small">Asana — open ${drhVal(p.asana.open)}`
+      + ` · overdue ${drhVal(p.asana.overdue)}`
+      + ` · completed ${drhVal(p.asana.completed_today)}</p>`;
+  }
+  if (!body) body = '<p class="muted small">Saved, but with no figures.</p>';
+  return `<div class="mailbox-section">${head}${body}</div>`;
+}
+
+function drhComparison(c) {
+  if (!c) return '';
+  // The number of missing days is stated, never averaged away: a mean over
+  // three of seven days is not a week's average.
+  const miss = c.daysMissing
+    ? `<span class="badge badge-amber">${c.daysMissing} of 7 days have no report</span>`
+    : '<span class="badge badge-gray">all 7 days have a report</span>';
+  const avg = a => a && typeof a.value === 'number'
+    ? `<b>${a.value}</b> <span class="muted">(over ${a.over} day${a.over === 1 ? '' : 's'})</span>`
+    : '<span class="muted">—</span>';
+  const rows = (c.series || []).map(r => `<tr>
+      <td class="mono">${esc(r.date)}</td>
+      <td>${drhVal(r.total_tasks)}</td><td>${drhVal(r.completed_tasks)}</td>
+      <td>${drhVal(r.board_open)}</td><td>${drhVal(r.board_completed)}</td>
+    </tr>`).join('');
+  return `<div class="mailbox-section">
+    <h4 style="margin:0 0 4px">Previous 7 days — Erick</h4>
+    <p class="small muted">${esc(c.window.from)} to ${esc(c.window.to)} · ${miss}</p>
+    ${c.daysMissing ? `<p class="small muted">Missing: ${esc((c.missingDates || []).join(', '))}</p>` : ''}
+    <p class="small">Average tasks ${avg(c.averages.total_tasks)}
+      · completed ${avg(c.averages.completed_tasks)}
+      · board open ${avg(c.averages.board_open)}
+      · board completed ${avg(c.averages.board_completed)}</p>
+    ${rows ? `<table class="data-table"><thead><tr><th>Day</th><th>Tasks</th><th>Completed</th><th>Board open</th><th>Board completed</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="muted small">No day in this window has a stored report.</p>'}
+  </div>`;
+}
+
+async function loadReportHistory(date) {
+  const host = $('#report-history'), live = $('#report-sections'), note = $('#report-history-note');
+  if (!host) return;
+  if (!date) {   // back to today
+    host.classList.add('hidden'); host.innerHTML = '';
+    if (live) live.classList.remove('hidden');
+    if (note) note.textContent = '';
+    const sel = $('#report-history-date'); if (sel) sel.value = '';
+    return;
+  }
+  host.classList.remove('hidden');
+  if (live) live.classList.add('hidden');
+  host.innerHTML = '<p class="muted small">Loading…</p>';
+  try {
+    const d = await api('/api/reports/daily/history?date=' + encodeURIComponent(date),
+      { credentials: 'same-origin' });
+    if (note) {
+      note.textContent = d.exists
+        ? 'Saved ' + (d.savedAt ? new Date(d.savedAt).toLocaleString('en-US',
+          { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—')
+        : '';
+    }
+    let html = `<div class="view-head" style="margin-top:4px"><div>
+        <h3 style="margin:0">${esc(date)}</h3>
+        <p class="muted small" style="margin:2px 0 0">Read-only. Everything below is what was stored that day — nothing is recalculated from today.</p>
+      </div></div>`;
+    if (!d.exists) {
+      html += `<div class="mailbox-section"><p><b>No record for this day.</b> The report was never saved.</p></div>`;
+      if (d.fallback) {
+        html += `<div class="mailbox-section">
+          <h4 style="margin:0 0 4px">Fallback — ${esc(d.fallback.source)}</h4>
+          <p class="small muted">${esc(d.fallback.note)}</p>
+          <p class="small">Tasks ${drhVal(d.fallback.total_tasks)} · completed ${drhVal(d.fallback.completed_tasks)}</p>
+          ${d.fallback.countersNote ? `<p class="small muted">${esc(d.fallback.countersNote)}</p>` : ''}
+        </div>`;
+      }
+    } else {
+      html += (d.people || []).map(drhPersonCard).join('');
+    }
+    html += drhComparison(d.comparison);
+    host.innerHTML = html;
+  } catch (e) {
+    host.innerHTML = `<p class="muted small">Could not load: ${esc(e.message)}</p>`;
+  }
+}
+
+async function wireReportHistory() {
+  if (drhWired) return;
+  drhWired = true;
+  const sel = $('#report-history-date');
+  try {
+    const d = await api('/api/reports/daily/history/days', { credentials: 'same-origin' });
+    drhDays = d.days || [];
+  } catch { drhDays = []; }
+  if (sel) {
+    // Only days that exist are offered. A day with no report is not a choice
+    // that silently shows nothing.
+    sel.innerHTML = '<option value="">Today (live)</option>'
+      + drhDays.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
+    sel.addEventListener('change', () => loadReportHistory(sel.value));
+    // Default to yesterday — the most recent stored day that is not today.
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+    const yesterday = drhDays.find(x => x < today);
+    if (yesterday) { sel.value = yesterday; loadReportHistory(yesterday); }
+  }
+  $('#report-history-today')?.addEventListener('click', () => loadReportHistory(null));
+}
+
 async function reportLoad() {
+  wireReportHistory();   // read-only history picker; independent of the live report
   const el = $('#report-sections');
   if (!el) return;
   el.innerHTML = '<p class="small muted">Loading…</p>';

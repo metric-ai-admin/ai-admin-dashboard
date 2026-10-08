@@ -19,6 +19,12 @@
 --   has to carry the figure it replaced. These add something the report never
 --   computed, so there is nothing to keep beside them.
 --
+--   KEYED PER SUBJECT, NOT PER PROPERTY (Kara, 2026-10-09). Delinquency notes
+--   and renewal comments are written about a RESIDENT, and unit transfers about
+--   a UNIT — a property-level key would have let the second note on the same
+--   property overwrite the first, silently, and the loss would look like
+--   somebody forgetting to write it.
+--
 -- Nothing reads either table yet. The allow-list in server.js is still empty
 -- and stays empty until Bekah and Kara confirm the field names.
 
@@ -67,20 +73,43 @@ create table if not exists kpi_field_notes (
   -- 'unit_transfer'. Text rather than an enum: Kara has not confirmed the
   -- names, and a fifth field should not need a migration on a deadline.
   field        text        not null,
+
+  -- WHO OR WHAT THE NOTE IS ABOUT: a unit number, or an AppFolio resident /
+  -- occupancy id. Text, because the three fields that use it do not agree on
+  -- what identifies their subject and never will.
+  --
+  -- EMPTY STRING, NOT NULL, and that is the whole reason it is spelled this
+  -- way: this column is part of the primary key, a primary key column cannot
+  -- be null, and in Postgres null is not equal to null — so a nullable subject
+  -- would let the same property-level note be inserted over and over with no
+  -- conflict raised. '' is a real value that collides with itself, which is
+  -- exactly what an upsert needs.
+  --
+  -- '' means the note is about the property as a whole. traffic_adjustment is
+  -- the one that works that way today.
+  subject      text        not null default '',
+
   body         text,
   updated_by   text        not null,
   updated_at   timestamptz not null default now(),
-  primary key (week_ending, property, field)
+  primary key (week_ending, property, field, subject)
 );
 
 comment on table kpi_field_notes is
   'Notes Bekah and Kara add to the weekly KPI report: delinquency notes, '
-  'renewal comments, traffic adjustments, unit transfers. Unlike '
-  'kpi_manual_overrides these do not replace a computed number, so there is no '
-  'computed value to keep beside them.';
+  'renewal comments, traffic adjustments, unit transfers. Keyed per SUBJECT '
+  '(a unit or a resident), because delinquency notes and renewal comments are '
+  'written about a resident and transfers about a unit; subject = '''' means '
+  'the note is about the property as a whole. Unlike kpi_manual_overrides '
+  'these do not replace a computed number, so there is no computed value to '
+  'keep beside them.';
 
 create index if not exists kpi_field_notes_week_idx
   on kpi_field_notes (week_ending desc);
+
+-- Reading every note on one property for a week is the query the report makes.
+create index if not exists kpi_field_notes_week_property_idx
+  on kpi_field_notes (week_ending desc, property);
 
 -- ---------------------------------------------------------------------------
 -- Both are written only through the server, which holds the service role key.

@@ -14366,6 +14366,66 @@ app.patch('/api/reports/daily/:id/section', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---- Daily Report history (Jay, 2026-10-09) -------------------------------
+// Read a PAST day, per person. Read-only; nothing is generated or written.
+//
+// NOTHING IS RECONSTRUCTED. Every figure comes from what daily_reports stored
+// that day. A day that was never saved says so; a counter that did not exist
+// yet says so. Today's work orders cannot describe 09/30, and the 2026-10-08
+// backfill put 1,050 rows into maintenance_work_orders carrying old dates, so
+// anything recomputed from them would be a number nobody ever saw.
+
+// Which days can be chosen. The picker is built from this, so a day with no
+// report is never offered and an empty screen is never ambiguous.
+app.get('/api/reports/daily/history/days', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.json({ days: [] });
+  const client = supabaseAdmin || supabasePublic;
+  try {
+    const { selectAll } = require('./lib/db-page.js');
+    const rows = await selectAll(() => client.from('daily_reports')
+      .select('report_date').order('report_date', { ascending: false }),
+      { label: 'daily report history days' });
+    res.json({ days: rows.map(r => String(r.report_date).slice(0, 10)) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/reports/daily/history', requireAuth, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
+  const DRH = require('./lib/daily-report-history.js');
+  const date = String(req.query.date || '');
+  if (!DRH.isYmd(date)) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  const client = supabaseAdmin || supabasePublic;
+  try {
+    // The chosen day, and the eight days ending on it for the comparison.
+    const from = new Date(date + 'T00:00:00Z');
+    from.setUTCDate(from.getUTCDate() - 8);
+    const { data: rows, error } = await client.from('daily_reports')
+      .select('report_date,sections,created_at')
+      .gte('report_date', from.toISOString().slice(0, 10))
+      .lte('report_date', date)
+      .order('report_date', { ascending: false });
+    if (error) throw new Error(error.message);
+
+    const today = (rows || []).find(r => DRH.ymd(r.report_date) === date) || null;
+    const view = DRH.dayView(today);
+
+    // Erick's seven-day comparison. Only the maintenance section has the
+    // counters to compare; the others store no numbers yet.
+    view.comparison = DRH.sevenDay(rows, 'maintenance', date);
+
+    // cc_daily_state, ONLY when the report itself was never saved, and the
+    // payload says where it came from so the screen can too.
+    if (!today) {
+      const { data: st } = await client.from('cc_daily_state')
+        .select('state_date,total_tasks,completed_tasks,completed_auto,completed_routine,generated_at')
+        .eq('state_date', date).maybeSingle();
+      view.fallback = DRH.fallbackFromState(st, date);
+    }
+    view.countersLiveFrom = DRH.COUNTERS_LIVE_FROM;
+    res.json(view);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Today's report without creating one, so opening the tab is a read.
 app.get('/api/reports/daily/today', requireAuth, async (req, res) => {
   try {

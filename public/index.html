@@ -383,6 +383,19 @@
       </div>
     </div>
 
+    <!-- History (Jay, 2026-10-09). Read-only. The picker is built from the days
+         that actually have a stored report, so a day with no data is never
+         offered and an empty screen is never ambiguous. Nothing here is
+         reconstructed from today's state. -->
+    <div class="refresh-bar" id="report-history-bar" style="gap:12px;flex-wrap:wrap;align-items:center">
+      <label for="report-history-date" class="small muted">Show a past day</label>
+      <select id="report-history-date" class="col-sort-input"></select>
+      <button class="btn-sm" id="report-history-today">Back to today</button>
+      <span class="small muted" id="report-history-note"></span>
+    </div>
+
+    <div id="report-history" class="hidden"></div>
+
     <div id="report-sections"></div>
 
     <div class="view-head" style="margin-top:24px">
