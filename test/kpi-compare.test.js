@@ -269,4 +269,70 @@ t('everything rendered from the response is escaped', () => {
     'unescaped interpolation: ' + x));
 });
 
+
+// ---- her apps rule, which is not what the card label says --------------------
+t('New Applications is her PENDING count, with no date filter at all', () => {
+  // appsCount counts applications that are neither approved-with-a-lease-start
+  // nor Canceled nor Denied. Our side counts applications RECEIVED in the week.
+  // That is a difference of definition, not of data, and the panel has to say
+  // so rather than show it as a disagreement.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-compare.js'), 'utf8');
+  const apps = src.slice(src.indexOf('// apps — her rule'), src.indexOf('// box score:'));
+  const code = apps.replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(!/\bstart\b|\bend\b/.test(code), 'her apps rule takes no week');
+  assert.ok(/r\[12\]/.test(code), 'Application Status is column M (12), not F (5)');
+  assert.ok(/r\[5\]/.test(code), 'and column F is the finer Status, used for Converting');
+});
+
+t('her Approved card is the CONVERTING list, not the approved one', () => {
+  // newLeasesCount is convertingList.length. Reading it as
+  // approved-with-a-lease-start gave 88 against her 7.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-compare.js'), 'utf8');
+  const i = src.indexOf("status === 'Converting'");
+  assert.ok(i > 0, 'the Converting branch must exist');
+  const branch = src.slice(i, i + 900);
+  assert.ok(/add\(propRaw, 'approved', 1\)/.test(branch),
+    'approved must be fed by the Converting branch');
+});
+
+// ---- closed work orders ------------------------------------------------------
+t('a cancelled work order is not a completed one', () => {
+  // Her sheet is "Work Orders Completed Last Week": 75 Completed + 1 Completed
+  // No Need To Bill, zero cancellations. Ours counted anything isClosed(), and
+  // from 2026-10-07 that includes cancellations, because the wo_canceled feed
+  // writes canceled_on into completed_on so a closure can be dated. Seven
+  // cancellations at The Highlander on 2026-10-02 landed in the count.
+  const k = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-lyndsay.js'), 'utf8');
+  const at = k.indexOf('b.closedThisWeek = (b.closedThisWeek || 0) + 1;');
+  const fn = k.slice(at - 600, at + 60);
+  assert.ok(/cancel/i.test(fn), 'cancellations must be excluded from closedThisWeek');
+  assert.ok(/IS_UNIT_TURN/.test(fn), 'and Unit Turn work orders still are too');
+});
+
+t('the report asks for the columns the computation needs', () => {
+  // Without work_order_type the Unit Turn exclusion silently never fires,
+  // because IS_UNIT_TURN.test(undefined) is false. Without completed_on the
+  // closure is dated from updated_at, which is the mistake migration 076 was
+  // added to fix. The Highlander read 19 against her 9 on both counts at once.
+  const b = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-build.js'), 'utf8');
+  const i = b.indexOf("grab('maintenance_work_orders'");
+  const sel = b.slice(i, i + 220);
+  assert.ok(/work_order_type/.test(sel), 'work_order_type is missing from the select');
+  assert.ok(/completed_on/.test(sel), 'completed_on is missing from the select');
+});
+
+t('every column workOrdersFrom reads is in the select', () => {
+  // The guard that generalises the bug above: a metric that silently depends
+  // on a column nobody asked for reads as a confident wrong number.
+  const k = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-lyndsay.js'), 'utf8');
+  const fn = k.slice(k.indexOf('function workOrdersFrom'), k.indexOf('function dqFrom'));
+  const used = [...new Set((fn.match(/\br\.([a-z_]+)/g) || []).map(x => x.slice(2)))];
+  const b = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-build.js'), 'utf8');
+  const i = b.indexOf("grab('maintenance_work_orders'");
+  const sel = b.slice(i, i + 260);
+  used.forEach(col => {
+    if (col === 'synced_at') return;       // optional fallback for pre-076 rows
+    assert.ok(sel.includes(col), 'workOrdersFrom reads r.' + col + ' but the select omits it');
+  });
+});
 console.log(`\n${pass} passing`);
