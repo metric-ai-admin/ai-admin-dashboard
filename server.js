@@ -3390,11 +3390,16 @@ app.post('/api/email/setup-outlook-rules', requireAuth, requireRole('admin'), as
 
     // ── 4. Rule definitions ──────────────────────────────────────────────────
     const rules = [
-      {
-        displayName: 'SimpleVoip no-reply → Archive',
-        conditions: { senderContains: ['noreply@simplevoip.com'] },
-        actions:    { moveToFolder: archiveId, stopProcessingRules: true },
-      },
+      // 'SimpleVoip no-reply → Archive' used to live here. It moved to
+      // LYNDSAY_MESSAGE_RULES on 2026-10-08, when Lyndsay asked for all
+      // SimpleVoIP mail to land in Inbox/Simple VOIP instead of Archive.
+      //
+      // It had to move: this route skips a rule whose displayName already
+      // exists, so changing the destination here would have reported
+      // "skipped (already exists)" and left the live rule filing to Archive.
+      // ensureLyndsayMessageRules PATCHes by displayName, so it can retarget a
+      // rule that is already in the mailbox. Defining it in both arrays would
+      // be a trap, so it is defined in exactly one.
       {
         displayName: 'AppFolio Mailer → Archive',
         conditions: { senderContains: ['communications@metricpropertymanagement.mailer.appfolio.us'] },
@@ -15285,7 +15290,30 @@ const LYNDSAY_MESSAGE_RULES = [
     forwardTo: 'accounting@metricpropertymanagement.com' },
   { displayName: 'MPM Auto: Indeed -> Archive',        folder: 'Archive',       conditions: { senderContains: ['mc.indeed.com'] },        markRead: true },
   { displayName: 'MPM Auto: Home Depot -> Archive',    folder: 'Archive',       conditions: { senderContains: ['mg.homedepot.com'] },     markRead: true },
-  { displayName: 'MPM Auto: SimpleVoIP mktg -> Archive', folder: 'Archive',     conditions: { senderContains: ['marketing@simplevoip.com'] }, markRead: true },
+  // ---- SimpleVoIP: everything to Inbox/Simple VOIP (Lyndsay, 2026-10-08) ----
+  //
+  // THE DISPLAY NAMES STILL SAY "Archive" AND THAT IS DELIBERATE, the same
+  // reason as the Rigby Slack rule above: ensureLyndsayMessageRules matches
+  // live Outlook rules BY displayName. Renaming either of these would fail to
+  // match the rule in the mailbox and create a second rule beside it, leaving
+  // the original still filing to Archive. The folder field below is what
+  // decides where the mail goes.
+  //
+  // Three rules rather than one because the first two already exist in the
+  // mailbox and have to be retargeted where they stand; the catch-all is
+  // appended at max(sequence)+1 and so runs LAST, after both. All three point
+  // at the same folder, so the ordering cannot change the outcome — it only
+  // decides which rule gets the credit.
+  { displayName: 'SimpleVoip no-reply → Archive',        folder: 'Simple VOIP', conditions: { senderContains: ['noreply@simplevoip.com'] } },
+  { displayName: 'MPM Auto: SimpleVoIP mktg -> Archive', folder: 'Simple VOIP', conditions: { senderContains: ['marketing@simplevoip.com'] }, markRead: true },
+  // The catch-all Lyndsay actually asked for: support, provisioning, billing,
+  // anything else from the domain. senderContains is a substring test on the
+  // address, so '@simplevoip.com' also pins it to the domain — 'simplevoip.com'
+  // alone would match a lookalike like simplevoip.com.example.net.
+  //
+  // NOT marked read: a support reply or an invoice is mail somebody has to
+  // open, unlike the daily report and the marketing blast above.
+  { displayName: 'MPM Auto: SimpleVoIP (all) -> Simple VOIP', folder: 'Simple VOIP', conditions: { senderContains: ['@simplevoip.com'] } },
   { displayName: 'MPM Auto: Impact Floors -> Financial', folder: 'Financial',   conditions: { senderContains: ['impactfloors.com'] } },
   { displayName: 'MPM Auto: Allen Vaughn -> Archive',  folder: 'Archive',       conditions: { senderContains: ['allen@colonycreekapts.com'] }, markRead: true },
   // ParentSquare and WebWork are deliberately NOT managed here any more.
@@ -15367,6 +15395,122 @@ async function ensureLyndsayMessageRules({ execute }) {
     out.map(o => `${o.rule} -> ${o.status}${o.reason ? ` (${o.reason})` : ''}${o.error ? ` (${o.error})` : ''}`).join(' | '));
   return out;
 }
+// POST /api/email/lyndsay/simplevoip-consolidate — move SimpleVoIP mail into
+// Inbox/Simple VOIP (Lyndsay, 2026-10-08).
+//
+// DRY RUN BY DEFAULT. {"write": true} applies it; {"includeArchive": true}
+// also sweeps Archive, which is excluded otherwise — see lib/simplevoip-mail.js
+// for why.
+//
+// Two sources: the whole of the root folder "Simple Voip Daily Report", and any
+// @simplevoip.com sender sitting in another folder. The hand-made Outlook rule
+// that fills the old folder is Arturo's to retarget; this only drains what is
+// already there, so running it before that rule changes leaves the folder to
+// fill up again — which is harmless, and the dry run will say so next time.
+//
+// MOVES, NEVER DELETES. Every id and the folder it came from is written to the
+// response before the first move, so a wrong call can be walked back message by
+// message.
+app.post('/api/email/lyndsay/simplevoip-consolidate', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!GRAPH_CONFIGURED) return res.status(503).json({ ok: false, error: 'Graph API not configured' });
+  const SV = require('./lib/simplevoip-mail.js');
+  const write = !!(req.body && req.body.write === true);
+  const includeArchive = !!(req.body && req.body.includeArchive === true);
+
+  // Held open with whitespace: a hundred-odd single-message moves runs past
+  // Render's ~60s idle cap, and a 502 halfway through a move is the one outcome
+  // that leaves nobody able to say what happened. Same pattern as the backfill.
+  res.status(200).setHeader('Content-Type', 'application/json; charset=utf-8');
+  const keepAlive = setInterval(() => {
+    try { if (!res.writableEnded) res.write(' '); } catch { /* client gone */ }
+  }, 10000);
+  const finish = payload => {
+    clearInterval(keepAlive);
+    if (!res.writableEnded) res.end(JSON.stringify(payload));
+  };
+
+  try {
+    const token = await graphMailboxToken('lyndsay');
+    const base = graphMailboxBase('lyndsay');
+    const headers = { Authorization: `Bearer ${token}` };
+    const folders = await listMailFolders('lyndsay', token);
+    const byName = n => (folders || []).find(f => SV.norm(f.displayName) === SV.norm(n));
+
+    const target = byName(SV.TARGET_FOLDER);
+    if (!target) {
+      return finish({ ok: false, error: `"${SV.TARGET_FOLDER}" does not exist in the mailbox. `
+        + 'Create it in Outlook first — this route does not create folders.' });
+    }
+    const source = byName(SV.SOURCE_FOLDER);
+
+    const plan = [];
+    // 1. The whole old folder.
+    if (source) {
+      const msgs = await graphFetchAllPages(`${base}/mailFolders/${source.id}`
+        + '/messages?$select=id,subject,from,receivedDateTime&$top=100', token);
+      msgs.forEach(m => plan.push(SV.planRow(m, SV.SOURCE_FOLDER, 'whole folder')));
+    }
+
+    // 2. Stray @simplevoip.com elsewhere.
+    const { scan, skipped } = SV.foldersToScan(folders,
+      { targetId: target.id, sourceId: source && source.id, includeArchive });
+    const searched = [];
+    for (const f of scan) {
+      let hits = [];
+      try {
+        hits = await graphFetchAllPages(`${base}/mailFolders/${f.id}`
+          + '/messages?$select=id,subject,from,receivedDateTime&$top=100'
+          + '&$search=' + encodeURIComponent(`"from:${SV.DOMAIN}"`), token);
+      } catch (e) {
+        searched.push({ folder: f.displayName, error: e.message });
+        continue;
+      }
+      const { kept, discarded } = SV.keepRealHits(hits);
+      if (kept.length || discarded.length) {
+        searched.push({ folder: f.displayName, found: kept.length, discardedAsLookalike: discarded.length });
+      }
+      kept.forEach(m => plan.push(SV.planRow(m, f.displayName, `sender ${SV.DOMAIN}`)));
+    }
+
+    const summary = SV.summarize(plan);
+    const report = {
+      ok: true, dryRun: !write, includeArchive,
+      target: { folder: SV.TARGET_FOLDER, messagesBefore: target.totalItemCount || 0 },
+      source: source ? { folder: SV.SOURCE_FOLDER, messages: source.totalItemCount || 0 } : null,
+      skippedFolders: skipped,
+      searched: searched.filter(x => x.error || x.found),
+      summary,
+    };
+
+    if (!write) return finish({ ...report, note: 'DRY RUN — nothing moved. POST {"write":true} to apply.' });
+
+    // The id list goes in the response BEFORE the moves, so even a failure
+    // halfway leaves a record of what was attempted and where it came from.
+    let moved = 0;
+    const failed = [];
+    for (const m of plan) {
+      try {
+        const r = await fetchFn(`${base}/messages/${encodeURIComponent(m.id)}/move`, {
+          method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ destinationId: target.id }),
+        });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          throw new Error((j.error && j.error.message) || `move returned ${r.status}`);
+        }
+        moved++;
+      } catch (e) {
+        failed.push({ id: m.id, subject: m.subject, fromFolder: m.fromFolder, error: e.message });
+      }
+    }
+    console.log(`[simplevoip-consolidate] moved ${moved}/${plan.length} into ${SV.TARGET_FOLDER}`
+      + (failed.length ? `, ${failed.length} failed` : ''));
+    return finish({ ...report, moved, failed, movedFrom: plan.map(m => ({ id: m.id, fromFolder: m.fromFolder })) });
+  } catch (err) {
+    return finish({ ok: false, error: err.message });
+  }
+});
+
 app.get('/api/email/lyndsay/message-rules', requireAuth, requireRole('admin'), async (req, res) => {
   try { res.json({ dryRun: true, rules: await ensureLyndsayMessageRules({ execute: false }) }); }
   catch (err) { res.status(500).json({ error: err.message }); }
