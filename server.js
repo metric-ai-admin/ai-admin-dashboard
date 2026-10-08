@@ -7514,37 +7514,29 @@ const leasingSyncLog = (label, raw, rows) =>
 app.post('/api/leasing/sync/showings', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   try {
-    // A DATE RANGE, because without one this report answers with whatever
-    // AppFolio considers current and completed showings fall out of it. That is
-    // the whole of the 18-against-26 gap on Katie's 09/27-10/03 sheet: The
-    // Highlander's two Completed and three of Windy Hill's nine were not
-    // mismapped, they were never in the response.
+    // A DATE RANGE, because without one this report answers with 24 rows —
+    // whatever AppFolio considers current — and every completed showing has
+    // already fallen out. That is the whole of the 18-against-26 gap on Katie's
+    // 09/27-10/03 sheet: The Highlander's two Completed and three of Windy
+    // Hill's nine were not mismapped, they were never in the response.
+    //
+    // showing_date_from / showing_date_to, and ONLY that spelling. Measured by
+    // /api/leasing/probe-showings-window on 2026-10-08: it returned 499 rows
+    // spanning 2026-07-01..2026-11-07 with 26 inside Katie's week, while
+    // from_date/to_date, showing_time_from/_to and from/to were all ignored and
+    // came back identical to the 24-row baseline. An ignored parameter looks
+    // exactly like one that works, so do not "also try" another spelling here:
+    // it would silently widen nothing and make the next person think it did.
     //
     // Ninety days back and sixty forward, off the CENTRAL day. Back far enough
     // that a week we are still reconciling is never near the edge; forward
     // because showings are scheduled ahead and the Goal Board shows them.
     const today = WEEK.toChicagoYMD(new Date());
-    const from_date = (req.body && req.body.from_date) || WEEK.addDaysYMD(today, -90);
-    const to_date   = (req.body && req.body.to_date)   || WEEK.addDaysYMD(today, 60);
+    const showing_date_from = (req.body && req.body.from_date) || WEEK.addDaysYMD(today, -90);
+    const showing_date_to   = (req.body && req.body.to_date)   || WEEK.addDaysYMD(today, 60);
 
-    // The parameter NAME is not verified — no showings probe has run, and the
-    // work-order report ignored seven spellings of its own date filter. So the
-    // range is attempted and, if the API refuses it, the call is repeated
-    // exactly as it ran before. The sync cannot come out worse than it is
-    // today, and `dateFilter` in the response says which path ran rather than
-    // leaving us to infer it from a row count.
-    const base = { property_visibility: 'active', paginate_results: false };
-    let dateFilter = 'applied';
-    let raw;
-    try {
-      raw = await appfolioReportsFetch(APPFOLIO_SHOWINGS_REPORT, { ...base, from_date, to_date });
-    } catch (e) {
-      if (e.code >= 400 && e.code < 500) {
-        console.warn('[leasing-sync] showings: date range refused (' + e.code + ': ' + e.message + ') — retrying without it');
-        dateFilter = 'rejected: ' + e.code + ' ' + e.message;
-        raw = await appfolioReportsFetch(APPFOLIO_SHOWINGS_REPORT, base);
-      } else throw e;
-    }
+    const raw = await appfolioReportsFetch(APPFOLIO_SHOWINGS_REPORT,
+      { showing_date_from, showing_date_to, property_visibility: 'active', paginate_results: false });
     const now = new Date().toISOString();
     const seen = new Set();
     const rows = [];
@@ -7567,7 +7559,7 @@ app.post('/api/leasing/sync/showings', requireMetricAccess, async (req, res) => 
     leasingSyncLog('showings', raw, rows);
     const synced = await leasingSyncUpsert('leasing_showings', rows, 'showing_id');
     res.json({ ok: true, synced, mapped: rows.length, raw: raw.length, serviceRole: !!supabaseAdmin,
-      from_date, to_date, dateFilter, timestamp: now });
+      showing_date_from, showing_date_to, timestamp: now });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Showings sync failed: ' + err.message });
   }
@@ -8346,12 +8338,15 @@ app.post('/api/collections/probe-tenant-statuses', requireMetricAdmin, async (re
 // POST /api/leasing/probe-showings-window — READ ONLY. Which date-parameter
 // spelling, if any, the showings report honours.
 //
-// The showings sync now asks for a 90/60 window on from_date/to_date, the pair
-// the applications sync uses. Nobody has verified that this report reads them:
-// the work-order report ignored seven spellings of its own. A spelling that is
-// ignored looks exactly like one that works until you count the rows, so this
-// counts them — row totals and the actual min/max showing_time per variant,
-// against a baseline with no dates at all.
+// ANSWERED 2026-10-08: showing_date_from / showing_date_to. That variant
+// returned 499 rows spanning 2026-07-01..2026-11-07 with 26 inside Katie's
+// week; from_date/to_date, showing_time_from/_to and from/to all came back
+// identical to the 24-row baseline, i.e. ignored. The sync uses the verified
+// spelling and no other.
+//
+// Kept because a spelling that is ignored looks exactly like one that works
+// until you count the rows, and this is what counts them — row totals and the
+// actual min/max showing_time per variant, against a baseline with no dates.
 app.post('/api/leasing/probe-showings-window', requireMetricAdmin, async (req, res) => {
   try {
     const base = { property_visibility: 'active', paginate_results: false };
