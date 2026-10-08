@@ -389,4 +389,16 @@ t('exporting and uploading are named in Activity Logs', () => {
   assert.strictEqual(ACTS.describeRead('/api/kpi/report/export/xlsx').label, 'Exported Excel');
   assert.strictEqual(ACTS.describeRead('/api/kpi/report/export/pdf').label, 'Exported PDF');
 });
+
+t('the report pages its reads, because .limit does not raise the ceiling', () => {
+  // .limit(20000) only promises not to ask for more than 20,000; PostgREST
+  // still returns at most 1,000. maintenance_work_orders passed 1,000 the
+  // moment the closed-work-order backfill ran, and the report silently saw two
+  // thirds of it — closedThisWeek read 61 against her 76 with every missing
+  // row sitting in the table. A cap that returns a plausible number is the
+  // worst kind, because nothing looks wrong.
+  const b = fs.readFileSync(path.join(__dirname, "..", "lib", "kpi-build.js"), "utf8");
+  assert.ok(/.range(from, from + PAGE - 1)/.test(b), "grab must page");
+  assert.ok(!/.select(cols).limit(/.test(b), "the bare limit is gone");
+});
 console.log(`\n${pass} passing`);
