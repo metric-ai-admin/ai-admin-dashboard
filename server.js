@@ -8395,7 +8395,12 @@ app.post('/api/maintenance/probe-wo-window', requireMetricAdmin, async (req, res
 // so that stays checkable rather than remembered.
 const woBackfill = require('./lib/wo-backfill.js');
 
-app.post('/api/maintenance/work-orders/backfill', requireAuth, requireMetricAdmin, async (req, res) => {
+// requireMetricAdmin alone, the same guard as /api/maintenance/reconcile.
+// requireAuth on top would demand a browser session, and this is a maintenance
+// operation run server-to-server with the shared key — the hourly loop calls
+// it that way too, so adding requireAuth would have broken the loop silently
+// an hour after deploy.
+app.post('/api/maintenance/work-orders/backfill', requireMetricAdmin, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   const write = !!(req.body && req.body.write === true);
   try {
