@@ -15706,6 +15706,9 @@ async function calendarInvitesToFollow() {
   return {
     items,
     summary: CF.summarize(items),
+    // Matched, but she has already pressed Follow. Reported because an empty
+    // list and a broken list look the same on screen.
+    alreadyFollowing: CF.alreadyFollowingSummary(events, { mailbox: MAILBOX_LYNDSAY }),
     scanned: events.length,
     window: { from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10) },
   };

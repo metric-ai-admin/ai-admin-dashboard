@@ -2658,8 +2658,18 @@ async function loadCalFollow() {
         + `${d.window.from} to ${d.window.to}, ${d.scanned} invitations checked. `
         + `Open one and press Follow; nothing here responds for her.`;
     }
+    // "Nothing waiting" and "this panel is broken" look identical, so the
+    // already-Following tally is printed either way. On 2026-10-08 the list
+    // correctly showed no hearings and the only way to tell that from a silent
+    // failure was to go and read the calendar.
+    const af = d.alreadyFollowing || { total: 0, byCategory: {} };
+    const afText = af.total
+      ? `${af.total} already marked Following (`
+        + Object.entries(af.byCategory)
+          .map(([k, n]) => n + ' ' + calFollowLabel(k).toLowerCase()).join(', ') + ')'
+      : 'none marked Following yet';
     if (!items.length) {
-      body.innerHTML = '<p class="muted small">Nothing waiting — every matching invitation is already marked Following.</p>';
+      body.innerHTML = `<p class="muted small">Nothing waiting — ${esc(afText)}.</p>`;
       return;
     }
     const when = (iso, allDay) => {
@@ -2683,7 +2693,8 @@ async function loadCalFollow() {
           <td class="small mono">${esc(statusCell(i.status || {}))}</td>
           <td>${i.webLink ? `<a href="${esc(i.webLink)}" target="_blank" rel="noopener noreferrer">Open in Outlook</a>` : ''}</td>
         </tr>`).join('')
-      + '</tbody></table>';
+      + '</tbody></table>'
+      + `<p class="muted small" style="margin-top:8px">${esc(afText)}.</p>`;
   } catch (e) {
     body.innerHTML = `<p class="muted small">Could not load: ${esc(e.message)}</p>`;
     if (badge) badge.classList.add('hidden');

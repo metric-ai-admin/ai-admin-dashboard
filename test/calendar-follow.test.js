@@ -187,10 +187,49 @@ t('rows come back in date order, soonest first', () => {
   assert.deepStrictEqual(items.map(i => i.start), ['2026-10-09T10:00:00', '2026-12-01T10:00:00']);
 });
 
+t('the already-Following ones are counted, not just dropped', () => {
+  // "Nothing waiting" and "this panel is broken" look identical on screen. On
+  // 2026-10-08 the list correctly showed no hearings, and the only way to tell
+  // that from a silent failure was to go and read the calendar.
+  const af = C.alreadyFollowingSummary(SAMPLE, { mailbox: ME });
+  assert.strictEqual(af.total, 1);
+  assert.deepStrictEqual(af.byCategory, { hearing: 1 });
+});
+
+t('the real 2026-10-08 window reproduces: 0 hearings out, 4 already Following', () => {
+  // The four collections@ events in the route's window, verbatim, all followed.
+  const coll = s2 => ({ subject: s2, organizer: { emailAddress: { address: COLL } },
+    start: { dateTime: '2026-10-20T19:00:00' } });
+  const events = [
+    coll('Following: InPerson Hearing | J2-CV-26-008772 | X - Ascent at Northgate - 3-216'),
+    coll('Following: Reset | InPerson Hearing | J2-CV-26-008772 | ASCENT VS. X'),
+    coll('Following: VIRTUAL HEARING | J3-EV-26-001524 5704 | CEDAR AND SAGE vs. X'),
+    coll('Following: Virtual Hearing | J3-EV-26-001526 | 5704 COUGAR LLC DBA CEDAR AND SAGE vs. X'),
+    ev('PTO - Katrina', 'marketing@metricpropertymanagement.com'),
+    ev('PTO - Katrina', 'marketing@metricpropertymanagement.com'),
+  ];
+  assert.deepStrictEqual(C.summarize(C.pick(events, { mailbox: ME })), { total: 2, byCategory: { pto: 2 } });
+  assert.deepStrictEqual(C.alreadyFollowingSummary(events, { mailbox: ME }), { total: 4, byCategory: { hearing: 4 } });
+});
+
+t('a Reset hearing with showAs tentative is still listed when not followed', () => {
+  // The exact event queried on 2026-10-08. Neither the "Reset |" prefix, nor
+  // the J2-CV number shape, nor showAs tentative excludes it — it was missing
+  // from the list only because she had already pressed Follow.
+  const e = ev('Reset | InPerson Hearing | J2-CV-26-008772 | ASCENT VS. SUSIE A JIMENEZ', COLL,
+    { showAs: 'tentative', responseStatus: { response: 'tentativelyAccepted' } });
+  assert.strictEqual(C.caseNumber(C.subjectOf(e)), 'J2-CV-26-008772');
+  assert.strictEqual(C.categorize(e), 'hearing');
+  const got = C.pick([e], { mailbox: ME });
+  assert.strictEqual(got.length, 1, 'it would have been missed');
+  assert.ok(/Reset/.test(got[0].label) && /J2-CV-26-008772/.test(got[0].label));
+});
+
 t('an empty calendar is an empty list, not an error', () => {
   assert.deepStrictEqual(C.pick([], {}), []);
   assert.deepStrictEqual(C.pick(null, {}), []);
   assert.deepStrictEqual(C.summarize([]), { total: 0, byCategory: {} });
+  assert.deepStrictEqual(C.alreadyFollowingSummary(null, {}), { total: 0, byCategory: {} });
 });
 
 // ---- the route and the UI ------------------------------------------------
@@ -242,6 +281,20 @@ t('THE COUNT IS NOT IN THE REPORT THAT GOES TO THE GROUP CHAT', () => {
 
 t('a calendar failure does not cost him the morning report', () => {
   assert.ok(/invitesToFollow = \{ error: e\.message \}/.test(CODE));
+});
+
+t('the panel always prints the already-Following tally', () => {
+  assert.ok(/alreadyFollowing: CF\.alreadyFollowingSummary/.test(CODE), 'the route does not report it');
+  const ui = APP.slice(APP.indexOf('async function loadCalFollow'), APP.indexOf('async function loadEmail'));
+  assert.ok(/already marked Following/.test(ui));
+  // Printed on BOTH paths — with rows and with none — so an empty panel can
+  // still be told apart from a broken one.
+  const flat = ui.split('\n').join(' ');
+  assert.ok(flat.includes('Nothing waiting — ${esc(afText)}'), 'not printed on the empty path');
+  assert.ok(/<\/tbody><\/table>'/.test(flat) && flat.indexOf('esc(afText)') < flat.length,
+    'the tally is not rendered at all');
+  assert.strictEqual((ui.match(/esc\(afText\)/g) || []).length, 2,
+    'the tally should be printed on both the empty and the populated path');
 });
 
 t('the panel is in the Email / Cal tab and refreshes on its own', () => {
