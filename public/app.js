@@ -425,6 +425,32 @@ async function loadMorning(force = false) {
   try {
     const data = await api('/api/morning-report', { credentials: 'same-origin' });
     if (out) out.value = data.report || '(empty report)';
+    // Calendar invites to follow — ON SCREEN ONLY, never in the textarea.
+    // The textarea is what gets copied into the High Ops group chat, and these
+    // name court cases and whose day off it is. The server keeps them out of
+    // `report` for the same reason; this is the other half of that.
+    const inv = $('#morning-invites');
+    if (inv) {
+      const v = data.invitesToFollow;
+      if (!v) inv.textContent = '';
+      else if (v.error) inv.textContent = 'Calendar invites to follow: unavailable (' + v.error + ')';
+      else if (!v.count) inv.textContent = 'Calendar invites to follow: none outstanding.';
+      else {
+        const parts = Object.entries(v.byCategory || {})
+          .map(([k, n]) => n + ' ' + ({ hearing: 'hearing', wop: 'writ', pto: 'time off' }[k] || k) + (n === 1 ? '' : 's'));
+        inv.innerHTML = `<b>${v.count}</b> calendar invite${v.count === 1 ? '' : 's'} to follow`
+          + (parts.length ? ' — ' + esc(parts.join(', ')) : '')
+          + ' · <a href="#" id="morning-invites-link">see them in Email / Cal</a>'
+          + ' <span class="muted">(not included in the copied report)</span>';
+        const lnk = $('#morning-invites-link');
+        // Click the real nav button rather than reimplementing the tab
+        // switch: that handler also loads the tab and records the choice.
+        if (lnk) lnk.addEventListener('click', e => {
+          e.preventDefault();
+          document.querySelector('#tabs button[data-tab="email"]')?.click();
+        });
+      }
+    }
     if (stamp) stamp.textContent = data.generatedAt
       ? `Last generated ${new Date(data.generatedAt).toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' })}`
       : '';
@@ -2606,7 +2632,71 @@ function checkMeetingAlerts() {
   lastAlertLevel = topLevel;
 }
 
+// ---- Calendar invites to follow -------------------------------------------
+// READ ONLY. Graph cannot send a Follow response — the responseStatus enum has
+// no such value in v1.0 or beta — and the nearest substitute, tentativelyAccept,
+// would tell a court Lyndsay might attend. So this lists them and she presses
+// Follow in Outlook on the web. Nothing here responds, accepts or edits.
+let calFollowWired = false;
+function calFollowLabel(cat) {
+  return { hearing: 'Hearing', wop: 'Writ of possession', pto: 'Time off' }[cat] || cat;
+}
+async function loadCalFollow() {
+  const body = $('#cal-follow-body'), badge = $('#cal-follow-badge');
+  if (!body) return;
+  body.textContent = 'Loading…';
+  try {
+    const d = await api('/api/calendar/invites-to-follow', { credentials: 'same-origin' });
+    const items = d.items || [];
+    if (badge) {
+      badge.textContent = String(items.length);
+      badge.classList.toggle('hidden', !items.length);
+    }
+    const meta = $('#cal-follow-meta');
+    if (meta && d.window) {
+      meta.textContent = `Hearings, writs and time off on Lyndsay's calendar not marked "Following" yet — `
+        + `${d.window.from} to ${d.window.to}, ${d.scanned} invitations checked. `
+        + `Open one and press Follow; nothing here responds for her.`;
+    }
+    if (!items.length) {
+      body.innerHTML = '<p class="muted small">Nothing waiting — every matching invitation is already marked Following.</p>';
+      return;
+    }
+    const when = (iso, allDay) => {
+      if (!iso) return '—';
+      const d2 = new Date(/Z$/.test(iso) ? iso : iso + 'Z');
+      return d2.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Chicago' })
+        + (allDay ? ' (all day)' : ' ' + d2.toLocaleTimeString('en-US',
+          { hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago' }));
+    };
+    // showAs AND the response are both shown: they answer different questions,
+    // and a Followed invite reads free + tentativelyAccepted, so neither alone
+    // says whether she has dealt with it.
+    const statusCell = st => [st.showAs || '—', st.response || '—'].join(' · ');
+    body.innerHTML = `<table class="data-table"><thead><tr>
+        <th>When</th><th>What</th><th>Organizer</th><th>Status today</th><th></th>
+      </tr></thead><tbody>`
+      + items.map(i => `<tr>
+          <td class="mono">${esc(when(i.start, i.isAllDay))}</td>
+          <td><span class="badge badge-gray">${esc(calFollowLabel(i.category))}</span> ${esc(i.label)}</td>
+          <td class="small muted">${esc(i.organizer)}</td>
+          <td class="small mono">${esc(statusCell(i.status || {}))}</td>
+          <td>${i.webLink ? `<a href="${esc(i.webLink)}" target="_blank" rel="noopener noreferrer">Open in Outlook</a>` : ''}</td>
+        </tr>`).join('')
+      + '</tbody></table>';
+  } catch (e) {
+    body.innerHTML = `<p class="muted small">Could not load: ${esc(e.message)}</p>`;
+    if (badge) badge.classList.add('hidden');
+  }
+}
+
 async function loadEmail() {
+  if (!calFollowWired) {
+    calFollowWired = true;
+    const b = $('#cal-follow-refresh');
+    if (b) b.addEventListener('click', loadCalFollow);
+  }
+  loadCalFollow();   // not awaited: a slow calendar must not hold up the mailboxes
   const status = await api('/api/email/refresh-status');
   const fmt = ts => ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
   if (!status.configured) {

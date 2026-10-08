@@ -334,6 +334,7 @@
     </div>
     <textarea id="morning-output" readonly wrap="off"
       style="width:100%;min-height:520px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.5;white-space:pre;overflow:auto;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--card,#fff);color:inherit;resize:vertical"></textarea>
+    <p class="muted small" id="morning-invites" style="margin-top:10px"></p>
     <p class="muted small" id="morning-generated" style="margin-top:8px"></p>
   </section>
 
@@ -490,6 +491,19 @@
         <button id="refresh-now-btn">🔄 Refresh Now</button>
       </div>
       <div id="email-check-status" class="small muted"></div>
+    </div>
+
+    <!-- Calendar invites to follow. READ ONLY: Graph cannot send a Follow
+         response at all (the responseStatus enum has no such value), and the
+         nearest substitute would tell a court she might attend. So this lists
+         them and she clicks Follow in Outlook on the web. -->
+    <div class="mailbox-section" id="cal-follow-section">
+      <h3>📅 Calendar invites to follow
+        <span id="cal-follow-badge" class="badge badge-amber hidden"></span>
+        <button id="cal-follow-refresh" class="btn-sm" style="float:right">&#128260; Refresh</button>
+      </h3>
+      <p class="muted small" id="cal-follow-meta">Hearings, writs and time off on Lyndsay&rsquo;s calendar that are not marked &ldquo;Following&rdquo; yet. Open one and press Follow &mdash; nothing here responds for her.</p>
+      <div id="cal-follow-body" class="small muted">Loading&hellip;</div>
     </div>
 
     <div class="mailbox-section mailbox-section-lyndsay">

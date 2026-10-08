@@ -15591,112 +15591,6 @@ app.post('/api/email/lyndsay/simplevoip-consolidate', requireAuth, requireRole('
 //
 // Subjects only, never bodies: the question is whether a narrow rule is good
 // enough, and a body match answers a different one.
-// POST /api/email/lyndsay/follow-flag — set a follow-up flag on the mail
-// Lyndsay follows. DRY RUN unless {"write": true}.
-//
-//   { days: 90 }            how far back to look (default 90, max 365)
-//   { write: true }         actually set the flags
-//   { includeArchive: true } also sweep Archive, excluded otherwise
-//
-// FLAGS ONLY. It does not move, file, mark read or delete anything, and there
-// is a test asserting the route contains no such call.
-//
-// It is a pass and not an Outlook rule because Graph's messageRuleActions has
-// no flag action — see lib/follow-flag.js. Substituting a category would have
-// answered a different request without saying so.
-async function followFlagRun({ days, write, includeArchive }) {
-  const FF = require('./lib/follow-flag.js');
-  const SV = require('./lib/simplevoip-mail.js');
-  const d = Math.min(365, Math.max(1, Number(days) || 90));
-  const since = new Date(Date.now() - d * 86400000).toISOString();
-
-  const token = await graphMailboxToken('lyndsay');
-  const base = graphMailboxBase('lyndsay');
-  const headers = { Authorization: `Bearer ${token}` };
-  const folders = await listMailFolders('lyndsay', token);
-
-  // The same folder policy as the SimpleVoIP sweep, by reference rather than by
-  // a second copy that can drift. Sent Items is excluded with the rest: a
-  // filing Lyndsay forwarded is her own outbound, and flagging her Sent mail
-  // puts it on a list she reads for incoming work.
-  const skipped = [];
-  const scan = folders.filter(f => {
-    const name = FF.norm(f.displayName);
-    if (SV.PROTECTED.has(name)) { skipped.push(f.displayName); return false; }
-    if (name === 'archive' && !includeArchive) {
-      skipped.push(f.displayName + ' (pass includeArchive to include it)');
-      return false;
-    }
-    if (!f.totalItemCount) return false;
-    return true;
-  });
-
-  let acc = null;
-  const folderErrors = [];
-  for (const f of scan) {
-    try {
-      const msgs = await graphFetchAllPages(`${base}/mailFolders/${f.id}/messages`
-        + `?$filter=receivedDateTime ge ${since}`
-        + '&$select=id,subject,from,receivedDateTime,flag&$top=100', token);
-      acc = FF.plan(msgs, f.displayName, acc);
-    } catch (e) {
-      folderErrors.push({ folder: f.displayName, error: e.message });
-    }
-  }
-  acc = acc || FF.plan([], null, null);
-
-  const report = {
-    ok: true, dryRun: !write, days: d, since,
-    rules: FF.RULES.map(r => ({ key: r.key, label: r.label })),
-    foldersScanned: scan.length, foldersSkipped: skipped, folderErrors,
-    messagesScanned: acc.scanned,
-    wouldFlag: acc.toFlag.length,
-    alreadyFlagged: acc.alreadyFlagged,
-    byRule: acc.byRule,
-    byFolder: acc.byFolder,
-    subjects: acc.subjects,
-  };
-  if (!write) return { ...report, note: 'DRY RUN — nothing was flagged. POST {"write":true} to apply.' };
-
-  let flagged = 0;
-  const failed = [];
-  for (const row of acc.toFlag) {
-    try {
-      const r = await fetchFn(`${base}/messages/${encodeURIComponent(row.id)}`, {
-        method: 'PATCH', headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flag: { flagStatus: 'flagged' } }),
-      });
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        throw new Error((j.error && j.error.message) || `flag returned ${r.status}`);
-      }
-      flagged++;
-    } catch (e) {
-      failed.push({ subject: row.subject, folder: row.folder, error: e.message });
-    }
-  }
-  console.log(`[follow-flag] flagged ${flagged}/${acc.toFlag.length} over ${d}d`
-    + (failed.length ? `, ${failed.length} failed` : ''));
-  // The ids are returned so a wrong call can be unflagged message by message.
-  return { ...report, flagged, failed, flaggedIds: acc.toFlag.map(r => ({ id: r.id, rule: r.rule })) };
-}
-
-app.post('/api/email/lyndsay/follow-flag', requireAuth, requireRole('admin'), async (req, res) => {
-  if (!GRAPH_CONFIGURED) return res.status(503).json({ ok: false, error: 'Graph API not configured' });
-  res.status(200).setHeader('Content-Type', 'application/json; charset=utf-8');
-  const keepAlive = setInterval(() => {
-    try { if (!res.writableEnded) res.write(' '); } catch { /* client gone */ }
-  }, 10000);
-  const finish = p => { clearInterval(keepAlive); if (!res.writableEnded) res.end(JSON.stringify(p)); };
-  try {
-    finish(await followFlagRun({
-      days: req.body && req.body.days,
-      write: !!(req.body && req.body.write === true),
-      includeArchive: !!(req.body && req.body.includeArchive === true),
-    }));
-  } catch (err) { finish({ ok: false, error: err.message }); }
-});
-
 app.get('/api/email/lyndsay/followable-scan', requireAuth, requireRole('admin'), async (req, res) => {
   if (!GRAPH_CONFIGURED) return res.status(503).json({ ok: false, error: 'Graph API not configured' });
   const FS = require('./lib/followable-scan.js');
@@ -15775,6 +15669,53 @@ app.get('/api/email/lyndsay/message-rules', requireAuth, requireRole('admin'), a
 app.post('/api/email/lyndsay/message-rules', requireAuth, requireRole('admin'), async (req, res) => {
   try { res.json({ dryRun: false, rules: await ensureLyndsayMessageRules({ execute: true }) }); }
   catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// =====================================================================
+// CALENDAR INVITES TO FOLLOW — read-only.
+// =====================================================================
+// Invitations on Lyndsay's calendar that she probably wants to mark Follow and
+// has not yet: evictions hearings, writs of possession, and time off.
+//
+// IT READS AND NOTHING ELSE. No accept, no tentativelyAccept, no decline, no
+// PATCH of any event. Graph cannot send a Follow response at all — the
+// responseStatus enum is none | organizer | tentativelyAccepted | accepted |
+// declined | notResponded in v1.0 and beta alike — and the nearest automatable
+// substitute, tentativelyAccept, would tell a COURT she might attend. That is
+// not a decision a keyword rule gets to make, so the job here is to find them
+// and she clicks Follow in Outlook on the web.
+//
+// WINDOW: everything still to come, plus the last 7 days, so something that
+// happened on Monday and was never answered has not already vanished.
+const CAL_FOLLOW_PAST_DAYS = 7;
+const CAL_FOLLOW_FUTURE_DAYS = 120;
+
+async function calendarInvitesToFollow() {
+  const CF = require('./lib/calendar-follow.js');
+  const token = await graphAccessToken();
+  const start = new Date(Date.now() - CAL_FOLLOW_PAST_DAYS * 86400000);
+  const end = new Date(Date.now() + CAL_FOLLOW_FUTURE_DAYS * 86400000);
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX_LYNDSAY)}/calendarView`
+    + `?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
+    // responseStatus AND showAs, because they answer different questions: what
+    // the organizer was told, and how the time looks on her calendar.
+    + '&$select=id,subject,start,organizer,isAllDay,isCancelled,isOrganizer,showAs,responseStatus,webLink'
+    + '&$orderby=start/dateTime&$top=250';
+  const events = await graphFetchAllPages(url, token);
+  const items = CF.pick(events, { mailbox: MAILBOX_LYNDSAY });
+  return {
+    items,
+    summary: CF.summarize(items),
+    scanned: events.length,
+    window: { from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10) },
+  };
+}
+
+app.get('/api/calendar/invites-to-follow', requireMetricAdmin, async (req, res) => {
+  if (!GRAPH_CONFIGURED) return res.status(503).json({ error: 'Microsoft Graph is not configured.' });
+  try {
+    res.json(await calendarInvitesToFollow());
+  } catch (err) { res.status(502).json({ error: err.message }); }
 });
 
 // =====================================================================
@@ -16717,7 +16658,26 @@ app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
   if (!GRAPH_CONFIGURED) { errors.meetings = errors.emails = 'Microsoft Graph is not configured.'; }
 
   const report = mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sopReview, errors });
+
+  // Calendar invites to follow — a SIBLING FIELD, deliberately not inside
+  // `report`.
+  //
+  // `report` is the block Arturo pastes into the High Ops group chat. These
+  // rows name court cases and whose day off it is, so they belong on his own
+  // screen and not in a group message. Keeping them out of mrFormat is what
+  // guarantees that: there is no flag to forget to set.
+  //
+  // Degrades on its own. A calendar failure must not cost him the report.
+  let invitesToFollow = null;
+  try {
+    if (GRAPH_CONFIGURED) {
+      const r = await calendarInvitesToFollow();
+      invitesToFollow = { count: r.summary.total, byCategory: r.summary.byCategory, window: r.window };
+    }
+  } catch (e) { invitesToFollow = { error: e.message }; }
+
   res.json({ report, generatedAt: new Date().toISOString(), date, errors,
+    invitesToFollow,
     allDay: allDayDiagnostic, droppedByGreeting, senderDiagnostic });
 });
 
@@ -18011,27 +17971,6 @@ cron.schedule('30 5 * * *', () => {
 //
 // 06:00, before Erick opens the Command Center and well before the EOD reads
 // the table at 18:00.
-// The standing half of "following": a daily pass that flags yesterday's
-// matches, since Graph message rules cannot flag (see lib/follow-flag.js).
-//
-// OFF UNLESS FOLLOW_FLAG_ENABLED IS SET. This writes to Lyndsay's mailbox on a
-// schedule, and the dry run has not been read yet at the time of writing. A
-// standing automation that starts itself on deploy, before anyone has seen
-// what it would do, is how an unreviewed rule ends up flagging three months of
-// mail overnight. Set the variable in Render once the dry run looks right.
-//
-// A 3-day window, not 1: a message that arrives while the pass is running, or
-// on a day the service was restarting, would otherwise never be looked at
-// again. Re-flagging is already a no-op — plan() skips anything flagged — so
-// the overlap costs nothing.
-cron.schedule('30 6 * * *', () => {
-  if (!GRAPH_CONFIGURED) return;
-  if (process.env.FOLLOW_FLAG_ENABLED !== '1') return;
-  followFlagRun({ days: 3, write: true })
-    .then(r => logLine(`[follow-flag] ${r.flagged ?? 0} flagged, ${r.alreadyFlagged ?? 0} already`))
-    .catch(err => logLine(`[follow-flag] FAILED: ${err.message}`));
-}, { timezone: LYNDSAY_TIMEZONE });
-
 cron.schedule('0 6 * * *', () => {
   if (!CRM_CONFIGURED) return;
   callOwnRoute('/api/maintenance/sync', {})
