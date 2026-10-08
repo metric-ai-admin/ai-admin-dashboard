@@ -15346,6 +15346,27 @@ const LYNDSAY_MESSAGE_RULES = [
   // NOT marked read: a support reply or an invoice is mail somebody has to
   // open, unlike the daily report and the marketing blast above.
   { displayName: 'MPM Auto: SimpleVoIP (all) -> Simple VOIP', folder: 'Simple VOIP', conditions: { senderContains: ['@simplevoip.com'] } },
+  // Support tickets come from a DIFFERENT DOMAIN — .us, not .com (Arturo,
+  // 2026-10-08). A separate rule rather than a second entry in the array above
+  // only because the names stay readable that way; senderContains ORs within
+  // its own list, so either shape would work.
+  { displayName: 'MPM Auto: SimpleVoIP .us -> Simple VOIP', folder: 'Simple VOIP', conditions: { senderContains: ['@simplevoip.us'] } },
+  // BY SUBJECT, WHATEVER THE SENDER. Jay answers support threads from
+  // admin@metricpropertymanagement.com, so the ticket's own replies carry an
+  // internal address and no sender rule can catch them — the thread would sit
+  // half in Simple VOIP and half in MPM Team.
+  //
+  // Graph ANDs senderContains with subjectContains, so this cannot be folded
+  // into either rule above: it has to stand alone to match on subject only.
+  //
+  // THIS ONE IS DELIBERATELY BROAD and worth knowing about: any mail whose
+  // subject says SimpleVoIP is filed, including a thread that merely mentions
+  // it. That is what was asked for, and the dry run below names every message
+  // it would catch before anything moves. '[SimpleVoIP Support]' is already
+  // covered by the bare word; it is listed first as a record of the ticket
+  // format, so a future reader knows which string the system actually emits.
+  { displayName: 'MPM Auto: SimpleVoIP subject -> Simple VOIP', folder: 'Simple VOIP',
+    conditions: { subjectContains: ['[SimpleVoIP Support]', 'SimpleVoIP'] } },
   { displayName: 'MPM Auto: Impact Floors -> Financial', folder: 'Financial',   conditions: { senderContains: ['impactfloors.com'] } },
   { displayName: 'MPM Auto: Allen Vaughn -> Archive',  folder: 'Archive',       conditions: { senderContains: ['allen@colonycreekapts.com'] }, markRead: true },
   // ParentSquare and WebWork are deliberately NOT managed here any more.
@@ -15483,34 +15504,47 @@ app.post('/api/email/lyndsay/simplevoip-consolidate', requireAuth, requireRole('
       msgs.forEach(m => plan.push(SV.planRow(m, SV.SOURCE_FOLDER, 'whole folder')));
     }
 
-    // 2. Stray @simplevoip.com elsewhere.
+    // 2. Stray SimpleVoIP mail elsewhere — both domains, plus the subject
+    // match that catches Jay's replies from an internal address.
     const { scan, skipped } = SV.foldersToScan(folders,
       { targetId: target.id, sourceId: source && source.id, includeArchive });
+    const seen = new Set(plan.map(m => m.id));
     const searched = [];
     for (const f of scan) {
-      let hits = [];
-      try {
-        hits = await graphFetchAllPages(`${base}/mailFolders/${f.id}`
-          + '/messages?$select=id,subject,from,receivedDateTime&$top=100'
-          + '&$search=' + encodeURIComponent(`"from:${SV.DOMAIN}"`), token);
-      } catch (e) {
-        searched.push({ folder: f.displayName, error: e.message });
-        continue;
+      const row = { folder: f.displayName, found: 0, discarded: 0 };
+      for (const term of SV.searchTerms()) {
+        let hits = [];
+        try {
+          hits = await graphFetchAllPages(`${base}/mailFolders/${f.id}`
+            + '/messages?$select=id,subject,from,receivedDateTime&$top=100'
+            + '&$search=' + encodeURIComponent(term), token);
+        } catch (e) {
+          row.errors = (row.errors || []).concat(`${term}: ${e.message}`);
+          continue;
+        }
+        const { kept, discarded } = SV.keepRealHits(hits);
+        row.discarded += discarded.length;
+        // The three searches overlap — a ticket from support@simplevoip.us
+        // also says SimpleVoIP in its subject — so dedupe by message id. A
+        // message counted twice would be moved twice and reported as two.
+        for (const { message, why } of kept) {
+          if (seen.has(message.id)) continue;
+          seen.add(message.id);
+          row.found++;
+          plan.push(SV.planRow(message, f.displayName, why));
+        }
       }
-      const { kept, discarded } = SV.keepRealHits(hits);
-      if (kept.length || discarded.length) {
-        searched.push({ folder: f.displayName, found: kept.length, discardedAsLookalike: discarded.length });
-      }
-      kept.forEach(m => plan.push(SV.planRow(m, f.displayName, `sender ${SV.DOMAIN}`)));
+      if (row.found || row.discarded || row.errors) searched.push(row);
     }
 
     const summary = SV.summarize(plan);
+    summary.byReason = SV.summarizeReasons(plan);
     const report = {
       ok: true, dryRun: !write, includeArchive,
       target: { folder: SV.TARGET_FOLDER, messagesBefore: target.totalItemCount || 0 },
       source: source ? { folder: SV.SOURCE_FOLDER, messages: source.totalItemCount || 0 } : null,
       skippedFolders: skipped,
-      searched: searched.filter(x => x.error || x.found),
+      searched,
       summary,
     };
 

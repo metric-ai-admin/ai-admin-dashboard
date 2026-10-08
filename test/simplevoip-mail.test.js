@@ -92,7 +92,7 @@ t('ordinary folders ARE searched', () => {
 });
 
 // ---- the search is re-checked -------------------------------------------
-t("Graph's relevance search is filtered down to exact senders", () => {
+t("Graph's relevance search is filtered down to real matches", () => {
   const { kept, discarded } = SV.keepRealHits([
     msg('noreply@simplevoip.com'),
     msg('someone@elsewhere.com'),                 // search matched the body, not the sender
@@ -100,7 +100,62 @@ t("Graph's relevance search is filtered down to exact senders", () => {
   ]);
   assert.strictEqual(kept.length, 1);
   assert.strictEqual(discarded.length, 2);
-  assert.strictEqual(SV.senderOf(kept[0]), 'noreply@simplevoip.com');
+  assert.strictEqual(SV.senderOf(kept[0].message), 'noreply@simplevoip.com');
+});
+
+// ---- the support ticket, which no single test catches on its own ---------
+t('support tickets come from .us, and that is not a typo', () => {
+  assert.ok(SV.isDomainSender('support@simplevoip.us'));
+  assert.ok(SV.isDomainSender('tickets@SimpleVoip.US'));
+  assert.ok(!SV.isDomainSender('support@simplevoip.us.example.net'), 'lookalike .us');
+});
+
+t("Jay's replies carry an INTERNAL address and are caught by subject", () => {
+  // The whole reason a subject rule exists: no sender test can see a reply
+  // sent from admin@metricpropertymanagement.com, and the ticket thread would
+  // end up split across two folders.
+  const jay = msg('admin@metricpropertymanagement.com',
+    { subject: 'Re: [SimpleVoIP Support] SV#66134 — call recording gap' });
+  assert.strictEqual(SV.isDomainSender(SV.senderOf(jay)), false);
+  assert.strictEqual(SV.matchReason(jay), 'subject says SimpleVoIP');
+});
+
+t('the subject test is case-insensitive and matches the bare word', () => {
+  ['[SimpleVoIP Support] SV#66134', 'simplevoip outage', 'RE: SIMPLEVOIP billing']
+    .forEach(sub => assert.ok(SV.isSubjectMatch(sub), sub));
+  // "Simple Voip" with a space is the old FOLDER name, not the product string
+  // the ticket system emits — it is not a subject match.
+  ['Simple Voip daily report', 'voip issues', ''].forEach(sub =>
+    assert.strictEqual(SV.isSubjectMatch(sub), false, 'unexpectedly matched: ' + sub));
+});
+
+t('the reason names which test caught a message, so a surprise is explainable', () => {
+  assert.strictEqual(SV.matchReason(msg('noreply@simplevoip.com')), 'sender simplevoip.com');
+  assert.strictEqual(SV.matchReason(msg('support@simplevoip.us')), 'sender simplevoip.us');
+  assert.strictEqual(SV.matchReason(msg('a@b.com', { subject: 'about SimpleVoIP' })), 'subject says SimpleVoIP');
+  assert.strictEqual(SV.matchReason(msg('a@b.com', { subject: 'unrelated' })), null);
+});
+
+t('a sender match wins over the subject, so the reason is the stronger one', () => {
+  assert.strictEqual(
+    SV.matchReason(msg('support@simplevoip.us', { subject: '[SimpleVoIP Support] SV#66134' })),
+    'sender simplevoip.us');
+});
+
+t('the three searches are issued separately, and all three are re-checked', () => {
+  assert.deepStrictEqual(SV.searchTerms(),
+    ['"from:@simplevoip.com"', '"from:@simplevoip.us"', '"subject:SimpleVoIP"']);
+});
+
+t('summarizeReasons counts how each message was caught', () => {
+  const plan = [
+    { why: 'sender simplevoip.com' },
+    { why: 'sender simplevoip.us' },
+    { why: 'subject says SimpleVoIP' },
+    { why: 'subject says SimpleVoIP' },
+  ];
+  assert.deepStrictEqual(SV.summarizeReasons(plan),
+    { 'sender simplevoip.com': 1, 'sender simplevoip.us': 1, 'subject says SimpleVoIP': 2 });
 });
 
 t('an empty search result is not an error', () => {
@@ -147,12 +202,26 @@ t('it moves and never deletes', () => {
   assert.ok(!/method: 'DELETE'/.test(route), 'the route can delete mail');
 });
 
-t('all three SimpleVoIP rules now file to Simple VOIP, none to Archive', () => {
+t('every SimpleVoIP rule files to Simple VOIP, none to Archive', () => {
   const rules = CODE.split('\n').filter(l => /displayName:.*SimpleVoip|displayName:.*SimpleVoIP/.test(l));
-  assert.strictEqual(rules.length, 3, 'expected 3 SimpleVoIP rules, found ' + rules.length);
+  assert.strictEqual(rules.length, 5, 'expected 5 SimpleVoIP rules, found ' + rules.length);
   rules.forEach(r => {
     assert.ok(/folder: 'Simple VOIP'/.test(r), 'still filing elsewhere: ' + r.trim().slice(0, 80));
   });
+});
+
+t('there is a .us sender rule and a subject-only rule', () => {
+  assert.ok(/senderContains: \['@simplevoip\.us'\]/.test(CODE), 'no .us rule');
+  assert.ok(/subjectContains: \['\[SimpleVoIP Support\]', 'SimpleVoIP'\]/.test(CODE), 'no subject rule');
+});
+
+t('the subject rule carries NO sender condition — Graph ANDs them', () => {
+  // With a sender condition attached it could never fire for the internal
+  // replies it exists to catch, and would look correct in a code review.
+  const i = CODE.indexOf('SimpleVoIP subject -> Simple VOIP');
+  assert.ok(i > 0);
+  const block = CODE.slice(i, i + 220);
+  assert.ok(!/senderContains/.test(block), 'the subject rule is ANDed with a sender and can never fire');
 });
 
 t('the catch-all is pinned to the domain, not a bare substring', () => {
