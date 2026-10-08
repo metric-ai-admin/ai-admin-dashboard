@@ -394,7 +394,11 @@ t('a board that someone opened stops claiming nobody did', () => {
 t('it runs hourly through the working day, in Central time', () => {
   assert.ok(/cron\.schedule\('0 7-19 \* \* \*'/.test(server));
   const at = server.indexOf("cron.schedule('0 7-19 * * *'");
-  assert.ok(/timezone: LYNDSAY_TIMEZONE/.test(server.slice(at, at + 700)),
+  // Bounded by the END of the registration, not by a byte count: the callback
+  // grows as steps are added to the loop, and a fixed window silently stops
+  // covering the line it was written to check.
+  const block = server.slice(at, server.indexOf('}, { timezone', at) + 40);
+  assert.ok(/timezone: LYNDSAY_TIMEZONE/.test(block),
     'on UTC this would run 02:00-14:00 CT, which is the wrong half of the day');
 });
 

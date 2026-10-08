@@ -8382,6 +8382,79 @@ app.post('/api/maintenance/probe-wo-window', requireMetricAdmin, async (req, res
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// Backfill the work orders that closed between two syncs.
+//
+// Dry run by default, like the reconciliation: {"write":true} to apply. Admin
+// only, and it ONLY INSERTS — an existing row is never touched, so nothing a
+// person or the reconciliation has settled can be overwritten by a feed.
+//
+// The Command Center does not grow new cards from this. Its work-order slot is
+// fed by the RESPONSE of /api/maintenance/sync, which returns open rows only
+// and does not read this table; and ccGenerate skips completed and cancelled
+// work orders for every actionable category. The dry run reports both counts
+// so that stays checkable rather than remembered.
+const woBackfill = require('./lib/wo-backfill.js');
+
+app.post('/api/maintenance/work-orders/backfill', requireAuth, requireMetricAdmin, async (req, res) => {
+  if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
+  const write = !!(req.body && req.body.write === true);
+  try {
+    const af = require('./appfolio-reports.js');
+    const read = async id => {
+      const d = await af.readReportData(id);
+      return { rows: (d && d.rows) || [], fetchedAt: (d && d.fetchedAt) || null };
+    };
+    const completed = await read('wo_completed');
+    const canceled = await read('wo_canceled');
+    if (!completed.rows.length && !canceled.rows.length) {
+      return res.status(503).json({ ok: false, error: 'Both closure stores are empty — sync wo_completed and wo_canceled first.' });
+    }
+
+    const db = supabaseAdmin || supabasePublic;
+    const { data: existing, error } = await db.from('maintenance_work_orders')
+      .select('work_order_number').limit(50000);
+    if (error) throw new Error(error.message);
+    const have = new Set((existing || []).map(r => String(r.work_order_number).trim()));
+
+    const now = new Date().toISOString();
+    const { rows, summary } = woBackfill.plan(completed.rows, canceled.rows, have, now);
+
+    const out = {
+      ok: true, dryRun: !write,
+      stores: {
+        wo_completed: { rows: completed.rows.length, fetchedAt: completed.fetchedAt },
+        wo_canceled: { rows: canceled.rows.length, fetchedAt: canceled.fetchedAt },
+      },
+      onFile: have.size,
+      ...summary,
+      sample: rows.slice(0, 15).map(r => ({
+        work_order_number: r.work_order_number, property_name: r.property_name,
+        status: r.status, completed_on: r.completed_on, work_order_type: r.work_order_type,
+      })),
+    };
+    if (!write || !rows.length) return res.json(out);
+
+    // A copy of exactly what is about to be added, before it is added.
+    try {
+      await fsp.mkdir(DATA_DIR, { recursive: true });
+      const file = path.join(DATA_DIR, 'wo-backfill-' + now.replace(/[:.]/g, '') + '.json');
+      await fsp.writeFile(file, JSON.stringify({ at: now, inserting: rows }, null, 1), 'utf8');
+      out.backupPath = file;
+    } catch (e) { out.backupError = e.message; }
+
+    let wrote = 0;
+    for (let i = 0; i < rows.length; i += 500) {
+      // INSERT, never upsert. If a row has appeared since the read above, this
+      // fails loudly rather than quietly overwriting it.
+      const { error: e2 } = await db.from('maintenance_work_orders').insert(rows.slice(i, i + 500));
+      if (e2) throw new Error('after ' + wrote + ' rows: ' + e2.message);
+      wrote += Math.min(500, rows.length - i);
+    }
+    out.inserted = wrote;
+    res.json(out);
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.post('/api/maintenance/reconcile', requireMetricAdmin, async (req, res) => {
   try {
     const dryRun = !(req.body && req.body.write === true);
@@ -17439,6 +17512,15 @@ async function workOrderClosureLoop() {
   // write:true — this is the step that was missing. dryRun is the default on
   // the route, so it has to be asked for explicitly.
   const r = await callOwnRoute('/api/maintenance/reconcile', { write: true });
+  await sleep(500);
+  // And the work orders that closed between two syncs, which the
+  // reconciliation cannot help with: it only updates rows that exist, and
+  // these have none. Inserts only; a failure here must not cost the
+  // reconciliation that already succeeded.
+  try {
+    const bf = await callOwnRoute('/api/maintenance/work-orders/backfill', { write: true });
+    out.backfilled = bf.inserted || 0;
+  } catch (e) { out.backfillError = e.message; }
   out.closed = r.closed != null ? r.closed : r.toClose;
   out.reopened = r.reopened != null ? r.reopened : r.toReopen;
   out.unknown = r.unknown != null ? r.unknown : r.toUnknown;
@@ -17449,7 +17531,8 @@ cron.schedule('0 7-19 * * *', () => {
   if (!CRM_CONFIGURED) return;
   workOrderClosureLoop()
     .then(o => logLine(`[wo-loop] ${o.open} open, ${o.completed} completed, ${o.canceled} canceled — `
-      + `closed ${o.closed}, reopened ${o.reopened}, new unknown ${o.unknown}, unknown total ${o.stillUnknown}`))
+      + `closed ${o.closed}, reopened ${o.reopened}, new unknown ${o.unknown}, unknown total ${o.stillUnknown}`
+      + `, backfilled ${o.backfilled == null ? (o.backfillError || '?') : o.backfilled}`))
     // Logged through logLine, not console.error: a step that stops working
     // should be visible in the same place the other jobs report, or a silent
     // failure here puts the board back to never closing anything.

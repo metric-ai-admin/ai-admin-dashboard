@@ -335,4 +335,26 @@ t('every column workOrdersFrom reads is in the select', () => {
     assert.ok(sel.includes(col), 'workOrdersFrom reads r.' + col + ' but the select omits it');
   });
 });
+
+// ---- evictions, from the tenant custom fields tab ---------------------------
+t('evictions in process come from a NAME join, not a delinquency column', () => {
+  // evictionsInProcess is not on the delinquency sheet. It is the count of
+  // delinquent tenants carrying an Eviction Status in "tenant custom fields",
+  // joined by name — and the two sheets write the same person differently.
+  const src = fs.readFileSync(path.join(__dirname, "..", "lib", "kpi-compare.js"), "utf8");
+  assert.ok(/tenant custom fields/.test(src));
+  assert.ok(/evictionsInProcess = inProcess/.test(src));
+});
+
+t('the name join tolerates how the two sheets differ', () => {
+  assert.strictEqual(C.normName("Castilla, Dulce P."), C.normName("castilla,  dulce p"));
+  assert.strictEqual(C.normName("LAWLESS, Richard S."), C.normName("Lawless, Richard S"));
+  assert.notStrictEqual(C.normName("Smith, John"), C.normName("Smith, Jane"));
+});
+
+t('Need To Refile is the same queue as Need To File', () => {
+  // A stage spelled two ways would split one queue into two.
+  const src = fs.readFileSync(path.join(__dirname, "..", "lib", "kpi-compare.js"), "utf8");
+  assert.ok(/need to refile/i.test(src));
+});
 console.log(`\n${pass} passing`);
