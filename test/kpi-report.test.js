@@ -398,7 +398,7 @@ t('the report pages its reads, because .limit does not raise the ceiling', () =>
   // row sitting in the table. A cap that returns a plausible number is the
   // worst kind, because nothing looks wrong.
   const b = fs.readFileSync(path.join(__dirname, "..", "lib", "kpi-build.js"), "utf8");
-  assert.ok(/.range(from, from + PAGE - 1)/.test(b), "grab must page");
-  assert.ok(!/.select(cols).limit(/.test(b), "the bare limit is gone");
+  assert.ok(b.includes('.range(from, from + PAGE - 1)'), 'grab must page');
+  assert.ok(!b.includes('.select(cols).limit('), 'the bare limit is gone');
 });
 console.log(`\n${pass} passing`);
