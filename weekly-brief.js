@@ -57,16 +57,35 @@ const addDays = (isoDate, n) => {
   return d.toLocaleDateString('en-CA');
 };
 
-// Monday of the week containing `today`, and the Sunday that closes it.
+// The brief's weeks.
 //
-// PINNED TO MON_SUN BY NAME, and deliberately not following WEEK.DASHBOARD.
-// Phase 3 moved the rest of the dashboard to Sun-Sat on 2026-09-30; this is
-// the Monday Morning Brief, whose whole premise is the week a Monday opens.
-// Moving it would mean a "Monday brief" that starts on Sunday, and that is a
-// product decision, not a consequence of standardising week arithmetic.
+// SUN-SAT, FOLLOWING THE DASHBOARD (Lyndsay, 2026-10-09). It was pinned to
+// Mon-Sun on the reasoning that a "Monday brief" should open on a Monday —
+// which was a product decision, and she has now made the opposite one: the
+// brief has to line up with the KPI report and the Goal Board, and a digest
+// whose dates differ from the report it is read beside costs more than the
+// tidiness of a Monday start.
+//
+// TWO WEEKS, because the brief asks two different questions:
+//
+//   weekOf       the week IN PROGRESS. What is still to come — move-ins,
+//                move-outs and tours are all forward-looking, and a brief read
+//                on Monday is about the days ahead of it.
+//   priorWeekOf  the LAST COMPLETE week, which is the one the KPI report and
+//                the Goal Board publish. Anything retrospective belongs here,
+//                and it must be the same Sun-Sat span those two use or the
+//                numbers will not reconcile.
+//
+// Both come from lib/week.js in America/Chicago, so none of this file does its
+// own date arithmetic.
 const WEEK = require('./lib/week.js');
 function weekOf(today) {
-  return { start: WEEK.weekStartYMD(today, WEEK.MON_SUN), end: WEEK.weekEndYMD(today, WEEK.MON_SUN) };
+  return { start: WEEK.weekStartYMD(today, WEEK.DASHBOARD), end: WEEK.weekEndYMD(today, WEEK.DASHBOARD) };
+}
+// The same week the KPI report and the Goal Board call "last week".
+function priorWeekOf(today) {
+  const r = WEEK.lastCompleteWeekRange(today, WEEK.DASHBOARD);
+  return { start: r.from, end: r.to };
 }
 
 // Two properties are the same property if their names match once case and
@@ -93,6 +112,10 @@ const DEAD_SHOWING = /cancel|no show/i;
 function buildWeeklyBrief(src = {}, opts = {}) {
   const today = opts.today || new Date().toISOString().slice(0, 10);
   const { start, end } = weekOf(today);
+  // Carried in the output so a retrospective section has the right span ready
+  // and the brief can print the dates it is actually describing. No section
+  // looks backwards yet; see the note on priorWeekOf.
+  const prior = priorWeekOf(today);
   const horizon = addDays(today, opts.expiryDays == null ? 30 : opts.expiryDays);
   const isExcluded = opts.isExcludedProperty || (() => false);
   const keep = name => clean(name) && !isExcluded(name);
@@ -223,7 +246,8 @@ function buildWeeklyBrief(src = {}, opts = {}) {
     .sort((a, b) => a.date.localeCompare(b.date) || a.property.localeCompare(b.property));
 
   return {
-    week: { start, end, today },
+    week: { start, end, today, convention: WEEK.DASHBOARD.name },
+    priorWeek: { start: prior.start, end: prior.end },
     horizon: { end: horizon, days: opts.expiryDays == null ? 30 : opts.expiryDays },
     moveIns, moveOuts, tours, expirations,
     counts: {
@@ -233,4 +257,4 @@ function buildWeeklyBrief(src = {}, opts = {}) {
   };
 }
 
-module.exports = { buildWeeklyBrief, weekOf, addDays, firstPhone, DEAD_SHOWING };
+module.exports = { buildWeeklyBrief, weekOf, priorWeekOf, addDays, firstPhone, DEAD_SHOWING };

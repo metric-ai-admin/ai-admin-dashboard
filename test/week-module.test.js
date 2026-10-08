@@ -124,18 +124,32 @@ t('a surface on DASHBOARD now runs Sunday to Saturday', () => {
   assert.strictEqual(W.dowYMD(r.to), 6, 'the week does not close on a Saturday');
 });
 
-console.log('\ntwo things do NOT follow DASHBOARD, and each says so by name');
-t('the Monday Morning Brief stays Mon-Sun', () => {
-  // A "Monday brief" that opens on Sunday is a product decision, not a
-  // consequence of standardising week arithmetic.
-  // Comments stripped: the note explaining the pin names DASHBOARD, and
-  // matching that would fail on the very text documenting it.
-  const brief = stripComments(read('weekly-brief.js'));
-  assert.ok(/WEEK\.MON_SUN/.test(brief), 'weekly-brief.js no longer pins its convention by name');
-  assert.ok(!/WEEK\.DASHBOARD/.test(brief), 'the Monday brief follows DASHBOARD and has moved to Sunday');
-  assert.deepStrictEqual(require('../weekly-brief.js').weekOf('2026-09-30'),
-    { start: '2026-09-28', end: '2026-10-04' });
+console.log('\nthe Monday Morning Brief now follows DASHBOARD too');
+// The Mon-Sun pin came out on 2026-10-09 by Lyndsay's decision: the brief has
+// to carry the same dates as the KPI report and the Goal Board. The old test
+// asserted the opposite and is deleted rather than edited — a test rewritten to
+// match whatever the code does was never holding anything up.
+//
+// Comments are stripped before matching: the note explaining the convention
+// names both constants, and matching on prose would pass on the documentation.
+const brief = stripComments(read('weekly-brief.js'));
+t('it asks for DASHBOARD and no longer names MON_SUN', () => {
+  assert.ok(/WEEK\.DASHBOARD/.test(brief), 'the brief does not follow DASHBOARD');
+  assert.ok(!/WEEK\.MON_SUN/.test(brief), 'the brief is still pinned to Mon-Sun');
 });
+t('the week in progress runs Sunday to Saturday', () => {
+  assert.deepStrictEqual(require('../weekly-brief.js').weekOf('2026-09-30'),
+    { start: '2026-09-27', end: '2026-10-03' });
+});
+t('the backward-looking week is the one the KPI report publishes', () => {
+  // They must be the same span, or a figure in the brief will not reconcile
+  // with the report it is read beside.
+  const B = require('../weekly-brief.js');
+  assert.deepStrictEqual(B.priorWeekOf('2026-10-09'), { start: '2026-09-27', end: '2026-10-03' });
+  assert.strictEqual(B.priorWeekOf('2026-10-09').end, W.leasingLastCompleteWeekEnding('2026-10-09'));
+});
+
+console.log('\none thing still does NOT follow DASHBOARD, and says so by name');
 t('leasing stays Sun-Sat by name, not by coincidence', () => {
   // It reads the same as DASHBOARD today, which is exactly why it must be asked
   // for explicitly: a future flip must not drag rows keyed on a Saturday.

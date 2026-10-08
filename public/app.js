@@ -11265,8 +11265,12 @@ document.getElementById('sync-all-btn')?.addEventListener('click', async () => {
 // MONDAY MORNING BRIEF (Bekah, Module 3)
 // =====================================================================
 // Four collapsible sections over already-synced data. Read-only. Works any
-// day of the week — the header names the Mon–Sun window it is showing, so a
+// day of the week — the header names the SUN–SAT window it is showing, so a
 // Thursday reader is never left guessing which week they are looking at.
+//
+// Sun–Sat since 2026-10-09: the brief has to carry the same dates as the KPI
+// report and the Goal Board. The server sends week.convention, so the header
+// says which one it is rather than this file asserting it.
 
 let mbData = null;
 
@@ -11345,7 +11349,9 @@ function renderBrief() {
   const freshest = [syncedAt?.tickler, syncedAt?.vacancy, syncedAt?.rentRoll].filter(Boolean).sort().pop();
 
   document.getElementById('mb-sub').innerHTML =
-    `Week of ${mbEsc(mbDay(week.start))} — ${mbEsc(mbDay(week.end))} · data as of ${mbEsc(mbWhen(freshest))}`;
+    `Week of ${mbEsc(mbDay(week.start))} — ${mbEsc(mbDay(week.end))}`
+    + (week.convention ? ` (${mbEsc(week.convention)})` : '')
+    + ` · data as of ${mbEsc(mbWhen(freshest))}`;
 
   const prop = r => mbEsc(r.property) + (r.unit ? ` <span class="muted">${mbEsc(r.unit)}</span>` : '');
 

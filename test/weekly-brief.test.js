@@ -1,28 +1,55 @@
 // Monday Morning Brief — rules that decide what lands in the digest.
 // Fixtures mirror the live shapes captured on 2026-09-23.
 const assert = require('assert');
-const { buildWeeklyBrief, weekOf, firstPhone } = require('../weekly-brief.js');
+const { buildWeeklyBrief, weekOf, priorWeekOf, firstPhone } = require('../weekly-brief.js');
 
 let pass = 0;
 const t = (name, fn) => { fn(); pass++; console.log('  ok  ' + name); };
 
-// Wednesday of the week 2026-09-21 (Mon) .. 2026-09-27 (Sun).
+// Wednesday of the week 2026-09-20 (Sun) .. 2026-09-26 (Sat).
 const TODAY = '2026-09-23';
 const excluded = n => /brazos|wolf ridge/i.test(n);
 const build = (src, opts) => buildWeeklyBrief(src, { today: TODAY, isExcludedProperty: excluded, ...opts });
 
-console.log('weekOf');
-t('Wednesday resolves to its Monday and Sunday', () => {
-  assert.deepStrictEqual(weekOf(TODAY), { start: '2026-09-21', end: '2026-09-27' });
+// SUN-SAT since 2026-10-09, by Lyndsay's decision: the brief has to carry the
+// same dates as the KPI report and the Goal Board. It was Mon-Sun before, on
+// the reasoning that a "Monday brief" should open on a Monday.
+console.log('weekOf — the week in progress');
+t('Wednesday resolves to its Sunday and Saturday', () => {
+  assert.deepStrictEqual(weekOf(TODAY), { start: '2026-09-20', end: '2026-09-26' });
 });
-t('Monday is its own week start', () => {
-  assert.strictEqual(weekOf('2026-09-21').start, '2026-09-21');
+t('Sunday is its own week start', () => {
+  assert.strictEqual(weekOf('2026-09-20').start, '2026-09-20');
 });
-t('Sunday belongs to the week that just ended, not the next one', () => {
-  assert.deepStrictEqual(weekOf('2026-09-27'), { start: '2026-09-21', end: '2026-09-27' });
+t('Saturday closes the week it is in', () => {
+  assert.deepStrictEqual(weekOf('2026-09-26'), { start: '2026-09-20', end: '2026-09-26' });
+});
+t('the next Sunday opens the next week, it does not close the last one', () => {
+  // The exact reversal from the Mon-Sun era, and the one that moves rows.
+  assert.deepStrictEqual(weekOf('2026-09-27'), { start: '2026-09-27', end: '2026-10-03' });
 });
 t('the week rolls at the month boundary', () => {
-  assert.deepStrictEqual(weekOf('2026-10-01'), { start: '2026-09-28', end: '2026-10-04' });
+  assert.deepStrictEqual(weekOf('2026-10-01'), { start: '2026-09-27', end: '2026-10-03' });
+});
+
+console.log('priorWeekOf — the week the KPI report publishes');
+t('it is the last COMPLETE Sun-Sat week, not the one in progress', () => {
+  assert.deepStrictEqual(priorWeekOf(TODAY), { start: '2026-09-13', end: '2026-09-19' });
+  assert.deepStrictEqual(priorWeekOf('2026-10-09'), { start: '2026-09-27', end: '2026-10-03' });
+});
+t('it matches what the Goal Board and the KPI report call last week', () => {
+  // If these ever diverge, a figure in the brief stops reconciling with the
+  // report it is read beside — which is the whole reason for this change.
+  const W = require('../lib/week.js');
+  ['2026-09-23', '2026-10-01', '2026-10-09'].forEach(d =>
+    assert.strictEqual(priorWeekOf(d).end, W.leasingLastCompleteWeekEnding(d), d));
+});
+t('the two weeks never overlap and sit back to back', () => {
+  ['2026-09-23', '2026-09-27', '2026-10-01'].forEach(d => {
+    const cur = weekOf(d), prev = priorWeekOf(d);
+    assert.ok(prev.end < cur.start, d + ': the prior week runs into the current one');
+    assert.strictEqual(require('../lib/week.js').addDaysYMD(prev.end, 1), cur.start, d);
+  });
 });
 
 console.log('phones');
@@ -36,12 +63,15 @@ t('no number yields empty, not "null"', () => {
 console.log('move-ins');
 const LH = [
   { property_name: 'Ascent at Northgate', tenant_name: 'Ojeda, Jesus', move_in_date: '2026-09-23', renewal: 'No', status: 'Pending' },
-  { property_name: 'Hyde Park Square', tenant_name: 'Reed, Ana', move_in_date: '2026-09-27', renewal: 'Yes', status: 'Completed' },
-  { property_name: 'Hyde Park Square', tenant_name: 'Old, Tenant', move_in_date: '2026-09-20', renewal: 'No', status: 'Completed' },
-  { property_name: 'Hyde Park Square', tenant_name: 'Next, Week', move_in_date: '2026-09-28', renewal: 'No', status: 'Pending' },
+  // Saturday closes the week, so this one is the last day IN.
+  { property_name: 'Hyde Park Square', tenant_name: 'Reed, Ana', move_in_date: '2026-09-26', renewal: 'Yes', status: 'Completed' },
+  // The Saturday before: one day outside, at the bottom end.
+  { property_name: 'Hyde Park Square', tenant_name: 'Before, Window', move_in_date: '2026-09-19', renewal: 'No', status: 'Completed' },
+  // The next Sunday OPENS the following week — out, and under Mon-Sun it was in.
+  { property_name: 'Hyde Park Square', tenant_name: 'Next, Week', move_in_date: '2026-09-27', renewal: 'No', status: 'Pending' },
   { property_name: 'Brazos Lofts', tenant_name: 'Excluded, Ed', move_in_date: '2026-09-23', renewal: 'No', status: 'Pending' },
 ];
-t('only Mon-Sun of the current week is included', () => {
+t('only the current Sun-Sat week is included, at both ends', () => {
   assert.deepStrictEqual(build({ leaseHistory: LH }).moveIns.map(r => r.tenant), ['Ojeda, Jesus', 'Reed, Ana']);
 });
 t('excluded properties are dropped', () => {
@@ -248,10 +278,33 @@ t('counts match the arrays', () => {
 t('no sources at all is an empty brief, not a crash', () => {
   const out = build({});
   assert.deepStrictEqual(out.counts, { moveIns: 0, moveOuts: 0, tours: 0, expirations: 0 });
-  assert.strictEqual(out.week.start, '2026-09-21');
+  assert.strictEqual(out.week.start, '2026-09-20');
 });
 t('the horizon end is 30 days out by default', () => {
   assert.deepStrictEqual(build({}).horizon, { end: '2026-10-23', days: 30 });
+});
+t('the brief reports BOTH weeks, so it can print the dates it describes', () => {
+  const out = build({});
+  assert.deepStrictEqual(out.week, { start: '2026-09-20', end: '2026-09-26', today: TODAY, convention: 'Sun–Sat' });
+  assert.deepStrictEqual(out.priorWeek, { start: '2026-09-13', end: '2026-09-19' });
+});
+t('the forward sections all read the week IN PROGRESS', () => {
+  // Move-ins, move-outs and tours are things still to come; the brief is read
+  // on a Monday about the days ahead of it.
+  const out = build({ leaseHistory: LH, tickler: TICK_OUT, showings: SHOW });
+  const inWeek = d => d >= out.week.start && d <= out.week.end;
+  out.moveIns.forEach(r => assert.ok(inWeek(r.date), 'move-in outside the week: ' + r.date));
+  out.moveOuts.forEach(r => assert.ok(inWeek(r.date), 'move-out outside the week: ' + r.date));
+  out.tours.forEach(r => assert.ok(inWeek(r.date), 'tour outside the week: ' + r.date));
+});
+t('no section silently reads the prior week instead', () => {
+  // If a retrospective section is added later it must use priorWeek on
+  // purpose. This catches one that drifts there by accident.
+  const out = build({ leaseHistory: LH, tickler: TICK_OUT, showings: SHOW });
+  const rows = out.moveIns.concat(out.moveOuts, out.tours);
+  assert.ok(rows.length > 0, 'nothing to check');
+  rows.forEach(r => assert.ok(r.date > out.priorWeek.end,
+    'a forward section picked up a row from the prior week: ' + r.date));
 });
 
 console.log(`\n${pass} passing`);

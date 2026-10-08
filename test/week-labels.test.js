@@ -73,15 +73,28 @@ t('a cached response from before the field falls back, it does not print blank',
     'an older cached payload would render "This week is X to Y ()"');
 });
 
-console.log('\nwhat is pinned stays pinned, and still says so');
-t('the Monday Morning Brief is still Mon–Sun, by name', () => {
-  // Its label is CORRECT as Mon–Sun, so this test exists to stop a blanket
-  // find-and-replace sweeping it into Sun–Sat along with the rest.
+console.log('\nthe Monday Morning Brief moved to Sun–Sat, and its label moved with it');
+// It was pinned to Mon–Sun, and this test asserted that pin. Lyndsay reversed
+// the decision on 2026-10-09 so the brief carries the same dates as the KPI
+// report and the Goal Board, and the old assertion is deleted rather than
+// inverted — what it was protecting no longer exists.
+t('the brief follows DASHBOARD and names no convention of its own', () => {
   const brief = code(read('weekly-brief.js'));
-  assert.ok(/WEEK\.MON_SUN/.test(brief), 'the brief no longer pins its convention');
-  assert.ok(!/WEEK\.DASHBOARD/.test(brief), 'the brief now follows DASHBOARD');
+  assert.ok(/WEEK\.DASHBOARD/.test(brief), 'the brief does not follow DASHBOARD');
+  assert.ok(!/WEEK\.MON_SUN/.test(brief), 'the brief is still pinned to Mon–Sun');
   assert.deepStrictEqual(require('../weekly-brief.js').weekOf('2026-10-01'),
-    { start: '2026-09-28', end: '2026-10-04' });
+    { start: '2026-09-27', end: '2026-10-03' });
+});
+t('its label is sent by the server, not typed in the browser', () => {
+  // Same rule as every other surface here: the name travels with the dates it
+  // describes, so a cached payload cannot print one week's dates under another
+  // week's label.
+  const brief = code(read('weekly-brief.js'));
+  assert.ok(/convention: WEEK\.DASHBOARD\.name/.test(brief),
+    'the brief does not send the convention it built the week with');
+  const app = code(read('public/app.js'));
+  assert.ok(/week\.convention \? ` \(\$\{mbEsc\(week\.convention\)\}\)` : ''/.test(app),
+    'the brief header does not print what the server sent, or does not fall back');
 });
 t('leasing still asks for SUN_SAT explicitly', () => {
   const i = server.indexOf('async function leasingWeeklyRollup(');

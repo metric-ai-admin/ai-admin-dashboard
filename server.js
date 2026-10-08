@@ -5596,8 +5596,10 @@ app.get('/api/regional/performance', requireAuth, requireRole(...DECISION_QUEUE_
 });
 
 // ---- Monday Morning Brief (Bekah's Module 3) ---------------------------------
-// Same audience again, and again no AppFolio calls: four already-synced sources,
-// filtered to the current Mon–Sun week. Works any day, not only Monday.
+// Same audience again, and again no AppFolio calls: four already-synced
+// sources, filtered to the current SUN–SAT week — the same convention the KPI
+// report and the Goal Board use, so the dates reconcile (Lyndsay,
+// 2026-10-09). Works any day, not only Monday.
 app.get('/api/regional/weekly-brief', requireAuth, requireRole(...DECISION_QUEUE_ROLES), async (req, res) => {
   try {
     const db = supabaseAdmin || supabasePublic;
