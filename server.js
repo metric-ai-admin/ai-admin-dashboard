@@ -15577,6 +15577,91 @@ app.post('/api/email/lyndsay/simplevoip-consolidate', requireAuth, requireRole('
   }
 });
 
+// GET /api/email/lyndsay/followable-scan?days=90 — MEASUREMENT ONLY.
+//
+// How much mail would be "followed" if evictions, writs and time-off requests
+// were followed automatically (Lyndsay, 2026-10-08). It counts; it writes
+// nothing, flags nothing, moves nothing and stores nothing.
+//
+// It exists because the failure mode of a keyword list is not that it misses
+// things. It is that it catches a legal newsletter every week, the list stops
+// being read, and the one that mattered is in it. So this reports PER TERM,
+// per folder and per sender, and the terms that do not earn their place get
+// dropped before anything is built on them.
+//
+// Subjects only, never bodies: the question is whether a narrow rule is good
+// enough, and a body match answers a different one.
+app.get('/api/email/lyndsay/followable-scan', requireAuth, requireRole('admin'), async (req, res) => {
+  if (!GRAPH_CONFIGURED) return res.status(503).json({ ok: false, error: 'Graph API not configured' });
+  const FS = require('./lib/followable-scan.js');
+  const SV = require('./lib/simplevoip-mail.js');
+  const days = Math.min(365, Math.max(1, Number(req.query.days) || 90));
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+
+  res.status(200).setHeader('Content-Type', 'application/json; charset=utf-8');
+  const keepAlive = setInterval(() => {
+    try { if (!res.writableEnded) res.write(' '); } catch { /* client gone */ }
+  }, 10000);
+  const finish = payload => {
+    clearInterval(keepAlive);
+    if (!res.writableEnded) res.end(JSON.stringify(payload));
+  };
+
+  try {
+    const token = await graphMailboxToken('lyndsay');
+    const base = graphMailboxBase('lyndsay');
+    const folders = await listMailFolders('lyndsay', token);
+
+    // Same folder policy as the SimpleVoIP sweep, and for the same reasons —
+    // except Sent Items, which IS read here: a time-off request Lyndsay
+    // answered, or an eviction she forwarded, is exactly the kind of thread
+    // "following" is about.
+    const skipped = [];
+    const scan = folders.filter(f => {
+      const name = FS.norm(f.displayName);
+      if (name === 'sent items') return true;
+      if (SV.PROTECTED.has(name)) { skipped.push(f.displayName); return false; }
+      if (!f.totalItemCount) return false;
+      return true;
+    });
+
+    let acc = null;
+    const perFolderErrors = [];
+    for (const f of scan) {
+      const dateField = FS.norm(f.displayName) === 'sent items' ? 'sentDateTime' : 'receivedDateTime';
+      try {
+        const msgs = await graphFetchAllPages(`${base}/mailFolders/${f.id}/messages`
+          + `?$filter=${dateField} ge ${since}`
+          + '&$select=id,subject,from,receivedDateTime,sentDateTime&$top=100', token);
+        acc = FS.tally(msgs, f.displayName, acc);
+      } catch (e) {
+        perFolderErrors.push({ folder: f.displayName, error: e.message });
+      }
+    }
+    acc = acc || FS.tally([], null, null);
+
+    // Sorted descending, because the only question anyone asks of this report
+    // is "which term is the loudest".
+    const top = obj => Object.entries(obj).sort((a, b) => b[1] - a[1])
+      .reduce((o, [k, v]) => { o[k] = v; return o; }, {});
+
+    return finish({
+      ok: true, measurementOnly: true, days, since,
+      note: 'Read-only. Nothing was flagged, moved or stored.',
+      foldersScanned: scan.length, foldersSkipped: skipped, perFolderErrors,
+      messagesScanned: acc.scanned,
+      byTopic: acc.byTopic,
+      byTopicInternalSendersOnly: acc.internalOnly,
+      byTerm: top(acc.byTerm),
+      byFolder: top(acc.byFolder),
+      bySender: top(acc.bySender),
+      samples: acc.samples,
+    });
+  } catch (err) {
+    return finish({ ok: false, error: err.message });
+  }
+});
+
 app.get('/api/email/lyndsay/message-rules', requireAuth, requireRole('admin'), async (req, res) => {
   try { res.json({ dryRun: true, rules: await ensureLyndsayMessageRules({ execute: false }) }); }
   catch (err) { res.status(500).json({ error: err.message }); }
