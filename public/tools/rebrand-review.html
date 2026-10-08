@@ -121,6 +121,20 @@ details.deep[open]{padding-bottom:14px}
 .said .score{color:var(--gold)}
 .said p{margin:6px 0 0;font-size:.95rem}
 .said b{font-family:var(--ui);font-size:.85rem}
+/* Read-only review (Lyndsay's link): every reviewer side by side.
+   auto-fit so three columns on a laptop collapse to one on a phone without a
+   second breakpoint to keep in sync. */
+.ro-grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:10px}
+.ro-col{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.ro-col .top{display:flex;justify-content:space-between;gap:10px;align-items:baseline;
+  font-family:var(--ui);font-weight:700;margin-bottom:8px}
+.ro-col .score{color:var(--gold);white-space:nowrap}
+.ro-col h5{font-family:var(--ui);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;
+  margin:12px 0 2px;opacity:.75}
+.ro-col p{margin:2px 0 0;font-size:.95rem}
+.ro-empty{opacity:.6;font-style:italic}
+.ro-note{font-size:.9rem;opacity:.8;margin:0 0 4px}
+.ro-rank li{margin:2px 0}
 
 /* Ideas, rankings, tally */
 .idea{border:1px solid var(--line);border-radius:12px;padding:18px;margin:14px 0;background:var(--card)}
@@ -626,7 +640,60 @@ function panelHTML(target,name,modeKind){
     <div class="others"></div>
   </div>`;
 }
+/* ---------- read-only view: everyone, side by side ----------
+   Lyndsay's link is read-only, and read-only used to mean "the editable page
+   with every control disabled". Nothing was ever selected in the "I'm ..."
+   picker -- she is not one of the reviewers, and the picker was disabled along
+   with everything else -- so the fields stayed hidden and the per-name panels
+   had nothing in them. She asked to see all three reviewers at once, which is
+   what this renders instead: not a disabled form, a document.
+
+   It reads the same `docs` keys the editable panel writes, so there is no
+   second source of truth to drift. */
+function roFields(modeKind){
+  const base=[["overall","Overall reaction"],["pros","Pros"],["cons","Cons / risks"]];
+  return modeKind==="full" ? base.concat([
+    ["feel","What it makes them think or feel"],
+    ["promise","What it promises an owner or investor"],
+    ["earn","What we would need to do to live up to it"],
+  ]) : base;
+}
+function roColumn(target,person,modeKind,brandName){
+  const d=docs[reviewPath(target,person)]||{};
+  const parts=[];
+  roFields(modeKind).forEach(([k,label])=>{
+    if(String(d[k]||"").trim()) parts.push(`<h5>${esc(label)}</h5><p>${nl2br(d[k])}</p>`);
+  });
+  /* The deeper questions are per reviewer, so the question text comes from
+     that person's own list. A stored answer whose question no longer exists is
+     still shown, labelled by number -- dropping it would hide an answer
+     somebody wrote. */
+  const qs=prompts[person]||[];
+  const deep=[];
+  Object.keys(d).filter(k=>/^q\d+$/.test(k)).sort((a,b)=>Number(a.slice(1))-Number(b.slice(1)))
+    .forEach(k=>{
+      if(!String(d[k]||"").trim()) return;
+      const i=Number(k.slice(1));
+      const q=qs[i]?qs[i].replace("[BRAND]",brandName):"Question "+(i+1);
+      deep.push(`<h5>${esc(q)}</h5><p>${nl2br(d[k])}</p>`);
+    });
+  const body=parts.concat(deep).join("");
+  return `<div class="ro-col">
+    <div class="top"><span>${esc(person)}</span><span class="score">${d.score?esc(d.score)+" / 10":"No score"}</span></div>
+    ${body||`<p class="ro-empty">No feedback on ${esc(brandName)} yet.</p>`}
+  </div>`;
+}
+function roPanelHTML(target,name,modeKind){
+  return `<div class="fb" data-target="${esc(target)}" data-name="${esc(name)}" data-mode="${esc(modeKind)}" data-readonly="1">
+    <h3>What the team said about ${esc(name)}</h3>
+    <div class="ro-grid">${people.map(p=>roColumn(target,p,modeKind,name)).join("")}</div>
+  </div>`;
+}
 function mountPanel(slot){
+  if(readOnly){
+    slot.innerHTML=roPanelHTML(slot.dataset.target,slot.dataset.name,slot.dataset.mode);
+    return;
+  }
   slot.innerHTML=panelHTML(slot.dataset.target,slot.dataset.name,slot.dataset.mode);
   const panel=slot.firstElementChild;
   panel.addEventListener("click",e=>{
@@ -784,6 +851,26 @@ function ranks(person){return((docs["rankings/"+slug(person)]||{}).ranks)||{}}
 let rankSig="";
 function renderRankingForms(force){
   const c=candidates();
+  if(readOnly){
+    /* A list, not a grid of disabled <select>s. Ordered by the rank each
+       reviewer gave, so the column reads top choice first -- which is the
+       question being asked -- instead of candidate order with the answer
+       buried in a dropdown. */
+    $("#rankingForms").innerHTML=`<div class="ro-grid">`+people.map(person=>{
+      const r=ranks(person);
+      const ranked=c.map(x=>({name:x.name,rank:Number(r[x.id])}))
+        .filter(x=>x.rank>0).sort((a,b)=>a.rank-b.rank);
+      const unranked=c.filter(x=>!(Number(r[x.id])>0));
+      return `<div class="ro-col">
+        <div class="top"><span>${esc(person)}</span></div>
+        ${ranked.length?`<ol class="ro-rank">`+ranked.map(x=>`<li>${esc(x.name)}</li>`).join("")+`</ol>`
+          :`<p class="ro-empty">Has not ranked yet.</p>`}
+        ${ranked.length&&unranked.length?`<p class="ro-note">Not ranked: ${unranked.map(x=>esc(x.name)).join(", ")}</p>`:""}
+      </div>`;
+    }).join("")+`</div>`;
+    rankSig="";
+    return;
+  }
   const sig=JSON.stringify(c.map(x=>x.id))+JSON.stringify(people.map(ranks));
   if(sig===rankSig&&!force) return; rankSig=sig;
   const box=$("#rankingForms");
@@ -844,6 +931,18 @@ function renderRollup(){
   $("#rollup").innerHTML=out;
 }
 function renderFinalForms(){
+  if(readOnly){
+    $("#finalForms").innerHTML=`<div class="ro-grid">`+people.map(p=>{
+      const d=docs["final/"+slug(p)]||{};
+      const body=finalQs.filter(([k])=>String(d[k]||"").trim())
+        .map(([k,q])=>`<h5>${esc(q)}</h5><p>${nl2br(d[k])}</p>`).join("");
+      return `<div class="ro-col">
+        <div class="top"><span>${esc(p)}</span></div>
+        ${body||`<p class="ro-empty">No final comparison yet.</p>`}
+      </div>`;
+    }).join("")+`</div>`;
+    return;
+  }
   $("#finalForms").innerHTML=people.map(p=>`
     <details class="person">
       <summary>${p}’s final comparison</summary>
@@ -856,8 +955,13 @@ function renderAll(){
   /* paintDeepSummary too: the panels are mounted before the server copy
      arrives, so without this the count is painted from an empty docs and every
      name reads "none answered yet" however much is stored. */
-  document.querySelectorAll(".fb").forEach(p=>{paintOthers(p);paintDone(p);paintScore(p);paintDeepSummary(p)});
-  fillInputs();
+  /* In read-only mode the panels are documents, not forms: there is no
+     picker to mark, no score buttons to press and no inputs to fill, and
+     every one of these would be a no-op or throw on a missing node. */
+  if(!readOnly){
+    document.querySelectorAll(".fb").forEach(p=>{paintOthers(p);paintDone(p);paintScore(p);paintDeepSummary(p)});
+    fillInputs();
+  }
 }
 
 /* ---------- buttons ---------- */
@@ -965,7 +1069,17 @@ function goLocal(){
     /* AFTER the server copy is in, so the server always wins where it has a
        value, and BEFORE the first render, so nothing recovered flashes in. */
     const recovered=mergeLocal();
-    ideasSig="";rankSig="";renderAll();
+    ideasSig="";rankSig="";
+    /* The panels were mounted at boot, before the server said whether this
+       link is read-only -- so they were built as editable forms. Remount them
+       now that the answer is in, or Lyndsay gets the editable shell with
+       nothing selected in it, which is the bug being fixed. renderFinalForms
+       is re-run for the same reason. */
+    if(readOnly){
+      document.querySelectorAll("section .fb-slot").forEach(mountPanel);
+      renderFinalForms();
+    }
+    renderAll();
     if(readOnly) applyReadOnly();
     refreshSync();
     const resave=mineToResave(recovered);

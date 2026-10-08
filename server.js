@@ -13747,6 +13747,20 @@ const REBRAND_PEOPLE = ['Kara', 'Bekah', 'Zach', 'Lyndsay', 'Test'];
 // works the same way as everyone else's.
 const REBRAND_READONLY = new Set(['Lyndsay']);
 
+// Links that no longer open. Zach's was revoked on 2026-10-08 at Lyndsay's
+// request: he cannot get back in, and nothing he wrote is touched.
+//
+// A SEPARATE SET, NOT A DELETION FROM REBRAND_PEOPLE, and the distinction is
+// the whole point. REBRAND_PEOPLE is what /api/rebrand/responses sends as the
+// column list for the dashboard tab — drop him from it and his answers, his
+// ranking and his two name ideas stop being shown, which is the one outcome
+// this was explicitly asked not to cause. His rows stay in rebrand_review,
+// the tab still renders his column, and only the door closes.
+//
+// Revocation happens in rebrandPersonFor, so it covers the page and every API
+// route at once rather than each caller having to remember.
+const REBRAND_REVOKED = new Set(['Zach']);
+
 // The test link, and why it needs more than a label.
 //
 // The page writes to "reviews/<brand>--<slug(person)>", and the person comes
@@ -13817,7 +13831,18 @@ function rebrandPersonFor(token) {
     const expected = rebrandToken(p);
     if (!expected) return null;
     const a = Buffer.from(expected), b = Buffer.from(t);
-    if (a.length === b.length && require('crypto').timingSafeEqual(a, b)) return p;
+    if (a.length === b.length && require('crypto').timingSafeEqual(a, b)) {
+      // A revoked token is not "forbidden", it is NOT FOUND — the same answer
+      // an invented token gets. Telling the holder of a dead link that it used
+      // to be real is information he no longer has any claim to, and a 403
+      // would invite him to ask why.
+      //
+      // Compared AFTER timingSafeEqual rather than by skipping him in the
+      // loop, so a revoked token costs exactly what a live one costs and the
+      // difference is not measurable from outside.
+      if (REBRAND_REVOKED.has(p)) return null;
+      return p;
+    }
   }
   return null;
 }
@@ -14018,12 +14043,19 @@ app.get('/api/rebrand/links', requireAuth, requireRole('admin'), (req, res) => {
   }
   const base = process.env.PUBLIC_URL || `https://${req.get('host')}`;
   res.json({
-    links: REBRAND_PEOPLE.map(p => ({
-      person: rebrandIsTest(p) ? 'Test (Arturo)' : p,
-      readOnly: REBRAND_READONLY.has(p),
-      isTest: rebrandIsTest(p),
-      url: `${base}/review/${rebrandToken(p)}`,
-    })),
+    links: REBRAND_PEOPLE.map(p => {
+      const revoked = REBRAND_REVOKED.has(p);
+      return {
+        person: rebrandIsTest(p) ? 'Test (Arturo)' : p,
+        readOnly: REBRAND_READONLY.has(p),
+        isTest: rebrandIsTest(p),
+        revoked,
+        // No URL for a revoked link. Printing one next to the word "revoked"
+        // is how a dead link gets copied into an email by somebody skimming,
+        // and it would be a working-looking URL that answers 404.
+        url: revoked ? null : `${base}/review/${rebrandToken(p)}`,
+      };
+    }),
   });
 });
 
