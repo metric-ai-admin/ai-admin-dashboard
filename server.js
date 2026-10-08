@@ -8403,6 +8403,18 @@ const woBackfill = require('./lib/wo-backfill.js');
 app.post('/api/maintenance/work-orders/backfill', requireMetricAdmin, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
   const write = !!(req.body && req.body.write === true);
+  // Render's proxy closes an idle request at ~60s and a thousand-row insert
+  // exceeds that — the first attempt came back as a 502 with the write half
+  // done for all anyone could tell. Held open with whitespace, which is still
+  // valid JSON ahead of the body, the same way /api/sync/all does it.
+  res.status(200).setHeader('Content-Type', 'application/json; charset=utf-8');
+  const keepAlive = setInterval(() => {
+    try { if (!res.writableEnded) res.write(' '); } catch { /* client gone */ }
+  }, 10000);
+  const finish = payload => {
+    clearInterval(keepAlive);
+    if (!res.writableEnded) res.end(JSON.stringify(payload));
+  };
   try {
     const af = require('./appfolio-reports.js');
     const read = async id => {
@@ -8412,7 +8424,7 @@ app.post('/api/maintenance/work-orders/backfill', requireMetricAdmin, async (req
     const completed = await read('wo_completed');
     const canceled = await read('wo_canceled');
     if (!completed.rows.length && !canceled.rows.length) {
-      return res.status(503).json({ ok: false, error: 'Both closure stores are empty — sync wo_completed and wo_canceled first.' });
+      return finish({ ok: false, error: 'Both closure stores are empty — sync wo_completed and wo_canceled first.' });
     }
 
     const db = supabaseAdmin || supabasePublic;
@@ -8437,7 +8449,7 @@ app.post('/api/maintenance/work-orders/backfill', requireMetricAdmin, async (req
         status: r.status, completed_on: r.completed_on, work_order_type: r.work_order_type,
       })),
     };
-    if (!write || !rows.length) return res.json(out);
+    if (!write || !rows.length) return finish(out);
 
     // A copy of exactly what is about to be added, before it is added.
     try {
@@ -8456,8 +8468,8 @@ app.post('/api/maintenance/work-orders/backfill', requireMetricAdmin, async (req
       wrote += Math.min(500, rows.length - i);
     }
     out.inserted = wrote;
-    res.json(out);
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+    finish(out);
+  } catch (err) { finish({ ok: false, error: err.message }); }
 });
 
 app.post('/api/maintenance/reconcile', requireMetricAdmin, async (req, res) => {
