@@ -111,6 +111,7 @@
         + 'Síguelos tal como están escritos y avísale a Erick si algo no coincide con lo que haces en la propiedad.',
       foot: 'Esta página es solo de lectura. Toca un procedimiento para abrirlo e imprimirlo.',
       untranslated: 'en inglés',
+      bilingual: 'inglés y español',
     },
     en: {
       h1: 'Maintenance SOPs',
@@ -124,6 +125,7 @@
         + 'Follow them as written, and tell Erick if something does not match what you do on site.',
       foot: 'This page is read only. Tap a procedure to open and print it.',
       untranslated: 'in English',
+      bilingual: 'English and Spanish',
     },
   };
 
@@ -163,7 +165,8 @@
         html += '<li><a class="sop" href="/sops/' + TOKEN + '/' + encodeURIComponent(s.slug) + '?lang=' + LANG + '">'
           + '<span class="title">' + esc(title)
           + (s.status && s.status !== 'Current' ? '<span class="flag">' + esc(t.flag) + '</span>' : '')
-          + (LANG === 'es' && !s.title_es ? '<span class="flag">' + esc(t.untranslated) + '</span>' : '')
+          + (LANG === 'es' && !s.title_es
+            ? '<span class="flag">' + esc(s.bilingual ? t.bilingual : t.untranslated) + '</span>' : '')
           + '</span>'
           + '<span class="meta">' + esc(s.updated || '') + '</span></a></li>';
       });

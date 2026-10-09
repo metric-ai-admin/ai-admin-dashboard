@@ -85,6 +85,63 @@ t('STALE SPANISH IS NEVER SHOWN — English, with a reason', () => {
   assert.strictEqual(v.fallback, 'outdated');
 });
 
+// ---- documents written in both languages ---------------------------------
+//
+// Five of the 33 were WRITTEN bilingual, English and Spanish side by side,
+// including the two longest. Three were translated anyway and came out as
+// clean Spanish-only documents, which is an improvement. The other two were
+// skipped, and a page telling their reader "not translated yet" would be wrong
+// in the way that matters: he is looking at a document that already has his
+// language in it.
+const BILINGUAL = {
+  title: 'Policy Vacant Unit Energy Conservation Política de Conservación de Energía en Unidades Vacantes',
+  body_md: 'Purpose / Propósito\n\nThis policy ensures that vacant or make-ready apartments are managed '
+    + 'in a way that conserves energy and reduces operating costs.\n\nEsta política garantiza que los '
+    + 'apartamentos vacantes o en preparación sean gestionados de una manera que conserve la energía, '
+    + 'reduzca los costos y mantenga la eficiencia de cada uno de los equipos del edificio para todas '
+    + 'las unidades, desde el primer día hasta que el residente entregue las llaves.',
+};
+
+t('a document written in both languages is BILINGUAL, not missing', () => {
+  assert.strictEqual(T.translationState(BILINGUAL), 'bilingual');
+  assert.strictEqual(T.isBilingualSource(BILINGUAL.title, BILINGUAL.body_md), true);
+});
+
+t('it is not queued for translation — that would double its Spanish', () => {
+  assert.strictEqual(T.needsTranslation(BILINGUAL), false);
+});
+
+t('an English-only SOP is never mistaken for bilingual', () => {
+  // The separation in the real library is absolute: five documents score 31 to
+  // 120 accented characters, the next scores 2, and the remaining 27 score
+  // zero. These are the shapes on the English side of that gap.
+  [
+    { title: 'Creating Key Tags', body_md: '# Purpose\nTag every key with the unit number before filing it.' },
+    { title: 'Equipment Warranty Management', body_md: 'Ensure all equipment over $500 is documented. File within 30 days.' },
+    // A stray accented word or a property name does not make it bilingual.
+    { title: 'Sunset Palms walkthrough', body_md: 'Check the patio and the piñata room. Jose signed off.' },
+  ].forEach(r => assert.strictEqual(T.isBilingualSource(r.title, r.body_md), false,
+    'wrongly called bilingual: ' + r.title));
+});
+
+t('the reader is told it is bilingual, not that it is waiting', () => {
+  const v = T.viewFor(BILINGUAL, 'es');
+  assert.strictEqual(v.lang, 'en');
+  assert.strictEqual(v.fallback, 'bilingual');
+});
+
+t('a real translation still wins over the bilingual guess', () => {
+  // Three of the five WERE translated. The stored Spanish is current, so it is
+  // shown — the heuristic only speaks when there is nothing stored.
+  const withEs = Object.assign({}, BILINGUAL, {
+    title_es: 'Política de Conservación de Energía',
+    body_es: '# Propósito\n\nEsta política garantiza...',
+  });
+  withEs.es_source_hash = T.sourceHash(withEs.title, withEs.body_md);
+  assert.strictEqual(T.translationState(withEs), 'ok');
+  assert.strictEqual(T.viewFor(withEs, 'es').lang, 'es');
+});
+
 t('an untranslated SOP falls back with a DIFFERENT reason', () => {
   // "not translated yet" and "out of date" read differently to somebody
   // standing in a plant room.
@@ -245,9 +302,26 @@ t('the needs-review label survives in both languages', () => {
   assert.ok(/falta revisar/.test(DOC) && /needs review/.test(DOC));
 });
 
-t('the fallback says WHICH of the two reasons it was', () => {
+t('the fallback says WHICH of the three reasons it was', () => {
   assert.ok(/todavía no está traducido/.test(DOC), 'no "not translated yet" message');
   assert.ok(/El texto en inglés cambió después de la traducción/.test(DOC), 'no "out of date" message');
+  assert.ok(/Documento en inglés y español/.test(DOC), 'no "written in both languages" message');
+  assert.ok(/translationState === 'bilingual'/.test(DOC), 'the page never checks for the bilingual state');
+});
+
+t('the index labels a bilingual SOP as such, not as untranslated', () => {
+  assert.ok(/bilingual: 'inglés y español'/.test(IDX));
+  assert.ok(/s\.bilingual \? t\.bilingual : t\.untranslated/.test(IDX),
+    'the index shows "en inglés" for a document that already has Spanish in it');
+});
+
+t('the index reads the body to decide, and never sends it', () => {
+  const lib = fs.readFileSync(path.join(__dirname, '..', 'lib', 'sop-public.js'), 'utf8');
+  assert.ok(/LIST_COLUMNS = '[^']*body_md'/.test(lib), 'the index cannot tell bilingual from untranslated');
+  assert.ok(/T\.isBilingualSource\(r\.title, r\.body_md\)/.test(lib));
+  // groupForIndex builds a new object per SOP, so the body cannot ride along.
+  const g = SOPP.groupForIndex([{ slug: 'x', title: 'X', category: 'M', body_md: 'SECRET' }]);
+  assert.ok(!JSON.stringify(g).includes('SECRET'), 'the body leaked into the index payload');
 });
 
 t('an English reader gets no translation notice', () => {

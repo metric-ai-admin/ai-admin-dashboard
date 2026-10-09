@@ -106,6 +106,8 @@
       machine: 'Traducción automática. Si algo no se entiende o no coincide con lo que haces '
         + 'en la propiedad, avísale a Erick.',
       notTranslated: 'Este procedimiento todavía no está traducido. Se muestra en inglés.',
+      // Written in both languages already, so there is nothing to wait for.
+      bilingual: 'Documento en inglés y español. El texto original ya incluye las dos versiones.',
       outdated: 'El texto en inglés cambió después de la traducción, así que se muestra el '
         + 'original en inglés. La traducción se va a regenerar.',
       missing: 'No se encontró',
@@ -123,6 +125,7 @@
       machine: '',
       notTranslated: '',
       outdated: '',
+      bilingual: 'This document is written in English and Spanish.',
       missing: 'Not found',
       gone: 'That procedure is not available. Go back and pick it from the list.',
       empty: 'This procedure has no written steps yet.',
@@ -219,6 +222,7 @@
     var msg = '';
     if (LANG === 'es') {
       if (useEs) msg = t.machine;
+      else if (DATA.translationState === 'bilingual') msg = t.bilingual;
       else if (DATA.translationState === 'missing') msg = t.notTranslated;
       else msg = t.outdated;
     }
