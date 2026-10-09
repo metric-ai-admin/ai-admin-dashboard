@@ -55,6 +55,17 @@ const ALLOWED = new Map([
   ['GET /api/review/:token/docs',  'public review page; per-person token, 404 otherwise'],
   ['PUT /api/review/:token/docs',  'public review page; per-person token, 404 otherwise'],
   ['DELETE /api/review/:token/docs', 'public review page; per-person token, 404 otherwise'],
+  // Public SOP links for the maintenance technicians. Public ON PURPOSE: they
+  // have no dashboard account and are not getting one. Guarded by one GROUP
+  // token checked by sopPubGuard() on every one of these — HMAC over
+  // "maintenance-techs", compared with timingSafeEqual, rate limited, and
+  // answering 404 rather than 401. All four are reads, and the department,
+  // status and archived filters are fixed in lib/sop-public.js with no
+  // parameter a visitor can set.
+  ['GET /sops/:token',                  'public SOP index; group token, 404 otherwise'],
+  ['GET /sops/:token/:slug',            'public SOP page; group token, 404 otherwise'],
+  ['GET /api/sops/public/:token',       'public SOP index data; group token, 404 otherwise'],
+  ['GET /api/sops/public/:token/:slug', 'public SOP data; group token, 404 otherwise'],
   ['POST /api/triage/log-session', 'retired 2026-10-05; answers 410 and touches nothing'],
   ['POST /api/lyndsay/import',     'retired 2026-10-05; answers 410 and touches nothing'],
   ['GET /health',                 'liveness; reports no data and is the anti-hibernation ping'],

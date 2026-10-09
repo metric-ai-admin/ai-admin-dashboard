@@ -13814,6 +13814,114 @@ app.get('/api/activity/day', requireAuth, requireRole(...ACTIVITY_ROLES), async 
 });
 
 // =====================================================================
+// PUBLIC SOP LINKS — maintenance technicians, read only, no login
+// =====================================================================
+// The technicians have no dashboard account. One group token
+// (SOP_PUBLIC_SECRET, HMAC'd over "maintenance-techs") opens an index and one
+// page per SOP, built to be printed and stuck on the workshop wall.
+//
+// NOTHING ELSE IS REACHABLE FROM IT. Its own HTML, no app.js, no navigation,
+// no session, and a query whose department, status and archived filters are
+// fixed in lib/sop-public.js with no parameter a visitor can set.
+//
+// A wrong token is a 404, the same as the Rebrand review: a 401 confirms the
+// URL shape was right and invites a second attempt.
+const SOPP = require('./lib/sop-public.js');
+const SOP_PUBLIC_SECRET = process.env.SOP_PUBLIC_SECRET || '';
+
+const sopPubHits = new Map();
+function sopPubRateLimited(key) {
+  const now = Date.now(), windowMs = 60000, max = 120;
+  const hits = (sopPubHits.get(key) || []).filter(t => now - t < windowMs);
+  hits.push(now);
+  sopPubHits.set(key, hits);
+  if (sopPubHits.size > 500) {
+    for (const [k, v] of sopPubHits) if (!v.length || now - v[v.length - 1] > windowMs) sopPubHits.delete(k);
+  }
+  return hits.length > max;
+}
+
+// 404 for everything that is not a good token, and the headers that keep these
+// pages out of search engines and browser caches — a shared link in the cache
+// of a borrowed phone is the likeliest way this leaks.
+function sopPubGuard(req, res) {
+  if (sopPubRateLimited(String(req.ip || '-'))) { res.status(429).send('Too many requests'); return false; }
+  if (!SOPP.isValidToken(req.params.token, SOP_PUBLIC_SECRET)) { res.status(404).send('Not found'); return false; }
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  return true;
+}
+
+function sopPubPage(res, file, replacements) {
+  const fs2 = require('fs');
+  fs2.readFile(path.join(__dirname, 'public', 'tools', file), 'utf8', (err, html) => {
+    if (err) return res.status(404).send('Not found');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    let out = html;
+    Object.entries(replacements || {}).forEach(([k, v]) => { out = out.split(k).join(v); });
+    res.send(out);
+  });
+}
+
+app.get('/sops/:token', (req, res) => {
+  if (!sopPubGuard(req, res)) return;
+  sopPubPage(res, 'sop-public-index.html', { __SOP_TOKEN__: encodeURIComponent(req.params.token) });
+});
+
+app.get('/sops/:token/:slug', (req, res) => {
+  if (!sopPubGuard(req, res)) return;
+  if (!SOPP.isSlug(req.params.slug)) return res.status(404).send('Not found');
+  sopPubPage(res, 'sop-public-doc.html', {
+    __SOP_TOKEN__: encodeURIComponent(req.params.token),
+    __SOP_SLUG__: encodeURIComponent(req.params.slug),
+  });
+});
+
+// The data behind those two pages. Same guard, same fixed scope.
+app.get('/api/sops/public/:token', async (req, res) => {
+  if (!sopPubGuard(req, res)) return;
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { selectAll } = require('./lib/db-page.js');
+    const rows = await selectAll(() => SOPP.scope(db.from('sop_documents').select(SOPP.LIST_COLUMNS)),
+      { label: 'public sops' });
+    res.json({ department: SOPP.DEPARTMENT, categories: SOPP.groupForIndex(rows), count: rows.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/sops/public/:token/:slug', async (req, res) => {
+  if (!sopPubGuard(req, res)) return;
+  if (!SOPP.isSlug(req.params.slug)) return res.status(404).json({ error: 'Not found' });
+  if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Not configured' });
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    // The slug is filtered INSIDE the same scope, so a Maintenance-looking
+    // slug cannot be used to fetch an Accounting document.
+    const { data, error } = await SOPP.scope(
+      db.from('sop_documents').select(SOPP.DOC_COLUMNS).eq('slug', req.params.slug)).limit(1);
+    if (error) throw new Error(error.message);
+    const doc = (data || [])[0];
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    res.json({ sop: doc });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Admin only: the link to send the technicians, read off the running service
+// rather than rebuilt by hand from the secret.
+app.get('/api/sops/public-link', requireAuth, requireRole('admin'), (req, res) => {
+  if (!SOP_PUBLIC_SECRET) return res.status(503).json({ error: 'SOP_PUBLIC_SECRET is not set' });
+  const base = process.env.PUBLIC_URL || `https://${req.get('host')}`;
+  res.json({
+    group: SOPP.GROUP,
+    department: SOPP.DEPARTMENT,
+    publishedStatuses: SOPP.PUBLISHED_STATUSES,
+    url: `${base}/sops/${SOPP.token(SOP_PUBLIC_SECRET)}`,
+  });
+});
+
+// =====================================================================
 // REBRAND LEADERSHIP REVIEW — a public page behind a per-person token
 // =====================================================================
 // Kara, Bekah and Zach fill this in; Zach has no dashboard account and never
