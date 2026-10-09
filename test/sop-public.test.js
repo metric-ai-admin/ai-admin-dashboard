@@ -84,17 +84,33 @@ t('THE STATUS LIST IS MEASURED, NOT ASSUMED', () => {
   assert.ok(!S.PUBLISHED_STATUSES.includes('Archived'));
 });
 
-t('only the columns the page renders are ever selected', () => {
+t('only what the page renders ever reaches it', () => {
   const list = S.LIST_COLUMNS.split(',');
   const doc = S.DOC_COLUMNS.split(',');
-  assert.ok(!list.includes('body_md'), 'the index should not pull every document body');
   assert.ok(doc.includes('body_md'));
-  // Internal columns must not leave the server.
+  // Internal columns must not leave the server at all.
   ['content_hash', 'source_path', 'legacy_sop_review_id', 'updated_by', 'author', 'owner']
     .forEach(c => {
       assert.ok(!list.includes(c), 'index leaks ' + c);
       assert.ok(!doc.includes(c), 'document leaks ' + c);
     });
+});
+
+t('the index READS the bodies but never SENDS them', () => {
+  // It needs body_md to tell a bilingual original from an untranslated one,
+  // and shipping 130 KB of SOP text to render a list of titles would be a
+  // worse trade for a phone on bad signal. groupForIndex builds a new object
+  // per SOP, so the body cannot ride along — this asserts that directly rather
+  // than trusting the column list, which is what actually changed.
+  assert.ok(S.LIST_COLUMNS.split(',').includes('body_md'),
+    'the index cannot tell bilingual from untranslated without the body');
+  const out = S.groupForIndex([
+    { slug: 'x', title: 'X', category: 'Maintenance', body_md: 'SENTINEL-BODY-TEXT' },
+  ]);
+  assert.ok(!JSON.stringify(out).includes('SENTINEL-BODY-TEXT'),
+    'a SOP body leaked into the index payload');
+  assert.deepStrictEqual(Object.keys(out[0].sops[0]).sort(),
+    ['bilingual', 'reviewed', 'slug', 'status', 'title', 'title_es', 'updated']);
 });
 
 // ---- the index -----------------------------------------------------------
