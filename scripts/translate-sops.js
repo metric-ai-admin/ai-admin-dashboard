@@ -23,6 +23,15 @@ const SOPP = require('../lib/sop-public.js');
 const WRITE = process.argv.includes('--write');
 const FORCE = process.argv.includes('--force');
 const ONLY = (() => { const i = process.argv.indexOf('--only'); return i > 0 ? process.argv[i + 1] : null; })();
+// Comma-separated slugs to leave alone. Two of the Maintenance SOPs are
+// already written in BOTH languages, side by side ("Purpose / Proposito ...
+// This policy ensures ... Esta politica garantiza ..."), so translating them
+// would produce a Spanish version of a document that is already half Spanish.
+// What to do with those is a content decision, not a translation one.
+const SKIP = (() => {
+  const i = process.argv.indexOf('--skip');
+  return i > 0 ? String(process.argv[i + 1] || '').split(',').map(x => x.trim()).filter(Boolean) : [];
+})();
 const MODEL = process.env.SOP_TRANSLATE_MODEL || 'claude-sonnet-4-6';
 
 const db = createClient(process.env.SUPABASE_URL,
@@ -70,6 +79,11 @@ const fmtCost = c => c == null ? 'unknown' : '$' + c.toFixed(4);
   }
   let rows = data || [];
   if (ONLY) rows = rows.filter(r => r.slug === ONLY);
+  if (SKIP.length) {
+    const before = rows.length;
+    rows = rows.filter(r => !SKIP.includes(r.slug));
+    console.log('skipping ' + (before - rows.length) + ' of ' + SKIP.length + ' named slug(s)');
+  }
 
   const todo = rows.filter(r => FORCE || T.needsTranslation(r));
   const byState = {};
