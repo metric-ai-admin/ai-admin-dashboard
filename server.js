@@ -13924,7 +13924,11 @@ app.get('/api/sop-public/:token/:slug', async (req, res) => {
     if (error) throw new Error(error.message);
     const doc = (data || [])[0];
     if (!doc) return res.status(404).json({ error: 'Not found' });
-    res.json({ sop: doc });
+    // Both languages and the staleness verdict, decided here. The page renders
+    // what it is given; it never works out whether a translation is current,
+    // and it never triggers one — a GET that can call a paid API is a GET
+    // anybody can bill us with.
+    res.json({ sop: SOPP.docPayload(doc) });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

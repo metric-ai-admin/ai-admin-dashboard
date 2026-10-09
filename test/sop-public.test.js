@@ -210,8 +210,13 @@ t('both pages parse', () => {
 });
 
 t('both escape everything they render', () => {
-  assert.ok(/function esc|var esc = function/.test(IDX) && /esc\(s\.title\)/.test(IDX));
-  assert.ok(/esc\(s\.title/.test(DOC));
+  // The index renders `title`, a local holding either the Spanish or the
+  // English one; the document renders doc.title the same way.
+  assert.ok(/var esc = function/.test(IDX) && /esc\(title\)/.test(IDX));
+  assert.ok(/var esc = function/.test(DOC) && /esc\(doc\.title/.test(DOC));
+  // And the category and the slug, which also come out of the database.
+  assert.ok(/esc\(group\.category\)/.test(IDX));
+  assert.ok(/encodeURIComponent\(s\.slug\)/.test(IDX));
 });
 
 t('THE MARKDOWN RENDERER ESCAPES BEFORE IT FORMATS', () => {
@@ -221,8 +226,13 @@ t('THE MARKDOWN RENDERER ESCAPES BEFORE IT FORMATS', () => {
   const sandbox = {};
   // From `var esc` through the end of md(): the renderer depends on esc, and
   // lifting md() alone would be testing a function that cannot run.
-  const src = m.slice(m.indexOf('var esc =')).replace(/\n\s*fetch\([\s\S]*$/, '');
-  new Function('S', src + '\nS.md = md;')(sandbox);
+  const src = m.slice(m.indexOf('var esc =')).replace(/\n\s*function chrome\(\)[\s\S]*$/, '');
+  // window and localStorage are stubbed because the slice now includes the
+  // language sniff. The output parameter is NOT called 'S': the page declares
+  // its own `var S` for the UI strings and would shadow it.
+  const win = { location: { search: '' } };
+  const store = { getItem: () => null, setItem: () => {} };
+  new Function('__OUT', 'window', 'localStorage', src + '\n__OUT.md = md;')(sandbox, win, store);
   const out = sandbox.md('# Hi <script>alert(1)</script>\n\n- **bold** and <img src=x onerror=1>\n');
   assert.ok(!/<script>/.test(out), 'a tag survived the renderer');
   assert.ok(!/<img/.test(out), 'an img tag survived the renderer');

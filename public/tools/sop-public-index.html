@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Maintenance SOPs — Metric Property Management</title>
+<title>Procedimientos de Mantenimiento — Metric Property Management</title>
 <style>
   :root{
     --ink:#15181d; --muted:#5d6570; --line:#dcdfe4; --bg:#fff; --card:#f7f8fa; --gold:#8a6d2f;
@@ -34,6 +34,12 @@
     vertical-align:middle}
   .note{background:var(--card);border-left:3px solid var(--gold);padding:11px 14px;margin:18px 0;
     font-size:.88rem;color:var(--muted);border-radius:0 6px 6px 0}
+  .langs{display:flex;gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;
+    align-self:flex-start}
+  .langs button{font:inherit;font-size:.82rem;padding:6px 14px;border:0;background:var(--bg);
+    color:var(--muted);cursor:pointer}
+  .langs button[aria-pressed="true"]{background:var(--ink);color:#fff;font-weight:600}
+  .head-row{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
   footer{margin-top:40px;padding-top:14px;border-top:1px solid var(--line);
     color:var(--muted);font-size:.8rem}
   .empty{color:var(--muted);padding:26px 0}
@@ -47,24 +53,29 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>Maintenance SOPs</h1>
-    <p class="sub">Metric Property Management — read only</p>
+    <div class="head-row">
+      <div>
+        <h1 id="h1">Procedimientos de Mantenimiento</h1>
+        <p class="sub" id="sub">Metric Property Management &mdash; solo lectura</p>
+      </div>
+      <!-- Spanish first, and selected by default: most of the technicians do
+           not read English. The choice is remembered in this browser only. -->
+      <div class="langs" role="group" aria-label="Idioma / Language">
+        <button type="button" data-lang="es" aria-pressed="true">Español</button>
+        <button type="button" data-lang="en" aria-pressed="false">English</button>
+      </div>
+    </div>
   </header>
 
-  <input id="q" class="search" type="search" placeholder="Filter by title…" autocomplete="off"
-    aria-label="Filter standard operating procedures by title">
+  <input id="q" class="search" type="search" placeholder="Buscar por título…" autocomplete="off"
+    aria-label="Buscar procedimientos por título">
   <p class="count" id="count">Loading…</p>
 
   <div id="list"></div>
 
-  <p class="note" id="reviewNote" hidden>
-    Procedures marked <span class="flag">needs review</span> have not been signed off yet.
-    Follow them as written, and tell Erick if something does not match what you do on site.
-  </p>
+  <p class="note" id="reviewNote" hidden></p>
 
-  <footer>
-    This page is read only. Tap a procedure to open and print it.
-  </footer>
+  <footer id="foot"></footer>
 </div>
 
 <script>
@@ -78,44 +89,110 @@
       return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[c];
     });
   };
+
+  /* Spanish is the DEFAULT. Most of the maintenance technicians do not read
+     English, and this page exists for them; English is the fallback and the
+     source of record. The choice is remembered per browser, and a browser that
+     refuses storage simply gets Spanish every time, which is the right
+     default anyway. */
+  var LANG = 'es';
+  try { if (localStorage.getItem('metricSopLang') === 'en') LANG = 'en'; } catch (e) {}
+
+  var S = {
+    es: {
+      h1: 'Procedimientos de Mantenimiento',
+      sub: 'Metric Property Management — solo lectura',
+      search: 'Buscar por título…',
+      count: function (n) { return n + (n === 1 ? ' procedimiento' : ' procedimientos'); },
+      none: 'No hay nada que coincida.',
+      error: 'No se pudo cargar la lista. Revisa la conexión y vuelve a abrir.',
+      flag: 'falta revisar',
+      review: 'Los procedimientos marcados <span class="flag">falta revisar</span> todavía no están aprobados. '
+        + 'Síguelos tal como están escritos y avísale a Erick si algo no coincide con lo que haces en la propiedad.',
+      foot: 'Esta página es solo de lectura. Toca un procedimiento para abrirlo e imprimirlo.',
+      untranslated: 'en inglés',
+    },
+    en: {
+      h1: 'Maintenance SOPs',
+      sub: 'Metric Property Management — read only',
+      search: 'Filter by title…',
+      count: function (n) { return n + (n === 1 ? ' procedure' : ' procedures'); },
+      none: 'Nothing matches that.',
+      error: 'Could not load the list. Check the connection and reload.',
+      flag: 'needs review',
+      review: 'Procedures marked <span class="flag">needs review</span> have not been signed off yet. '
+        + 'Follow them as written, and tell Erick if something does not match what you do on site.',
+      foot: 'This page is read only. Tap a procedure to open and print it.',
+      untranslated: 'in English',
+    },
+  };
+
   var data = [];
 
+  function chrome() {
+    var t = S[LANG];
+    document.documentElement.lang = LANG;
+    document.getElementById('h1').textContent = t.h1;
+    document.getElementById('sub').textContent = t.sub;
+    document.getElementById('q').placeholder = t.search;
+    document.getElementById('foot').textContent = t.foot;
+    Array.prototype.forEach.call(document.querySelectorAll('.langs button'), function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.lang === LANG));
+    });
+  }
+
   function render() {
+    var t = S[LANG];
     var q = (document.getElementById('q').value || '').trim().toLowerCase();
     var host = document.getElementById('list');
     var shown = 0, html = '', needsReview = false;
     data.forEach(function (group) {
       var items = group.sops.filter(function (s) {
-        return !q || String(s.title).toLowerCase().indexOf(q) >= 0;
+        var title = (LANG === 'es' && s.title_es) ? s.title_es : s.title;
+        return !q || String(title).toLowerCase().indexOf(q) >= 0;
       });
       if (!items.length) return;
       html += '<h2>' + esc(group.category) + '</h2><ul>';
       items.forEach(function (s) {
         shown++;
         if (s.status && s.status !== 'Current') needsReview = true;
-        html += '<li><a class="sop" href="/sops/' + TOKEN + '/' + encodeURIComponent(s.slug) + '">'
-          + '<span class="title">' + esc(s.title)
-          + (s.status && s.status !== 'Current' ? '<span class="flag">needs review</span>' : '')
+        // Per SOP, not per page: one untranslated procedure must not drag the
+        // whole list back into English.
+        var useEs = LANG === 'es' && !!s.title_es;
+        var title = useEs ? s.title_es : s.title;
+        html += '<li><a class="sop" href="/sops/' + TOKEN + '/' + encodeURIComponent(s.slug) + '?lang=' + LANG + '">'
+          + '<span class="title">' + esc(title)
+          + (s.status && s.status !== 'Current' ? '<span class="flag">' + esc(t.flag) + '</span>' : '')
+          + (LANG === 'es' && !s.title_es ? '<span class="flag">' + esc(t.untranslated) + '</span>' : '')
           + '</span>'
           + '<span class="meta">' + esc(s.updated || '') + '</span></a></li>';
       });
       html += '</ul>';
     });
-    host.innerHTML = html || '<p class="empty">Nothing matches that.</p>';
-    document.getElementById('count').textContent =
-      shown + (shown === 1 ? ' procedure' : ' procedures');
-    document.getElementById('reviewNote').hidden = !needsReview;
+    host.innerHTML = html || '<p class="empty">' + esc(t.none) + '</p>';
+    document.getElementById('count').textContent = t.count(shown);
+    var note = document.getElementById('reviewNote');
+    note.hidden = !needsReview;
+    if (needsReview) note.innerHTML = t.review;
   }
 
   document.getElementById('q').addEventListener('input', render);
+  Array.prototype.forEach.call(document.querySelectorAll('.langs button'), function (b) {
+    b.addEventListener('click', function () {
+      LANG = b.dataset.lang === 'en' ? 'en' : 'es';
+      try { localStorage.setItem('metricSopLang', LANG); } catch (e) {}
+      chrome(); render();
+    });
+  });
 
+  chrome();
   fetch('/api/sop-public/' + TOKEN, { credentials: 'omit' })
     .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(function (j) { data = j.categories || []; render(); })
     .catch(function () {
       document.getElementById('count').textContent = '';
       document.getElementById('list').innerHTML =
-        '<p class="empty">Could not load the list. Check the connection and reload.</p>';
+        '<p class="empty">' + esc(S[LANG].error) + '</p>';
     });
 })();
 </script>

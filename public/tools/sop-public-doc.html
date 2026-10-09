@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Maintenance SOP — Metric Property Management</title>
+<title>Procedimiento de Mantenimiento — Metric Property Management</title>
 <style>
   :root{
     --ink:#15181d; --muted:#5d6570; --line:#dcdfe4; --bg:#fff; --card:#f7f8fa; --gold:#8a6d2f;
@@ -20,8 +20,14 @@
   .meta{color:var(--muted);font-size:.85rem;margin:0}
   .flag{display:inline-block;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;
     border:1px solid var(--gold);color:var(--gold);border-radius:4px;padding:1px 5px;margin-left:6px}
-  .note{background:var(--card);border-left:3px solid var(--gold);padding:11px 14px;margin:0 0 22px;
+  .note{background:var(--card);border-left:3px solid var(--gold);padding:11px 14px;margin:0 0 14px;
     font-size:.88rem;color:var(--muted);border-radius:0 6px 6px 0}
+  .langs{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .langs button{font:inherit;font-size:.82rem;padding:6px 14px;border:0;background:var(--bg);
+    color:var(--muted);cursor:pointer}
+  .langs button[aria-pressed="true"]{background:var(--ink);color:#fff;font-weight:600}
+  .top-row{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;
+    margin-bottom:14px}
   .doc h1,.doc h2,.doc h3{letter-spacing:-.01em;margin:26px 0 8px;line-height:1.3}
   .doc h1{font-size:1.25rem} .doc h2{font-size:1.1rem} .doc h3{font-size:1rem}
   .doc p{margin:0 0 12px}
@@ -48,18 +54,25 @@
 </head>
 <body>
 <div class="wrap">
-  <a class="back" href="#" id="back">&larr; All maintenance SOPs</a>
+  <div class="top-row">
+    <a class="back" href="#" id="back">&larr; Todos los procedimientos</a>
+    <!-- Spanish by default; the choice is remembered in this browser. -->
+    <div class="langs" role="group" aria-label="Idioma / Language">
+      <button type="button" data-lang="es" aria-pressed="true">Español</button>
+      <button type="button" data-lang="en" aria-pressed="false">English</button>
+    </div>
+  </div>
   <header>
     <h1 id="title">Loading…</h1>
     <p class="meta" id="meta"></p>
   </header>
-  <p class="note" id="reviewNote" hidden>
-    This procedure has not been signed off yet. Follow it as written, and tell Erick if
-    something does not match what you do on site.
-  </p>
+  <!-- Two separate notices, because they say different things: one is about
+       the procedure not being approved, the other about the language. -->
+  <p class="note" id="mtNote" hidden></p>
+  <p class="note" id="reviewNote" hidden></p>
   <div class="doc" id="doc"></div>
-  <div class="print"><button type="button" id="printBtn">Print this procedure</button></div>
-  <footer>Metric Property Management — read only.</footer>
+  <div class="print"><button type="button" id="printBtn">Imprimir este procedimiento</button></div>
+  <footer id="foot">Metric Property Management &mdash; solo lectura.</footer>
 </div>
 
 <script>
@@ -67,14 +80,57 @@
   'use strict';
   var TOKEN = '__SOP_TOKEN__';
   var SLUG = '__SOP_SLUG__';
-  document.getElementById('back').href = '/sops/' + TOKEN;
-  document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
 
   var esc = function (s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[c];
     });
   };
+
+  /* Spanish by default, remembered per browser. ?lang= in the URL wins for one
+     visit, so a link from the index opens in the language it was read in,
+     without that overwriting the stored preference. */
+  var LANG = 'es';
+  try { if (localStorage.getItem('metricSopLang') === 'en') LANG = 'en'; } catch (e) {}
+  var q = /[?&]lang=(es|en)/.exec(window.location.search);
+  if (q) LANG = q[1];
+
+  var S = {
+    es: {
+      back: '← Todos los procedimientos',
+      print: 'Imprimir este procedimiento',
+      foot: 'Metric Property Management — solo lectura.',
+      flag: 'falta revisar',
+      review: 'Este procedimiento todavía no está aprobado. Síguelo tal como está escrito y '
+        + 'avísale a Erick si algo no coincide con lo que haces en la propiedad.',
+      machine: 'Traducción automática. Si algo no se entiende o no coincide con lo que haces '
+        + 'en la propiedad, avísale a Erick.',
+      notTranslated: 'Este procedimiento todavía no está traducido. Se muestra en inglés.',
+      outdated: 'El texto en inglés cambió después de la traducción, así que se muestra el '
+        + 'original en inglés. La traducción se va a regenerar.',
+      missing: 'No se encontró',
+      gone: 'Ese procedimiento no está disponible. Regresa y elígelo de la lista.',
+      empty: 'Este procedimiento todavía no tiene pasos escritos.',
+      updated: 'actualizado', reviewed: 'revisado',
+    },
+    en: {
+      back: '← All maintenance SOPs',
+      print: 'Print this procedure',
+      foot: 'Metric Property Management — read only.',
+      flag: 'needs review',
+      review: 'This procedure has not been signed off yet. Follow it as written, and tell '
+        + 'Erick if something does not match what you do on site.',
+      machine: '',
+      notTranslated: '',
+      outdated: '',
+      missing: 'Not found',
+      gone: 'That procedure is not available. Go back and pick it from the list.',
+      empty: 'This procedure has no written steps yet.',
+      updated: 'updated', reviewed: 'reviewed',
+    },
+  };
+
+  var DATA = null;
 
   /* A small Markdown renderer, deliberately small.
    *
@@ -125,27 +181,73 @@
     return out.join('\n');
   }
 
+
+  function chrome() {
+    var t = S[LANG];
+    document.documentElement.lang = LANG;
+    document.getElementById('back').textContent = t.back;
+    document.getElementById('back').href = '/sops/' + TOKEN;
+    document.getElementById('printBtn').textContent = t.print;
+    document.getElementById('foot').textContent = t.foot;
+    Array.prototype.forEach.call(document.querySelectorAll('.langs button'), function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.lang === LANG));
+    });
+  }
+
+  function paint() {
+    var t = S[LANG];
+    if (!DATA) return;
+    // The SERVER decided whether the Spanish is current; this only renders.
+    var useEs = LANG === 'es' && !!DATA.es;
+    var doc = useEs ? DATA.es : DATA.en;
+
+    document.title = (doc.title || 'SOP') + ' — Metric Property Management';
+    document.getElementById('title').innerHTML = esc(doc.title || '')
+      + (DATA.status && DATA.status !== 'Current'
+        ? '<span class="flag">' + esc(t.flag) + '</span>' : '');
+
+    var bits = [];
+    if (DATA.category) bits.push(esc(DATA.category));
+    if (DATA.last_reviewed_at) bits.push(t.reviewed + ' ' + esc(String(DATA.last_reviewed_at).slice(0, 10)));
+    else if (DATA.updated_at) bits.push(t.updated + ' ' + esc(String(DATA.updated_at).slice(0, 10)));
+    document.getElementById('meta').innerHTML = bits.join(' · ');
+
+    // The machine-translation line, and the two reasons Spanish was asked for
+    // but English is on screen. Only ever shown in Spanish: an English reader
+    // is looking at the source of record and has nothing to be warned about.
+    var mt = document.getElementById('mtNote');
+    var msg = '';
+    if (LANG === 'es') {
+      if (useEs) msg = t.machine;
+      else if (DATA.translationState === 'missing') msg = t.notTranslated;
+      else msg = t.outdated;
+    }
+    mt.hidden = !msg;
+    mt.textContent = msg;
+
+    var rev = document.getElementById('reviewNote');
+    rev.hidden = !(DATA.status && DATA.status !== 'Current');
+    rev.textContent = t.review;
+
+    document.getElementById('doc').innerHTML = doc.body ? md(doc.body) : '<p>' + esc(t.empty) + '</p>';
+  }
+
+  document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
+  Array.prototype.forEach.call(document.querySelectorAll('.langs button'), function (b) {
+    b.addEventListener('click', function () {
+      LANG = b.dataset.lang === 'en' ? 'en' : 'es';
+      try { localStorage.setItem('metricSopLang', LANG); } catch (e) {}
+      chrome(); paint();
+    });
+  });
+
+  chrome();
   fetch('/api/sop-public/' + TOKEN + '/' + SLUG, { credentials: 'omit' })
     .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-    .then(function (j) {
-      var s = j.sop || {};
-      document.title = (s.title || 'Maintenance SOP') + ' — Metric Property Management';
-      document.getElementById('title').innerHTML = esc(s.title || 'Untitled')
-        + (s.status && s.status !== 'Current' ? '<span class="flag">needs review</span>' : '');
-      var bits = [];
-      if (s.category) bits.push(esc(s.category));
-      if (s.last_reviewed_at) bits.push('reviewed ' + esc(String(s.last_reviewed_at).slice(0, 10)));
-      else if (s.updated_at) bits.push('updated ' + esc(String(s.updated_at).slice(0, 10)));
-      document.getElementById('meta').innerHTML = bits.join(' · ');
-      document.getElementById('reviewNote').hidden = !(s.status && s.status !== 'Current');
-      document.getElementById('doc').innerHTML = s.body_md
-        ? md(s.body_md)
-        : '<p>This procedure has no written steps yet.</p>';
-    })
+    .then(function (j) { DATA = j.sop || null; paint(); })
     .catch(function () {
-      document.getElementById('title').textContent = 'Not found';
-      document.getElementById('doc').innerHTML =
-        '<p>That procedure is not available. Go back and pick it from the list.</p>';
+      document.getElementById('title').textContent = S[LANG].missing;
+      document.getElementById('doc').innerHTML = '<p>' + esc(S[LANG].gone) + '</p>';
     });
 })();
 </script>
