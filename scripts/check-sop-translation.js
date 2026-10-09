@@ -64,14 +64,62 @@ function numberDiff(en, es) {
 
 // Informal "tu" forms in a document that is meant to be "usted" throughout.
 //
-// One slipped through the first run — "Marcala" in the 7-Day Turn Process,
-// one instance across all 31 documents. Worth checking by machine rather than
-// by eye: it is the kind of thing that reads fine until a technician notices
-// the SOP is talking down to him.
+// One slipped through the first run — "Marcala" in the 7-Day Turn Process.
+// Worth checking by machine rather than by eye: it is the kind of thing that
+// reads fine until a technician notices the SOP is talking down to him.
+//
+// SUBJECT-AWARE, because several of these verb forms are also the ordinary
+// indicative for "usted" and for the third person. "Usted arma un carrito e
+// INGRESA una orden" is correct Spanish agreeing with usted; "El residente
+// INGRESA por la puerta" is third person. Only a verb with no subject before
+// it in its own sentence is an imperative, and only an imperative can be the
+// informal one.
 const TU_FORMS = /\b(?:m[aá]rcal[ao]|h[aá]zlo|haz|rev[ií]sal[ao]|ponl[ao]|dile|av[ií]sale|an[oó]talo|ch[eé]calo|aseg[uú]rate|debes|tienes que|puedes|recuerda|usa|revisa|ingresa|anota|verifica)\b/gi;
+
+// A subject standing before the verb in the same sentence: a pronoun, a
+// determiner followed by a noun, or a NAME. After the verb it is an object
+// ("Revise la lista") and says nothing about the subject, which is why
+// position matters.
+//
+// Three more false positives came out of the live library and are handled
+// below: "Karla revisa la lista" (a person as subject), "solo se anota" and
+// "Si se verifica que..." (impersonal se). A Spanish imperative never takes a
+// proclitic se — it is enclitic, "anotalo" — so se immediately before the verb
+// rules an order out on its own.
+const SUBJECT_BEFORE = /\b(?:usted(?:es)?|[ée]l|ella|ellos|ellas|nosotros|qui[eé]n(?:es)?|el|la|los|las|un|una|unos|unas|su|sus|este|esta|estos|estas|ese|esa|cada|todo|todos|toda|todas)\s+\S/i;
+
+// The sentence a position falls in. Split on sentence punctuation, newlines and
+// list markers, because a SOP is mostly fragments rather than prose.
+function sentenceAround(text, index) {
+  const before = String(text).slice(0, index);
+  const after = String(text).slice(index);
+  const startAt = Math.max(
+    before.lastIndexOf('.'), before.lastIndexOf(':'), before.lastIndexOf(';'),
+    before.lastIndexOf('\n'), before.lastIndexOf('—'), before.lastIndexOf('*')
+  ) + 1;
+  const endRel = after.search(/[.;:\n]/);
+  return { prefix: before.slice(startAt), whole: before.slice(startAt) + (endRel < 0 ? after : after.slice(0, endRel)) };
+}
+
 function registerWarnings(es) {
-  const hits = String(es || '').match(TU_FORMS) || [];
-  return [...new Set(hits.map(h => h.toLowerCase()))];
+  const text = String(es || '');
+  const out = [];
+  const re = new RegExp(TU_FORMS.source, 'gi');
+  let m;
+  while ((m = re.exec(text))) {
+    const { prefix, whole } = sentenceAround(text, m.index);
+    // A subject before it means indicative, not an order.
+    if (SUBJECT_BEFORE.test(prefix)) continue;
+    // Impersonal or passive se: "se anota", "si se verifica".
+    if (/\bse\s*$/i.test(prefix)) continue;
+    // A proper name as the subject: "Karla revisa la lista".
+    if (/\b[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+$/.test(prefix) && !/^[\s*>#-]*$/.test(prefix.replace(/\b[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+$/, ''))) continue;
+    if (/^\s*[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+$/.test(prefix)) continue;
+    out.push({ word: m[0].toLowerCase(), sentence: whole.trim().replace(/\s+/g, ' ').slice(0, 110) });
+  }
+  // One entry per distinct word; the sentence is what makes it checkable.
+  const seen = new Set();
+  return out.filter(x => (seen.has(x.word) ? false : seen.add(x.word)));
 }
 
 function report(row) {
@@ -98,7 +146,8 @@ function report(row) {
     + '    bullets ' + bEn.length + ' / ' + bEs.length);
 
   const tu = registerWarnings(es);
-  console.log('  REGISTER    informal "tu" forms: ' + (tu.length ? tu.join(', ') + '   <-- should be "usted"' : 'none'));
+  console.log('  REGISTER    informal "tu" forms: ' + (tu.length ? tu.map(x => x.word).join(', ') + '   <-- should be "usted"' : 'none'));
+  tu.forEach(x => console.log('                "' + x.sentence + '"'));
 
   const nd = numberDiff(en, es);
   console.log('  NUMBERS     lost from the translation: ' + (nd.lost.length ? nd.lost.join(', ') : 'none'));
