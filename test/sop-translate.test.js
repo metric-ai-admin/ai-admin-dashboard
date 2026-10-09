@@ -172,7 +172,11 @@ t('the prompt names the things that must not be translated', () => {
   assert.ok(/do NOT convert currencies/i.test(flat));
   assert.ok(/do NOT convert imperial to metric/i.test(flat));
   assert.ok(/the same heading levels/i.test(flat), 'Markdown structure is not pinned');
-  assert.ok(/usted/.test(T.SYSTEM));
+  // Case-insensitive: the rule is shouted now, after one "Marcala" slipped
+  // through the first run. The counterexamples matter more than the word —
+  // "use usted" alone is what produced the slip.
+  assert.ok(/usted/i.test(flat));
+  assert.ok(/never "Marcala"/i.test(flat), 'the prompt gives no counterexample');
 });
 
 t('the reply is parsed strictly, not guessed at', () => {

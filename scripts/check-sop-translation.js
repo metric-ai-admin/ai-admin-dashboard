@@ -41,7 +41,11 @@ function bilingualScore(text) {
 
 const headings = s => (String(s || '').match(/^#{1,6}\s+(.*)$/gm) || []).map(h => h.replace(/^#+\s*/, '').trim());
 const bullets = s => (String(s || '').match(/^\s*(?:[-*+]|\d+[.)])\s+(.*)$/gm) || []).map(b => b.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').trim());
-const numbers = s => (String(s || '').match(/\$?\d[\d.,]*\s?%?/g) || []).map(x => x.trim());
+// Trailing punctuation stripped: "$300," and "$300 " are the same figure, and
+// reporting one as lost and the other as invented is noise that hides a real
+// difference.
+const numbers = s => (String(s || '').match(/\$?\d[\d.,]*\s?%?/g) || [])
+  .map(x => x.trim().replace(/[.,]+$/, ''));
 
 function tally(a) {
   const m = new Map();
@@ -56,6 +60,18 @@ function numberDiff(en, es) {
   A.forEach((n, k) => { const b = B.get(k) || 0; if (b < n) lost.push(k + ' ×' + (n - b)); });
   B.forEach((n, k) => { const a = A.get(k) || 0; if (a < n) added.push(k + ' ×' + (n - a)); });
   return { lost, added };
+}
+
+// Informal "tu" forms in a document that is meant to be "usted" throughout.
+//
+// One slipped through the first run — "Marcala" in the 7-Day Turn Process,
+// one instance across all 31 documents. Worth checking by machine rather than
+// by eye: it is the kind of thing that reads fine until a technician notices
+// the SOP is talking down to him.
+const TU_FORMS = /\b(?:m[aá]rcal[ao]|h[aá]zlo|haz|rev[ií]sal[ao]|ponl[ao]|dile|av[ií]sale|an[oó]talo|ch[eé]calo|aseg[uú]rate|debes|tienes que|puedes|recuerda|usa|revisa|ingresa|anota|verifica)\b/gi;
+function registerWarnings(es) {
+  const hits = String(es || '').match(TU_FORMS) || [];
+  return [...new Set(hits.map(h => h.toLowerCase()))];
 }
 
 function report(row) {
@@ -80,6 +96,9 @@ function report(row) {
   const bEn = bullets(en), bEs = bullets(es);
   console.log('\n  STRUCTURE   headings ' + hEn.length + ' / ' + hEs.length
     + '    bullets ' + bEn.length + ' / ' + bEs.length);
+
+  const tu = registerWarnings(es);
+  console.log('  REGISTER    informal "tu" forms: ' + (tu.length ? tu.join(', ') + '   <-- should be "usted"' : 'none'));
 
   const nd = numberDiff(en, es);
   console.log('  NUMBERS     lost from the translation: ' + (nd.lost.length ? nd.lost.join(', ') : 'none'));
