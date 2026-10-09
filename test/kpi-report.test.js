@@ -95,10 +95,20 @@ t('occPct is null rather than a divide-by-zero', () => {
 
 // ---- the six sections -------------------------------------------------------
 t('the six sections are hers, in her order', () => {
-  assert.deepStrictEqual(K.SECTIONS.map(s => s.title), [
+  // Hers, unchanged. Anything Metric adds goes AFTER them: the point of this
+  // report is that a reader who knows her workbook recognises it, and a
+  // section inserted into the middle moves every one below it.
+  assert.deepStrictEqual(K.SECTIONS.map(s => s.title).slice(0, 6), [
     'Occupancy', 'Leasing Activity', 'Renewals', 'Income Snapshot (MTD)',
     'Maintenance', 'Delinquency & Evictions',
   ]);
+});
+
+t('Code Violations is ours, and comes after her six', () => {
+  // Added at Kara's request on 2026-10-09 ("open and closed, total
+  // transparency"). It is not in Lyndsay's workbook, which is exactly why it
+  // is last rather than filed among the sections that are.
+  assert.deepStrictEqual(K.SECTIONS.map(s => s.title).slice(6), ['Code Violations']);
 });
 
 t('the card labels are hers, word for word', () => {
@@ -173,18 +183,20 @@ t('the response says whether the week was chosen or defaulted', () => {
 });
 
 // ---- manual edits, locked shut ----------------------------------------------
-t('no field is adjustable yet', () => {
-  // Declared once, in the builder module, and re-exported to the route — two
-  // lists could disagree and the route's would be the one that let a write in.
-  assert.ok(/const KPI_EDITABLE_FIELDS = \[\];/.test(ROUTE),
-    'it stays empty until Bekah and Kara say which numbers they need');
+t('the allow-list is the report’s own cards, kept in one place', () => {
+  // Opened on 2026-10-09: Kara named "the values in the Property Summary,
+  // traffic especially". It is derived from CARD_METRICS rather than retyped,
+  // because a hand-kept second list starts as a copy and ends as a
+  // disagreement — and the one that would win is the one guarding the write.
+  assert.ok(/KPI_EDITABLE_FIELDS = \[\.\.\.new Set\(kpiReport\.CARD_METRICS\)\]/.test(ROUTE),
+    'the allow-list must come from the report definition');
   assert.ok(/KPI_EDITABLE_FIELDS = kpiBuild\.KPI_EDITABLE_FIELDS/.test(server),
     'the route must not keep a second copy of the allow-list');
 });
 
-t('a PATCH is refused whatever field it names', () => {
+t('a PATCH naming a field the report does not have is still refused', () => {
   assert.ok(/KPI_EDITABLE_FIELDS\.includes\(field\)/.test(PATCH));
-  assert.ok(/No KPI field is adjustable yet/.test(PATCH),
+  assert.ok(/That field cannot be adjusted by hand/.test(PATCH),
     'and the refusal explains itself rather than looking like a bug');
 });
 
@@ -198,8 +210,13 @@ t('only Bekah and Kara, by name and not by role', () => {
   assert.ok(!/\.role\b/.test(block));
 });
 
-t('an adjustment keeps the figure it replaced', () => {
-  assert.ok(/computed: b\.computed === undefined \? null : b\.computed/.test(PATCH));
+t('an adjustment keeps the figure it replaced, computed HERE', () => {
+  // It used to be taken from the request body. That is whatever the page was
+  // showing, including a stale number, and it is the figure the edit would be
+  // defended with — so the server works it out from the report instead.
+  assert.ok(/computed = await kpiComputedValue\(/.test(PATCH));
+  assert.ok(!/computed: b\.computed/.test(PATCH),
+    'the client must not supply the figure its own edit is judged against');
 });
 
 t('adjusting is named in Activity Logs', () => {
@@ -378,7 +395,10 @@ t('a PDF without the workbook says so on its face', () => {
 
 t('one builder feeds the page and both exports', () => {
   assert.ok(/async function kpiBuildReport\(req\)/.test(server));
-  assert.ok(/res\.json\(await kpiBuildReport\(req\)\)/.test(server));
+  // The JSON route no longer hands the build straight to res.json — it takes
+  // the week's snapshot first (Kara, 2026-10-09) — but it must still be the
+  // SAME builder the exports use, which is what this is really guarding.
+  assert.ok(/const report = await kpiBuildReport\(req\);/.test(server));
   assert.ok(/kpiBuild\.buildKpiReport\(db,/.test(server), 'the route wraps the module');
   assert.ok(/const report = await kpiBuildReport\(req\)/.test(EXPORT),
     'two assemblers would mean only one of them ever gets fixed');

@@ -10606,9 +10606,80 @@ async function kpiBuildReport(req) {
   return out;
 }
 
+// The week-on-week snapshot (Kara, 2026-10-09).
+//
+// INSERTED, NOT UPSERTED. 083 says a snapshot is written once and never
+// recomputed, and this is where that is enforced: ignoreDuplicates leaves an
+// existing week exactly as it was captured. A snapshot that gets rewritten on
+// every page load is not a record of the Saturday, it is the live report with
+// an older date on it — and it would agree with the live report forever, which
+// is the one thing it exists not to do.
+//
+// NEVER FAILS THE REPORT. A snapshot that cannot be written costs the
+// comparison; it must not cost Kara the report she opened.
+const kpiSnapshot = require('./lib/kpi-snapshot.js');
+async function kpiCaptureSnapshot(report, who) {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const rows = kpiSnapshot.rowsFromReport(report, { captured_by: who || null });
+    if (!rows.length) return { captured: 0 };
+    const { error } = await db.from('kpi_property_snapshots')
+      .upsert(rows, { onConflict: 'week_ending,property', ignoreDuplicates: true });
+    if (error) throw new Error(error.message);
+    return { captured: rows.length };
+  } catch (e) {
+    console.warn('[kpi] snapshot not captured for ' + (report && report.week_ending) + ': ' + e.message);
+    return { captured: 0, error: e.message };
+  }
+}
+
 app.get('/api/kpi/report', requireAuth, requireRole(...KPI_REPORT_ROLES), async (req, res) => {
   try {
-    res.json(await kpiBuildReport(req));
+    const report = await kpiBuildReport(req);
+    // Only a FINISHED week is captured. The current week is still moving, and
+    // a snapshot of a Wednesday stored under Saturday's date would be the one
+    // row nobody could ever correct.
+    if (report.week_ending <= WEEK.leasingLastCompleteWeekEnding()) {
+      report.snapshot = await kpiCaptureSnapshot(report, actorName(req));
+    }
+    res.json(report);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Last report → current, per property and for the portfolio.
+app.get('/api/kpi/compare/:week_ending', requireAuth, requireRole(...KPI_REPORT_ROLES), async (req, res) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(req.params.week_ending))) {
+    return res.status(400).json({ error: 'week_ending must be a YYYY-MM-DD date.' });
+  }
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const week = req.params.week_ending;
+    // The previous week that was actually CAPTURED, not week-7: if a Monday
+    // was missed there is no snapshot for it, and comparing against a week
+    // that does not exist would report every figure as new.
+    const { data: earlier, error: e1 } = await db.from('kpi_property_snapshots')
+      .select('week_ending').lt('week_ending', week)
+      .order('week_ending', { ascending: false }).limit(1);
+    if (e1) throw new Error(e1.message);
+    const prevWeek = earlier && earlier.length ? earlier[0].week_ending : null;
+    const [curRes, prevRes] = await Promise.all([
+      selectAllResult(() => db.from('kpi_property_snapshots').select('*').eq('week_ending', week),
+        { label: 'kpi snapshot current' }),
+      prevWeek
+        ? selectAllResult(() => db.from('kpi_property_snapshots').select('*').eq('week_ending', prevWeek),
+          { label: 'kpi snapshot previous' })
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (curRes.error) throw new Error(curRes.error.message);
+    if (prevRes.error) throw new Error(prevRes.error.message);
+    res.json({
+      week_ending: week,
+      previous_week_ending: prevWeek,
+      // Said out loud rather than implied by an empty list.
+      note: prevWeek ? null : 'No earlier snapshot has been captured, so there is nothing to compare against yet.',
+      fields: kpiSnapshot.COMPARED,
+      rows: kpiSnapshot.compare(prevRes.data, curRes.data),
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -10943,11 +11014,31 @@ function kpiPdf(doc, report, only) {
       L, doc.y + 6, { width: W });
 }
 
-// Adjusting a number by hand.
+// The computed value of one metric, for one property, this week — read out of
+// the report itself rather than taken from whoever is calling.
 //
-// Refuses everything today, because KPI_EDITABLE_FIELDS is empty. Written now
-// so the shape is settled and reviewed before the Monday comparison, rather
-// than added in a hurry afterwards.
+// WHY THE SERVER WORKS IT OUT. The point of an adjustment is that the
+// calculated figure stays visible next to it, so an owner can ask why they
+// differ. A `computed` supplied by the client is not that: it is whatever the
+// page happened to be showing, including a stale one, and it is the number
+// that would be used to defend the edit. This is the same rule as the CRM
+// agent — the thing being recorded as evidence never comes from the body.
+async function kpiComputedValue(req, week_ending, property, field) {
+  const report = await kpiBuild.buildKpiReport(supabaseAdmin || supabasePublic, { week_ending });
+  const column = property === 'Portfolio' ? report.portfolio : (report.properties || {})[property];
+  if (!column) return null;
+  for (const sec of column) {
+    const hit = (sec.cards || []).concat(sec.funnel || []).find(c => c.metric === field);
+    // `computed` when this metric is ALREADY adjusted — cardValue puts the
+    // live calculation there and the override in `value`. Taking `value`
+    // would make each edit cite the previous edit as the calculated figure,
+    // and after two rounds nobody could find the original number.
+    if (hit) return hit.computed !== undefined ? hit.computed : hit.value;
+  }
+  return null;
+}
+
+// Adjusting a number by hand.
 app.patch('/api/kpi/report/:week_ending', requireAuth, async (req, res) => {
   if (!mayEditKpi(req.user)) {
     return res.status(403).json({ error: 'Only Bekah and Kara can adjust KPI figures.' });
@@ -10964,18 +11055,70 @@ app.patch('/api/kpi/report/:week_ending', requireAuth, async (req, res) => {
   }
   try {
     const db = supabaseAdmin || supabasePublic;
+    const property = String(b.property || 'Portfolio');
+    // The calculated figure, worked out here and kept beside the adjustment,
+    // so the report can always show what it would have said.
+    const computed = await kpiComputedValue(req, req.params.week_ending, property, field);
     const { error } = await db.from('kpi_manual_overrides').upsert({
       week_ending: req.params.week_ending,
-      property: String(b.property || 'Portfolio'),
+      property,
       field,
       value: b.value === undefined ? null : b.value,
-      // The calculated figure, kept beside the adjustment, so the report can
-      // always show what it would have said.
-      computed: b.computed === undefined ? null : b.computed,
+      computed,
       note: String(b.note || '').trim() || null,
       updated_by: actorName(req),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'week_ending,property,field' });
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, computed });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// A note Bekah or Kara adds to the report — a renewal comment, a delinquency
+// note, a traffic adjustment, a unit transfer.
+//
+// SEPARATE FROM THE ROUTE ABOVE because these are not adjustments: they add
+// something the report never computed, so there is no calculated figure to
+// keep beside them and nothing to compare. Keyed per SUBJECT (a resident, a
+// unit), so two delinquency notes on the same property in the same week are
+// two rows and not one overwriting the other.
+app.put('/api/kpi/report/:week_ending/note', requireAuth, async (req, res) => {
+  if (!mayEditKpi(req.user)) {
+    return res.status(403).json({ error: 'Only Bekah and Kara can write KPI notes.' });
+  }
+  const b = req.body || {};
+  const field = String(b.field || '');
+  if (!kpiBuild.KPI_NOTE_FIELDS.includes(field)) {
+    return res.status(400).json({ error: 'That is not a note field.', noteFields: kpiBuild.KPI_NOTE_FIELDS });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(req.params.week_ending))) {
+    return res.status(400).json({ error: 'week_ending must be a YYYY-MM-DD date.' });
+  }
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const body = String(b.body == null ? '' : b.body).trim();
+    const row = {
+      week_ending: req.params.week_ending,
+      property: String(b.property || 'Portfolio'),
+      field,
+      // '' means "about the property as a whole" — a real value that collides
+      // with itself, which is what the upsert needs. See 083.
+      subject: String(b.subject == null ? '' : b.subject).trim(),
+      body: body || null,
+      updated_by: actorName(req),
+      updated_at: new Date().toISOString(),
+    };
+    // An emptied note is DELETED rather than stored as an empty string, so a
+    // cleared comment does not come back as a blank line on the owner's report.
+    if (!body) {
+      const { error } = await db.from('kpi_field_notes').delete()
+        .eq('week_ending', row.week_ending).eq('property', row.property)
+        .eq('field', row.field).eq('subject', row.subject);
+      if (error) throw new Error(error.message);
+      return res.json({ ok: true, deleted: true });
+    }
+    const { error } = await db.from('kpi_field_notes').upsert(row,
+      { onConflict: 'week_ending,property,field,subject' });
     if (error) throw new Error(error.message);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }

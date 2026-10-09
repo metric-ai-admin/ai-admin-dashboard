@@ -791,6 +791,33 @@ const SAMMY_ONLY="Windy Hill Apartment";
 const SHARED_TEAM=["Rocio","Oscar","Yeni"];
 const coverFor = p => (p===SAMMY_ONLY ? ["Sammy"] : SHARED_TEAM);
 const PCOLOR={Rocio:"var(--r1)",Oscar:"var(--r2)",Yeni:"var(--r3)",Sammy:"var(--r4)"};
+
+// HOW A SHARED GOAL IS DIVIDED (Kara, 2026-10-09: "take the total needed and
+// split it amongst them").
+//
+// Rocio, Oscar and Yeni share every community except Windy Hill, so there is
+// one pool of work and three people doing it. Each gets a THIRD OF THE TOTAL
+// NEEDED, not a third of each property: the question Kara asks of this board is
+// "how much does each of them owe me", and that is one number per metric.
+//
+// LARGEST REMAINDER, so the parts add back to the total exactly. 100 traffic
+// across three people is 34/33/33, never 33/33/33 (three short of the goal) and
+// never 34/34/34 (two more than anyone needs to do). The extra always goes to
+// the same people in the same order — SHARE_ORDER below — so a share does not
+// move from one person to another when an unrelated number changes.
+const SHARE_ORDER = SHARED_TEAM;   // Rocio, Oscar, Yeni — fixed, not sorted
+function splitEqually(total, n){
+  const t = Math.max(0, Math.round(Number(total)||0));
+  const base = Math.floor(t/n), extra = t - base*n;
+  const out = [];
+  for(let i=0;i<n;i++) out.push(base + (i<extra?1:0));
+  return out;
+}
+// One person's share of a shared total.
+function shareOf(total, person){
+  const i = SHARE_ORDER.indexOf(person);
+  return i < 0 ? 0 : splitEqually(total, SHARE_ORDER.length)[i];
+}
 let LEAD={
  "The Chateau":"Rocio","Hyde Park Square":"Rocio","The Sidney":"Rocio",
  "Sunset Palms":"Oscar","The Highlander":"Oscar","iConic Round Rock":"Oscar","iConic Downtown":"Oscar",
@@ -1242,34 +1269,73 @@ function renderAgentRollup(){
 /* ============ RENDER: TEAM SCORECARD ============ */
 function renderScorecard(){
   const props=new Set(viewProps());
-  const people = PEOPLE.filter(person => Object.keys(LEAD).some(p=>LEAD[p]===person && props.has(p)));
+  const inView = p => props.has(p);
+  // The shared pool, and Windy Hill, within whatever view is on screen.
+  const sharedProps = Object.keys(LEAD).filter(p=>p!==SAMMY_ONLY && inView(p)).sort();
+  const sammyProps  = Object.keys(LEAD).filter(p=>p===SAMMY_ONLY && inView(p));
+  const people = []
+    .concat(sharedProps.length ? SHARE_ORDER : [])
+    .concat(sammyProps.length ? ["Sammy"] : []);
+
+  const METRICS=[["traffic","Traffic"],["tours","Tours"],["apps","Apps"],["movein","Move-Ins"]];
+  const goalsOf = list => {
+    const g={traffic:0,tours:0,apps:0,movein:0};
+    list.forEach(p=>{ const c=compute(getD(p)); METRICS.forEach(([k])=>{ g[k]+=c.goals[k]; }); });
+    return g;
+  };
+  const actualsOf = list => {
+    const a={traffic:0,tours:0,apps:0,movein:0};
+    list.forEach(p=>{ METRICS.forEach(([k])=>{ a[k]+=sumActuals(p,k); }); });
+    return a;
+  };
+
   document.getElementById("scoreTitle").textContent = VIEW.type==="portfolio" ? "Agent Performance" : `${viewLabel()} Agent Performance`;
-  document.getElementById("scoreSub").textContent =
-    `Each box is cumulative actual-to-date vs. the full ${settings.wk}-week lease-up goal for that metric (all weeks combined, not just last week) across that person's led communities.`;
+  document.getElementById("scoreSub").textContent = sharedProps.length
+    ? `Rocio, Oscar and Yeni share every community except Windy Hill, so the ${settings.wk}-week goal for those communities is split three ways and each person's share is shown below — the three shares add back to the shared total exactly. Activity is NOT split: nothing records which of the three produced a given lead or tour, so the shared pool's actuals are shown once, under the goals, rather than divided into numbers nobody logged.`
+    : `Each box is cumulative actual-to-date vs. the full ${settings.wk}-week lease-up goal for that metric (all weeks combined, not just last week).`;
   const el=document.getElementById("scorecard");
   if(people.length===0){ el.innerHTML=`<div class="card pcard" style="grid-column:1/-1;color:var(--muted);">No team members scoped to this view.</div>`; return; }
-  el.innerHTML = people.map(person=>{
-    const myProps = Object.keys(LEAD).filter(p=>LEAD[p]===person && props.has(p));
-    let traffic=0,tours=0,apps=0,movein=0;
-    myProps.forEach(p=>{ const c=compute(getD(p)); traffic+=c.goals.traffic; tours+=c.goals.tours; apps+=c.goals.apps; movein+=c.goals.movein; });
-    let aTraffic=0,aTours=0,aApps=0,aMove=0;
-    myProps.forEach(p=>{
-      aTraffic += sumActuals(p,"traffic"); aTours += sumActuals(p,"tours"); aApps += sumActuals(p,"apps"); aMove += sumActuals(p,"movein");
-    });
-    const seasonCalls = myProps.reduce((sum,p)=>sum+(SEASON_CALLS[p]||0),0);
-    const status=statusFor(myProps);
+
+  const sharedGoals = goalsOf(sharedProps);
+  const sharedStatus = statusFor(sharedProps);
+
+  const cards = people.map(person=>{
+    const shared = person!=="Sammy";
+    const myProps = shared ? sharedProps : sammyProps;
+    const status = shared ? sharedStatus : statusFor(myProps);
+    const goals = shared ? null : goalsOf(myProps);
+    const acts  = shared ? null : actualsOf(myProps);
+    const seasonCalls = shared ? null : myProps.reduce((sum,p)=>sum+(SEASON_CALLS[p]||0),0);
+    const boxes = METRICS.map(([k,label])=> shared
+      ? `<div class="mbox"><div class="lab">${label} · My Share of the ${settings.wk}-Wk Goal</div><div class="num">${shareOf(sharedGoals[k],person)}</div></div>`
+      : `<div class="mbox"><div class="lab">${label} · ${settings.wk}-Wk Goal</div><div class="num">${acts[k]}/${goals[k]}</div></div>`
+    ).join("");
+    const calls = shared ? "" :
+      `<div class="mbox mbox-calls"><div class="lab">Calls Logged · Season-to-Date (actual, no goal)</div><div class="num">${seasonCalls}</div></div>`;
     return `<div class="card pcard" style="border-top-color:${PCOLOR[person]}">
       <div class="name"><b>${person}</b>${pillHtml(status)}</div>
-      <div class="props">${myProps.join(", ")}</div>
-      <div class="metrics">
-        <div class="mbox"><div class="lab">Traffic · 8-Wk Goal</div><div class="num">${aTraffic}/${traffic}</div></div>
-        <div class="mbox"><div class="lab">Tours · 8-Wk Goal</div><div class="num">${aTours}/${tours}</div></div>
-        <div class="mbox"><div class="lab">Apps · 8-Wk Goal</div><div class="num">${aApps}/${apps}</div></div>
-        <div class="mbox"><div class="lab">Move-Ins · 8-Wk Goal</div><div class="num">${aMove}/${movein}</div></div>
-        <div class="mbox mbox-calls"><div class="lab">Calls Logged · Season-to-Date (actual, no goal)</div><div class="num">${seasonCalls}</div></div>
-      </div>
+      <div class="props">${shared ? "Shared: "+myProps.join(", ") : myProps.join(", ")}</div>
+      <div class="metrics">${boxes}${calls}</div>
     </div>`;
-  }).join("");
+  });
+
+  // The pool the three shares came out of, stated once. Without this the board
+  // shows three thirds and no whole, and the first question anyone asks is
+  // "a third of what".
+  if(sharedProps.length){
+    const a = actualsOf(sharedProps);
+    const calls = sharedProps.reduce((sum,p)=>sum+(SEASON_CALLS[p]||0),0);
+    cards.push(`<div class="card pcard" style="border-top-color:var(--muted2);grid-column:1/-1">
+      <div class="name"><b>Shared pool</b> &middot; Rocio + Oscar + Yeni</div>
+      <div class="props">${sharedProps.join(", ")}</div>
+      <div class="metrics">
+        ${METRICS.map(([k,label])=>`<div class="mbox"><div class="lab">${label} &middot; Team Actual / ${settings.wk}-Wk Goal</div><div class="num">${a[k]}/${sharedGoals[k]}</div></div>`).join("")}
+        <div class="mbox mbox-calls"><div class="lab">Calls Logged &middot; Season-to-Date (actual, no goal)</div><div class="num">${calls}</div></div>
+      </div>
+      <div class="rollup-note">Split three ways: ${METRICS.map(([k,label])=>`${label} ${splitEqually(sharedGoals[k],3).join(" / ")}`).join(" &nbsp;·&nbsp; ")} (Rocio / Oscar / Yeni). Where a total does not divide by three the remainder goes to Rocio first, then Oscar — so the three shares always add back to the total rather than falling short of it.</div>
+    </div>`);
+  }
+  el.innerHTML = cards.join("");
 }
 function sumActuals(p,k){
   const arr=ensureActuals(p,k);
