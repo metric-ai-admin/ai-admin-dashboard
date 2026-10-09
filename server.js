@@ -13878,8 +13878,28 @@ app.get('/sops/:token/:slug', (req, res) => {
   });
 });
 
+// Admin only: the link to send the technicians, read off the running service
+// rather than rebuilt by hand from the secret.
+app.get('/api/sop-public/link', requireAuth, requireRole('admin'), (req, res) => {
+  if (!SOP_PUBLIC_SECRET) return res.status(503).json({ error: 'SOP_PUBLIC_SECRET is not set' });
+  const base = process.env.PUBLIC_URL || `https://${req.get('host')}`;
+  res.json({
+    group: SOPP.GROUP,
+    department: SOPP.DEPARTMENT,
+    publishedStatuses: SOPP.PUBLISHED_STATUSES,
+    url: `${base}/sops/${SOPP.token(SOP_PUBLIC_SECRET)}`,
+  });
+});
+
 // The data behind those two pages. Same guard, same fixed scope.
-app.get('/api/sops/public/:token', async (req, res) => {
+//
+// UNDER /api/sop-public, NOT /api/sops/public. app.get('/api/sops/:id') is
+// registered at line ~1498, twelve thousand lines earlier, and Express matches
+// in registration order — so /api/sops/public-link was being captured as an id
+// and answered "SOP not found". Moving the whole family out of /api/sops is
+// the fix that cannot come back: ordering it correctly would make this block
+// depend on staying above a route nobody editing it can see.
+app.get('/api/sop-public/:token', async (req, res) => {
   if (!sopPubGuard(req, res)) return;
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Not configured' });
   try {
@@ -13891,7 +13911,7 @@ app.get('/api/sops/public/:token', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/sops/public/:token/:slug', async (req, res) => {
+app.get('/api/sop-public/:token/:slug', async (req, res) => {
   if (!sopPubGuard(req, res)) return;
   if (!SOPP.isSlug(req.params.slug)) return res.status(404).json({ error: 'Not found' });
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Not configured' });
@@ -13908,18 +13928,6 @@ app.get('/api/sops/public/:token/:slug', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Admin only: the link to send the technicians, read off the running service
-// rather than rebuilt by hand from the secret.
-app.get('/api/sops/public-link', requireAuth, requireRole('admin'), (req, res) => {
-  if (!SOP_PUBLIC_SECRET) return res.status(503).json({ error: 'SOP_PUBLIC_SECRET is not set' });
-  const base = process.env.PUBLIC_URL || `https://${req.get('host')}`;
-  res.json({
-    group: SOPP.GROUP,
-    department: SOPP.DEPARTMENT,
-    publishedStatuses: SOPP.PUBLISHED_STATUSES,
-    url: `${base}/sops/${SOPP.token(SOP_PUBLIC_SECRET)}`,
-  });
-});
 
 // =====================================================================
 // REBRAND LEADERSHIP REVIEW — a public page behind a per-person token

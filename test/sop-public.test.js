@@ -137,7 +137,7 @@ t('a bad token is a 404, never a 401', () => {
 
 t('every public route goes through the one guard', () => {
   ["app.get('/sops/:token'", "app.get('/sops/:token/:slug'",
-   "app.get('/api/sops/public/:token'", "app.get('/api/sops/public/:token/:slug'"]
+   "app.get('/api/sop-public/:token'", "app.get('/api/sop-public/:token/:slug'"]
     .forEach(r => {
       const i = CODE.indexOf(r);
       assert.ok(i > 0, 'missing route ' + r);
@@ -173,14 +173,20 @@ t('the public routes READ only — no write of any kind', () => {
 
 t('the single-document route filters the slug INSIDE the scope', () => {
   // Otherwise a Maintenance-looking slug could fetch an Accounting document.
-  const i = CODE.indexOf("app.get('/api/sops/public/:token/:slug'");
+  const i = CODE.indexOf("app.get('/api/sop-public/:token/:slug'");
   const body = CODE.slice(i, i + 900);
   assert.ok(/SOPP\.scope\([\s\S]*\.eq\('slug', req\.params\.slug\)\)/.test(body),
     'the slug filter is applied outside the department/status scope');
 });
 
 t('the link route is admin only', () => {
-  assert.ok(/app\.get\('\/api\/sops\/public-link', requireAuth, requireRole\('admin'\)/.test(CODE));
+  assert.ok(/app\.get\('\/api\/sop-public\/link', requireAuth, requireRole\('admin'\)/.test(CODE));
+});
+
+t('nothing in this feature lives under /api/sops any more', () => {
+  // /api/sops/:id is registered at the top of server.js and captured
+  // /api/sops/public-link as an id — see test/route-shadowing.test.js.
+  assert.ok(!/\/api\/sops\/public/.test(CODE), 'a public SOP route is still under /api/sops');
 });
 
 // ---- the pages -----------------------------------------------------------

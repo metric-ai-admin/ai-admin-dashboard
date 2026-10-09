@@ -125,7 +125,7 @@
     return out.join('\n');
   }
 
-  fetch('/api/sops/public/' + TOKEN + '/' + SLUG, { credentials: 'omit' })
+  fetch('/api/sop-public/' + TOKEN + '/' + SLUG, { credentials: 'omit' })
     .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(function (j) {
       var s = j.sop || {};

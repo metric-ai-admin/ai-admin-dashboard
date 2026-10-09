@@ -64,8 +64,8 @@ const ALLOWED = new Map([
   // parameter a visitor can set.
   ['GET /sops/:token',                  'public SOP index; group token, 404 otherwise'],
   ['GET /sops/:token/:slug',            'public SOP page; group token, 404 otherwise'],
-  ['GET /api/sops/public/:token',       'public SOP index data; group token, 404 otherwise'],
-  ['GET /api/sops/public/:token/:slug', 'public SOP data; group token, 404 otherwise'],
+  ['GET /api/sop-public/:token',        'public SOP index data; group token, 404 otherwise'],
+  ['GET /api/sop-public/:token/:slug',  'public SOP data; group token, 404 otherwise'],
   ['POST /api/triage/log-session', 'retired 2026-10-05; answers 410 and touches nothing'],
   ['POST /api/lyndsay/import',     'retired 2026-10-05; answers 410 and touches nothing'],
   ['GET /health',                 'liveness; reports no data and is the anti-hibernation ping'],

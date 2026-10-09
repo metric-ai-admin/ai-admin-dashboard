@@ -109,7 +109,7 @@
 
   document.getElementById('q').addEventListener('input', render);
 
-  fetch('/api/sops/public/' + TOKEN, { credentials: 'omit' })
+  fetch('/api/sop-public/' + TOKEN, { credentials: 'omit' })
     .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(function (j) { data = j.categories || []; render(); })
     .catch(function () {
