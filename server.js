@@ -11820,10 +11820,42 @@ app.patch('/api/crm/properties/:id', requireCRM, async (req, res) => {
 });
 
 // ---- POST /api/crm/properties/:id/follow-ups -----------------------------------
+// Who gets the credit for a CRM row. See lib/crm-agent.js for why this is the
+// session's agent_name and not its display name.
+//
+// The roster is cached for ten minutes and is only consulted for the body
+// fallback, so a cold cache costs an admin-on-behalf-of write its attribution
+// and nothing else. Never awaited twice on one request.
+const CRMAG = require('./lib/crm-agent.js');
+let crmRosterAt = 0, crmRoster = [], crmRosterLoading = false;
+function crmRosterRefresh() {
+  if (crmRosterLoading || Date.now() - crmRosterAt < 600000) return;
+  if (!CRM_CONFIGURED) return;
+  crmRosterLoading = true;
+  (supabaseAdmin || supabasePublic).from('dashboard_users').select('agent_name')
+    .then(({ data, error }) => {
+      if (!error && data) {
+        crmRoster = data.map(r => r.agent_name).filter(Boolean);
+        crmRosterAt = Date.now();
+      }
+    })
+    .catch(() => {})
+    .finally(() => { crmRosterLoading = false; });
+}
+function crmAgentFor(req) {
+  crmRosterRefresh();
+  return CRMAG.resolveAgent(req.user, req.body, crmRoster);
+}
+
 app.post('/api/crm/properties/:id/follow-ups', requireCRM, async (req, res) => {
   try {
     const client = supabaseAdmin || supabasePublic;
-    const { data, error } = await client.from('follow_ups').insert({ ...req.body, property_id: req.params.id }).select().single();
+    // The agent comes from the session, and any agent field in the body is
+    // dropped before the spread — otherwise a caller could file the work under
+    // somebody else's name.
+    const { data, error } = await client.from('follow_ups')
+      .insert({ ...CRMAG.withoutAgentFields(req.body), property_id: req.params.id, agent_name: crmAgentFor(req) })
+      .select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data);
   } catch (err) {
@@ -11852,7 +11884,9 @@ app.post('/api/crm/properties/:id/phone-shops', requireCRM, async (req, res) => 
     const { data: prop } = await db.from('properties').select('phone_number_version').eq('id', req.params.id).maybeSingle();
     const ver = (prop && prop.phone_number_version) || 0;
     const { data, error } = await db.from('phone_shops')
-      .insert({ ...req.body, property_id: req.params.id, phone_number_version: ver }).select().single();
+      .insert({ ...CRMAG.withoutAgentFields(req.body), property_id: req.params.id,
+        phone_number_version: ver, agent_name: crmAgentFor(req) })
+      .select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -11900,7 +11934,8 @@ app.post('/api/crm/properties/:id/online-shops', requireCRM, async (req, res) =>
   try {
     const db = supabaseAdmin || supabasePublic;
     const { data, error } = await db.from('online_shops')
-      .insert({ ...req.body, property_id: req.params.id }).select().single();
+      .insert({ ...CRMAG.withoutAgentFields(req.body), property_id: req.params.id, agent_name: crmAgentFor(req) })
+      .select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.status(201).json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -11998,6 +12033,10 @@ app.put('/api/crm/properties/:id/dm-review', requireCRM, async (req, res) => {
       audit_notes:      audit_notes      || null,
       ai_filled:        ai_filled        || false,
       updated_at:       new Date().toISOString(),
+      // THE FIELD THAT WAS MISSING. Every one of the 133 rows in this table
+      // was written without it, so a whole table of real work counted for
+      // nobody — Katie's seventeen among them.
+      agent_name:       crmAgentFor(req),
     };
 
     const { data, error } = await db.from('dm_reviews')
@@ -12450,12 +12489,20 @@ app.get('/api/crm/tasks', requireCRM, requireAuth, async (req, res) => {
 // historical archive shows up immediately; set From to narrow it.
 app.get('/api/crm/completed', requireCRM, requireAuth, async (req, res) => {
   const client = supabaseAdmin || supabasePublic;
-  const dstr = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
-  const to = isDate(req.query.to) ? req.query.to : dstr(new Date());
+  // CENTRAL, not the server's zone and not UTC. Render runs in UTC, so
+  // `new Date()` there was already tomorrow from 7pm Austin time onward — a
+  // default range that ran a day ahead — while the UTC day bounds below cut
+  // the window at 7pm local, hiding work done that evening. Katie's reviews
+  // were logged at 18:0x; one hour later and the same week would have shown a
+  // different count depending on which of the two bugs bit first.
+  const to = isDate(req.query.to) ? req.query.to : WEEK.toChicagoYMD(new Date());
   const from = isDate(req.query.from) ? req.query.from : null;   // null = all-time
-  const toTs = to + 'T23:59:59.999Z';
-  const fromTs = from ? from + 'T00:00:00.000Z' : null;
+  // Timestamp columns are compared against the Central midnights that bound the
+  // range: [from 00:00 CT, the day after `to` 00:00 CT). Half-open at the top,
+  // because "23:59:59.999" drops anything stamped in that last millisecond.
+  const toTs = WEEK.chicagoStartOfDayISO(WEEK.addDaysYMD(to, 1));
+  const fromTs = from ? WEEK.chicagoStartOfDayISO(from) : null;
   const agent = String(req.query.agent || '').trim();
   const agentLc = agent.toLowerCase();
 
@@ -12467,7 +12514,9 @@ app.get('/api/crm/completed', requireCRM, requireAuth, async (req, res) => {
   // agent's completed count has been short by whatever fell past the ceiling —
   // and the total looked perfectly reasonable.
   const range = (mk, col, ts) => selectAll(() => {
-    let q = mk().lte(col, ts ? toTs : to);
+    // `ts` columns are instants and use the half-open Central window; plain
+    // date columns carry no time and compare as the dates they are.
+    let q = ts ? mk().lt(col, toTs) : mk().lte(col, to);
     if (from) q = q.gte(col, ts ? fromTs : from);
     return q;
   }, { label: 'crm/completed ' + col });
