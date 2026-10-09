@@ -30,6 +30,13 @@ const GUARDS = [
 
 // Public ON PURPOSE. Each line needs a reason, because each line is a hole.
 const ALLOWED = new Map([
+  ['USE /api/crm/properties/:id',
+                                  'the activity property stamp: middleware, not a route. It reads only '
+                                + 'req.params.id, writes res.locals.activityProperty and calls next() '
+                                + 'unconditionally. It returns nothing and answers nothing, so there is no '
+                                + 'response for an unauthenticated caller to get; the real CRM routes behind '
+                                + 'it keep their own requireCRM guard. Guarding it would be guarding a '
+                                + 'bookmark.'],
   ['USE /api',                    'activityWriteLogger: logging middleware, not a route. It reads nothing, '
                                 + 'returns nothing to the caller and calls next() unconditionally; the row is '
                                 + 'written on res.finish, after the guarded route has already decided.'],

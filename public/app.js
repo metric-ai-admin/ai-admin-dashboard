@@ -361,6 +361,43 @@ function logSectionView(tab) {
   } catch { /* never reaches the caller */ }
 }
 
+/* "Somebody opened this record."
+ *
+ * Declarative on purpose: a screen marks the thing that can be opened with
+ * data-record-open (the KIND of record), optionally data-record-id and
+ * data-record-property, and one delegated listener does the rest. Wiring each
+ * screen's own click handler would mean three places to forget.
+ *
+ * WHAT IS SENT: the kind, the id, the property, and the tab it happened in.
+ * Never a resident name, a unit, a balance or a note — and the server checks
+ * all of it again, rejecting an id that is not an id and a property that is
+ * not one of the real ones. An id that fails the shape test is dropped and the
+ * open is still recorded, which is why a key like
+ * "Hyde Park Square|112|Gonzalez, Maria" can never be stored as an id by
+ * accident.
+ *
+ * Fire-and-forget, keepalive, errors swallowed: opening a record must not wait
+ * on a log row. */
+function logRecordOpen(type, id, property) {
+  try {
+    const entity_type = String(type || '').trim().toLowerCase();
+    if (!/^[a-z0-9_-]{1,40}$/.test(entity_type)) return;
+    const section = document.querySelector('#tabs button[data-tab].active')?.dataset.tab || null;
+    fetch('/api/activity/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ section, entity_type, entity_id: id || null, property: property || null }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch { /* never reaches the caller */ }
+}
+
+document.addEventListener('click', e => {
+  const el = e.target.closest?.('[data-record-open]');
+  if (!el) return;
+  logRecordOpen(el.dataset.recordOpen, el.dataset.recordId, el.dataset.recordProperty);
+});
+
 function loadTab(tab) {
   logSectionView(tab);
   if (tab !== 'maintenance') {
@@ -10701,7 +10738,12 @@ function dqChange(a) {
 
 function dqCard(a) {
   const decided = a.decision;
-  return `<article class="${dqCardClass(a.status)}" data-key="${dqEsc(a.key)}">
+  // data-record-open marks this as an openable record for the activity log.
+  // NO data-record-id: the key is "property|unit|name" and carries a resident.
+  // The property is a business fact and the server checks it against the real
+  // list before storing it.
+  return `<article class="${dqCardClass(a.status)}" data-key="${dqEsc(a.key)}"
+    data-record-open="delinquent_account" data-record-property="${dqEsc(a.property)}">
     <header class="dq-card-head">
       <div>
         <div class="dq-name">${dqEsc(a.name)}</div>

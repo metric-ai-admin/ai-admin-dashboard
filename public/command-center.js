@@ -1020,6 +1020,12 @@ function ccTaskRow(t) {
   const done = st0.done;
   const d = document.createElement('div');
   d.className = 'cc-task' + (done ? ' done' : '') + (st0.by === 'auto' ? ' cc-autodone' : '');
+  // Opening a card is an activity-log record: the work order's id and its
+  // property, nothing about the resident. One delegated listener in app.js
+  // picks these up; see logRecordOpen there.
+  d.dataset.recordOpen = 'work_order';
+  if (t.wo.woId) d.dataset.recordId = String(t.wo.woId);
+  if (t.wo.property) d.dataset.recordProperty = String(t.wo.property);
   const meta = [];
   if (t.wo.property) meta.push(`<span class="cc-chip">${esc(t.wo.property)}${t.wo.unit ? ' · ' + esc(t.wo.unit) : ''}</span>`);
   if (t.wo.tech) meta.push(`<span class="cc-chip">👤 ${esc(t.wo.tech)}</span>`);

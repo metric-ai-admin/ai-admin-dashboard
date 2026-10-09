@@ -623,6 +623,91 @@ function activityWriteLogger(req, res, next) {
 // it — and this is a POST, which that middleware logs as a 'write'. Were the
 // order reversed, every beacon would write TWO rows: the view it means and a
 // 'write' to /api/activity that means nothing. A test pins the order.
+// The real property names, cached, for two jobs: stamping property_name on a
+// CRM write, and checking what an OPEN beacon claims.
+//
+// A CHECK, NOT A SANITISER. property_name is the one column where free text
+// would look completely normal — "Hyde Park Square" and "Gonzalez, Maria, unit
+// 112" are both just strings — so a pattern test protects nothing. Only a name
+// that exists is stored.
+//
+// A cold or stale cache drops the property rather than blocking: an audit row
+// without a property is worth more than a slow page, and the next beacon gets
+// it. Never awaited on the request path.
+const ACT_PROP_TTL_MS = 10 * 60 * 1000;
+let actPropAt = 0, actPropNames = [], actPropById = new Map(), actPropLoading = false;
+function actPropRefresh() {
+  if (actPropLoading || Date.now() - actPropAt < ACT_PROP_TTL_MS) return;
+  if (!CRM_CONFIGURED) return;
+  actPropLoading = true;
+  (supabaseAdmin || supabasePublic).from('properties').select('id, property_name')
+    .then(({ data, error }) => {
+      if (!error && data) {
+        actPropNames = data.map(r => r.property_name).filter(Boolean);
+        actPropById = new Map(data.filter(r => r.property_name).map(r => [String(r.id), r.property_name]));
+        actPropAt = Date.now();
+      }
+    })
+    .catch(() => {})
+    .finally(() => { actPropLoading = false; });
+}
+
+// Stamp the property on a CRM write, FROM THE PATH — never from the body.
+//
+// /api/crm/properties/:id/... carries the id in the URL, which the route owns.
+// The body does not decide what gets audited; if it did, the audit would
+// record whatever the caller wished it recorded.
+//
+// Collections and Maintenance get no equivalent, and that is a finding rather
+// than an omission: neither has a write route whose subject is one property.
+// Collections has two writes (generate, decision-queue/decide) and Maintenance
+// three (sync, reconcile, command-center/state); all are portfolio-wide except
+// `decide`, whose property exists only inside the request body.
+app.use('/api/crm/properties/:id', (req, res, next) => {
+  actPropRefresh();
+  try {
+    const name = actPropById.get(String(req.params.id));
+    if (name) res.locals.activityProperty = name;
+  } catch { /* never block a write to record one */ }
+  next();
+});
+
+// POST /api/activity/open — "somebody opened this record".
+//
+// Registered BEFORE app.use('/api', activityWriteLogger) for the same reason
+// as /view below: a POST declared after it would log twice, once as the open
+// it means and once as a meaningless write to /api/activity.
+//
+// WHAT IT RECORDS: the kind of record, its id, and the property. Nothing about
+// the resident — no name, no unit, no balance. The id is an id and the type is
+// a slug; both reject rather than strip, and the property has to be one that
+// exists.
+app.post('/api/activity/open', requireAuth, (req, res) => {
+  res.status(204).end();
+  try {
+    const who = activityActor(req);
+    if (!who) return;
+    const b = req.body || {};
+    const section = ACT.normalizeSection(b.section);
+    const entity_type = ACT.normalizeEntityType(b.entity_type);
+    const entity_id = ACT.normalizeEntityId(b.entity_id);
+    // Section and type are what make the row mean anything. An id that fails
+    // the shape test is dropped on its own — the open still happened.
+    if (!section || !entity_type) return;
+    actPropRefresh();
+    activityLog.log({
+      ...who,
+      event: 'open',
+      action: 'Opened a record',
+      section,
+      entity_type,
+      entity_id,
+      property_name: ACT.normalizeProperty(b.property, actPropNames),
+      view_bucket: ACT.viewBucket(new Date()),
+    });
+  } catch { /* a beacon never reaches the caller */ }
+});
+
 app.post('/api/activity/view', requireAuth, (req, res) => {
   res.status(204).end();
   try {
