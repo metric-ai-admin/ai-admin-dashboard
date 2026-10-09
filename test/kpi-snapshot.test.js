@@ -222,6 +222,20 @@ t('an unwritable snapshot costs the comparison, not the report', () => {
   assert.ok(/catch/.test(body) && /console\.warn/.test(body));
 });
 
+t('a captured row says which projection definition it was computed under', () => {
+  // Checked against kpi_dashboard_17.html on 2026-10-09: her page has no
+  // per-property projected-occupancy figure, and her nine-week projection
+  // needs lease expiry dates this dashboard does not sync. So this number is
+  // ours and provisional, and the row has to say so — otherwise a week
+  // captured under one definition and a week captured under the next get
+  // compared to each other with nothing to show they are different questions.
+  const sp = S.rowsFromReport(fakeReport).find(r => r.property === 'Sunset Palms');
+  assert.strictEqual(sp.sources.__projection_basis, S.PROJECTION_BASIS);
+  assert.ok(/@\d{4}-\d{2}-\d{2}$/.test(S.PROJECTION_BASIS),
+    'the basis must carry the date it was fixed, so a change is visible');
+  assert.strictEqual(sp.sources.units, 'appfolio', 'the real provenances must survive');
+});
+
 t('the comparison compares against the last week actually captured', () => {
   const at = SERVER.indexOf("app.get('/api/kpi/compare/:week_ending'");
   assert.ok(at >= 0);
