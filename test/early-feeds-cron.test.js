@@ -25,11 +25,22 @@ const BLOCK = AT < 0 ? '' : server.slice(AT, server.indexOf("cron.schedule('30 5
 // [minute, 'label'] pairs, read out of the table itself.
 const SCHEDULE = [...BLOCK.matchAll(/\[(\d+),\s*'([a-z_-]+)'/g)].map(m => [Number(m[1]), m[2]]);
 
-t('all six feeds are scheduled', () => {
+t('all eight early feeds are scheduled', () => {
   assert.ok(AT >= 0, 'the EARLY_FEEDS table is gone');
   const want = ['applications', 'lease-history', 'showings',
-    'unit_vacancy', 'rent_roll', 'lease_expiration_detail'];
+    'unit_vacancy', 'rent_roll', 'lease_expiration_detail',
+    'tenant_tickler', 'work_order_labor_summary'];
   assert.deepStrictEqual(SCHEDULE.map(s => s[1]), want);
+});
+
+t('all four Monday Brief sources are scheduled together', () => {
+  // Three of these were scheduled and tenant_tickler was held back for a day.
+  // A brief built from three fresh feeds and one from whenever somebody last
+  // pressed Sync All mixes days inside one document, which is harder to spot
+  // than all four being equally old.
+  const brief = ['tenant_tickler', 'unit_vacancy', 'rent_roll', 'lease_expiration_detail'];
+  const have = SCHEDULE.map(s => s[1]);
+  brief.forEach(f => assert.ok(have.includes(f), f + ' feeds the Monday Brief but is on no schedule'));
 });
 
 t('they are staggered, never two on the same minute', () => {
@@ -72,6 +83,56 @@ t('each is its own cron, and a failure is logged not swallowed', () => {
   assert.ok(/\[early-sync\] \$\{label\} FAILED/.test(BLOCK));
   assert.ok(/timezone: LYNDSAY_TIMEZONE/.test(BLOCK),
     'without a timezone these drift an hour twice a year, across the 05:30 boundary');
+});
+
+// ---- the Command Center feeds ---------------------------------------------
+
+const MAT = server.indexOf('const MAINT_FEEDS = [');
+const MBLOCK = MAT < 0 ? '' : server.slice(MAT, MAT + 900);
+const MSCHED = [...MBLOCK.matchAll(/\[(\d+),\s*'([a-z-]+)'\]/g)].map(m => [Number(m[1]), m[2]]);
+
+t('the five Command Center feeds are scheduled', () => {
+  assert.ok(MAT >= 0, 'the MAINT_FEEDS table is gone');
+  assert.deepStrictEqual(MSCHED.map(m => m[1]),
+    ['inspections', 'billable', 'labor', 'inventory', 'custom-fields']);
+});
+
+t('they run AFTER the 06:00 work-order sync, staggered', () => {
+  assert.ok(/\$\{minute\} 6 \* \* \*/.test(MBLOCK), 'they are not in the 6 AM hour');
+  const mins = MSCHED.map(m => m[0]);
+  assert.ok(Math.min(...mins) >= 5, 'something runs on the 06:00 minute the WO sync holds');
+  assert.ok(Math.max(...mins) <= 25, 'a feed runs later than agreed');
+  const sorted = [...mins].sort((a, b) => a - b);
+  assert.deepStrictEqual(mins, sorted);
+  for (let i = 1; i < sorted.length; i++) {
+    assert.ok(sorted[i] - sorted[i - 1] >= 5, 'two AppFolio jobs less than five minutes apart');
+  }
+});
+
+t('custom-fields is last, because it is the heaviest pull', () => {
+  // 24,000 rows. Ahead of the others it would put the slowest job in front of
+  // the board Erick opens on.
+  assert.strictEqual(MSCHED[MSCHED.length - 1][1], 'custom-fields');
+});
+
+t('each is its own cron and names itself when it fails', () => {
+  assert.ok(/MAINT_FEEDS\.forEach/.test(MBLOCK));
+  assert.ok(/\[maint-sync\] \$\{name\} FAILED/.test(MBLOCK));
+  assert.ok(/timezone: LYNDSAY_TIMEZONE/.test(MBLOCK));
+});
+
+t('every scheduled maintenance feed is a route that exists', () => {
+  // The table builds its path by string concatenation, so a typo here is a
+  // 404 at 6 AM that nobody is awake to see.
+  MSCHED.forEach(([, name]) => assert.ok(
+    server.includes("app.post('/api/maintenance/sync/" + name + "'"),
+    '/api/maintenance/sync/' + name + ' is scheduled but not registered'));
+});
+
+t('no two AppFolio jobs share a minute across the two blocks', () => {
+  const all = SCHEDULE.map(s => '5:' + s[0]).concat(MSCHED.map(m => '6:' + m[0]));
+  all.push('5:0', '5:30', '6:0');   // occupancy, the leasing block, the WO sync
+  assert.strictEqual(new Set(all).size, all.length, 'two jobs collide');
 });
 
 // ---- the date the comparison shows ----------------------------------------

@@ -18475,6 +18475,13 @@ const EARLY_FEEDS = [
   [20, 'unit_vacancy',           () => require('./appfolio-reports.js').syncReport('unit_vacancy').then(r => r?.rowCount)],
   [25, 'rent_roll',              () => require('./appfolio-reports.js').syncReport('rent_roll').then(r => r?.rowCount)],
   [35, 'lease_expiration_detail', () => require('./appfolio-reports.js').syncReport('lease_expiration_detail').then(r => r?.rowCount)],
+  // The fourth leg of the Monday Morning Brief. Three of its four sources were
+  // scheduled on 2026-10-12 and this one was held back — which is worse than
+  // leaving all four alone: a brief built from three fresh feeds and one from
+  // whenever somebody last pressed Sync All mixes days inside one document,
+  // and that is harder to spot than everything being equally old.
+  [40, 'tenant_tickler',         () => require('./appfolio-reports.js').syncReport('tenant_tickler').then(r => r?.rowCount)],
+  [45, 'work_order_labor_summary', () => require('./appfolio-reports.js').syncReport('work_order_labor_summary').then(r => r?.rowCount)],
 ];
 EARLY_FEEDS.forEach(([minute, label, run]) => {
   cron.schedule(`${minute} 5 * * *`, () => {
@@ -18542,6 +18549,36 @@ cron.schedule('0 6 * * *', () => {
     .then(r => logLine(`[wo-sync] ${r?.synced ?? '?'} work orders`))
     .catch(err => logLine(`[wo-sync] FAILED: ${err.message}`));
 }, { timezone: LYNDSAY_TIMEZONE });
+
+// The five Command Center support feeds, after the work orders they describe.
+//
+// Erick presses these often enough that they were only three days old when
+// they were found — the mildest case of the button-only gap, but the same one.
+// Each replaces its table wholesale (delete then insert), so a run that fails
+// halfway leaves the table short; they are five separate crons so a failure in
+// one does not skip the rest, and each says so in the log.
+//
+// AFTER 06:00, not before: custom_fields is 24,000 rows and the heaviest pull
+// of the morning, and running it ahead of the work-order sync would put the
+// slowest job in front of the one Erick's board actually opens on.
+//
+// Five minutes apart for the same reason as the 05:00 block — one job at a
+// time against AppFolio's rate limiter.
+const MAINT_FEEDS = [
+  [5,  'inspections'],
+  [10, 'billable'],
+  [15, 'labor'],
+  [20, 'inventory'],
+  [25, 'custom-fields'],
+];
+MAINT_FEEDS.forEach(([minute, name]) => {
+  cron.schedule(`${minute} 6 * * *`, () => {
+    if (!CRM_CONFIGURED) return;
+    callOwnRoute(`/api/maintenance/sync/${name}`, {})
+      .then(r => logLine(`[maint-sync] ${name}: ${r?.synced ?? '?'} rows`))
+      .catch(err => logLine(`[maint-sync] ${name} FAILED: ${err.message}`));
+  }, { timezone: LYNDSAY_TIMEZONE });
+});
 
 // The closure loop, hourly through the working day.
 //
