@@ -7688,28 +7688,39 @@ app.post('/api/leasing/sync/showings', requireMetricAccess, async (req, res) => 
 // POST /api/leasing/sync/applications — upsert leasing_applications on rental_application_id.
 app.post('/api/leasing/sync/applications', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
-  // NO from_date BY DEFAULT.
+  // received_on_from / received_on_to, and ONLY that spelling.
   //
-  // It used to send 2026-01-01 unconditionally, and this was the only one of
-  // the three leasing syncs that sent a date at all — showings and
-  // lease_history ask for everything and get 467 and 79 rows. This one asked
-  // with a date and got TWENTY, on a morning when the table already held 67.
+  // Measured on 2026-10-12 by scripts/probe-applications-report.js against a
+  // baseline taken with no date at all: this pair returned 144 rows spanning
+  // 2026-07-02..2026-10-09, while received_from/_to, received_date_from/_to,
+  // application_received_from/_to, application_date_from/_to,
+  // date_range_from/_to, from_date/to_date, from/to, start_date/end_date,
+  // received_at_from/_to, lease_start_date_from/_to and move_in_date_from/_to
+  // all came back identical to the baseline's 20.
   //
-  // That is the shape worth reading carefully: a sync returning fewer rows
-  // than the table it fills is not returning a stale set, it is returning a
-  // DIFFERENT set each run, and the table is the union of every run since the
-  // sync was written. Katie's export carries 123 applications, all received
-  // between 2026-07-15 and 2026-10-09 — every one of them after the date we
-  // were sending, so a filter on Received could not have dropped a single one.
-  // Whatever from_date filters on, it is not the column we assumed.
+  // AN IGNORED PARAMETER LOOKS EXACTLY LIKE ONE THAT WORKS, which is the same
+  // lesson showings taught with showing_date_from. So do not "also try"
+  // another spelling here: it would silently widen nothing and make the next
+  // person think it did.
   //
-  // Still accepted in the body, because narrowing a manual run is a reasonable
-  // thing to want; it is just not what an unattended sync should do.
-  const from_date = (req.body && req.body.from_date) || null;
+  // WHY IT MATTERED. Sending from_date — a name this report ignores — left the
+  // request at its default window of about four weeks, so the sync returned 20
+  // rows on a morning when the table already held 67. A sync returning fewer
+  // rows than the table it fills is not returning a stale set, it is returning
+  // a DIFFERENT set each run, and the table was the union of every run since
+  // the sync was written.
+  //
+  // NINETY DAYS BACK, off the CENTRAL day. Katie's export carries 123
+  // applications received from 2026-07-15, which is ninety days before the day
+  // she pulled it — her saved report is a rolling ninety-day window and this
+  // matches it rather than guessing wider. Forward to today, because an
+  // application cannot be received in the future.
+  const today = WEEK.toChicagoYMD(new Date());
+  const received_on_from = (req.body && req.body.from_date) || WEEK.addDaysYMD(today, -90);
+  const received_on_to   = (req.body && req.body.to_date)   || today;
   try {
-    const params = { property_visibility: 'active', paginate_results: false };
-    if (from_date) params.from_date = from_date;
-    const raw = await appfolioReportsFetch(APPFOLIO_APPLICATIONS_REPORT, params);
+    const raw = await appfolioReportsFetch(APPFOLIO_APPLICATIONS_REPORT,
+      { received_on_from, received_on_to, property_visibility: 'active', paginate_results: false });
     const now = new Date().toISOString();
     const seen = new Set();
     const rows = [];
@@ -7766,7 +7777,7 @@ app.post('/api/leasing/sync/applications', requireMetricAccess, async (req, res)
     }
     res.json({
       ok: true, synced, mapped: rows.length, raw: raw.length,
-      serviceRole: !!supabaseAdmin, from_date, droppedColumn, timestamp: now,
+      serviceRole: !!supabaseAdmin, received_on_from, received_on_to, droppedColumn, timestamp: now,
       // Said out loud on every run. A sync that returns fewer rows than the
       // table it fills has been building a union instead of a picture, and
       // that is invisible unless somebody is told the two numbers.

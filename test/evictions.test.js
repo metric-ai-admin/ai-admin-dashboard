@@ -150,3 +150,61 @@ t('the report is registered for the morning cron', () => {
 
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);
+
+// ---- 2026-10-12: a zero has to say which zero it is ------------------------
+
+t('the stage column is detected, not pinned', () => {
+  // THE BUG. The first wiring read `eviction_status` and nothing else, so a
+  // report calling it anything else produced a silent zero — indistinguishable
+  // from "nobody is in eviction", the one reading that needs no action.
+  const r = EV.countFrom([{ property_name: 'X', tenant_name: 'A', eviction_stage: 'Need To File Eviction' }], {});
+  assert.strictEqual(r.__stats.statusField, 'eviction_stage');
+  assert.strictEqual(r.X.needToFile, 1);
+});
+
+t('every row is accounted for in the tally', () => {
+  const rows = [
+    { property_name: 'X', tenant_name: 'A', eviction_status: 'Need To File Eviction' },
+    { property_name: 'X', tenant_name: 'B', eviction_status: '' },
+    { property_name: '', tenant_name: 'C', eviction_status: 'Pending JP Court Date' },
+  ];
+  const r = EV.countFrom(rows, {});
+  assert.strictEqual(r.__stats.rows, 3);
+  assert.strictEqual(r.__stats.withStage, 2, 'the blank one has no stage');
+  assert.strictEqual(r.__stats.unresolvedProperty, 1);
+  assert.strictEqual(r.__stats.counted, 1);
+});
+
+t('the tally does not leak into the counts', () => {
+  // byProperty is iterated by the report; a __stats key in it would be read as
+  // a property called __stats.
+  const r = EV.countFrom([{ property_name: 'X', tenant_name: 'A', eviction_status: 'Pending Writ Wait Period' }], {});
+  assert.deepStrictEqual(Object.keys(r), ['X']);
+  assert.ok(r.__stats, 'but it is still reachable');
+});
+
+t('each cause of a zero gets its own sentence', () => {
+  assert.ok(/store is empty/.test(EV.diagnose(EV.countFrom([], {}).__stats)));
+  assert.ok(/calls it something else/.test(
+    EV.diagnose(EV.countFrom([{ property_name: 'X', foo: 1 }], {}).__stats)));
+  assert.ok(/none with a value/.test(
+    EV.diagnose(EV.countFrom([{ property_name: 'X', eviction_status: '' }], {}).__stats)));
+  const notDq = EV.countFrom([{ property_name: 'X', tenant_name: 'A', eviction_status: 'Need To File Eviction' }],
+    { isDelinquent: () => false }).__stats;
+  assert.ok(/not on the delinquency sheet/.test(EV.diagnose(notDq)));
+});
+
+t('a working count says nothing — silence is the success case', () => {
+  const r = EV.countFrom([{ property_name: 'X', tenant_name: 'A', eviction_status: 'Pending JP Court Date' }], {});
+  assert.strictEqual(EV.diagnose(r.__stats), null);
+});
+
+t('the report turns a zero into a named gap', () => {
+  const build = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-build.js'), 'utf8');
+  assert.ok(/EV\.diagnose\(evictions\.__stats\)/.test(build));
+  assert.ok(/gaps\.push\('evictions: '/.test(build));
+  assert.ok(/evictionStats:/.test(build), 'the tally must reach the response');
+  // And it must not pin the column names, or detection never runs.
+  assert.ok(!/status: r => EV\.clean\(r\.eviction_status\)/.test(build),
+    'pinning the column is the bug this fixed');
+});

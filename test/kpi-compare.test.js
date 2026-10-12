@@ -418,9 +418,16 @@ t('canceled and denied are marked as a definition difference', () => {
     assert.ok(C.EXPLANATIONS[m], m + ' has no explanation');
     assert.ok(/^SOURCE:/.test(C.EXPLANATIONS[m]), m + ' must name the sync gap');
   });
-  assert.ok(/^DEFINITION:/.test(C.EXPLANATIONS.evictionsInProcess),
-    'hers includes EHO/Good Standing; ours is tenant_status = Evict');
-  assert.ok(/unavailable/.test(C.EXPLANATIONS.needToFile));
+  // No longer a difference of definition: both sides read Occupancy Custom
+  // Fields and count delinquent residents carrying a stage. The explanation
+  // has to say what a gap MEANS now, and "DEFINITION" would send somebody to
+  // reconcile two rules that are already the same one.
+  assert.ok(/same source/.test(C.EXPLANATIONS.evictionsInProcess),
+    'it still describes the old delinquency_kpi rule');
+  assert.ok(!/tenant_status = Evict/.test(C.EXPLANATIONS.evictionsInProcess));
+  assert.ok(/same source/.test(C.EXPLANATIONS.needToFile));
+  assert.ok(!/we do not sync/.test(C.EXPLANATIONS.needToFile),
+    'we do sync it now — an explanation that outlives its fact is worse than none');
 });
 
 t('a percentage is formatted by its metric, not by its size', () => {
