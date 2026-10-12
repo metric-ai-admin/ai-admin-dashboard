@@ -332,6 +332,30 @@ const REPORTS = [
     feeds: 'Renewal status — Monday Morning Brief',
     params: {},
   },
+
+  // ---- Occupancy Custom Fields: where the eviction stage actually lives ----
+  //
+  // Registered 2026-10-12. The delinquency report does NOT return the eviction
+  // columns — they come back blank on every row — so needToFile could only
+  // ever be zero on our side while Katie read 13 for the same week. She gets
+  // it from this report, under the tab she calls "tenant custom fields".
+  //
+  // It is the same base report her export names in its own header:
+  // "Base Report: Occupancy Custom Fields". Her 10/04-10/10 file carries 794
+  // rows from it, 120 of them with an Eviction Status set.
+  //
+  // NOTE THE GRAIN: one row per OCCUPANCY, not per property. It carries
+  // Occupancy ID, Unit ID and Property ID and no property NAME, which is what
+  // lib/appfolio-properties.js translates.
+  {
+    id: 'occupancy_custom_fields',
+    resource: 'occupancy_custom_fields',
+    label: 'Occupancy Custom Fields',
+    group: 'Collections',
+    priority: 9,
+    feeds: 'KPI evictions — Eviction Status, stage and court dates',
+    params: { property_visibility: 'active' },
+  },
 ];
 
 const byId = id => REPORTS.find(r => r.id === id);

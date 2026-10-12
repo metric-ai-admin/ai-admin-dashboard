@@ -25,11 +25,11 @@ const BLOCK = AT < 0 ? '' : server.slice(AT, server.indexOf("cron.schedule('30 5
 // [minute, 'label'] pairs, read out of the table itself.
 const SCHEDULE = [...BLOCK.matchAll(/\[(\d+),\s*'([a-z_-]+)'/g)].map(m => [Number(m[1]), m[2]]);
 
-t('all eight early feeds are scheduled', () => {
+t('all nine early feeds are scheduled', () => {
   assert.ok(AT >= 0, 'the EARLY_FEEDS table is gone');
   const want = ['applications', 'lease-history', 'showings',
     'unit_vacancy', 'rent_roll', 'lease_expiration_detail',
-    'tenant_tickler', 'work_order_labor_summary'];
+    'tenant_tickler', 'work_order_labor_summary', 'occupancy_custom_fields'];
   assert.deepStrictEqual(SCHEDULE.map(s => s[1]), want);
 });
 

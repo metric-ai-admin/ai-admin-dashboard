@@ -410,10 +410,13 @@ t('residentDiff reads the columns the store actually has', () => {
 });
 
 t('canceled and denied are marked as a definition difference', () => {
-  ['canceled', 'denied'].forEach(m => {
+  // Both sides count standing applications now, so these are no longer a
+  // difference of definition — what is left is the 53 rows her tab carries
+  // and leasing_applications does not. Marked SOURCE, which is actionable;
+  // DEFINITION would have read as "nothing to do here".
+  ['applications', 'canceled', 'denied'].forEach(m => {
     assert.ok(C.EXPLANATIONS[m], m + ' has no explanation');
-    assert.ok(/^DEFINITION:/.test(C.EXPLANATIONS[m]),
-      m + ' must be marked DEFINITION like applications — hers has no date filter');
+    assert.ok(/^SOURCE:/.test(C.EXPLANATIONS[m]), m + ' must name the sync gap');
   });
   assert.ok(/^DEFINITION:/.test(C.EXPLANATIONS.evictionsInProcess),
     'hers includes EHO/Good Standing; ours is tenant_status = Evict');

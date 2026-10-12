@@ -18564,6 +18564,10 @@ const EARLY_FEEDS = [
   // and that is harder to spot than everything being equally old.
   [40, 'tenant_tickler',         () => require('./appfolio-reports.js').syncReport('tenant_tickler').then(r => r?.rowCount)],
   [45, 'work_order_labor_summary', () => require('./appfolio-reports.js').syncReport('work_order_labor_summary').then(r => r?.rowCount)],
+  // Where the eviction stage lives. delinquency_as_of returns those columns
+  // blank, so without this needToFile could only ever be zero while Katie
+  // read 13 for the same week.
+  [50, 'occupancy_custom_fields', () => require('./appfolio-reports.js').syncReport('occupancy_custom_fields').then(r => r?.rowCount)],
 ];
 EARLY_FEEDS.forEach(([minute, label, run]) => {
   cron.schedule(`${minute} 5 * * *`, () => {

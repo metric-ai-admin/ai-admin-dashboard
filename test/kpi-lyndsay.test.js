@@ -85,31 +85,36 @@ t('Vacant Rented is a STATE, counted over every application', () => {
     { property_name: 'X', application_date: '2026-09-22', status: 'Approved', detailed_status: 'Converted' },
     { property_name: 'X', application_date: '2026-07-15', status: 'Approved', detailed_status: 'Converting' },
   ];
-  assert.strictEqual(K.vacantRentedFrom(rows).X.vacantRented, 2,
+  // Renamed from vacantRentedFrom on 2026-10-12. Her Vacant Rented NUMBER is
+  // column H of the occupancy sheet; Converting is the list behind her hover
+  // detail and her projection, and it now travels under its own name.
+  assert.strictEqual(K.convertingFrom(rows).X.vacantRentedConverting, 2,
     'applications outside the week were dropped');
-  // appsFrom, which IS weekly, must not also count it.
-  assert.strictEqual(K.appsFrom(rows, W.weekStart, W.weekEnd).X.vacantRented, undefined);
+  // Her "Approved Apps with Signed Lease" is this same list.
+  assert.strictEqual(K.convertingFrom(rows).X.approved, 2);
+  // appsFrom must not also set it.
+  assert.strictEqual(K.appsFrom(rows, W.weekStart, W.weekEnd).X.vacantRentedConverting, undefined);
 });
 t('"Converted" is not "Converting" — the move-in already happened', () => {
-  const r = K.vacantRentedFrom([
+  const r = K.convertingFrom([
     { property_name: 'X', detailed_status: 'Converted' },
     { property_name: 'X', detailed_status: 'Approved' },
   ]).X;
-  assert.ok(!r.vacantRented, 'Converted or Approved counted as Vacant Rented');
+  assert.ok(!r.vacantRentedConverting, 'Converted or Approved counted as Converting');
 });
 t('a row with no detailed_status is unknown, not "not converting"', () => {
   // Rows synced before migration 075 have none. Reading null as "no" would
   // under-report silently; counting it separately makes the answer say it is
   // incomplete.
-  const r = K.vacantRentedFrom([
+  const r = K.convertingFrom([
     { property_name: 'X', detailed_status: null },
     { property_name: 'X' },
     { property_name: 'X', detailed_status: 'Converting' },
   ]).X;
-  assert.strictEqual(r.vacantRented, 1);
+  assert.strictEqual(r.vacantRentedConverting, 1);
   assert.strictEqual(r.vacantRentedUnknown, 2);
 });
-t('each status lands in exactly one bucket', () => {
+t('the weekly counts still split each status into exactly one bucket', () => {
   const r = K.appsFrom([
     { property_name: 'X', application_date: '2026-09-22', status: 'Approved' },
     { property_name: 'X', application_date: '2026-09-22', status: 'Canceled' },
@@ -117,9 +122,37 @@ t('each status lands in exactly one bucket', () => {
     { property_name: 'X', application_date: '2026-09-22', status: 'Decision Pending' },
     { property_name: 'X', application_date: '2026-09-22', status: 'In Screening' },
   ], W.weekStart, W.weekEnd).X;
-  assert.strictEqual(r.applications, 5);
-  assert.strictEqual(r.approved + r.canceled + r.denied + r.pending, 5);
+  assert.strictEqual(r.applicationsReceived, 5);
+  assert.strictEqual(r.approvedReceived + r.canceledReceived + r.deniedReceived + r.pending, 5);
   assert.strictEqual(r.pending, 2);
+});
+
+t('her standing counts ignore the week entirely', () => {
+  // THE WHOLE POINT OF THE 2026-10-12 CHANGE. The report has to replace hers
+  // without an owner noticing, and hers has no date filter: an application
+  // received in July and still pending counts today. A week-scoped count read
+  // 0 against her 11 at Windy Hill.
+  const outside = [
+    { property_name: 'X', application_date: '2026-07-01', status: 'Decision Pending' },
+    { property_name: 'X', application_date: '2026-07-02', status: 'Canceled' },
+    { property_name: 'X', application_date: '2026-07-03', status: 'Denied' },
+    // Carried through to a signed lease: in neither her pending pile nor ours.
+    { property_name: 'X', application_date: '2026-07-04', status: 'Approved', detailed_status: 'Converting' },
+    { property_name: 'X', application_date: '2026-07-05', status: 'Approved', detailed_status: 'Converted' },
+  ];
+  const r = K.appsFrom(outside, W.weekStart, W.weekEnd).X;
+  assert.strictEqual(r.applications, 1, 'only the one still standing');
+  assert.strictEqual(r.canceled, 1);
+  assert.strictEqual(r.denied, 1);
+  // And nothing came in during the week.
+  assert.strictEqual(r.applicationsReceived, undefined);
+});
+
+t('an approved application with no lease yet is still pending, like hers', () => {
+  const r = K.appsFrom([
+    { property_name: 'X', application_date: '2026-07-01', status: 'Approved', detailed_status: 'Approved' },
+  ], W.weekStart, W.weekEnd).X;
+  assert.strictEqual(r.applications, 1);
 });
 
 console.log('\nmove-ins and move-outs');
