@@ -326,3 +326,36 @@ t('a null or empty value is still null, not today', () => {
   assert.strictEqual(K.inWeek(null, '2026-09-27', '2026-10-03'), false);
 });
 console.log(`\n${pass} passing`);
+
+// ---- 2026-10-12: her Approved rule, and the column it needs -----------------
+
+t('with lease_start_date present, her exact rule is used', () => {
+  // Approved AND carrying a lease start is "carried through to a signed
+  // lease", and counts in neither her pending pile nor ours.
+  const r = K.appsFrom([
+    { property_name: 'X', application_date: '2026-07-01', status: 'Approved', lease_start_date: '2026-08-01' },
+    { property_name: 'X', application_date: '2026-07-02', status: 'Approved', lease_start_date: null },
+    { property_name: 'X', application_date: '2026-07-03', status: 'Decision Pending', lease_start_date: null },
+  ], W.weekStart, W.weekEnd).X;
+  assert.strictEqual(r.applications, 2, 'only the one with a lease start is excluded');
+});
+
+t('a null lease start is an ANSWER, not a reason to fall back', () => {
+  // Rows that have the column and no value mean "no lease start". Treating
+  // that as unknown and asking detailed_status instead would make the rule
+  // change meaning as the table fills.
+  const r = K.appsFrom([
+    { property_name: 'X', application_date: '2026-07-01', status: 'Approved', detailed_status: 'Converting', lease_start_date: null },
+  ], W.weekStart, W.weekEnd).X;
+  assert.strictEqual(r.applications, 1, 'detailed_status overrode a column that was present');
+});
+
+t('without the column at all, it falls back to detailed_status', () => {
+  // Until migration 087 and a full sync. The fallback is the nearest thing
+  // this feed has ever carried, and it is not her rule.
+  const r = K.appsFrom([
+    { property_name: 'X', application_date: '2026-07-01', status: 'Approved', detailed_status: 'Converting' },
+    { property_name: 'X', application_date: '2026-07-02', status: 'Approved', detailed_status: 'Approved' },
+  ], W.weekStart, W.weekEnd).X;
+  assert.strictEqual(r.applications, 1);
+});

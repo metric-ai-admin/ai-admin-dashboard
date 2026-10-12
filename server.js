@@ -7688,9 +7688,28 @@ app.post('/api/leasing/sync/showings', requireMetricAccess, async (req, res) => 
 // POST /api/leasing/sync/applications — upsert leasing_applications on rental_application_id.
 app.post('/api/leasing/sync/applications', requireMetricAccess, async (req, res) => {
   if (!CRM_CONFIGURED) return res.status(503).json({ ok: false, error: 'Supabase not configured' });
-  const from_date = (req.body && req.body.from_date) || '2026-01-01';
+  // NO from_date BY DEFAULT.
+  //
+  // It used to send 2026-01-01 unconditionally, and this was the only one of
+  // the three leasing syncs that sent a date at all — showings and
+  // lease_history ask for everything and get 467 and 79 rows. This one asked
+  // with a date and got TWENTY, on a morning when the table already held 67.
+  //
+  // That is the shape worth reading carefully: a sync returning fewer rows
+  // than the table it fills is not returning a stale set, it is returning a
+  // DIFFERENT set each run, and the table is the union of every run since the
+  // sync was written. Katie's export carries 123 applications, all received
+  // between 2026-07-15 and 2026-10-09 — every one of them after the date we
+  // were sending, so a filter on Received could not have dropped a single one.
+  // Whatever from_date filters on, it is not the column we assumed.
+  //
+  // Still accepted in the body, because narrowing a manual run is a reasonable
+  // thing to want; it is just not what an unattended sync should do.
+  const from_date = (req.body && req.body.from_date) || null;
   try {
-    const raw = await appfolioReportsFetch(APPFOLIO_APPLICATIONS_REPORT, { from_date, property_visibility: 'active', paginate_results: false });
+    const params = { property_visibility: 'active', paginate_results: false };
+    if (from_date) params.from_date = from_date;
+    const raw = await appfolioReportsFetch(APPFOLIO_APPLICATIONS_REPORT, params);
     const now = new Date().toISOString();
     const seen = new Set();
     const rows = [];
@@ -7718,12 +7737,41 @@ app.post('/api/leasing/sync/applications', requireMetricAccess, async (req, res)
         status: r.application_status != null ? String(r.application_status) : null,
         detailed_status: r.status != null ? String(r.status) : null,
         move_in_date: leasingDateOnly(r.move_in_date),
+        // THE COLUMN HER RULE TESTS. Katie's "New Applications" excludes
+        // anything Approved WITH a lease start date, and without this our
+        // side has to approximate that with detailed_status — defensible, and
+        // not her rule. Read from whichever name the report uses; the probe
+        // (scripts/probe-applications-report.js) prints which one is present.
+        //
+        // Writing it is conditional on migration 087 having been run: an
+        // unknown column fails the whole upsert, and losing the sync to gain
+        // a column is the wrong trade.
+        lease_start_date: leasingDateOnly(
+          r.lease_start_date != null ? r.lease_start_date
+            : (r.lease_start != null ? r.lease_start : r.lease_from)),
         synced_at: now,
       });
     }
     leasingSyncLog('applications', raw, rows);
-    const synced = await leasingSyncUpsert('leasing_applications', rows, 'rental_application_id');
-    res.json({ ok: true, synced, mapped: rows.length, raw: raw.length, serviceRole: !!supabaseAdmin, from_date, timestamp: now });
+    // Retried without lease_start_date when 087 has not been run yet, so the
+    // sync keeps working and says what it could not store.
+    let synced, droppedColumn = null;
+    try {
+      synced = await leasingSyncUpsert('leasing_applications', rows, 'rental_application_id');
+    } catch (e) {
+      if (!/lease_start_date/.test(e.message || '')) throw e;
+      droppedColumn = 'lease_start_date — run supabase/migrations/087_application_lease_start.sql';
+      synced = await leasingSyncUpsert('leasing_applications',
+        rows.map(({ lease_start_date, ...rest }) => rest), 'rental_application_id');
+    }
+    res.json({
+      ok: true, synced, mapped: rows.length, raw: raw.length,
+      serviceRole: !!supabaseAdmin, from_date, droppedColumn, timestamp: now,
+      // Said out loud on every run. A sync that returns fewer rows than the
+      // table it fills has been building a union instead of a picture, and
+      // that is invisible unless somebody is told the two numbers.
+      note: raw.length < rows.length ? 'the report returned fewer rows than were mapped' : undefined,
+    });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Applications sync failed: ' + err.message });
   }
