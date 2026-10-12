@@ -7883,7 +7883,7 @@ function appfolioWorkOrderFilter(today) {
   return {
     status_date: '0',                                   // Created On
     status_date_range_from: APPFOLIO_WO_RANGE_FROM,
-    status_date_range_to: today || new Date().toISOString().slice(0, 10),
+    status_date_range_to: today || WEEK.todayYMD(),
     work_order_statuses: APPFOLIO_WO_OPEN_CODES,
     work_order_types: ['internal', 'tenant_requested', 'unit_turn'],
     property_visibility: 'active',
@@ -9573,7 +9573,7 @@ app.get('/api/calls/export', requireAuth, requireCallAnalyzer, async (req, res) 
         (calls || []).forEach(c => { if (c.caller) phoneByRecording[c.recording_id] = c.caller; });
       }
       const { wb, counts } = gradeWorkbook.buildWorkbook(filtered, { phoneByRecording, flagsByRecording: flagMap });
-      const spanX = from || to ? `${from || 'start'}_to_${to || 'today'}` : new Date().toISOString().slice(0, 10);
+      const spanX = from || to ? `${from || 'start'}_to_${to || 'today'}` : WEEK.todayYMD();
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="call_grades_${spanX}.xlsx"`);
       res.setHeader('X-Export-Rows', String(counts.criteria));
@@ -9586,7 +9586,7 @@ app.get('/api/calls/export', requireAuth, requireCallAnalyzer, async (req, res) 
       ? gradeExport.summaryCSV(filtered)
       : gradeExport.detailCSV(filtered);
 
-    const span = from || to ? `${from || 'start'}_to_${to || 'today'}` : new Date().toISOString().slice(0, 10);
+    const span = from || to ? `${from || 'start'}_to_${to || 'today'}` : WEEK.todayYMD();
     const name = `call_grades_${format}_${span}.csv`;
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
@@ -10999,7 +10999,7 @@ function kpiSummarySheet(report, columns) {
   const aoa = [
     ['Metric Property Management — Executive KPI Dashboard'],
     ['Leasing Week:', report.range.from + ' .. ' + report.range.to],
-    ['Generated:', new Date().toISOString().slice(0, 10) + ' — Metric AI Admin Dashboard'],
+    ['Generated:', WEEK.todayYMD() + ' — Metric AI Admin Dashboard'],
     [],
   ];
   const colOf = name => (name === 'Portfolio' ? report.portfolio : report.properties[name]);
@@ -13430,9 +13430,19 @@ function reportSignerFor(req) {
   }) || null;
 }
 
+// TODAY, IN AUSTIN — for the Daily Report's report_date, the Command Center's
+// state_date, Erick's board, meeting summaries and the EOD.
+//
+// This read the SERVER's local date, and Render runs on UTC. After 7PM Central
+// in summer (6PM in winter) that is already tomorrow, so everything filed in
+// the evening was dated a day ahead: a Daily Report generated at 7:30PM on the
+// 9th was stored as the 10th, and the next morning's generate found a report
+// already there for "today" and returned it.
+//
+// The nightly Command Center snapshot was fixed on its own last week; this is
+// the same bug everywhere else it reaches.
 function reportDateStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return WEEK.todayYMD();
 }
 
 // Maintenance is the first section to carry real data: Erick's board already

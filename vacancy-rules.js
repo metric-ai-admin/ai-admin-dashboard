@@ -19,6 +19,11 @@
 // =====================================================================
 
 // Rule 1 — never post these, whatever else is true of them.
+// "Today" is TODAY IN AUSTIN. These defaults read the server clock, and
+// Render runs on UTC, so from 7PM Central everything undated was being
+// judged against tomorrow.
+const WEEK = require('./lib/week.js');
+
 const RENTED_STATUSES = ['Vacant-Rented', 'Notice-Rented'];
 
 // Rule 1 — description indicates the unit is not ready.
@@ -179,7 +184,7 @@ const MAX_PER_FLOOR_PLAN = 3;
  *   add    — not currently posted, ranked inside the top N.
  */
 function analyzeVacancy(rows, opts = {}) {
-  const today = opts.today || new Date().toISOString().slice(0, 10);
+  const today = opts.today || WEEK.todayYMD();
   const isExcludedProperty = opts.isExcludedProperty || (() => false);
   const cap = opts.maxPerFloorPlan || MAX_PER_FLOOR_PLAN;
 

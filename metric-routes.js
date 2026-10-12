@@ -31,9 +31,13 @@ const simplevoip = require('./simplevoip');
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
 const fetchFn = (typeof fetch === 'function') ? fetch : require('node-fetch');
+const WEEK = require('./lib/week.js');
 
+// TODAY, IN AUSTIN. Erick's board groups by working day and these dates reach
+// his screen and his export filenames; on Render a UTC date is already
+// tomorrow from 7PM Central.
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return WEEK.todayYMD();
 }
 
 // ── File directories ─────────────────────────────────────────────────────────

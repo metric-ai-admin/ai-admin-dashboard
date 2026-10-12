@@ -110,7 +110,7 @@ const DEAD_SHOWING = /cancel|no show/i;
  *   expiryDays          horizon for section 4 (default 30)
  */
 function buildWeeklyBrief(src = {}, opts = {}) {
-  const today = opts.today || new Date().toISOString().slice(0, 10);
+  const today = opts.today || WEEK.todayYMD();
   const { start, end } = weekOf(today);
   // Carried in the output so a retrospective section has the right span ready
   // and the brief can print the dates it is actually describing. No section

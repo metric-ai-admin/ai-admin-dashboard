@@ -52,6 +52,11 @@
 // =====================================================================
 
 // Exactly seven, enforced. Anything else is a data error, not a new status.
+// "Today" is TODAY IN AUSTIN. These defaults read the server clock, and
+// Render runs on UTC, so from 7PM Central everything undated was being
+// judged against tomorrow.
+const WEEK = require('./lib/week.js');
+
 const STATUSES = [
   'Pending',
   'Assigned - No Activity',
@@ -229,7 +234,7 @@ function pastDeadline(row = {}, today) {
   const due = isoDate(row.due_date);
   if (!due) return false;
   if (!OPEN_STATUSES.includes(clean(row.status))) return false;
-  return due < (today || new Date().toISOString().slice(0, 10));
+  return due < (today || WEEK.todayYMD());
 }
 
 /**
@@ -238,7 +243,7 @@ function pastDeadline(row = {}, today) {
  * @param {object} opts     today (YYYY-MM-DD), filters {property,status,category,month,year}
  */
 function buildTracker(rows = [], opts = {}) {
-  const today = opts.today || new Date().toISOString().slice(0, 10);
+  const today = opts.today || WEEK.todayYMD();
   const f = opts.filters || {};
   // Injected by server.js so the single exclusion list stays single. Without it
   // the property list here is the only authority, which is how The Sidney went

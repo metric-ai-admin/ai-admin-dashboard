@@ -29,7 +29,11 @@ const num = v => { const n = parseFloat(v); return Number.isNaN(n) ? null : n; }
 /** Vacancy % -> occupancy %. The source data stores vacancy. */
 const occ = v => { const n = num(v); return n === null ? null : Math.round(100 - n); };
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+// TODAY, IN AUSTIN. Task due dates and the overdue count are a working-day
+// question: at 7PM Central a UTC "today" makes everything due tomorrow look
+// due today, and everything due today look overdue.
+const WEEK = require('./lib/week.js');
+const todayISO = () => WEEK.todayYMD();
 
 function addDays(dateStr, n) {
   const d = dateStr ? new Date(dateStr + 'T00:00:00') : new Date();

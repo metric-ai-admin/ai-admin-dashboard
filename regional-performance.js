@@ -21,6 +21,11 @@
 // monthly $ exposure instead.
 // =====================================================================
 
+// "Today" is TODAY IN AUSTIN. These defaults read the server clock, and
+// Render runs on UTC, so from 7PM Central everything undated was being
+// judged against tomorrow.
+const WEEK = require('./lib/week.js');
+
 const num = v => {
   const n = parseFloat(String(v == null ? '' : v).replace(/[$,]/g, ''));
   return Number.isFinite(n) ? n : 0;
@@ -53,7 +58,7 @@ const NOT_A_PROPERTY = /property management|of texas llc/i;
  *   weekStart/weekEnd, prevStart/prevEnd   ISO dates for the funnel comparison
  */
 function buildRegionalPerformance(src = {}, opts = {}) {
-  const today = opts.today || new Date().toISOString().slice(0, 10);
+  const today = opts.today || WEEK.todayYMD();
   const isExcluded = opts.isExcludedProperty || (() => false);
   const keep = name => normName(name) && !isExcluded(name) && !NOT_A_PROPERTY.test(name);
 
