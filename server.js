@@ -55,6 +55,7 @@ const { registerAllTools } = require('./mcp-tools.cjs');
 const WEEK = require('./lib/week.js');
 // Reads a whole table past PostgREST's 1000-row ceiling. See lib/db-page.js.
 const { selectAll, selectAllResult } = require('./lib/db-page.js');
+const EB = require('./lib/excluded-buildings.js');
 const CORDER = require('./lib/collections-order.js');
 const DUE = require('./lib/due-date.js');
 const followups = require('./email-followups.js');
@@ -7405,6 +7406,29 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
       ...applications.map(a => a.property_name).filter(Boolean),
       ...leaseHistory.map(l => l.property_name).filter(Boolean),
     ]);
+    // Rentable occupancy, for the properties with a building that cannot be
+    // leased. Read once, before the loop, and absent rather than zero when the
+    // rent-roll store is not on this machine.
+    //
+    // PER PROPERTY ONLY. It is deliberately not folded into `totals` below:
+    // the portfolio figure has to keep matching Lyndsay's report, and a total
+    // that quietly means something new is worse than one that is hard to
+    // interpret.
+    const rentableBy = {};
+    if (EB.RULES.length) {
+      try {
+        const rr = await require('./appfolio-reports.js').readReportData('rent_roll');
+        const rows = (rr && rr.rows) || [];
+        if (rows.length) {
+          [...new Set(EB.RULES.map(r => r.property))].forEach(p => {
+            const res = EB.rentable(p, rows.filter(r =>
+              EB.clean(r.property_name).toLowerCase() === p.toLowerCase()));
+            if (res) rentableBy[p] = res;
+          });
+        }
+      } catch { /* no store here — the board shows the total alone */ }
+    }
+
     const properties = [];
     for (const name of names) {
       if (leasingIsExcluded(name)) continue; // hidden from all leasing views
@@ -7431,6 +7455,10 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
         vacant_rented: o && o.vacant_rented != null ? o.vacant_rented : null,
         notice_units: o && o.notice_units != null ? o.notice_units : null,
         goal_pct, net_moveins_needed,
+        // Null for every property without an unlettable building, which the
+        // card reads as "there is no second figure here" rather than as zero.
+        rentable: rentableBy[name] || null,
+        rentable_alerts: rentableBy[name] ? EB.alerts(rentableBy[name]) : [],
       });
     }
     // Sort by occupancy% ascending (nulls last), so the tightest communities top.
@@ -10931,6 +10959,34 @@ function kpiSummarySheet(report, columns) {
         return !found || found.value === null || found.value === undefined ? '' : found.value;
       })));
     });
+    // RENTABLE OCCUPANCY, immediately under the Occupancy block and nowhere
+    // else. Two extra rows that appear only for the properties that have a
+    // building they are not allowed to lease — every other column is blank,
+    // which is the honest cell for "this question does not apply here".
+    //
+    // The rows sit BELOW Occupancy %, never in place of it: the figures above
+    // are the ones Lyndsay's report carries and the ones owners already know.
+    if (sec.key === 'occupancy' && Object.keys(report.rentable || {}).length) {
+      const cell = (c, f) => {
+        const r = (report.rentable || {})[c];
+        return r ? f(r) : '';
+      };
+      aoa.push(['Rentable Units (excludes unlettable buildings)']
+        .concat(columns.map(c => cell(c, r => r.rentableUnits))));
+      aoa.push(['Rentable Occupancy %']
+        .concat(columns.map(c => cell(c, r => (r.rentablePct === null ? '' : r.rentablePct)))));
+      // Why the two numbers differ, in the sheet rather than in somebody's
+      // memory of a conversation.
+      columns.forEach(c => {
+        const r = (report.rentable || {})[c];
+        if (!r || !r.rules.length) return;
+        aoa.push(['   ' + c + ': ' + r.excludedUnits + ' units excluded — '
+          + r.rules.map(x => x.label + ', ' + x.reason).join('; ')]);
+      });
+      (report.rentableAlerts || []).forEach(a => {
+        aoa.push([(a.severity === 'alarm' ? '   *** ' : '   ') + a.property + ': ' + a.text]);
+      });
+    }
     aoa.push([]);
   });
   const ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -11009,6 +11065,32 @@ function kpiPdf(doc, report, only) {
         return f.source === 'manual' ? v + ' *' : v;
       })));
     });
+    // The rentable lines, under Occupancy only. Same two rows as the Excel,
+    // then the alerts in red — an owner reading the printed page gets the
+    // same warning as somebody opening the workbook, or the printed page
+    // becomes the quieter of the two and that is the one people keep.
+    if (sec.key === 'occupancy' && Object.keys(report.rentable || {}).length) {
+      const cell = (c, f) => {
+        const r = (report.rentable || {})[c];
+        return r ? f(r) : '';
+      };
+      row(['Rentable Units (excludes unlettable buildings)']
+        .concat(columns.map(c => String(cell(c, r => r.rentableUnits)))));
+      row(['Rentable Occupancy %'].concat(columns.map(c =>
+        String(cell(c, r => (r.rentablePct === null ? '—' : (r.rentablePct * 100).toFixed(1) + '%'))))));
+      columns.forEach(c => {
+        const r = (report.rentable || {})[c];
+        if (!r || !r.rules.length) return;
+        doc.fontSize(7).fillColor('#555').text(c + ': ' + r.excludedUnits + ' units excluded — '
+          + r.rules.map(x => x.label + ', ' + x.reason).join('; '), L, doc.y + 2, { width: W });
+      });
+      (report.rentableAlerts || []).forEach(a => {
+        doc.fontSize(7).fillColor(a.severity === 'alarm' ? '#b00020' : '#555')
+          .text((a.severity === 'alarm' ? '▲ ' : '') + a.property + ': ' + a.text,
+            L, doc.y + 2, { width: W });
+      });
+      doc.fillColor('#000').fontSize(7.5);
+    }
     doc.moveDown(0.5);
   });
 

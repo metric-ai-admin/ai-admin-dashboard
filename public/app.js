@@ -788,6 +788,28 @@ async function leasingLoadGoalBoard(week, range) {
     const num = v => (v == null ? '—' : v);
     const pct = v => (v == null ? '—' : v + '%');
     const t = b.totals || {};
+    // The rentable figure, under the property it belongs to.
+    //
+    // A second row rather than a second column: only one property has one, and
+    // a column that is empty for seven of eight makes the whole table look
+    // like it is missing data. The occupancy cell above it is untouched — that
+    // is the number on Lyndsay's report and the one owners know.
+    const rentableRow = p => {
+      const r = p.rentable;
+      if (!r || !r.rules.length) return '';
+      const pctOf = v => (v == null ? '—' : (v * 100).toFixed(1) + '%');
+      const why = r.rules.map(x => x.label + ' — ' + x.reason).join('; ');
+      const alerts = (p.rentable_alerts || []).map(a =>
+        `<div style="${a.severity === 'alarm' ? 'color:#b91c1c;font-weight:600' : 'color:var(--muted)'}">
+           ${a.severity === 'alarm' ? '&#9650; ' : ''}${esc(a.text)}</div>`).join('');
+      return `<tr style="background:var(--surface-2,rgba(0,0,0,.03))">
+        <td style="padding-left:1.6em;font-style:italic">rentable, excluding ${esc(why)}</td>
+        <td style="text-align:right">${r.rentableUnits}</td>
+        <td style="text-align:right">${r.rentableOccupied}</td>
+        <td style="text-align:right;font-weight:600">${pctOf(r.rentablePct)}</td>
+        <td colspan="11">${alerts}</td>
+      </tr>`;
+    };
     const rowsHtml = props.map(p => {
       const low = p.occupancy_pct != null && p.occupancy_pct < p.goal_pct;
       return `<tr>
@@ -806,7 +828,7 @@ async function leasingLoadGoalBoard(week, range) {
         <td style="text-align:right">${p.move_ins == null ? '—' : p.move_ins}</td>
         <td style="text-align:right">${p.goal_pct}%</td>
         <td style="text-align:right;${p.net_moveins_needed ? 'font-weight:600' : ''}">${p.net_moveins_needed == null ? '—' : p.net_moveins_needed}</td>
-      </tr>`;
+      </tr>` + rentableRow(p);
     }).join('');
     const totalRow = `<tr style="font-weight:700;border-top:2px solid var(--border)">
       <td>TOTAL</td>

@@ -28,6 +28,11 @@ t('the rule lives in exactly one place', () => {
   assert.strictEqual(r.property, WH);
   assert.strictEqual(r.prefix, '3');
   assert.ok(r.reason && r.since, 'a temporary rule must say why and since when');
+  // Counted off the rent roll on 2026-10-12: 23, not the 30 Kara named. Kept
+  // as what was MEASURED so a change is visible, with the disagreement
+  // recorded rather than resolved by whoever edits this next.
+  assert.strictEqual(r.expectedUnits, 23);
+  assert.ok(/30/.test(r.expectedNote), 'the disagreement with Kara must stay written down');
 });
 
 t('only Windy Hill is affected', () => {
@@ -141,6 +146,133 @@ t('the caller can say where unit and status live', () => {
     { unit: x => x.u, status: x => x.s });
   assert.strictEqual(r.units, 2);
   assert.strictEqual(r.excludedUnits, 1);
+});
+
+// ---- the real Windy Hill, as the rent roll had it on 2026-10-12 ------------
+
+const REAL = [];
+for (let i = 1; i <= 22; i++) REAL.push(row('3' + String(i).padStart(2, '0'), 'Vacant-Unrented'));
+REAL.push(row('399', 'Vacant-Rented'));                       // signed, in building 3
+for (let i = 1; i <= 40; i++) REAL.push(row('1' + String(i).padStart(2, '0'), 'Current'));
+for (let i = 1; i <= 8; i++) REAL.push(row('2' + String(i).padStart(2, '0'), 'Vacant-Unrented'));
+REAL.push(row('299', 'Vacant-Rented'));
+
+t('it reproduces the figures the probe printed on Render', () => {
+  const r = EB.rentable(WH, REAL);
+  assert.strictEqual(r.units, 72);
+  assert.strictEqual(r.occupied, 40);
+  assert.strictEqual((100 * r.occPct).toFixed(1), '55.6', 'the total must stay what Lyndsay reports');
+  assert.strictEqual(r.excludedUnits, 23);
+  assert.strictEqual(r.rentableUnits, 49);
+  assert.strictEqual(r.rentableOccupied, 40);
+  assert.strictEqual((100 * r.rentablePct).toFixed(1), '81.6');
+});
+
+t('a signed lease inside the excluded building is an ALARM, not a footnote', () => {
+  // A lease on a unit in a building with no certificate of occupancy is a
+  // unit that cannot legally be handed over on the move-in date.
+  const r = EB.rentable(WH, REAL);
+  assert.deepStrictEqual(r.preleasedExcluded, ['399']);
+  assert.deepStrictEqual(r.occupiedExcluded, [], 'nobody is living there — that part was confirmed');
+  const a = EB.alerts(r);
+  assert.strictEqual(a.length, 1);
+  assert.strictEqual(a[0].severity, 'alarm');
+  assert.ok(/399/.test(a[0].text), 'the alert must name the unit');
+  assert.ok(/cannot be handed over/.test(a[0].text));
+});
+
+t('a preleased unit OUTSIDE the building raises nothing', () => {
+  // 299 is Vacant-Rented too and is perfectly normal. An alert that fired on
+  // ordinary preleasing would be ignored within a week.
+  const a = EB.alerts(EB.rentable(WH, REAL));
+  assert.ok(!a.some(x => /299/.test(x.text)));
+});
+
+t('the count changing is a note, and the figure still moves with it', () => {
+  // 23 is itself unconfirmed. If the building grows or shrinks, the rentable
+  // number must follow the rent roll — and say that it did.
+  const grown = REAL.concat([row('324', 'Vacant-Unrented')]);
+  const r = EB.rentable(WH, grown);
+  assert.strictEqual(r.excludedUnits, 24);
+  assert.strictEqual(r.expectedUnits, 23);
+  assert.strictEqual(r.countChanged, true);
+  assert.strictEqual(r.rentableUnits, 49, 'the rest of the property is unchanged');
+  const note = EB.alerts(r).find(x => x.severity === 'note');
+  assert.ok(note && /24 units today against the 23/.test(note.text));
+});
+
+t('a count that matches raises nothing', () => {
+  assert.strictEqual(EB.rentable(WH, REAL).countChanged, false);
+  assert.ok(!EB.alerts(EB.rentable(WH, REAL)).some(a => a.severity === 'note'));
+});
+
+t('an occupied unit in the building outranks everything else', () => {
+  const r = EB.rentable(WH, REAL.concat([row('305', 'Current')]));
+  const a = EB.alerts(r);
+  assert.strictEqual(a[0].severity, 'alarm');
+  assert.ok(/occupied/.test(a[0].text), 'somebody living there must be the first thing said');
+});
+
+// ---- it reaches the report and the board ----------------------------------
+
+const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+const appjs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const build = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-build.js'), 'utf8');
+
+t('the report carries it without touching a single card', () => {
+  assert.ok(/\n      rentable,/.test(build), 'the report does not carry the rentable block');
+  assert.ok(/\n      rentableAlerts,/.test(build), 'the alerts never leave the builder');
+  // The cards are Lyndsay's and the totals are hers. Nothing here may write
+  // into them.
+  const kpiReport = require('../lib/kpi-report.js');
+  assert.ok(!kpiReport.CARD_METRICS.some(m => /rentable/i.test(m)),
+    'a rentable card would change the Summary every owner reads');
+});
+
+t('a missing rent roll is a named gap, never a zero', () => {
+  assert.ok(/no rent-roll rows/.test(build),
+    'a property with no rows must be reported, not silently skipped');
+});
+
+t('the Excel puts it under Occupancy and nowhere else', () => {
+  const sheet = server.slice(server.indexOf('function kpiSummarySheet'),
+    server.indexOf('function kpiBackupSheet'));
+  assert.ok(/sec\.key === 'occupancy'/.test(sheet), 'it is not pinned to the Occupancy block');
+  assert.ok(/Rentable Occupancy %/.test(sheet));
+  assert.ok(/units excluded/.test(sheet), 'the sheet must say why the two numbers differ');
+});
+
+t('the PDF warns in red, so the printed page is not the quieter one', () => {
+  const pdf = server.slice(server.indexOf('kpiReport.SECTIONS.forEach((sec, si) => {'),
+    server.indexOf('no value for this week'));
+  assert.ok(/Rentable Occupancy %/.test(pdf));
+  assert.ok(/#b00020/.test(pdf), 'an alarm must be visible on paper');
+});
+
+t('the Goal Board total is not touched', () => {
+  // Bounded by the NEXT route rather than by a character count: this handler
+  // is 200 lines long and a fixed window silently stopped short of the totals
+  // block, so the assertion below passed by not reaching what it was checking.
+  const from = server.indexOf("app.get('/api/leasing/goal-board'");
+  const rest = server.slice(from + 10);
+  const next = rest.search(/\napp\.(get|post|put|patch|delete)\(/);
+  const route = server.slice(from, next < 0 ? server.length : from + 10 + next);
+  assert.ok(/rentable: rentableBy\[name\] \|\| null/.test(route), 'the board never receives it');
+  // totals is built by reducing `properties`; rentable must stay out of it.
+  const at = route.indexOf('const totals = properties.reduce');
+  assert.ok(at > 0, 'the totals block moved');
+  assert.ok(!/rentable/.test(route.slice(at, at + 600)),
+    'the portfolio total must keep matching her report');
+});
+
+t('the board shows it as its own row, under the property', () => {
+  const fn = appjs.slice(appjs.indexOf('const rentableRow = p =>'),
+    appjs.indexOf('const rowsHtml = props.map'));
+  assert.ok(/rentablePct/.test(fn) && /rentableUnits/.test(fn));
+  assert.ok(/esc\(a\.text\)/.test(fn), 'alert text reaches the page unescaped');
+  assert.ok(/esc\(why\)/.test(fn), 'the reason reaches the page unescaped');
+  assert.ok(/#b91c1c/.test(fn), 'an alarm must be visible on the board');
+  assert.ok(/\+ rentableRow\(p\)/.test(appjs), 'the row is built but never appended');
 });
 
 // ---- the probe ------------------------------------------------------------
