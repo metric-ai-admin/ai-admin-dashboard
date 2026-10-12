@@ -12575,10 +12575,25 @@ $('#krc-refresh')?.addEventListener('click', loadKpiRecaps);
 const kcEsc = t => String(t == null ? '' : t)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-const kcNum = v => {
+// FORMATTED BY METRIC, not by magnitude.
+//
+// This used to read "is it between 0 and 1? then it is a percentage", which is
+// right for 0.556 and wrong for exactly 1: The Chateau reached 100% occupancy
+// and the panel printed "1". It is also wrong the other way — a property with
+// one move-in would have printed "100.0%" if the value had been 0.01.
+//
+// A number's kind is a property of the metric, not of the value it happens to
+// hold this week.
+const KC_PERCENT = ['occPct', 'prePct', 'rentablePct'];
+const KC_MONEY = ['dqTotal', 'evictionDollars', 'mtdIncome', 'mtdExpenses', 'rentCollected'];
+const kcNum = (v, metric) => {
   if (v === null || v === undefined) return '—';
   if (typeof v !== 'number') return kcEsc(v);
-  if (Math.abs(v) > 0 && Math.abs(v) < 1) return (v * 100).toFixed(1) + '%';
+  if (KC_PERCENT.includes(metric)) return (v * 100).toFixed(1) + '%';
+  if (KC_MONEY.includes(metric)) {
+    return '$' + (Math.round(v * 100) / 100).toLocaleString('en-US',
+      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
   return (Math.round(v * 100) / 100).toLocaleString('en-US');
 };
 
@@ -12663,8 +12678,8 @@ function kcRender(d) {
       <th class="n">Diff</th><th>Source</th><th>Why</th></tr></thead><tbody>${
     rows.map(r => `<tr class="${r.agrees ? 'ok' : (r.diff === null ? 'gap' : 'bad')}">
       <td>${kcEsc(r.property)}</td><td>${kcEsc(r.metric)}</td>
-      <td class="n">${kcNum(r.hers)}</td><td class="n">${kcNum(r.ours)}</td>
-      <td class="n">${r.diff === null ? '—' : kcNum(r.diff)}</td>
+      <td class="n">${kcNum(r.hers, r.metric)}</td><td class="n">${kcNum(r.ours, r.metric)}</td>
+      <td class="n">${r.diff === null ? '—' : kcNum(r.diff, r.metric)}</td>
       <td>${kcEsc(r.source || '')}</td>
       <td>${r.agrees ? '' : kcEsc(r.why || (r.diff === null ? 'one side has no value' : 'not explained — worth chasing'))}</td>
     </tr>`).join('')}</tbody></table>`;
@@ -12696,10 +12711,12 @@ function kcRender(d) {
     + table(d.portfolio || [])
     + '<h4>By property</h4>' + scope + table(d.rows || [])
     + `<h4>Her delinquency sheet, as read</h4>
-       <p class="small muted">Aged Receivable Detail: ${dq.herGroups || 0} groups, ${dq.herChargeLines || 0}
-       charge lines. Amount Receivable, positives only — ${kcNum(dq.herPositives)}.
-       ${dq.herNegativeRows || 0} negative row${dq.herNegativeRows === 1 ? '' : 's'}
-       (${kcNum(dq.herNegatives)}) left out: those are concessions, and netting them off
-       would report less delinquency than there is.</p>
+       <p class="small muted">Aged Receivable Detail: ${kcNum(dq.herGroups)} tenant sections,
+       ${kcNum(dq.herTenants)} with a balance, ${kcNum(dq.herSkippedZero)} at zero and skipped.
+       Amount Receivable, positives only — ${kcNum(dq.herPositives, 'dqTotal')}.
+       ${dq.herCredits ? `${kcNum(dq.herCredits, 'dqTotal')} of credits across
+       ${kcNum(dq.herCreditProperties)} propert${dq.herCreditProperties === 1 ? 'y' : 'ies'} left out of the
+       total: a credit is not negative delinquency, and netting it off would report less
+       than there is.` : 'No credits on this export.'}</p>
        <h4>Delinquency, resident by resident</h4>` + resBlock;
 }

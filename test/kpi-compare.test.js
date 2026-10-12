@@ -369,3 +369,63 @@ t('Need To Refile is the same queue as Need To File', () => {
   assert.ok(/need to refile/i.test(src));
 });
 console.log(`\n${pass} passing`);
+
+// ---- 2026-10-12: the panel's own diagnostics, and formatting ----------------
+
+t('the delinquency diagnostics name fields herDelinquency actually returns', () => {
+  // They read dq.groups, dq.rows, dq.positives, dq.negatives and
+  // dq.negativeRows — none of which that function has ever returned. Every one
+  // arrived undefined, the panel printed `|| 0`, and it reported
+  // "0 groups, 0 charge lines" under a correctly parsed 64,479.44. A
+  // diagnostic that reads zero while the thing it describes is working sends
+  // somebody to debug a parser that is fine.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-compare.js'), 'utf8');
+  const block = src.slice(src.indexOf('delinquency: {'), src.indexOf('disagreements:'));
+  ['dq.sections', 'dq.tenants', 'dq.skippedZero'].forEach(f =>
+    assert.ok(block.includes(f), block + '\nmissing ' + f));
+  ['dq.groups', 'dq.rows', 'dq.negativeRows'].forEach(f =>
+    assert.ok(!block.includes(f), f + ' is not a field herDelinquency returns'));
+});
+
+t('the resident key strips middle initials, and is not corrupted', () => {
+  // It read /\b[a-z]\b/ and reached the file as two literal backspace bytes
+  // around the character class — a shell heredoc turning \b into 0x08 — so it
+  // matched nothing and every resident with a middle initial failed to join.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-compare.js'), 'utf8');
+  assert.strictEqual(src.indexOf(String.fromCharCode(8)), -1,
+    'a backspace byte is in the source again — do not write regexes through a heredoc');
+  const key = s => C.norm(s).replace(/\b[a-z]\b/g, '').replace(/\s+/g, ' ').trim();
+  assert.strictEqual(key('Castilla, Dulce P.'), key('Castilla, Dulce'));
+  assert.strictEqual(key('Boyd, Evan D.'), 'boyd evan');
+  assert.notStrictEqual(key('Smith, John'), '', 'a name must not reduce to nothing');
+});
+
+t('residentDiff reads the columns the store actually has', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-compare.js'), 'utf8');
+  const fn = src.slice(src.indexOf('function residentDiff'), src.indexOf('module.exports'));
+  assert.ok(/r\.name \|\| r\.payer_name/.test(fn),
+    'delinquency_as_of calls it `name`; tenant_name is not on it');
+  assert.ok(/r\.amount_receivable !== undefined/.test(fn),
+    'every "ours" figure printed 0 because total/amount/balance are not columns on it');
+});
+
+t('canceled and denied are marked as a definition difference', () => {
+  ['canceled', 'denied'].forEach(m => {
+    assert.ok(C.EXPLANATIONS[m], m + ' has no explanation');
+    assert.ok(/^DEFINITION:/.test(C.EXPLANATIONS[m]),
+      m + ' must be marked DEFINITION like applications — hers has no date filter');
+  });
+  assert.ok(/^DEFINITION:/.test(C.EXPLANATIONS.evictionsInProcess),
+    'hers includes EHO/Good Standing; ours is tenant_status = Evict');
+  assert.ok(/unavailable/.test(C.EXPLANATIONS.needToFile));
+});
+
+t('a percentage is formatted by its metric, not by its size', () => {
+  // The Chateau reached 100% and the panel printed "1": the rule was "between
+  // 0 and 1 means percent", which is right for 0.556 and wrong for exactly 1.
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const fn = app.slice(app.indexOf('const KC_PERCENT'), app.indexOf('function kcInit'));
+  assert.ok(/KC_PERCENT\.includes\(metric\)/.test(fn), 'it still formats by magnitude');
+  assert.ok(!/Math\.abs\(v\) > 0 && Math\.abs\(v\) < 1/.test(fn), 'the magnitude rule is still there');
+  assert.ok(/kcNum\(r\.hers, r\.metric\)/.test(app), 'the table does not pass the metric');
+});
