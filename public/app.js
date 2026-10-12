@@ -12596,7 +12596,38 @@ async function kcCompare(file) {
   }
 }
 
+// WHAT DAY EACH SIDE'S OCCUPANCY IS FROM, printed before the differences.
+//
+// Her workbook is pulled "as of" the end of a week. Ours comes from
+// leasing_occupancy, which the sync overwrites — so until 2026-10-12 it held
+// 10/02 figures and every occupancy row in this panel would have read as a
+// disagreement when it was two different days. Three units moved in over the
+// weekend of 10/10 alone.
+//
+// Shown whichever way it falls, and the sign matters: data from AFTER her week
+// is just as much a mismatch as data from before, and a panel that only warned
+// about "behind" would present it as our number being wrong.
+function kcFreshness(f, weekTo) {
+  if (!f || !f.as_of) {
+    return `<div class="alert-box warn">Our occupancy data carries no date, so a difference
+      on any occupancy row cannot be told from a difference of day.</div>`;
+  }
+  const n = f.daysBehind;
+  const where = f.matchesWeek ? 'the same day'
+    : n > 0 ? `<b>${n} day${n === 1 ? '' : 's'} before</b> the end of her week`
+      : `<b>${-n} day${n === -1 ? '' : 's'} after</b> the end of her week`;
+  return `<div class="alert-box ${f.matchesWeek ? 'ok' : 'warn'}">
+    <b>Occupancy as of ${kcEsc(f.as_of)}</b> on our side, against her week ending
+    ${kcEsc(weekTo)} — ${where}.
+    ${f.synced_at ? `Synced ${kcEsc(String(f.synced_at).slice(0, 16).replace('T', ' '))} UTC.` : ''}
+    ${f.matchesWeek ? ''
+    : `Units, Occupied, Occupancy %, Preleased and Notices below are from that day, not from
+       ${kcEsc(weekTo)} — check this before treating an occupancy row as an error on either side.`}
+  </div>`;
+}
+
 function kcRender(d) {
+  const freshness = kcFreshness(d.freshness, d.range && d.range.to);
   const gaps = (d.gaps || []).length
     ? `<div class="alert-box bad"><b>${d.gaps.length} source could not be read</b> — every metric that depends on
        ${d.gaps.length === 1 ? 'it' : 'them'} is a gap, not a disagreement:<br>${d.gaps.map(kcEsc).join('<br>')}</div>`
@@ -12635,7 +12666,7 @@ function kcRender(d) {
     : `<p class="small muted">${kcEsc((d.residents && d.residents.error) || 'No resident-level comparison available.')}</p>`;
 
   const dq = d.delinquency || {};
-  document.getElementById('kc-out').innerHTML = gaps
+  document.getElementById('kc-out').innerHTML = freshness + gaps
     + '<h4>Portfolio</h4>'
     + '<p class="small muted">Summed over the ' + (d.shared || []).length
     + ' properties both sides carry — comparing our whole portfolio against her subset '

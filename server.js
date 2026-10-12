@@ -10850,6 +10850,9 @@ app.post('/api/kpi/compare', requireAuth, requireRole('admin'),
         // Carried through, because a metric that reads zero because its store
         // is missing must never be presented as a disagreement.
         gaps: report.gaps,
+        // What day OUR occupancy is from. Printed beside hers so a difference
+        // caused by two different days is not read as an error in either.
+        freshness: report.freshness,
         residents,
         ...result,
       });
@@ -18437,6 +18440,53 @@ cron.schedule('0 5 * * *', () => {
     .then(r => logLine(`[occupancy-sync] ${r?.synced ?? '?'} properties`))
     .catch(err => logLine(`[occupancy-sync] FAILED: ${err.message}`));
 }, { timezone: LYNDSAY_TIMEZONE });
+
+// THE REST OF THE EARLY-MORNING FEEDS, FIVE MINUTES APART.
+//
+// Same gap as occupancy above: these ran only when somebody pressed Sync All,
+// an admin-only button on no schedule. leasing_applications and
+// leasing_lease_history were last written 2026-10-02 — ten days — and they are
+// where the KPI report gets Converting, Renewals and Did Not Renew, so three
+// of the tables behind Monday's comparison were stale at once.
+//
+// STAGGERED, NOT A SWEEP. Sync All fires these through a concurrency pool,
+// which is fine when a person is watching and retrying. Unattended, a burst
+// against AppFolio's rate limiter means several jobs backing off at once and
+// the last of them finishing after the 05:30 snapshot has already copied the
+// table. Five minutes apart costs nothing at this hour and means each job has
+// the limiter to itself.
+//
+// THE ORDER IS NOT ARBITRARY. unit_vacancy must land before 05:30, because the
+// Sunday snapshot reads its STORE — captureUnitVacancySnapshot takes the saved
+// report rather than fetching — so the weekly unit-vacancy history was frozen
+// in exactly the same way the occupancy history was, and for the same reason.
+// 05:30 is taken by the leasing guest-card sync and the two snapshots, so
+// nothing is scheduled there and lease_expiration_detail follows at 05:35.
+//
+// Each is its own cron. One failing feed must not take the others with it, and
+// a single try/catch around a sweep is how that happens.
+const EARLY_FEEDS = [
+  // minute, label, run
+  [5,  'applications',           () => callOwnRoute('/api/leasing/sync/applications', {}).then(r => r?.count)],
+  [10, 'lease-history',          () => callOwnRoute('/api/leasing/sync/lease-history', {}).then(r => r?.count)],
+  [15, 'showings',               () => callOwnRoute('/api/leasing/sync/showings', {}).then(r => r?.count)],
+  // Stores on the Render disk, synced through appfolio-reports rather than a
+  // route. unit_vacancy before the 05:30 snapshot that reads it.
+  [20, 'unit_vacancy',           () => require('./appfolio-reports.js').syncReport('unit_vacancy').then(r => r?.rowCount)],
+  [25, 'rent_roll',              () => require('./appfolio-reports.js').syncReport('rent_roll').then(r => r?.rowCount)],
+  [35, 'lease_expiration_detail', () => require('./appfolio-reports.js').syncReport('lease_expiration_detail').then(r => r?.rowCount)],
+];
+EARLY_FEEDS.forEach(([minute, label, run]) => {
+  cron.schedule(`${minute} 5 * * *`, () => {
+    if (!CRM_CONFIGURED) return;
+    run()
+      .then(n => logLine(`[early-sync] ${label}: ${n == null ? '?' : n} rows`))
+      // Logged through logLine like the others: a feed that quietly stops is
+      // the failure this whole block exists to prevent, and it must surface
+      // where somebody already looks.
+      .catch(err => logLine(`[early-sync] ${label} FAILED: ${err.message}`));
+  }, { timezone: LYNDSAY_TIMEZONE });
+});
 
 cron.schedule('30 5 * * *', () => {
   if (!CRM_CONFIGURED) return;
