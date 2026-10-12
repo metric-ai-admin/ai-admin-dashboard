@@ -26,9 +26,12 @@ const clean = s => String(s == null ? '' : s).trim();
 // Dropped from every printed row. Matched on the FIELD NAME, so a column we
 // have never seen that is called "co_tenant" or "applicant_name" is dropped
 // too — the default has to be "do not print" for this to be worth anything.
-const PERSONAL = /tenant|resident|applicant|occupant|name|email|phone|contact|guarantor/i;
+// Through the shared rule now (lib/safe-print.js). This script had its own
+// copy and got it right; the next script did not have one and printed an
+// applicant's email, phone, employer and salary. One rule, used everywhere.
+const SP = require('../lib/safe-print.js');
 const SAFE = r => Object.fromEntries(
-  Object.entries(r).filter(([k, v]) => !PERSONAL.test(k) && v !== '' && v != null));
+  Object.entries(r).filter(([k, v]) => SP.isSafe(k) && v !== '' && v != null));
 
 (async () => {
   let rows;

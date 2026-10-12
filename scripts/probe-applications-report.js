@@ -1,105 +1,162 @@
 #!/usr/bin/env node
 //
-// What the Rental Applications report returns, and under which parameters.
+// Which date parameter the Rental Applications report actually honours.
 // READ ONLY — nothing is written to Supabase or to any store.
+// NO PERSONAL DATA IS PRINTED — see lib/safe-print.js.
 //
 //   node scripts/probe-applications-report.js
 //
-// WHY. On 2026-10-12 Katie's apps tab carried 123 applications and
-// leasing_applications held 70 — a clean subset, every one of ours inside
-// hers, 53 missing across all seven properties. A manual sync that morning
-// returned TWENTY rows while the table already held 67, which is the shape
-// that matters: the table has been accumulating a different ~20 on each run
-// rather than being refreshed with the whole set.
+// WHY. Katie's export carries 123 applications and the sync returns 20,
+// received 2026-09-12..2026-10-09 — about four weeks. Asking for everything
+// gets four weeks, so the report has a default window and the only way past
+// it is a date parameter under the name it expects.
 //
-// Our call is the only one of the three leasing syncs that passes a date:
+// SHOWINGS HAD EXACTLY THIS PROBLEM. `from_date` was ignored there; the
+// spelling that worked was `showing_date_from` / `showing_date_to`, and the
+// note in server.js is worth repeating here:
 //
-//   showings        { property_visibility, paginate_results }      467 rows
-//   lease_history   { property_visibility, paginate_results }       79 rows
-//   applications    { from_date, property_visibility, paginate }    20 rows
+//     An ignored parameter looks exactly like one that works.
 //
-// So the suspicion is that `from_date` does not filter on Received at all —
-// her 123 are all Received between 2026-07-15 and 2026-10-09, every one of
-// them after the 2026-01-01 we send, so a Received filter could not drop one.
-// A filter on a date that MOVES — last updated, decision made — would return a
-// different handful every day and build exactly the table we have.
+// A request that comes back with the same 20 rows has not been narrowed or
+// widened — it has been ignored. So every candidate is measured against a
+// BASELINE taken with no parameters at all, and anything matching the
+// baseline is reported as ignored rather than as working.
 //
-// This asks the report the same question several ways and prints the counts
-// side by side. Whichever call returns ~123 is the one the sync should make.
+// TWO CORRECTIONS TO THE FIRST VERSION OF THIS SCRIPT, both mine:
+//
+//   1. It called through appfolio-client (APPFOLIO_CLIENT_ID), while the sync
+//      calls the Reports API with APPFOLIO_REPORTS_CLIENT_ID. Two different
+//      doors. That is why five of six cases came back 0 while the sync
+//      returned 20 with the parameters one of those cases used — the zeros
+//      were about the client, not about the parameters, and the conclusion
+//      drawn from them ("her window gives 0") should be thrown away.
+//
+//   2. It printed a whole sample row, including an applicant's email, phone,
+//      employer and salary.
 require('dotenv').config();
 
-const CASES = [
-  ['as the sync calls it today', { from_date: '2026-01-01', property_visibility: 'active', paginate_results: false }],
-  ['no date at all, like lease_history', { property_visibility: 'active', paginate_results: false }],
-  ['no date, paginated', { property_visibility: 'active', paginate_results: true }],
-  ['no date, no visibility filter', { paginate_results: false }],
-  ['a date far enough back to be harmless', { from_date: '2020-01-01', property_visibility: 'active', paginate_results: false }],
-  ['her window, by received', { from_date: '2026-07-01', to_date: '2026-10-12', property_visibility: 'active', paginate_results: false }],
+const SP = require('../lib/safe-print.js');
+
+const BASE = 'https://' + (process.env.APPFOLIO_REPORTS_SUBDOMAIN
+  || process.env.APPFOLIO_SUBDOMAIN || '') + '.appfolio.com';
+const REPORT = '/api/v2/reports/rental_applications.json';
+const FROM = '2026-07-01';
+const TO = '2026-10-12';
+
+// Every spelling worth trying, named after the column the report calls the
+// date: `received`. The showings answer was <column>_from / <column>_to, so
+// that shape leads.
+const CANDIDATES = [
+  ['received_from / received_to', { received_from: FROM, received_to: TO }],
+  ['received_date_from / _to', { received_date_from: FROM, received_date_to: TO }],
+  ['received_on_from / _to', { received_on_from: FROM, received_on_to: TO }],
+  ['application_received_from / _to', { application_received_from: FROM, application_received_to: TO }],
+  ['application_date_from / _to', { application_date_from: FROM, application_date_to: TO }],
+  ['date_range_from / _to', { date_range_from: FROM, date_range_to: TO }],
+  ['from_date / to_date', { from_date: FROM, to_date: TO }],
+  ['from / to', { from: FROM, to: TO }],
+  ['start_date / end_date', { start_date: FROM, end_date: TO }],
+  ['received_at_from / _to', { received_at_from: FROM, received_at_to: TO }],
+  ['lease_start_date_from / _to', { lease_start_date_from: FROM, lease_start_date_to: TO }],
+  ['move_in_date_from / _to', { move_in_date_from: FROM, move_in_date_to: TO }],
 ];
 
-const clean = s => String(s == null ? '' : s).trim();
-const ymd = v => clean(v).slice(0, 10);
+const id = process.env.APPFOLIO_REPORTS_CLIENT_ID;
+const secret = process.env.APPFOLIO_REPORTS_CLIENT_SECRET;
+const auth = 'Basic ' + Buffer.from(id + ':' + secret).toString('base64');
+const pull = o => (Array.isArray(o) ? o : ((o && (o.results || o.data)) || []));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// The same door the sync uses, following next_page_url the same way.
+async function ask(params) {
+  const rows = [];
+  let res = await fetch(BASE + REPORT, {
+    method: 'POST',
+    headers: { Authorization: auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ property_visibility: 'active', paginate_results: false }, params)),
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => null);
+    const e = new Error((j && (j.error || j.message)) || ('HTTP ' + res.status));
+    e.status = res.status;
+    throw e;
+  }
+  let j = await res.json();
+  rows.push(...pull(j));
+  let next = j && j.next_page_url, guard = 0;
+  while (next && guard++ < 100) {
+    await sleep(2200);
+    const u = /^https?:\/\//i.test(next) ? next : BASE + next;
+    res = await fetch(u, { headers: { Authorization: auth } });
+    if (!res.ok) break;
+    j = await res.json();
+    rows.push(...pull(j));
+    next = j && j.next_page_url;
+  }
+  return rows;
+}
+
+const ymd = v => SP.clean(v).slice(0, 10);
+const span = rows => {
+  const d = rows.map(r => ymd(r.received)).filter(Boolean).sort();
+  return d.length ? d[0] + '..' + d[d.length - 1] : '—';
+};
+const idsOf = rows => new Set(rows.map(r => SP.clean(r.rental_application_id)).filter(Boolean));
 
 (async () => {
-  const client = require('../appfolio-client.js');
-  if (client.isConfigured && !client.isConfigured()) {
-    console.error('AppFolio is not configured here — run this on Render.');
+  if (!id || !secret) {
+    console.error('APPFOLIO_REPORTS_CLIENT_ID / _SECRET are not set here — run this on Render.');
     process.exit(2);
   }
 
-  const results = [];
-  for (const [label, params] of CASES) {
-    try {
-      const r = await client.fetchReport('rental_applications', params);
-      const rows = r.rows || r || [];
-      results.push({ label, params, n: rows.length, rows });
-      console.log(String(rows.length).padStart(5) + '  ' + label);
-    } catch (e) {
-      results.push({ label, params, n: null, error: e.message });
-      console.log('  ERR  ' + label + ' — ' + e.message);
+  console.log('Reports API, the same credentials and endpoint the sync uses.');
+  console.log('Window asked for: ' + FROM + ' .. ' + TO + '\n');
+
+  const baseline = await ask({});
+  const baseIds = idsOf(baseline);
+  console.log('BASELINE, no date parameter at all: ' + baseline.length + ' rows, received ' + span(baseline));
+  console.log('Anything returning the same set has been IGNORED, not applied.\n');
+
+  const hits = [];
+  for (const [label, params] of CANDIDATES) {
+    await sleep(2200);
+    let rows, err = null;
+    try { rows = await ask(params); } catch (e) { err = e; rows = []; }
+    if (err) {
+      // A 400 naming the parameter is a USEFUL answer: the report knows the
+      // name and dislikes the value, which is closer than silence.
+      console.log('  ERR   ' + label.padEnd(34) + err.status + ' ' + err.message.slice(0, 70));
+      continue;
     }
+    const ids = idsOf(rows);
+    const same = ids.size === baseIds.size && [...ids].every(x => baseIds.has(x));
+    const verdict = same ? 'ignored — identical to baseline'
+      : (rows.length > baseline.length ? 'WIDENED' : 'changed the set');
+    console.log('  ' + String(rows.length).padStart(5) + ' ' + label.padEnd(34)
+      + span(rows).padEnd(24) + verdict);
+    if (!same) hits.push({ label, params, n: rows.length, rows });
   }
 
-  const best = results.filter(r => r.n != null).sort((a, b) => b.n - a.n)[0];
-  if (!best || !best.n) { console.log('\nNothing came back. Nothing more to say from here.'); return; }
+  if (!hits.length) {
+    console.log('\nEvery candidate was ignored. The window is not reachable by any of these');
+    console.log('names, and the next place to look is her saved report definition in');
+    console.log('AppFolio — the parameter it sends is the one to copy.');
+    return;
+  }
 
+  const best = hits.sort((a, b) => b.n - a.n)[0];
   console.log('\nMOST ROWS: ' + best.n + ' — ' + best.label);
   console.log('params: ' + JSON.stringify(best.params));
+  console.log('Katie’s file carries 123 for 2026-07-15..2026-10-09.');
 
-  const sample = best.rows[0] || {};
-  console.log('\ncolumns (' + Object.keys(sample).length + '):');
-  Object.keys(sample).sort().forEach(k => console.log('   ' + k.padEnd(34) + JSON.stringify(sample[k])));
+  // Column names and FILL RATES only. No values from the personal columns.
+  console.log('\ncolumns, and how many of the ' + best.n + ' rows carry a value:');
+  SP.fillRates(best.rows).forEach(l => console.log(l));
 
-  // THE COLUMN HER RULE NEEDS. She excludes "Approved WITH a lease start
-  // date"; we do not store one, so the report approximates it with
-  // detailed_status. Find out what the field is actually called before adding
-  // it, rather than guessing a name into a migration.
-  const CANDIDATES = ['lease_start_date', 'lease_start', 'lease_from', 'lease_begin',
-    'start_date', 'lease_start_on', 'desired_move_in', 'move_in_date'];
-  console.log('\nthe lease-start column, if it is here:');
-  const found = CANDIDATES.filter(c => Object.prototype.hasOwnProperty.call(sample, c));
-  if (!found.length) {
-    console.log('   none of ' + CANDIDATES.join(', '));
-    console.log('   Look through the column list above for whatever carries it.');
-  } else {
-    found.forEach(c => {
-      const filled = best.rows.filter(r => clean(r[c])).length;
-      console.log('   ' + c.padEnd(24) + filled + ' of ' + best.n + ' rows have a value');
-    });
-  }
+  console.log('\nnon-personal sample (one row, redacted):');
+  Object.entries(SP.safeRow(best.rows[0] || {}))
+    .filter(([k]) => SP.isSafe(k))
+    .forEach(([k, v]) => console.log('   ' + k.padEnd(34) + JSON.stringify(v)));
 
-  // Received dates, so the from_date theory is settled rather than argued.
-  const recKey = ['received', 'received_date', 'application_date', 'created_at']
-    .find(k => Object.prototype.hasOwnProperty.call(sample, k));
-  if (recKey) {
-    const d = best.rows.map(r => ymd(r[recKey])).filter(Boolean).sort();
-    console.log('\n' + recKey + ' ranges ' + d[0] + ' .. ' + d[d.length - 1]
-      + '   (' + d.filter(x => x < '2026-01-01').length + ' before 2026-01-01)');
-    console.log('If none is before 2026-01-01, the from_date we send cannot be');
-    console.log('filtering on this column — it is filtering on something else.');
-  }
-
-  const ids = best.rows.map(r => clean(r.rental_application_id)).filter(Boolean);
-  console.log('\ndistinct rental_application_id: ' + new Set(ids).size + ' of ' + ids.length);
   console.log('\nNothing was written. This script only reads.');
 })().catch(e => { console.error('FAILED: ' + e.message); process.exit(1); });
