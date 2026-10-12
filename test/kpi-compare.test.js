@@ -414,9 +414,15 @@ t('canceled and denied are marked as a definition difference', () => {
   // difference of definition — what is left is the 53 rows her tab carries
   // and leasing_applications does not. Marked SOURCE, which is actionable;
   // DEFINITION would have read as "nothing to do here".
+  // The sync gap is closed: 127 rows against her 123, same rule, same
+  // lease-start test. What is left is the four days between her export and
+  // today, and the explanation has to say THAT — "SOURCE" would send somebody
+  // back to a sync that is now correct.
   ['applications', 'canceled', 'denied'].forEach(m => {
     assert.ok(C.EXPLANATIONS[m], m + ' has no explanation');
-    assert.ok(/^SOURCE:/.test(C.EXPLANATIONS[m]), m + ' must name the sync gap');
+    assert.ok(/^WINDOW:/.test(C.EXPLANATIONS[m]), m + ' must name the window, not the old sync gap');
+    assert.ok(!/70 of her 123|53 applications/.test(C.EXPLANATIONS[m]),
+      m + ' still quotes a row count that is no longer true');
   });
   // No longer a difference of definition: both sides read Occupancy Custom
   // Fields and count delinquent residents carrying a stage. The explanation

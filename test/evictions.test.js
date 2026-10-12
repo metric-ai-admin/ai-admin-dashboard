@@ -148,8 +148,6 @@ t('the report is registered for the morning cron', () => {
   assert.ok(/id: 'occupancy_custom_fields'/.test(reports), 'the report is not registered');
 });
 
-console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
-if (fail) process.exit(1);
 
 // ---- 2026-10-12: a zero has to say which zero it is ------------------------
 
@@ -208,3 +206,43 @@ t('the report turns a zero into a named gap', () => {
   assert.ok(!/status: r => EV\.clean\(r\.eviction_status\)/.test(build),
     'pinning the column is the bug this fixed');
 });
+
+t('a human label is found as readily as a snake_case name', () => {
+  // THE SECOND BUG. These are CUSTOM fields and the report returns them under
+  // their labels — "Eviction Status", with a capital and a space. The first
+  // version listed snake_case spellings and found none on 827 rows, and no
+  // amount of guessing more of them would have reached it.
+  const labelled = [{ 'Tenant Name': 'A', 'Property ID': '1703', 'Eviction Status': 'Need To File Eviction' }];
+  const r = EV.countFrom(labelled, { resolveValue: v => (v === '1703' ? 'Ascent at Northgate' : null) });
+  assert.strictEqual(r.__stats.statusField, 'Eviction Status');
+  assert.strictEqual(r.__stats.propertyField, 'Property ID');
+  assert.strictEqual(r['Ascent at Northgate'].needToFile, 1);
+});
+
+t('snake_case still works — this is a widening, not a swap', () => {
+  const snake = [{ tenant_name: 'A', property_name: 'X', eviction_status: 'Pending JP Court Date' }];
+  const r = EV.countFrom(snake, {});
+  assert.strictEqual(r.__stats.statusField, 'eviction_status');
+  assert.strictEqual(r.X.evictionsInProcess, 1);
+});
+
+t('every spelling of the same label lands on one answer', () => {
+  ['Eviction Status', 'eviction_status', 'EvictionStatus', 'eviction-status', 'Eviction  Status']
+    .forEach(k => {
+      const r = EV.countFrom([{ property_name: 'X', tenant_name: 'A', [k]: 'Need To File Eviction' }], {});
+      assert.strictEqual(r.__stats.statusField, k, k + ' was not recognised');
+      assert.strictEqual(r.X.needToFile, 1, k);
+    });
+});
+
+t('the column probe prints names and counts, never a value', () => {
+  const s = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'probe-store-columns.js'), 'utf8');
+  const code = s.replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
+  assert.ok(/filled\[k\] = rows\.filter/.test(code), 'it must count, not read');
+  assert.ok(!/JSON\.stringify\(\s*(r|row|sample)\s*\)/.test(code), 'it prints a row');
+  assert.ok(/clean\(r\[k\]\)/.test(code), 'a cell may only be tested for emptiness');
+});
+
+console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
+if (fail) process.exit(1);
