@@ -18,6 +18,11 @@ function fakeTable(n, calls, opts) {
           return Promise.resolve({ data: null, error: {
             message: 'column "' + ordered[0] + '" does not exist', code: '42703' } });
         }
+        // A column in the SELECT is missing — nothing to do with the ORDER BY.
+        if (o.missingSelectColumn) {
+          return Promise.resolve({ data: null, error: {
+            message: 'column ' + o.missingSelectColumn + ' does not exist', code: '42703' } });
+        }
         calls.push({ from, to, ordered });
         const size = Math.min(to - from + 1, 1000);
         return Promise.resolve({ data: rows.slice(from, from + size), error: null });
@@ -151,6 +156,23 @@ const ta = async (name, fn) => {
       calls.forEach(c => assert.strictEqual(c.ordered, null));
       assert.ok(/oddtable/.test(said) && /UNORDERED/.test(said),
         'it must say out loud that this query is not trustworthy past page one');
+    } finally { console.warn = warn; }
+  });
+
+  await ta('a missing SELECT column is not blamed on the ORDER BY', async () => {
+    // Real case, 2026-10-12: a script selected source_as_of before migration
+    // 086 had run. PostgREST answers 42703 — "some column does not exist" —
+    // and the fallback announced "this table has no id column", about a table
+    // whose primary key is id, then dropped the ORDER BY on its way to the
+    // real error. The error must reach the caller untouched.
+    const calls = [];
+    const warn = console.warn; let said = '';
+    console.warn = m => { said += m; };
+    try {
+      await assert.rejects(
+        selectAll(fakeTable(10, calls, { missingSelectColumn: 'leasing_occupancy_history.source_as_of' })),
+        /source_as_of does not exist/);
+      assert.strictEqual(said, '', 'it must not claim the ordering column is missing');
     } finally { console.warn = warn; }
   });
 

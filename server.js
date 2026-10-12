@@ -18216,6 +18216,15 @@ async function captureOccupancySnapshot(asOf) {
   // being filed, the numbers are from another day and the row would be a
   // quiet lie — recorded either way, so the discrepancy is visible later.
   const sourceAsOf = [...new Set(rows.map(r => String(r.as_of || '').slice(0, 10)).filter(Boolean))].sort();
+  // STORED ON THE ROW, not only returned. This used to travel out in the
+  // function's result and into a log line, which is no use a week later when
+  // somebody is comparing two snapshots and wants to know whether the
+  // comparison means anything. The row has to carry it (086).
+  //
+  // The oldest when the sources disagree: a snapshot is only as current as its
+  // stalest property, and taking the newest would describe the row more
+  // kindly than it deserves.
+  const rowSourceAsOf = sourceAsOf.length ? sourceAsOf[0] : null;
 
   const now = new Date().toISOString();
   const payload = rows
@@ -18235,12 +18244,21 @@ async function captureOccupancySnapshot(asOf) {
         // never the average of these — it is sum(occupied)/sum(units), which
         // is why both components are stored and not just the ratio.
         occupancy_pct: units > 0 ? Number((occ / units).toFixed(4)) : null,
+        source_as_of: rowSourceAsOf,
         captured_at: now,
       };
     });
 
-  const { error: wErr } = await db.from(OCC_SNAPSHOT_TABLE)
+  let { error: wErr } = await db.from(OCC_SNAPSHOT_TABLE)
     .upsert(payload, { onConflict: 'as_of,property_name' });
+  // 086 may not have been run yet. The week's only snapshot must not be lost
+  // over a column that describes it — retry without the description, and say
+  // so, rather than skipping the capture entirely.
+  if (wErr && /source_as_of/.test(wErr.message || '')) {
+    console.warn('[occ-snapshot] no source_as_of column — run supabase/migrations/086_occupancy_history_source.sql');
+    ({ error: wErr } = await db.from(OCC_SNAPSHOT_TABLE)
+      .upsert(payload.map(({ source_as_of, ...rest }) => rest), { onConflict: 'as_of,property_name' }));
+  }
   if (wErr) {
     if (/leasing_occupancy_history/.test(wErr.message)) {
       return { error: 'table missing — run supabase/migrations/072_leasing_occupancy_history.sql' };
@@ -18251,7 +18269,8 @@ async function captureOccupancySnapshot(asOf) {
     captured: payload.length,
     asOf,
     sourceAsOf,
-    stale: sourceAsOf.length === 1 && sourceAsOf[0] !== asOf ? sourceAsOf[0] : null,
+    sourceAsOfStored: rowSourceAsOf,
+    stale: rowSourceAsOf && rowSourceAsOf !== asOf ? rowSourceAsOf : null,
   };
 }
 
@@ -18390,11 +18409,45 @@ app.post('/api/leasing/sync/run-now', requireMetricAccess, async (req, res) => {
   }
 });
 
+// Occupancy into leasing_occupancy.
+//
+// THERE WAS NO CRON FOR THIS EITHER — the same gap as the work orders below,
+// found the same way. The table was only written when somebody pressed Sync,
+// and the last press was 2026-10-02, so on 2026-10-12 the Occupancy and
+// Preleased figures on the owners' report were ten days old. Worse than a
+// stale number on its own: the Sunday snapshot at 05:30 copies this table into
+// leasing_occupancy_history, so the "week ending 10/10" row was written from
+// 10/02 data and is wrong per property by as much as three units.
+//
+// 05:00, THIRTY MINUTES BEFORE THAT SNAPSHOT, which is the whole point: the
+// snapshot has to copy a table that was refreshed this morning. Nothing moves
+// in or out between midnight and five, so a 05:00 Sunday pull is the closest
+// AppFolio will give us to "as of the close of Saturday" — occupancy_summary
+// reports as of now and takes no historical date.
+//
+// It runs on its own schedule rather than inside the 05:30 block so that one
+// failure cannot cost the other, and so the snapshot is never waiting on a
+// retrying fetch. Rate limiting is appfolioReportsFetch's: 429 and the 5xx a
+// limiter answers with are retried with backoff and Retry-After honoured. The
+// minute is otherwise empty — the leasing sync is at 05:30 and the work-order
+// sync at 06:00 — so this adds no concurrent load on AppFolio.
+cron.schedule('0 5 * * *', () => {
+  if (!CRM_CONFIGURED) return;
+  callOwnRoute('/api/leasing/sync/occupancy', {})
+    .then(r => logLine(`[occupancy-sync] ${r?.synced ?? '?'} properties`))
+    .catch(err => logLine(`[occupancy-sync] FAILED: ${err.message}`));
+}, { timezone: LYNDSAY_TIMEZONE });
+
 cron.schedule('30 5 * * *', () => {
   if (!CRM_CONFIGURED) return;
-  // Sunday only: capture the Saturday that just closed, before the sync below
-  // overwrites leasing_occupancy with today's numbers. Order matters — the
-  // snapshot reads what is there now, not what the sync is about to put there.
+  // Sunday only: capture the Saturday that just closed. leasing_occupancy was
+  // refreshed at 05:00 by the cron above, so this copies this morning's
+  // numbers and not last week's.
+  //
+  // It still reads the table rather than fetching, and the 05:00 job is
+  // deliberately not awaited here: if that fetch is slow or failing, this
+  // captures the best figures available and says so through its own log line,
+  // which beats skipping the week's only snapshot.
   const todayCT = WEEK.toChicagoYMD(new Date());
   if (new Date(todayCT + 'T00:00:00Z').getUTCDay() === 0) {
     const satur = occSnapshotAsOf(todayCT);
