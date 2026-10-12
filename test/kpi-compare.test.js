@@ -278,10 +278,21 @@ t('New Applications is her PENDING count, with no date filter at all', () => {
   // so rather than show it as a disagreement.
   const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-compare.js'), 'utf8');
   const apps = src.slice(src.indexOf('// apps — her rule'), src.indexOf('// box score:'));
-  const code = apps.replace(/^\s*\/\/.*$/gm, '');
+  // Comments AND string literals stripped. Since the readers take their
+  // columns by name, this block legitimately contains 'lease start date' —
+  // a column name, not a date filter. Matching it would fail the test on the
+  // spelling of a header rather than on anything the code does.
+  const code = apps.replace(/^\s*\/\/.*$/gm, '').replace(/'[^']*'|"[^"]*"/g, "''");
   assert.ok(!/\bstart\b|\bend\b/.test(code), 'her apps rule takes no week');
-  assert.ok(/r\[12\]/.test(code), 'Application Status is column M (12), not F (5)');
-  assert.ok(/r\[5\]/.test(code), 'and column F is the finer Status, used for Converting');
+  // Her status is the ROLLED-UP "Application Status" (column M), not the finer
+  // "Status" in column F that carries Converting / Converted. Reading F gave
+  // our port 3 against her 15. Checked on the unstripped source, because the
+  // column is now asked for by name with 12 kept as the fallback.
+  assert.ok(/'application status', 12/.test(apps),
+    'Application Status must be read by name, falling back to column M (12)');
+  assert.ok(!/'status', 12/.test(apps), 'that would read the finer Status column as hers');
+  assert.ok(/'status', 5/.test(apps),
+    'and the finer Status, column F, is still read for Converting');
 });
 
 t('her Approved card is the CONVERTING list, not the approved one', () => {
@@ -291,7 +302,7 @@ t('her Approved card is the CONVERTING list, not the approved one', () => {
   const i = src.indexOf("status === 'Converting'");
   assert.ok(i > 0, 'the Converting branch must exist');
   const branch = src.slice(i, i + 900);
-  assert.ok(/add\(propRaw, 'approved', 1\)/.test(branch),
+  assert.ok(/add\(prop, 'approved', 1\)/.test(branch),
     'approved must be fed by the Converting branch');
 });
 
