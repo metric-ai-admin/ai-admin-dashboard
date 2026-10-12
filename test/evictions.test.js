@@ -124,7 +124,10 @@ const build = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-build.js'),
 
 t('the report reads the stage from Occupancy Custom Fields, not delinquency', () => {
   assert.ok(/occupancy_custom_fields/.test(build), 'the new source is not read');
-  assert.ok(/EV\.countFrom\(evictionRows/.test(build));
+  // The rows are FLATTENED first — the custom fields arrive nested inside one
+  // column, so "Eviction Status" is not a key until they are.
+  assert.ok(/CF\.flattenAll\(evictionRows\)/.test(build), 'the nested column is never flattened');
+  assert.ok(/EV\.countFrom\(evictionFlat/.test(build));
   assert.ok(/isDelinquent:/.test(build), 'without her restriction this counts a different population');
 });
 
