@@ -527,6 +527,37 @@ t('the panel asks with pickers, not a free-text box', () => {
   assert.ok(/carry_pair_required/.test(app), 'the refusal is not handled at all');
 });
 
+t('a table the anon key cannot read must not read as an empty month', () => {
+  // THE SECOND BUG, and it wore the first one's clothes. RLS is on
+  // oncall_rotations with no anon policy, so a read through supabasePublic
+  // returns [] with no error — indistinguishable from a month nobody has
+  // generated. The panel said "October 2026 is not in the dashboard" about a
+  // month that was imported, verified and sitting in the table.
+  const s = src('server.js');
+  assert.ok(/function oncallDb\(res\)/.test(s), 'the on-call routes still fall back to the anon client');
+  const fn = s.slice(s.indexOf('function oncallDb(res)'), s.indexOf('async function oncallRow'));
+  assert.ok(/SUPABASE_SERVICE_ROLE_KEY is not set/.test(fn),
+    'the message does not name the thing to fix');
+  assert.ok(/503/.test(fn), 'a configuration problem is reported as missing data');
+
+  // Every on-call route goes through it. One that still used
+  // `supabaseAdmin || supabasePublic` would show the same empty month again.
+  const start = s.indexOf("app.get('/api/maintenance/oncall'");
+  const end = s.indexOf('// GET /api/reports/make-ready-audit.xlsx');
+  const routes = s.slice(start, end);
+  assert.ok(start > 0 && end > start);
+  assert.strictEqual((routes.match(/supabaseAdmin \|\| supabasePublic/g) || []).length, 0,
+    'an on-call route can still read as the anon key');
+  assert.ok((routes.match(/oncallDb\(res\)/g) || []).length >= 5);
+});
+
+t('the check script reads with BOTH keys, so the difference is visible', () => {
+  const s = src('scripts/check-oncall.js');
+  assert.ok(/as the ANON key/.test(s) && /as the SERVICE key/.test(s));
+  assert.ok(/RLS, not absence/.test(s), 'an empty anon read is not explained');
+  assert.ok(!/\.update\(|\.insert\(|\.upsert\(|\.delete\(/.test(s), 'the check script writes');
+});
+
 // ---- importing a hand-built month ------------------------------------------
 
 t('the importer reads the carry-in out of the file, not from a prompt', () => {

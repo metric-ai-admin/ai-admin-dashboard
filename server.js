@@ -18508,6 +18508,30 @@ async function oncallInputs(db) {
   return { technicians: techs.data || [], properties, missingGeo: missing };
 }
 
+// THE ANON CLIENT CANNOT READ THIS TABLE, and it does not say so — it returns
+// an empty list, exactly like a month that was never generated.
+//
+// That is what "October 2026 is not in the dashboard" meant on 2026-10-13 after
+// both months had been imported and verified present: RLS is on and there is no
+// anon policy, so a read through supabasePublic comes back [] with no error.
+// An absent row and a forbidden row look identical, which is the same trap as
+// an AppFolio status nobody asks for by code.
+//
+// So the on-call routes REQUIRE the service-role client and say so plainly.
+// "The service role key is not configured" is a sentence somebody can act on;
+// "not in the dashboard" sent Arturo looking for an import that had run.
+function oncallDb(res) {
+  if (!supabaseAdmin) {
+    res.status(503).json({
+      error: 'SUPABASE_SERVICE_ROLE_KEY is not set on this server, so the on-call '
+        + 'table cannot be read. Row-level security hides it from the anon key, and '
+        + 'the read would come back empty rather than failing.',
+    });
+    return null;
+  }
+  return supabaseAdmin;
+}
+
 async function oncallRow(db, year, month) {
   const { data, error } = await db.from('oncall_rotations')
     .select('*').eq('year', year).eq('month', month).maybeSingle();
@@ -18533,7 +18557,8 @@ const oncallMonth = req => ({
 
 app.get('/api/maintenance/oncall', requireAuth, async (req, res) => {
   try {
-    const db = supabaseAdmin || supabasePublic;
+    const db = oncallDb(res);
+    if (!db) return;
     const { year, month } = oncallMonth(req);
     if (!year || !month) return res.status(400).json({ error: 'year and month are required' });
     const row = await oncallRow(db, year, month);
@@ -18557,7 +18582,8 @@ app.get('/api/maintenance/oncall', requireAuth, async (req, res) => {
 // nobody ends up with a calendar that is half new rule and half old decision.
 app.post('/api/maintenance/oncall/generate', requireMetricAdmin, async (req, res) => {
   try {
-    const db = supabaseAdmin || supabasePublic;
+    const db = oncallDb(res);
+    if (!db) return;
     const { year, month } = oncallMonth(req);
     if (!year || !month) return res.status(400).json({ error: 'year and month are required' });
 
@@ -18629,7 +18655,8 @@ app.post('/api/maintenance/oncall/generate', requireMetricAdmin, async (req, res
 // A hand edit. Appended to `edits` and applied to `draft`; fairness recomputes.
 app.post('/api/maintenance/oncall/edit', requireMetricAdmin, async (req, res) => {
   try {
-    const db = supabaseAdmin || supabasePublic;
+    const db = oncallDb(res);
+    if (!db) return;
     const { year, month } = oncallMonth(req);
     const row = await oncallRow(db, year, month);
     if (!row) return res.status(404).json({ error: 'No rotation for that month' });
@@ -18655,7 +18682,8 @@ app.post('/api/maintenance/oncall/edit', requireMetricAdmin, async (req, res) =>
 // "approved" with nobody's name on it is the same as not approved.
 app.post('/api/maintenance/oncall/state', requireMetricAdmin, async (req, res) => {
   try {
-    const db = supabaseAdmin || supabasePublic;
+    const db = oncallDb(res);
+    if (!db) return;
     const { year, month } = oncallMonth(req);
     const row = await oncallRow(db, year, month);
     if (!row) return res.status(404).json({ error: 'No rotation for that month' });
@@ -18686,7 +18714,8 @@ app.get('/api/maintenance/oncall/export.:format', requireAuth, async (req, res) 
     if (!['xlsx', 'pdf'].includes(format)) {
       return res.status(400).json({ error: 'format must be xlsx or pdf' });
     }
-    const db = supabaseAdmin || supabasePublic;
+    const db = oncallDb(res);
+    if (!db) return;
     const { year, month } = oncallMonth(req);
     const row = await oncallRow(db, year, month);
     if (!row) return res.status(404).json({ error: 'No rotation for that month' });
