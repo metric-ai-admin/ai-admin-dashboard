@@ -5762,6 +5762,7 @@ function switchMaintenanceView(view) {
     // from techCache, so it needs the roster already in hand.
     'properties':     async () => { await loadTechnicians(); loadPropertyAssignments(); },
     'coverage':       loadMaintenanceCoverage,
+    'oncall':         loadOnCall,
     'efficiency':     loadEfficiency,
     'technician':     loadTechActivity,
     'wo-scheduling':  loadWoScheduling,   // wo-scheduling.js
@@ -12757,4 +12758,204 @@ function kcRender(d) {
        total: a credit is not negative delinquency, and netting it off would report less
        than there is.` : 'No credits on this export.'}</p>
        <h4>Delinquency, resident by resident</h4>` + resBlock;
+}
+
+// ── On-Call Rotation ─────────────────────────────────────────────────
+// Erick, 2026-10-06. Generate a month, change what the rule got wrong, send it
+// to Josué, Bekah and Jay, export the file Erick loads into AppFolio by hand.
+//
+// EVERY HAND EDIT IS MARKED, here and in the export. A reviewer has to be able
+// to tell what the rule produced from what a person decided — an approval that
+// cannot tell them apart covers both without anybody noticing there was a
+// difference.
+let onCallDoc = null;
+let onCallWired = false;
+
+const ocMonthValue = () => $('#oncall-month')?.value || '';
+function ocYM() {
+  const v = ocMonthValue();
+  const m = v.match(/^(\d{4})-(\d{2})$/);
+  return m ? { year: Number(m[1]), month: Number(m[2]) } : null;
+}
+
+async function loadOnCall() {
+  if (!onCallWired) {
+    onCallWired = true;
+    const el = $('#oncall-month');
+    if (el && !el.value) {
+      // Next month: the calendar is prepared before the month it describes.
+      const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + 1);
+      el.value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+    $('#oncall-load')?.addEventListener('click', ocFetch);
+    $('#oncall-generate')?.addEventListener('click', ocGenerate);
+    $('#oncall-month')?.addEventListener('change', ocFetch);
+  }
+  ocFetch();
+}
+
+function ocExportLinks() {
+  const ym = ocYM();
+  const q = ym ? `?year=${ym.year}&month=${ym.month}` : '';
+  const x = $('#oncall-xlsx'); const p = $('#oncall-pdf');
+  if (x) x.href = '/api/maintenance/oncall/export.xlsx' + q;
+  if (p) p.href = '/api/maintenance/oncall/export.pdf' + q;
+}
+
+async function ocFetch() {
+  const ym = ocYM();
+  const status = $('#oncall-status');
+  const body = $('#oncall-body');
+  if (!ym) { if (status) status.textContent = 'Pick a month.'; return; }
+  ocExportLinks();
+  if (status) status.textContent = 'Loading…';
+  try {
+    const d = await api(`/api/maintenance/oncall?year=${ym.year}&month=${ym.month}`);
+    onCallDoc = d;
+    if (!d.exists) {
+      if (status) status.textContent = 'No rotation for that month yet.';
+      if (body) {
+        body.innerHTML = '<p class="small muted">Press <b>Generate</b> to build one from the roster '
+          + 'and the property assignments. The carry-in comes from the previous month&rsquo;s last week, '
+          + 'so generate the months in order.</p>';
+      }
+      return;
+    }
+    if (status) status.textContent = '';
+    ocRender(d);
+  } catch (e) {
+    if (status) status.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function ocGenerate() {
+  const ym = ocYM();
+  if (!ym) return;
+  const status = $('#oncall-status');
+  if (onCallDoc && onCallDoc.exists && !confirm('Regenerate ' + ocMonthValue()
+    + '? The draft is replaced. Hand edits are kept in the log but are NOT reapplied.')) return;
+  if (status) status.textContent = 'Generating…';
+  try {
+    await api('/api/maintenance/oncall/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({}, ym, { balance: !!$('#oncall-balance')?.checked })),
+    });
+    ocFetch();
+  } catch (e) { if (status) status.textContent = 'Error: ' + e.message; }
+}
+
+const OC_STATE_LABEL = {
+  draft: 'Draft', pending_approval: 'Pending approval', approved: 'Approved',
+};
+
+const ocShort = n => String(n || '').split(/\s+/)[0];
+
+function ocRender(d) {
+  const doc = d.draft || {};
+  const weeks = doc.weeks || [];
+  const props = Object.keys((weeks[0] || {}).assign || {}).sort();
+  const edited = w => new Set((w.edited || []).filter(e => e.type === 'property').map(e => e.property));
+  const pairEdited = w => (w.edited || []).some(e => e.type === 'pair');
+
+  const head = weeks.map(w => `<th>${esc(w.label)}<div class="small muted">${esc(w.range)}</div>`
+    + (w.spillsInto ? `<div class="small" style="color:#b00020">⚠ Spills into ${esc(w.spillsInto)}</div>` : '')
+    + '</th>').join('');
+
+  const canEdit = d.canEdit && d.state !== 'approved';
+  const sel = (week, property, value) => (canEdit
+    ? `<select data-oc-week="${week.n}" data-oc-prop="${esc(property)}">`
+      + week.pair.map(t => `<option value="${esc(t)}"${t === value ? ' selected' : ''}>${esc(ocShort(t))}</option>`).join('')
+      + '</select>'
+    : esc(ocShort(value)));
+
+  const rows = props.map(p => `<tr><td>${esc(p)}</td>`
+    + weeks.map(w => `<td${edited(w).has(p) ? ' class="oc-edited"' : ''}>`
+        + sel(w, p, w.assign[p]) + (edited(w).has(p) ? ' <span title="changed by hand">*</span>' : '')
+      + '</td>').join('')
+    + '</tr>').join('');
+
+  const fair = ((doc.fairness || {}).rows || []).map(r => `<tr>
+      <td>${esc(r.technician)}</td>
+      <td>${r.weeks}${r.carried ? ' <span class="small muted">(+ carry-in week)</span>' : ''}</td>
+      <td class="small">${esc(r.which)}</td></tr>`).join('');
+
+  const notes = [];
+  if (doc.carry && doc.carry.note) notes.push(esc(doc.carry.note));
+  (doc.excluded || []).forEach(e =>
+    notes.push(`Not in the on-call pool: <b>${esc(e.name)}</b> — ${esc(e.reason)}`));
+  (doc.missingGeo || []).forEach(n =>
+    notes.push(`<b style="color:#b00020">${esc(n)} has no location on file</b> — it is not in the rotation.`));
+  (doc.warnings || []).forEach(w => notes.push(`<b style="color:#b00020">${esc(w)}</b>`));
+  weeks.filter(w => w.guard).forEach(w =>
+    notes.push(`${esc(w.label)}: ${esc(w.guard.property)} given to ${esc(ocShort(w.guard.tech))} — `
+      + 'straight proximity would have left them with no property at all.'));
+
+  $('#oncall-body').innerHTML = `
+    <div class="row" style="gap:10px;align-items:center;margin-bottom:8px">
+      <span class="badge ${d.state === 'approved' ? 'badge-green' : 'badge-blue'}">${esc(OC_STATE_LABEL[d.state] || d.state)}</span>
+      ${(d.approvals || []).map(a => `<span class="small muted">✔ ${esc(a.by)} · ${esc(String(a.at).slice(0, 10))}</span>`).join('')}
+      <span style="flex:1"></span>
+      ${d.canEdit ? ocStateButtons(d) : ''}
+    </div>
+    <table class="table"><thead><tr><th>Property</th>${head}</tr></thead>
+      <tbody>
+        <tr><td><b>On-Call Techs</b></td>${weeks.map(w =>
+          `<td${pairEdited(w) ? ' class="oc-edited"' : ''}><b>${esc(w.pair.map(ocShort).join(' + '))}</b>${pairEdited(w) ? ' *' : ''}</td>`).join('')}</tr>
+        ${rows}
+      </tbody></table>
+    <h4>Rotation fairness check — on-call weeks per technician</h4>
+    <table class="table"><thead><tr><th>Technician</th><th>Weeks on-call</th><th>Which weeks</th></tr></thead>
+      <tbody>${fair}</tbody></table>
+    ${(doc.fairness && !doc.fairness.even)
+      ? '<p class="small" style="color:#b00020">The weeks are not even this month — spread of '
+        + doc.fairness.spread + '. That can be correct when the number of weeks does not divide by the pool.</p>' : ''}
+    ${notes.length ? '<ul class="small muted">' + notes.map(n => `<li>${n}</li>`).join('') + '</ul>' : ''}
+    <p class="small muted">* marks a cell changed by hand after the rotation was generated.</p>`;
+
+  if (canEdit) {
+    $$('#oncall-body select[data-oc-prop]').forEach(s =>
+      s.addEventListener('change', () => ocEdit({
+        type: 'property', week: Number(s.dataset.ocWeek), property: s.dataset.ocProp, tech: s.value,
+      })));
+  }
+  $$('#oncall-body [data-oc-state]').forEach(b =>
+    b.addEventListener('click', () => ocSetState(b.dataset.ocState)));
+}
+
+function ocStateButtons(d) {
+  if (d.state === 'draft') return '<button class="btn" data-oc-state="pending_approval">Send for approval</button>';
+  if (d.state === 'pending_approval') {
+    return '<button class="btn" data-oc-state="approved">Approve</button>'
+      + ' <button class="btn" data-oc-state="draft">Back to draft</button>';
+  }
+  return '<button class="btn" data-oc-state="draft">Back to draft</button>';
+}
+
+async function ocEdit(edit) {
+  const ym = ocYM();
+  try {
+    await api('/api/maintenance/oncall/edit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({}, ym, { edits: [edit] })),
+    });
+    ocFetch();
+  } catch (e) { $('#oncall-status').textContent = 'Error: ' + e.message; }
+}
+
+async function ocSetState(state) {
+  const ym = ocYM();
+  // An approval records WHO. "Approved" with nobody's name on it is the same as
+  // not approved, and the server refuses it anyway.
+  let by = null;
+  if (state === 'approved') {
+    by = prompt('Approving as (Josue Garcia, Rebekah Hernandez, Jay Manuel):', '');
+    if (!by) return;
+  }
+  try {
+    await api('/api/maintenance/oncall/state', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({}, ym, { state, by })),
+    });
+    ocFetch();
+  } catch (e) { $('#oncall-status').textContent = 'Error: ' + e.message; }
 }

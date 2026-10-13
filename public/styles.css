@@ -3022,3 +3022,9 @@ tr.ca-sel { background: var(--accent-glow); }
 .kc-table tr.gap td { color: var(--muted); }
 .kc-res { margin: 6px 0; }
 .kc-res > summary { cursor: pointer; padding: 5px 0; font-size: 12px; }
+
+/* On-Call Rotation: a cell changed by hand after the rotation was generated.
+   Marked on the screen AND with an asterisk in the export, so a reviewer can
+   always tell what the rule produced from what a person decided. */
+.oc-edited { background: #fff6e0; }
+.oc-edited select { background: transparent; }

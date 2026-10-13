@@ -18486,6 +18486,230 @@ async function karaBriefRender(opts) {
   };
 }
 
+// ---- On-call rotation (Erick, 2026-10-06) ----------------------------------
+//
+// One calendar per month, generated from the roster and the property
+// assignments, edited by hand where a person knows better, then approved by
+// Josué, Bekah and Jay. Erick loads the approved weeks into AppFolio himself —
+// THE DASHBOARD DOES NOT WRITE TO APPFOLIO, and nothing here pretends to.
+const ONCALL = require('./lib/oncall-rotation.js');
+const ONCALL_EXPORT = require('./lib/oncall-export.js');
+const PROPERTY_GEO = require('./lib/property-geo.js');
+
+// The roster and the properties, as the generator wants them.
+async function oncallInputs(db) {
+  const [techs, assigns] = await Promise.all([
+    db.from('technicians').select('id,full_name,active,position,show_on_map,home_lat,home_lng'),
+    db.from('property_assignments').select('property,maintenance_tech,grounds_tech'),
+  ]);
+  if (techs.error) throw new Error(techs.error.message);
+  if (assigns.error) throw new Error(assigns.error.message);
+  const { properties, missing } = PROPERTY_GEO.propertiesFrom(assigns.data || []);
+  return { technicians: techs.data || [], properties, missingGeo: missing };
+}
+
+async function oncallRow(db, year, month) {
+  const { data, error } = await db.from('oncall_rotations')
+    .select('*').eq('year', year).eq('month', month).maybeSingle();
+  if (error && !/no rows/i.test(error.message || '')) throw new Error(error.message);
+  return data || null;
+}
+
+// The month before, for the carry-in pair. Taken from the stored calendar, not
+// asked for again: the pair that covers the first days of this month is a FACT
+// about last month's calendar, and retyping it is how the two drift apart.
+function carryFromPrevious(prev) {
+  if (!prev || !prev.draft) return { pair: [], from: null };
+  const weeks = prev.draft.weeks || [];
+  const last = weeks[weeks.length - 1];
+  if (!last || !last.spillsInto) return { pair: [], from: null };
+  return { pair: last.pair || [], from: prev.draft.monthName.split(' ')[0] + ' ' + last.label };
+}
+
+const oncallMonth = req => ({
+  year: Number(req.query.year || req.body?.year),
+  month: Number(req.query.month || req.body?.month),
+});
+
+app.get('/api/maintenance/oncall', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { year, month } = oncallMonth(req);
+    if (!year || !month) return res.status(400).json({ error: 'year and month are required' });
+    const row = await oncallRow(db, year, month);
+    const { missingGeo } = await oncallInputs(db);
+    res.json({
+      exists: !!row,
+      year, month,
+      state: row ? row.state : null,
+      draft: row ? row.draft : null,
+      edits: row ? row.edits : [],
+      approvals: row ? row.approvals : [],
+      approvers: ONCALL.APPROVERS,
+      missingGeo,
+      canEdit: req.user?.role === 'admin' || /maintenance/i.test(req.user?.role || ''),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Generate (or regenerate) the month. A regenerate REPLACES the draft and says
+// so — the edits are kept in their own column, never silently reapplied, so
+// nobody ends up with a calendar that is half new rule and half old decision.
+app.post('/api/maintenance/oncall/generate', requireMetricAdmin, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { year, month } = oncallMonth(req);
+    if (!year || !month) return res.status(400).json({ error: 'year and month are required' });
+
+    const existing = await oncallRow(db, year, month);
+    if (existing && existing.state === 'approved' && !req.body?.force) {
+      return res.status(409).json({
+        error: 'That month is approved. Send it back to draft first, or pass force.',
+      });
+    }
+
+    const { technicians, properties, missingGeo } = await oncallInputs(db);
+    const prevMonth = month === 1 ? 12 : month - 1;
+    const prevYear = month === 1 ? year - 1 : year;
+    const prev = await oncallRow(db, prevYear, prevMonth);
+    const carry = carryFromPrevious(prev);
+
+    const draft = ONCALL.build({
+      year, month, technicians, properties,
+      carryPair: req.body?.carryPair || carry.pair,
+      carryFrom: req.body?.carryFrom || carry.from,
+      balance: req.body?.balance,
+    });
+    draft.missingGeo = missingGeo;
+    draft.state = 'draft';
+
+    const row = {
+      year, month, state: 'draft', draft, edits: [], approvals: [],
+      carry_pair: draft.carry.pair, carry_from: draft.carry.from,
+      created_by: req.user?.name || 'API key',
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await db.from('oncall_rotations').upsert(row, { onConflict: 'year,month' });
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, draft, carriedFrom: carry.from, missingGeo });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// A hand edit. Appended to `edits` and applied to `draft`; fairness recomputes.
+app.post('/api/maintenance/oncall/edit', requireMetricAdmin, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { year, month } = oncallMonth(req);
+    const row = await oncallRow(db, year, month);
+    if (!row) return res.status(404).json({ error: 'No rotation for that month' });
+    if (row.state === 'approved') {
+      return res.status(409).json({ error: 'Approved — send it back to draft to change it' });
+    }
+    const edits = Array.isArray(req.body?.edits) ? req.body.edits : [];
+    if (!edits.length) return res.status(400).json({ error: 'No edits' });
+    const who = req.user?.name || 'API key';
+    const draft = ONCALL.applyEdits(row.draft, edits, who);
+    const { error } = await db.from('oncall_rotations').update({
+      draft,
+      edits: (row.edits || []).concat(edits.map(e => ({ ...e, by: who, at: new Date().toISOString() }))),
+      updated_at: new Date().toISOString(),
+    }).eq('id', row.id);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, draft });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// draft -> pending_approval -> approved, one step at a time, and back to draft
+// when something has to change. An approval records WHO and WHEN, because
+// "approved" with nobody's name on it is the same as not approved.
+app.post('/api/maintenance/oncall/state', requireMetricAdmin, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { year, month } = oncallMonth(req);
+    const row = await oncallRow(db, year, month);
+    if (!row) return res.status(404).json({ error: 'No rotation for that month' });
+    const step = ONCALL.nextState(row.state, String(req.body?.state || ''));
+    if (!step.ok) return res.status(400).json({ error: step.error });
+
+    const who = String(req.body?.by || req.user?.name || '').trim();
+    if (step.state === 'approved' && !who) {
+      return res.status(400).json({ error: 'An approval needs a name' });
+    }
+    const approvals = step.state === 'approved'
+      ? (row.approvals || []).concat([{ by: who, at: new Date().toISOString(), note: req.body?.note || null }])
+      : (step.state === 'draft' ? [] : row.approvals || []);
+
+    const draft = { ...row.draft, state: step.state, approvals };
+    const { error } = await db.from('oncall_rotations').update({
+      state: step.state, approvals, draft, updated_at: new Date().toISOString(),
+    }).eq('id', row.id);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, state: step.state, approvals });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// The calendar, in the format people already read. xlsx or pdf.
+app.get('/api/maintenance/oncall/export.:format', requireAuth, async (req, res) => {
+  try {
+    const format = String(req.params.format || 'xlsx').toLowerCase();
+    if (!['xlsx', 'pdf'].includes(format)) {
+      return res.status(400).json({ error: 'format must be xlsx or pdf' });
+    }
+    const db = supabaseAdmin || supabasePublic;
+    const { year, month } = oncallMonth(req);
+    const row = await oncallRow(db, year, month);
+    if (!row) return res.status(404).json({ error: 'No rotation for that month' });
+
+    const { properties } = await oncallInputs(db);
+    const doc = { ...row.draft, state: row.state, approvals: row.approvals };
+    const rows = ONCALL_EXPORT.sheetRows(doc, properties);
+    const name = 'OnCall_Rotation_' + String(doc.monthName).replace(' ', '_');
+
+    if (format === 'xlsx') {
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      ws['!cols'] = ONCALL_EXPORT.columnWidths(doc);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'On-Call Rotation');
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + name + '.xlsx"');
+      return res.send(buf);
+    }
+
+    const PDFKit = require('pdfkit');
+    const pdf = new PDFKit({ size: 'LETTER', layout: 'landscape', margin: 32 });
+    const chunks = [];
+    pdf.on('data', c => chunks.push(c));
+    pdf.on('end', () => {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + name + '.pdf"');
+      res.send(Buffer.concat(chunks));
+    });
+    const width = pdf.page.width - 64;
+    const cols = (doc.weeks || []).length + 1;
+    const colW = width / cols;
+    rows.forEach((r, i) => {
+      if (i === 0) { pdf.font('Helvetica-Bold').fontSize(13).text(String(r[0] || ''), { width }); pdf.moveDown(0.3); return; }
+      if (i === 1) { pdf.font('Helvetica').fontSize(7.5).fillColor('#555').text(String(r[0] || ''), { width }); pdf.fillColor('#000').moveDown(0.5); return; }
+      if (!r.length) { pdf.moveDown(0.4); return; }
+      if (r.length === 1) { pdf.font('Helvetica').fontSize(7.5).text(String(r[0] || ''), { width }); return; }
+      const bold = i === 3 || i === 4 || /^(Technician|ROTATION)/.test(String(r[0]));
+      pdf.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(7.5);
+      const y = pdf.y;
+      let maxH = 0;
+      r.forEach((cell, c) => {
+        const text = String(cell == null ? '' : cell);
+        const h = pdf.heightOfString(text, { width: colW - 6 });
+        if (h > maxH) maxH = h;
+        pdf.text(text, 32 + c * colW, y, { width: colW - 6 });
+      });
+      pdf.y = y + maxH + 3;
+      if (pdf.y > pdf.page.height - 50) pdf.addPage();
+    });
+    pdf.end();
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // GET /api/reports/make-ready-audit.xlsx — every open unit turn, unit by unit.
 //
 // FOR THE MEETING WITH ERICK AND JAY (2026-10-13). Bekah's correction is that
