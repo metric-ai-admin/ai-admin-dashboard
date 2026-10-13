@@ -297,10 +297,10 @@ const REPORTS = [
   //                          notice, which are not renewal conversations. So
   //                          it is joined for status, never used to filter.
   //
-  // tenant_directory was probed too and is deliberately NOT registered. It is
-  // per-tenant rather than per-lease (15 rows for the same 11 leases, the
-  // extra 4 being roommates and occupants) and it carries resident birthdates,
-  // which is PII this dashboard has no reason to hold on disk.
+  // tenant_directory is registered below, with a projection. The reason it was
+  // kept out until 2026-10-13 still stands — it carries resident birthdates —
+  // and the answer is to drop those columns before anything is written, not to
+  // accept them because something else on the report is useful.
   // ---- Jay's "Code Violation Work Orders" saved report: NOT REACHABLE -----
   // Probed live 2026-09-23, both spellings of
   // /reports/joined_reports/66378e55-6e71-11f1-948b-0269bfa09cb1:
@@ -331,6 +331,41 @@ const REPORTS = [
     priority: 9,
     feeds: 'Renewal status — Monday Morning Brief',
     params: {},
+  },
+
+  // ---- Tenant directory: phone numbers for current residents --------------
+  //
+  // Registered 2026-10-13 for the Collections call match. It was deliberately
+  // NOT registered before, and that reasoning has not changed: it is one row
+  // per tenant rather than per lease, and it carries resident DATES OF BIRTH.
+  //
+  // So it is stored through a projection. Name, property, unit and phone are
+  // what the match needs; the birthdate and everything else is dropped before
+  // the rows reach the disk. A column nobody reads is still a column that can
+  // leak, and "we do not look at it" is not a control.
+  //
+  // The name IS kept, because a shared number has to be reported as shared —
+  // "this number belongs to two residents" is the honest answer and it cannot
+  // be given without knowing there are two.
+  {
+    id: 'tenant_directory',
+    resource: 'tenant_directory',
+    label: 'Tenant Directory (projected)',
+    group: 'Collections',
+    priority: 8,
+    feeds: 'Collections call match — resident phone numbers',
+    params: { property_visibility: 'active' },
+    // Everything else the report returns is discarded here, including
+    // date_of_birth. Adding a field is a deliberate act; the default is out.
+    project: r => ({
+      tenant_name: r.tenant_name ?? r.name ?? null,
+      property_name: r.property_name ?? r.property ?? null,
+      property_id: r.property_id ?? null,
+      unit: r.unit ?? r.unit_name ?? null,
+      phone: r.phone ?? r.phone_number ?? r.primary_phone ?? null,
+      mobile: r.mobile ?? r.mobile_phone ?? r.cell_phone ?? null,
+      tenant_status: r.tenant_status ?? r.status ?? null,
+    }),
   },
 
   // ---- Occupancy Custom Fields: where the eviction stage actually lives ----
@@ -418,7 +453,18 @@ async function syncReport(id) {
 
   try {
     const params = resolveParams(def);
-    const { rows, pages, truncated } = await fetchReport(def.resource, params);
+    const fetched = await fetchReport(def.resource, params);
+    const { pages, truncated } = fetched;
+    // A report may be stored WITHOUT some of the columns it returns.
+    //
+    // tenant_directory is the reason this exists: it carries what we need for
+    // the phone match and also resident dates of birth, and a field nobody
+    // reads is a field that can still leak. The projection runs before
+    // anything touches the disk, so the unwanted columns are never written
+    // rather than written and ignored.
+    const rows = typeof def.project === 'function'
+      ? (fetched.rows || []).map(def.project)
+      : fetched.rows;
 
     await ensureDir();
     await writeJSON(dataFile(id), {

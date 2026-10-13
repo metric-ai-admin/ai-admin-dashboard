@@ -10758,6 +10758,36 @@ function dqChange(a) {
   return `<span class="dq-delta ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${dqMoney(Math.abs(a.change))}</span>`;
 }
 
+// The call line on a resident card.
+//
+// "Last contact", not "last inbound call": since 2026-09-29 the archive stores
+// the other party's number on OUTBOUND calls too, so an attempt by Karla is
+// now visible where before it left no trace.
+//
+// AND IT NEVER SAYS "never called". The capture started on a date; before it,
+// 2,146 calls carry no number. "No calls since 9/29" is the true statement,
+// and the difference matters to somebody deciding whether anybody has tried.
+function dqCalls(a) {
+  if (a.externallyManaged) return 'Calls: <span class="muted">not on the Metric phone system</span>';
+  const c = a.calls;
+  if (!c) return 'Calls: <span class="muted">not checked</span>';
+  if (c.note) return 'Calls: <span class="muted">' + dqEsc(c.note) + '</span>';
+  const L = c.lastContact;
+  let out = 'Last contact: <strong>' + dqEsc(dqDate(L.date) || L.date) + '</strong> — '
+    + dqEsc(L.direction) + (L.duration ? ', ' + dqEsc(L.duration) : '')
+    + ' <span class="muted">(' + L.daysAgo + 'd ago)</span>'
+    + ' &middot; ' + c.count30 + ' call' + (c.count30 === 1 ? '' : 's') + ' in 30 days';
+  // A number on two leases is two people. Saying one of them called when it
+  // might have been the other is the kind of small wrong fact that makes
+  // somebody distrust the whole screen.
+  if (c.sharedWith && c.sharedWith.length) {
+    out += '<div class="dq-note">This number is shared with ' + c.sharedWith.length
+      + ' other resident' + (c.sharedWith.length === 1 ? '' : 's')
+      + ' — these calls may not be theirs.</div>';
+  }
+  return out;
+}
+
 function dqCard(a) {
   const decided = a.decision;
   // data-record-open marks this as an openable record for the activity log.
@@ -10788,9 +10818,7 @@ function dqCard(a) {
       ${a.triggers.map(t => `<li><span class="dq-chip">${dqEsc(t.label)}</span> ${dqEsc(t.reason)}</li>`).join('')}
     </ul>
 
-    <div class="dq-meta">${a.externallyManaged
-      ? 'Calls: <span class="muted">not on the Metric phone system</span>'
-      : 'Last inbound call: ' + (a.lastInboundCall ? dqEsc(dqDate(a.lastInboundCall)) : '<span class="muted">none on record</span>')}</div>
+    <div class="dq-meta">${dqCalls(a)}</div>
     <div class="dq-meta">${a.phone
       ? `Phone: <a class="dq-tel" href="tel:${dqEsc(a.phone.tel)}">${dqEsc(a.phone.display)}</a>${a.phone.label ? ` <span class="muted">${dqEsc(a.phone.label)}</span>` : ''}`
       : 'Phone: <span class="muted">none on file</span>'}</div>

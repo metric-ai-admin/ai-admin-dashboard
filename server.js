@@ -5407,6 +5407,31 @@ async function decisionQueueData({ refresh = false } = {}) {
 
   const phoneMap = await lastInboundCallByPhone(supabaseAdmin || supabasePublic).catch(() => new Map());
 
+  // Calls in BOTH directions, since counterparty_number started being stored.
+  //
+  // lastInboundCallByPhone above stays for the existing line; this is the new
+  // one, and it can answer "last contact" rather than "last inbound call"
+  // because the number is now recorded on outbound calls too.
+  const CM = require('./lib/call-match.js');
+  const callsByNumber = await (async () => {
+    try {
+      const rows = await selectAll(() => (supabaseAdmin || supabasePublic)
+        .from('simplevoip_daily_calls')
+        .select('call_date,call_direction,duration,counterparty_number')
+        .gte('call_date', CM.CAPTURE_START), { label: 'dq calls' });
+      return CM.indexCalls(rows);
+    } catch (e) { return new Map(); }
+  })();
+  // Who shares a number, from the projected tenant directory. Absent store =
+  // no sharing reported, which is the safe direction: it never claims a call
+  // belongs to one person when it might belong to two.
+  const residentsByNumber = await (async () => {
+    try {
+      const d = await require('./appfolio-reports.js').readReportData('tenant_directory');
+      return CM.indexResidents((d && d.rows) || []);
+    } catch (e) { return new Map(); }
+  })();
+
   // Month-over-month needs SEPARATE as-of snapshots. The report's
   // this_month / last_month / month_before_last columns are aging by charge
   // period, not history — see the note in collections-triggers.js. Same pull
@@ -5445,7 +5470,16 @@ async function decisionQueueData({ refresh = false } = {}) {
   // Bekah's own dispositions, merged on so a card can show it is already dealt with.
   const decisions = await readJSON(DECISIONS_FILE, {});
   const keyOf = a => String(a.occupancyId || `${a.property}|${a.unit}|${a.name}`);
-  result.queue = result.queue.map(a => ({ ...a, key: keyOf(a), decision: decisions[keyOf(a)] || null }));
+  // The call summary is attached HERE rather than inside buildDecisionQueue:
+  // that module is pure and tested on its triggers, and the call history is a
+  // display fact, not a reason an account is on the queue.
+  const todayCT = WEEK.todayYMD();
+  result.queue = result.queue.map(a => ({
+    ...a, key: keyOf(a), decision: decisions[keyOf(a)] || null,
+    calls: a.externallyManaged ? null : CM.summarise(a.phone && a.phone.tel, {
+      callsByNumber, residentsByNumber, name: a.name, today: todayCT,
+    }),
+  }));
 
   // RESIDENTS IN CREDIT (Bekah, 2026-09-25).
   //
@@ -18851,6 +18885,23 @@ const EARLY_FEEDS = [
   // something, not squeeze between.
   [55, 'delinquency_kpi',        () => require('./appfolio-reports.js').syncReport('delinquency_kpi').then(r => r?.rowCount)],
 ];
+
+// Resident phone numbers, for the Collections call match.
+//
+// 06:30, not in the 05:00 block: that hour is full to :55, and the brief at
+// 06:00, the work-order sync and the five Command Center feeds run to 06:25.
+// This is the first free slot five minutes clear of anything, and nothing
+// before the Collections screen is opened depends on it.
+//
+// STORED THROUGH A PROJECTION. The report carries resident dates of birth and
+// the store keeps name, property, unit and phone only — see the registration
+// in appfolio-reports.js. Nothing here logs a row.
+cron.schedule('30 6 * * *', () => {
+  if (!CRM_CONFIGURED) return;
+  require('./appfolio-reports.js').syncReport('tenant_directory')
+    .then(r => logLine(`[tenant-directory] ${r?.ok ? (r.rowCount ?? '?') + ' residents' : 'FAILED: ' + (r?.error || 'unknown')}`))
+    .catch(err => logLine(`[tenant-directory] FAILED: ${err.message}`));
+}, { timezone: LYNDSAY_TIMEZONE });
 EARLY_FEEDS.forEach(([minute, label, run]) => {
   cron.schedule(`${minute} 5 * * *`, () => {
     if (!CRM_CONFIGURED) return;
