@@ -18539,16 +18539,6 @@ async function oncallRow(db, year, month) {
   return data || null;
 }
 
-// The month before, for the carry-in pair. Taken from the stored calendar, not
-// asked for again: the pair that covers the first days of this month is a FACT
-// about last month's calendar, and retyping it is how the two drift apart.
-function carryFromPrevious(prev) {
-  if (!prev || !prev.draft) return { pair: [], from: null };
-  const weeks = prev.draft.weeks || [];
-  const last = weeks[weeks.length - 1];
-  if (!last || !last.spillsInto) return { pair: [], from: null };
-  return { pair: last.pair || [], from: prev.draft.monthName.split(' ')[0] + ' ' + last.label };
-}
 
 const oncallMonth = req => ({
   year: Number(req.query.year || req.body?.year),
@@ -18598,7 +18588,7 @@ app.post('/api/maintenance/oncall/generate', requireMetricAdmin, async (req, res
     const prevMonth = month === 1 ? 12 : month - 1;
     const prevYear = month === 1 ? year - 1 : year;
     const prev = await oncallRow(db, prevYear, prevMonth);
-    const carry = carryFromPrevious(prev);
+    const carry = ONCALL.carryFrom(prev, ONCALL.MONTHS[prevMonth - 1]);
 
     // THE MONTH BEFORE IS AN INPUT, NOT A DETAIL.
     //
@@ -18626,7 +18616,17 @@ app.post('/api/maintenance/oncall/generate', requireMetricAdmin, async (req, res
           range: last ? last.range : null,
           month: ONCALL.MONTHS[prevMonth - 1] + ' ' + prevYear,
         },
-        pool: ONCALL.poolFrom(technicians).pool.map(p => p.name),
+        // WHY, not just THAT. "October is not in the dashboard" was reported
+        // twice about a month that was stored both times; without this the next
+        // report is another round of guessing.
+        why: carry.why,
+        previousMonthFound: !!prev,
+        readAs: supabaseAdmin ? 'service-role' : 'anon (RLS hides the table)',
+        // ANY ACTIVE TECHNICIAN, not the on-call pool. Carlos covered Oct W5
+        // and Bekah has since taken him off the rotation; the pool no longer
+        // contains him, and a picker built from the pool cannot say who
+        // actually worked that week.
+        candidates: ONCALL.carryCandidates(technicians, prev).map(c => c.name),
       });
     }
 

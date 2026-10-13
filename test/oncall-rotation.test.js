@@ -584,12 +584,15 @@ t('the server REFUSES to generate without it, and says which week it needs', () 
   const s = src('server.js');
   const at = s.indexOf('carry_pair_required');
   assert.ok(at > 0, 'it still generates with an empty carry-in');
-  const block = s.slice(at - 1400, at + 900);
+  // Bounded on the end of the refusal, not on a character count: the payload
+  // has already outgrown one.
+  const block = s.slice(at - 1400, s.indexOf('});', at));
   assert.ok(/weeksOf\(year, month\)\.carryDays > 0/.test(block),
     'a month that starts on a Saturday has no carry-in and must not be blocked');
   assert.ok(/need: \{/.test(block) && /range:/.test(block),
     'it refuses without saying which week it means');
-  assert.ok(/pool: ONCALL\.poolFrom/.test(block), 'the caller has no list to choose from');
+  assert.ok(/candidates: ONCALL\.carryCandidates/.test(block),
+    'the caller has no list to choose from');
 });
 
 t('a month with no carry-in days is never blocked', () => {
@@ -606,7 +609,10 @@ t('the panel asks with pickers, not a free-text box', () => {
   // silently does nothing — which is the bug again, one layer up.
   const app = src('public/app.js');
   assert.ok(/function ocAskCarry/.test(app));
-  const fn = app.slice(app.indexOf('function ocAskCarry'), app.indexOf('function ocAskCarry') + 2200);
+  // Bounded on the next function, not on a character count the function
+  // outgrew the first time it changed.
+  const at = app.indexOf('function ocAskCarry');
+  const fn = app.slice(at, app.indexOf('async function ocEdit', at));
   assert.ok(/<select id="oncall-carry-a"/.test(fn) && /<select id="oncall-carry-b"/.test(fn));
   assert.ok(/a === b/.test(fn), 'one technician could be picked twice');
   assert.ok(/carry_pair_required/.test(app), 'the refusal is not handled at all');
@@ -634,6 +640,119 @@ t('a table the anon key cannot read must not read as an empty month', () => {
   assert.strictEqual((routes.match(/supabaseAdmin \|\| supabasePublic/g) || []).length, 0,
     'an on-call route can still read as the anon key');
   assert.ok((routes.match(/oncallDb\(res\)/g) || []).length >= 5);
+});
+
+t('NOTHING in the on-call code may touch the anon client', () => {
+  // Reported twice: "October 2026 is not in the dashboard" about a month that
+  // was stored both times. The whole region is checked, not just the route
+  // bodies — oncallInputs and oncallRow take `db` as an argument and a future
+  // edit could hardcode a client inside either of them.
+  const s = src('server.js');
+  const start = s.indexOf('// ---- On-call rotation (Erick');
+  const end = s.indexOf('// GET /api/reports/make-ready-audit.xlsx');
+  assert.ok(start > 0 && end > start, 'the on-call block moved');
+  // Comments stripped first: this file explains the bug by naming the client,
+  // and a test that matches its own prose fails for the wrong reason.
+  const region = s.slice(start, end).replace(/^\s*\/\/.*$/gm, '');
+  assert.strictEqual((region.match(/supabasePublic/g) || []).length, 0,
+    'the on-call code can still read as the anon key, and RLS makes that look empty');
+  // Every route takes its client from the one guard.
+  const routes = (region.match(/app\.(get|post)\('\/api\/maintenance\/oncall/g) || []).length;
+  assert.ok(routes >= 5, 'routes went missing');
+  // Counting the CALL SITES, not the declaration: `function oncallDb(res)`
+  // matches the same pattern and would always make this one too many.
+  assert.strictEqual((region.match(/= oncallDb\(res\)/g) || []).length, routes,
+    'a route gets its client from somewhere other than oncallDb');
+});
+
+t('the carry lookup is a pure function, so it can be tested without a route', () => {
+  // It has been the cause twice. A function that lives inside a route handler
+  // can only be debugged by reproducing the route.
+  assert.strictEqual(typeof R.carryFrom, 'function');
+  const s = src('server.js');
+  assert.ok(/ONCALL\.carryFrom\(prev, ONCALL\.MONTHS\[prevMonth - 1\]\)/.test(s));
+  assert.ok(!/function carryFromPrevious/.test(s), 'the old in-route copy is still there');
+});
+
+t('the carry lookup says WHY there is no pair', () => {
+  // "Not in the dashboard" was wrong about the cause both times. Each of these
+  // is a different thing to go and fix.
+  assert.strictEqual(R.carryFrom(null).why, 'no row for the previous month');
+  assert.strictEqual(R.carryFrom({}).why, 'the previous month has no draft stored');
+  assert.strictEqual(R.carryFrom({ draft: { weeks: [] } }).why,
+    'the previous month stored no weeks');
+  assert.ok(/does not run into this one/.test(R.carryFrom({ draft: {
+    monthName: 'October 2026',
+    weeks: [{ label: 'Week 4', pair: ['A', 'B'], spillsInto: null }],
+  } }).why));
+  assert.ok(/has no pair stored/.test(R.carryFrom({ draft: {
+    monthName: 'October 2026',
+    weeks: [{ label: 'Week 5', pair: [], spillsInto: 'November' }],
+  } }).why));
+});
+
+t('a stored month that spills gives its pair and no reason', () => {
+  const out = R.carryFrom({ draft: {
+    monthName: 'October 2026',
+    weeks: [{ label: 'Week 5', pair: ['Carlos Portilla', 'Angel Martinez'], spillsInto: 'November' }],
+  } });
+  assert.deepStrictEqual(out.pair, ['Carlos Portilla', 'Angel Martinez']);
+  assert.strictEqual(out.from, 'October Week 5');
+  assert.strictEqual(out.why, null);
+});
+
+t('the refusal reports why, and which client it read with', () => {
+  const s = src('server.js');
+  const at = s.indexOf('carry_pair_required');
+  const block = s.slice(at, at + 2200);
+  assert.ok(/why: carry\.why/.test(block), 'the next report is another round of guessing');
+  assert.ok(/previousMonthFound: !!prev/.test(block));
+  assert.ok(/readAs: supabaseAdmin \? 'service-role'/.test(block),
+    'nothing says whether RLS was in play');
+});
+
+// ---- who can be named as the carry-in --------------------------------------
+
+t('the carry-in picker is every ACTIVE technician, not the on-call pool', () => {
+  // Carlos covered October Week 5 and Bekah has since taken him off the
+  // rotation. A picker built from the pool cannot name who actually worked that
+  // week, and the week still happened.
+  const names = R.carryCandidates(TECHS, null).map(c => c.name);
+  assert.ok(names.includes('Carlos Portilla'), 'the only correct answer is unselectable');
+  assert.ok(!R.poolFrom(TECHS).pool.some(p => /Carlos/.test(p.name)),
+    'this test proves nothing if Carlos is still in the pool');
+  // Still technicians only: make-ready staff and inactive people are not it.
+  assert.ok(!names.includes('Fredy Ramirez'));
+  assert.ok(!names.includes('Yeison Salgado'), 'inactive');
+});
+
+t('somebody already named in the previous calendar is always offered', () => {
+  // A name already written down is evidence. Dropping it because they have
+  // since left the roster would make the correct answer unselectable.
+  const prev = { draft: { weeks: [{ pair: ['Gone Person', 'Raul Martinez'] }] } };
+  const c = R.carryCandidates(TECHS, prev);
+  const gone = c.find(x => x.name === 'Gone Person');
+  assert.ok(gone, 'a name from the stored calendar was dropped');
+  assert.strictEqual(gone.note, 'from the previous calendar');
+  // And nobody is listed twice.
+  assert.strictEqual(new Set(c.map(x => x.name)).size, c.length);
+});
+
+t('Carlos covered the carry-in week but is NOT in November\'s fairness table', () => {
+  // He worked Nov 01-06. He is not on call this month, so he has no row in a
+  // table about who is on call this month — and the week he did work is named
+  // in the carry-in note instead.
+  const rows = NOV.fairness.rows.map(r => r.technician);
+  assert.ok(!rows.some(n => /Carlos/.test(n)), 'Carlos is counted in a month he is not on call');
+  assert.deepStrictEqual(NOV.carry.pair, ['Carlos Portilla', 'Angel Martinez']);
+  assert.ok(/Carlos \+ Angel/.test(NOV.carry.note), NOV.carry.note);
+});
+
+t('the panel offers the candidates the server sent, not its own list', () => {
+  const app = src('public/app.js');
+  assert.ok(/d\.candidates \|\| d\.pool/.test(app), 'the picker still builds from the pool');
+  assert.ok(/from the previous calendar|c\.note/.test(app), 'the note is not shown');
+  assert.ok(/<b>Why:<\/b>/.test(app), 'the reason from the server is thrown away');
 });
 
 t('the check script reads with BOTH keys, so the difference is visible', () => {

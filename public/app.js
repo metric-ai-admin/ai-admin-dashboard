@@ -12861,11 +12861,21 @@ async function ocGenerate(carryPair) {
 // the dashboard. Two pickers rather than a free-text prompt: a typo here is a
 // name the roster does not know and a carry-in that silently does nothing.
 function ocAskCarry(d) {
-  const opts = (d.pool || []).map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  // EVERY ACTIVE TECHNICIAN, not the on-call pool. Carlos covered October Week
+  // 5 and has since been taken off the rotation — a picker built from the pool
+  // cannot name who actually worked that week, and the week still happened.
+  const list = (d.candidates || d.pool || []).map(n => (typeof n === 'string' ? { name: n } : n));
+  const opts = list.map(c => `<option value="${esc(c.name)}">${esc(c.name)}`
+    + (c.note ? ` — ${esc(c.note)}` : '') + '</option>').join('');
+  // WHY it is asking, from the server. "Not in the dashboard" was reported
+  // twice about a month that was stored both times.
+  const why = [d.why, d.previousMonthFound === false ? null : 'the row was found',
+    d.readAs ? 'read as ' + d.readAs : null].filter(Boolean).join(' · ');
   $('#oncall-body').innerHTML = `
     <div class="card" style="padding:12px;max-width:640px">
       <h4 style="margin-top:0">Who is on call for the first days of the month?</h4>
       <p class="small">${esc(d.message || '')}</p>
+      ${why ? `<p class="small muted"><b>Why:</b> ${esc(why)}</p>` : ''}
       <p class="small muted">
         ${esc((d.need && d.need.month) || 'The previous month')} &mdash;
         <b>${esc((d.need && d.need.week) || 'the last week')}</b>
