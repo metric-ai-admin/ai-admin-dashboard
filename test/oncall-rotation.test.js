@@ -24,11 +24,12 @@ console.log('on-call rotation');
 const TECHS = [
   { id: 'josue-garcia',    full_name: 'Josue Garcia',    active: true, position: 'field_supervisor', show_on_map: false, home_lat: null,    home_lng: null },
   { id: 'raul-martinez',   full_name: 'Raul Martinez',   active: true, position: 'senior_maint_tech', show_on_map: true, home_lat: 30.2835, home_lng: -97.6545 },
-  { id: 'jose-renteria',   full_name: 'Jose Renteria',   active: true, position: 'senior_maint_tech', show_on_map: true, home_lat: 30.2972, home_lng: -97.6859 },
+  { id: 'jose-renteria',   full_name: 'José Rentería',   active: true, position: 'senior_maint_tech', show_on_map: true, home_lat: 30.2972, home_lng: -97.6859 },
   { id: 'angel-martinez',  full_name: 'Angel Martinez',  active: true, position: 'maint_tech',        show_on_map: true, home_lat: 30.3420, home_lng: -97.6590 },
   { id: 'emerson-garcia',  full_name: 'Emerson Garcia',  active: true, position: 'maint_tech',        show_on_map: true, home_lat: 30.3827, home_lng: -97.6854 },
   { id: 'carlos-portilla', full_name: 'Carlos Portilla', active: true, position: 'maint_tech',        show_on_map: true, home_lat: 30.5212, home_lng: -97.6539 },
-  { id: 'yeison-salgado',  full_name: 'Yeison Salgado',  active: true, position: 'maint_tech',        show_on_map: false, home_lat: null,   home_lng: null },
+  { id: 'yeison-salgado',  full_name: 'Yeison Salgado',  active: false, position: 'maint_tech',       show_on_map: false, home_lat: null,   home_lng: null },
+  { id: 'franklin-garcia', full_name: 'Franklin Garcia', active: false, position: 'make_ready',       show_on_map: false, home_lat: null,   home_lng: null },
   { id: 'fredy-ramirez',   full_name: 'Fredy Ramirez',   active: true, position: 'make_ready',        show_on_map: false, home_lat: null,   home_lng: null },
   { id: 'gone-tech',       full_name: 'Gone Tech',       active: false, position: 'maint_tech',       show_on_map: true, home_lat: 30.3,    home_lng: -97.7 },
 ];
@@ -38,7 +39,7 @@ const ASSIGNMENTS = [
   { property: 'The Highlander',       maintenance_tech: 'Angel Martinez',                grounds_tech: 'Fredy Ramirez' },
   { property: 'Ascent at Northgate',  maintenance_tech: 'Emerson Garcia',                grounds_tech: 'Emerson Garcia' },
   { property: 'Sunset Palms',         maintenance_tech: 'Raul Martinez, Emerson Garcia', grounds_tech: 'Fredy Ramirez' },
-  { property: 'Windy Hill Apartment', maintenance_tech: 'Jose Renteria',                 grounds_tech: 'Jose Renteria' },
+  { property: 'Windy Hill Apartment', maintenance_tech: 'José Rentería',                 grounds_tech: 'José Rentería' },
   { property: 'iConic Round Rock',    maintenance_tech: 'Raul Martinez',                 grounds_tech: 'Carlos Portilla' },
   { property: 'iConic Downtown',      maintenance_tech: 'Raul Martinez',                 grounds_tech: 'Carlos Portilla' },
 ];
@@ -51,7 +52,7 @@ R.poolFrom(TECHS).pool.forEach(p => { byName[p.name] = p; });
 t('the pool is the five the real calendars use', () => {
   const { pool } = R.poolFrom(TECHS);
   assert.deepStrictEqual(pool.map(p => p.name), [
-    'Angel Martinez', 'Carlos Portilla', 'Emerson Garcia', 'Jose Renteria', 'Raul Martinez']);
+    'Angel Martinez', 'Carlos Portilla', 'Emerson Garcia', 'José Rentería', 'Raul Martinez']);
 });
 
 t('Yeison is excluded WITH A REASON, not silently', () => {
@@ -61,7 +62,7 @@ t('Yeison is excluded WITH A REASON, not silently', () => {
   const { excluded } = R.poolFrom(TECHS);
   const y = excluded.find(e => /Yeison/.test(e.name));
   assert.ok(y, 'Yeison vanished');
-  assert.ok(/role not confirmed/.test(y.reason), y.reason);
+  assert.strictEqual(y.reason, 'inactive');
   assert.ok(!excluded.some(e => /Fredy|Josue/.test(e.name)),
     'make-ready and supervisors are not candidates and should not be listed every month');
 });
@@ -107,23 +108,56 @@ t('a technician on call takes their own properties', () => {
     assert.strictEqual(s.assign[p], 'Angel Martinez', p));
   ['iConic Round Rock', 'iConic Downtown'].forEach(p =>
     assert.strictEqual(s.assign[p], 'Raul Martinez', p));
-  assert.strictEqual(s.reasons['Hyde Park Square'], 'assigned property');
+  assert.strictEqual(s.reasons['Hyde Park Square'], 'assigned property (maintenance)');
 });
 
-t('a property both of them own goes to the nearer one', () => {
-  // Sunset Palms is Raúl's and Emerson's.
+t('when both own it, Raul wins — he is the most experienced', () => {
+  // Arturo, 2026-10-13, and it is rule 1 of the tiebreak. Sunset Palms is
+  // maintained by Raul AND Emerson, and proximity would give it to Emerson.
   const s = R.splitWeek(['Raul Martinez', 'Emerson Garcia'], PROPS, byName, {});
-  assert.strictEqual(s.assign['Sunset Palms'], 'Emerson Garcia');
-  assert.ok(/both assigned/.test(s.reasons['Sunset Palms']));
+  assert.strictEqual(s.assign['Sunset Palms'], 'Raul Martinez');
+  assert.ok(/most experienced/.test(s.reasons['Sunset Palms']), s.reasons['Sunset Palms']);
 });
 
-t('Carlos gets iConic Round Rock whenever its owner is not on call', () => {
-  // He lives in Round Rock and is the only one for whom it is the nearest
-  // property — Arturo's stated expectation for a Carlos week.
-  ['Angel Martinez', 'Emerson Garcia', 'Jose Renteria'].forEach(other => {
+t('without Raul, the maintenance tech beats the grounds tech', () => {
+  // Hyde Park: Angel maintains it, Carlos keeps its grounds. Both are owners
+  // now that the grounds column counts, and Angel takes it.
+  const s = R.splitWeek(['Angel Martinez', 'Carlos Portilla'], PROPS, byName, {});
+  assert.strictEqual(s.assign['Hyde Park Square'], 'Angel Martinez');
+  assert.ok(/maintenance tech over grounds tech/.test(s.reasons['Hyde Park Square']));
+});
+
+t('the grounds column makes a technician an owner', () => {
+  // THE CLARIFICATION. A grounds tech also does the maintenance there, so
+  // Carlos owns Hyde Park, iConic Downtown and iConic Round Rock — before
+  // this he owned nothing and every week he was on call he carried one
+  // property.
+  const carlos = PROPS.filter(p => p.owners.some(o => /Carlos/.test(o.name))).map(p => p.name);
+  assert.deepStrictEqual(carlos.sort(),
+    ['Hyde Park Square', 'iConic Downtown', 'iConic Round Rock']);
+  // Fredy only does grounds and is not on the rotation, so he is not an owner.
+  assert.ok(!PROPS.some(p => p.owners.some(o => /Fredy/.test(o.name))),
+    'a grounds-only technician became an owner');
+});
+
+t('an accent is not a reason to lose a property', () => {
+  // technicians says "José Rentería"; property_assignments says "Jose
+  // Renteria". An exact-string match leaves him owning nothing, and a match
+  // that finds nothing looks exactly like a person who owns nothing.
+  const s = R.splitWeek(['José Rentería', 'Angel Martinez'], PROPS, byName, {});
+  assert.strictEqual(s.assign['Windy Hill Apartment'], 'José Rentería');
+  assert.ok(/assigned property/.test(s.reasons['Windy Hill Apartment']));
+});
+
+t('Carlos keeps iConic Round Rock unless Raul is on with him', () => {
+  // He keeps its grounds, so it is his — except against Raul, who maintains it
+  // and wins every shared property anyway.
+  ['Angel Martinez', 'Emerson Garcia', 'José Rentería'].forEach(other => {
     const s = R.splitWeek(['Carlos Portilla', other], PROPS, byName, {});
-    assert.strictEqual(s.assign['iConic Round Rock'], 'Carlos Portilla', 'paired with ' + other);
+    assert.strictEqual(s.assign['iConic Round Rock'], 'Carlos Portilla', 'with ' + other);
   });
+  const withRaul = R.splitWeek(['Carlos Portilla', 'Raul Martinez'], PROPS, byName, {});
+  assert.strictEqual(withRaul.assign['iConic Round Rock'], 'Raul Martinez');
 });
 
 t('every property is covered, every week, by one of the two', () => {
@@ -164,27 +198,37 @@ t('balance keeps the week even, and never moves an owned property', () => {
 t('balance can be turned off, and then it is lopsided — by design', () => {
   // Kept switchable because it is a deviation from the letter of the rule
   // Arturo stated. The numbers are the argument for the default, so they are
-  // pinned here rather than described.
-  const s = R.splitWeek(['Angel Martinez', 'Carlos Portilla'], PROPS, byName, { balance: false });
-  const angel = PROPS.filter(p => s.assign[p.name] === 'Angel Martinez').length;
-  assert.strictEqual(angel, 7, 'straight proximity gives Angel seven of eight');
-  // No guard here: Carlos still gets iConic Round Rock, because Angel does not
-  // own it and Carlos is nearer. One property is lopsided, not zero.
-  assert.strictEqual(s.guard, null);
-  assert.strictEqual(s.assign['iConic Round Rock'], 'Carlos Portilla');
+  // pinned here rather than described: without it, two of the ten possible
+  // pairs put seven of the eight properties on one person.
+  const pool = R.poolFrom(TECHS).pool.map(p => p.name);
+  const splits = [];
+  for (let i = 0; i < pool.length; i++) {
+    for (let j = i + 1; j < pool.length; j++) {
+      const s = R.splitWeek([pool[i], pool[j]], PROPS, byName, { balance: false });
+      const n = PROPS.filter(p => s.assign[p.name] === pool[i]).length;
+      splits.push(Math.max(n, PROPS.length - n));
+    }
+  }
+  assert.strictEqual(splits.filter(x => x === 7).length, 2, JSON.stringify(splits));
+  assert.strictEqual(splits.filter(x => x === 4).length, 1, 'only one pair is even on its own');
 });
 
-t('the zero guard fires on the one pair that strands a technician', () => {
-  // Raúl OWNS iConic Round Rock, so Carlos's only nearest property is taken
-  // from him, and Raúl is nearer than Carlos to all five others. Without the
-  // guard Carlos is on call for nothing.
-  const s = R.splitWeek(['Raul Martinez', 'Carlos Portilla'], PROPS, byName, { balance: false });
-  assert.ok(s.guard, 'Carlos was left with nothing');
-  assert.strictEqual(s.guard.tech, 'Carlos Portilla');
-  // Least disadvantaged, not nearest: Carlos loses every contest on absolute
-  // distance, so the question is which one he loses by least.
-  assert.strictEqual(s.guard.property, 'Ascent at Northgate');
-  assert.ok(/would have had no property/.test(s.reasons['Ascent at Northgate']));
+t('the zero guard is a net, and the data no longer trips it', () => {
+  // It fired for Raul + Carlos until the grounds column made Carlos an owner.
+  // Kept, because a roster change can strand somebody again, and a pair where
+  // one person is on call for nothing is not a pair.
+  const pool = R.poolFrom(TECHS).pool.map(p => p.name);
+  for (let i = 0; i < pool.length; i++) {
+    for (let j = i + 1; j < pool.length; j++) {
+      const s = R.splitWeek([pool[i], pool[j]], PROPS, byName, { balance: false });
+      assert.strictEqual(s.guard, null, pool[i] + ' + ' + pool[j] + ' needed the guard');
+    }
+  }
+  // Prove it still works: a pair where one of them owns nothing and is farther
+  // from every property.
+  const far = { ...byName, Nobody: { name: 'Nobody', lat: 10, lng: -10 } };
+  const s = R.splitWeek(['Raul Martinez', 'Nobody'], PROPS, far, { balance: false });
+  assert.ok(s.guard && s.guard.tech === 'Nobody', 'the guard no longer fires at all');
 });
 
 t('the north/south blocks are a tiebreak, not the rule', () => {
@@ -192,10 +236,10 @@ t('the north/south blocks are a tiebreak, not the rule', () => {
   assert.ok(/ONLY to break a tie/.test(lib), 'the blocks are documented as the rule');
   // A week where the pair owns properties on both sides is allowed to land
   // somewhere other than the blocks (Arturo, 2026-10-13).
-  const s = R.splitWeek(['Jose Renteria', 'Emerson Garcia'], PROPS, byName, {});
+  const s = R.splitWeek(['José Rentería', 'Emerson Garcia'], PROPS, byName, {});
   const north = R.BLOCKS.North.map(p => s.assign[p]);
   assert.ok(new Set(north).size >= 1);
-  assert.strictEqual(s.assign['Windy Hill Apartment'], 'Jose Renteria', 'his own property');
+  assert.strictEqual(s.assign['Windy Hill Apartment'], 'José Rentería', 'his own property');
 });
 
 // ---- fairness and pairing --------------------------------------------------
@@ -251,7 +295,7 @@ t('a month is generated on its own, never two at a time', () => {
 
 t('a hand edit is marked, and fairness is recomputed', () => {
   const before = NOV.fairness.rows.find(r => r.technician === 'Raul Martinez').weeks;
-  const other = NOV.weeks[0].pair[0] === 'Raul Martinez' ? 'Jose Renteria' : 'Raul Martinez';
+  const other = NOV.weeks[0].pair[0] === 'Raul Martinez' ? 'José Rentería' : 'Raul Martinez';
   const after = R.applyEdits(NOV, [{ type: 'pair', week: 1, pair: ['Raul Martinez', other] }], 'Arturo');
   const w = after.weeks[0];
   assert.strictEqual(w.edited.length, 1);
