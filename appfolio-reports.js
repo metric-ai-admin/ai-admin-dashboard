@@ -355,17 +355,20 @@ const REPORTS = [
     priority: 8,
     feeds: 'Collections call match — resident phone numbers',
     params: { property_visibility: 'active' },
-    // Everything else the report returns is discarded here, including
-    // date_of_birth. Adding a field is a deliberate act; the default is out.
-    project: r => ({
-      tenant_name: r.tenant_name ?? r.name ?? null,
-      property_name: r.property_name ?? r.property ?? null,
-      property_id: r.property_id ?? null,
-      unit: r.unit ?? r.unit_name ?? null,
-      phone: r.phone ?? r.phone_number ?? r.primary_phone ?? null,
-      mobile: r.mobile ?? r.mobile_phone ?? r.cell_phone ?? null,
-      tenant_status: r.tenant_status ?? r.status ?? null,
-    }),
+    // The projection lives in lib/tenant-directory.js.
+    //
+    // It used to be written out here as a whitelist of column names, and it
+    // asked for `phone` and `mobile`. The report does not call them that: the
+    // sync stored 411 rows and the call match found ZERO numbers, and the
+    // store could not say why, because the columns were gone before it was
+    // written. Guessing a column name in a projection fails silently and looks
+    // exactly like a report nobody synced.
+    //
+    // Now the drop list is what is explicit — birthdate, SSN, email, emergency
+    // contact, balance, under every spelling, checked first and unoverridable
+    // — and the phone columns are kept by what they MEAN rather than by what
+    // we assumed they were called.
+    project: r => require('./lib/tenant-directory.js').project(r),
   },
 
   // ---- Occupancy Custom Fields: where the eviction stage actually lives ----

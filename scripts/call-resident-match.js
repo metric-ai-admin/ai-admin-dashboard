@@ -47,9 +47,15 @@ function phonesOf(row) {
   Object.keys(row || {}).forEach(k => {
     if (!PHONE_FIELD.test(k)) return;
     const v = row[k];
-    if (typeof v !== 'string' && typeof v !== 'number') return;
-    // One field can hold several numbers separated by / , or ;
-    String(v).split(/[,;/]| and /i).forEach(part => {
+    // `phones` on a projected tenant_directory row is already a list. Without
+    // this it fell through the string/number check and the whole source
+    // reported zero numbers — which is one of the two reasons the directory
+    // contributed nothing.
+    const parts = Array.isArray(v) ? v
+      : ((typeof v === 'string' || typeof v === 'number')
+        // One field can hold several numbers separated by / , or ;
+        ? String(v).split(/[,;/]| and /i) : []);
+    parts.forEach(part => {
       const n = norm(part);
       if (n) out.push(n);
     });
