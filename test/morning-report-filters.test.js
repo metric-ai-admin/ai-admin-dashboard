@@ -143,7 +143,13 @@ t('the count says something is missing without naming the category', () => {
   // items"», and the first version of this test matched that sentence instead
   // of the code — the same way an earlier one matched the comment documenting
   // its own fix.
-  const body = server.slice(i, i + 1800)
+  // Bounded by the END of the block rather than by a character count: this
+  // section grew when the security task started being renamed instead of
+  // dropped, and a fixed 1800-character window stopped short of the very line
+  // being checked. The test failed on its own arithmetic, not on the code.
+  const opsAt = server.indexOf('opsPrivate', i);
+  const end = server.indexOf("L.push('')", opsAt);
+  const body = server.slice(i, end > i ? end + 200 : i + 4000)
     .split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
   assert.ok(/\+ \$\{opsPrivate\} item\$\{opsPrivate === 1 \? '' : 's'\} not shown here/.test(body),
     'items vanish with no notice that the list is incomplete');

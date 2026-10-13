@@ -53,6 +53,7 @@ const { registerAllTools } = require('./mcp-tools.cjs');
 // One definition of a week for the server, the browser and the Goal Board.
 // The browser is served this same file at /lib/week.js — not a copy.
 const WEEK = require('./lib/week.js');
+const RED = require('./lib/redact.js');
 // Reads a whole table past PostgREST's 1000-row ceiling. See lib/db-page.js.
 const { selectAll, selectAllResult } = require('./lib/db-page.js');
 const EB = require('./lib/excluded-buildings.js');
@@ -16769,6 +16770,10 @@ async function mrMeetings() {
         // covers today, and finding overlaps between timed meetings.
         endIso: normalizeGraphDateTime(e.end?.dateTime),
         allDay: !!e.isAllDay,
+        // How many people are on it. An all-day entry with nobody else on it
+        // is a trip or a day off; one with attendees is a commitment the room
+        // may also be attending. The report words the two differently.
+        attendeeCount: Array.isArray(e.attendees) ? e.attendees.length : 0,
         cancelled: !!e.isCancelled || /^cancel(l)?ed:/i.test(e.subject || ''),
       };
     })
@@ -16916,7 +16921,11 @@ async function mrEmails() {
         subject: m.subject || '(no subject)',
         // Kept generous here (200) for the Critical section; the Reminders
         // section slices it to 150 at render time.
-        summary: mrClean(m.bodyPreview).slice(0, 200),
+        // REDACTED BEFORE IT IS TRUNCATED. Slicing first and redacting
+        // after would let a preview escape when the account number happens to
+        // sit past character 200 — the sentence that discloses it is usually
+        // at the start, but "usually" is not a rule.
+        summary: RED.safePreview(mrClean(m.bodyPreview)).slice(0, 200),
         status: m.flag?.flagStatus === 'flagged' ? 'Flagged' : 'Unread',
       }));
   }
@@ -17146,7 +17155,17 @@ function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sop
   const allDayEvents = meetings.filter(m => m.allDay);
   const timed = meetings.filter(m => !m.allDay);
   if (allDayEvents.length) {
-    allDayEvents.forEach(m => L.push(`  📅 ALL DAY — ${m.subject}${m.organizer && m.organizer !== '—' ? `  (${m.organizer})` : ''}`));
+    allDayEvents.forEach(m => {
+      // Everything reaching here is already HERS — mrOwnsAllDay dropped
+      // anyone else's. What is left to decide is whether it is personal.
+      //
+      // A trip or a day off has no attendees, and its title says where she is.
+      // The room needs to know she is unreachable, not where. An all-day event
+      // WITH attendees is a commitment the room may share — a conference, an
+      // offsite — and is shown as it always was.
+      if (RED.isPersonalAllDay(m)) { L.push(`  📅 ALL DAY — ${RED.OUT_OF_OFFICE}`); return; }
+      L.push(`  📅 ALL DAY — ${m.subject}${m.organizer && m.organizer !== '—' ? `  (${m.organizer})` : ''}`);
+    });
     L.push('');
   }
 
@@ -17225,14 +17244,28 @@ function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sop
     // The report is pasted into the High Ops group chat. Some titles are read
     // by the room whether or not they were meant for it — see
     // MR_OPS_PRIVATE_RE for which, and why each one.
-    const opsSafe = ops.filter(o => !MR_OPS_PRIVATE_RE.test(String(o.item || '').trim()));
+    // A task with a safe rewrite is KEPT: the rewrite is what makes it safe,
+    // so dropping it as well would hide work the room should know about.
+    // MR_OPS_PRIVATE_RE still removes the ones with no rewrite.
+    const opsSafe = ops.filter(o => {
+      const t = String(o.item || '').trim();
+      if (!RED.opsTitle(t).showNote) return true;   // rewritten; safe to show
+      return !MR_OPS_PRIVATE_RE.test(t);
+    });
     const opsPrivate = ops.length - opsSafe.length;
     const opsEn = opsSafe.filter(o => !mrLooksSpanish(o.item));
     const opsSkipped = opsSafe.length - opsEn.length;
     opsEn.slice(0, 10).forEach(o => {
-      const note = o.pending && !mrLooksSpanish(o.pending) ? mrCleanOpsNote(o.pending) : '';
+      // Some titles announce an open gap to the room, including to whoever
+      // might use it. The task is NOT hidden — the room should know the work
+      // exists — it is renamed to something that says what is being worked on
+      // without saying what is open, and its notes are dropped: the notes are
+      // where the detail is, and the detail is the thing being withheld.
+      const { item, showNote } = RED.opsTitle(o.item);
+      const note = showNote && o.pending && !mrLooksSpanish(o.pending)
+        ? mrCleanOpsNote(o.pending) : '';
       // A title on its own beats a title followed by an em dash and nothing.
-      L.push(note ? `  ${o.priority}  ${o.item}  —  ${note}` : `  ${o.priority}  ${o.item}`);
+      L.push(note ? `  ${o.priority}  ${item}  —  ${note}` : `  ${o.priority}  ${item}`);
     });
     if (!opsEn.length) L.push('  No 🔴/🟡/🟢 items pending.');
     // Counted, not silent: the list says something is missing without saying
