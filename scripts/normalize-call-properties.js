@@ -59,6 +59,24 @@ const pad = (s, w) => String(s).padEnd(w);
 
   if (!WRITE) { console.log('\nDRY RUN — nothing written. Re-run with --write.'); return; }
 
+  // The backup is every row's CURRENT name, not just the ones about to change.
+  // A restore that only knows about the 272 rows this run touched cannot undo a
+  // run that mapped more than it should have, and the whole reason to take a
+  // backup is the case where the plan was wrong.
+  //
+  // exports/ is gitignored and lives on the Render disk, which is why the file
+  // name carries the stamp and the undo is printed below rather than assumed.
+  const fs = require('fs');
+  const pathm = require('path');
+  const dir = pathm.join(__dirname, '..', 'exports');
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backup = pathm.join(dir, 'call_grades_property_name_' + stamp + '.json');
+  fs.writeFileSync(backup, JSON.stringify(
+    rows.map(r => ({ id: r.id, property_name: r.property_name })), null, 0));
+  console.log('\nbackup: ' + backup + ' (' + rows.length + ' rows)');
+  console.log('undo:   node scripts/restore-call-properties.js "' + backup + '"');
+
   // One update per spelling, not per row: 1,847 updates to change 300 rows
   // would be 1,500 round trips doing nothing.
   let changed = 0;

@@ -134,9 +134,23 @@
     <a id="forgot-toggle">Forgot password / First time setup</a>
   </div>
 
+  <div class="reset-section" id="change-section">
+    <h2>Choose a new password</h2>
+    <p>You signed in with a temporary password. Set your own before you continue &mdash;
+       nothing else will open until you do.</p>
+    <label for="change-new">New password</label>
+    <input id="change-new" type="password" autocomplete="new-password" placeholder="at least 10 characters">
+    <label for="change-again">Repeat it</label>
+    <input id="change-again" type="password" autocomplete="new-password">
+    <button class="btn" type="button" id="change-btn">Save and continue</button>
+    <div class="msg" id="change-msg"></div>
+  </div>
+
   <div class="reset-section" id="reset-section">
     <h2>Set or reset your password</h2>
-    <p>Enter your username and we'll send a reset link to the email on file.</p>
+    <p><b>The reset link does not work yet.</b> Every account here uses an internal
+       address that receives no mail, so nothing arrives. Ask Arturo for a temporary
+       password &mdash; you will be asked to change it as soon as you sign in.</p>
     <label for="reset-username">Username</label>
     <input id="reset-username" type="text" placeholder="arturo" autocomplete="username">
     <button class="btn" type="button" id="reset-btn">Send reset link</button>
@@ -174,12 +188,44 @@ loginForm.addEventListener('submit', async (e) => {
       loginBtn.textContent = 'Sign in';
       return;
     }
+    // A temporary password buys exactly one screen: this one. The server
+    // enforces it as well — this is the courtesy, not the control.
+    if (data.user && data.user.mustChangePassword) {
+      document.getElementById('login-form').style.display = 'none';
+      document.getElementById('change-section').classList.add('open');
+      window._pwCurrent = password;
+      return;
+    }
     window.location.href = '/';
   } catch {
     loginMsg.className = 'msg error';
     loginMsg.textContent = 'Network error — try again';
     loginBtn.disabled = false;
     loginBtn.textContent = 'Sign in';
+  }
+});
+
+document.getElementById('change-btn').addEventListener('click', async () => {
+  const msg = document.getElementById('change-msg');
+  const a = document.getElementById('change-new').value;
+  const b = document.getElementById('change-again').value;
+  msg.className = 'msg';
+  if (a !== b) { msg.className = 'msg error'; msg.textContent = 'The two do not match'; return; }
+  if (a.length < 10) { msg.className = 'msg error'; msg.textContent = 'At least 10 characters'; return; }
+  try {
+    const r = await fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword: window._pwCurrent, newPassword: a }),
+      credentials: 'same-origin',
+    });
+    const d = await r.json();
+    if (!r.ok) { msg.className = 'msg error'; msg.textContent = d.error || 'Could not change it'; return; }
+    window._pwCurrent = '';
+    window.location.href = '/';
+  } catch {
+    msg.className = 'msg error';
+    msg.textContent = 'Network error — try again';
   }
 });
 

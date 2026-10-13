@@ -88,6 +88,41 @@ function priorWeekOf(today) {
   return { start: r.from, end: r.to };
 }
 
+// ---- the retrospective window ----------------------------------------------
+//
+// Bekah, 2026-10-13: "the previous 7 days, like the owners' KPI report". Those
+// are TWO RULES and on any day but Sunday they are different weeks:
+//
+//   rolling   the seven days ending yesterday. Read on Monday 10/12 that is
+//             10/05-10/11 (Mon-Sun).
+//   kpi       the last complete Sun-Sat week, which is what the KPI report and
+//             the Goal Board publish. On the same Monday that is 10/04-10/10.
+//
+// DEFAULT IS kpi, because "like the KPI report" is the reason she gave and
+// Lyndsay already settled the same question on 2026-10-09: a digest whose
+// dates differ from the report it is read beside costs more than any tidiness.
+// A brief that says "last week" over a window the KPI report does not use is
+// two numbers nobody can reconcile.
+//
+// Both are implemented and the output NAMES the one it used with its dates, so
+// switching is a parameter rather than an edit, and no reader has to guess
+// which seven days they are looking at.
+const LOOKBACK_MODES = ['kpi', 'rolling'];
+
+function lookbackOf(today, mode) {
+  if (mode === 'rolling') {
+    return {
+      start: addDays(today, -7), end: addDays(today, -1), mode: 'rolling',
+      label: 'the 7 days to ' + addDays(today, -1),
+    };
+  }
+  const p = priorWeekOf(today);
+  return {
+    start: p.start, end: p.end, mode: 'kpi',
+    label: 'last week (' + p.start + ' to ' + p.end + '), the KPI report\'s week',
+  };
+}
+
 // Two properties are the same property if their names match once case and
 // surrounding space are taken out. property_id is present on most sources but
 // not all, so the name is the one key every source shares.
@@ -116,6 +151,7 @@ function buildWeeklyBrief(src = {}, opts = {}) {
   // and the brief can print the dates it is actually describing. No section
   // looks backwards yet; see the note on priorWeekOf.
   const prior = priorWeekOf(today);
+  const lookback = lookbackOf(today, opts.lookbackMode);
   const horizon = addDays(today, opts.expiryDays == null ? 30 : opts.expiryDays);
   const isExcluded = opts.isExcludedProperty || (() => false);
   const keep = name => clean(name) && !isExcluded(name);
@@ -248,6 +284,16 @@ function buildWeeklyBrief(src = {}, opts = {}) {
   return {
     week: { start, end, today, convention: WEEK.DASHBOARD.name },
     priorWeek: { start: prior.start, end: prior.end },
+    // The window any retrospective section must use, named so the brief can
+    // print which seven days it means. Move-ins, move-outs and tours are
+    // forward-looking and deliberately stay on the week in progress (Bekah,
+    // 2026-10-13) — `windows` says so on the brief's face rather than leaving
+    // a reader to work out why two sections cover different dates.
+    lookback,
+    windows: {
+      forward: { sections: ['moveIns', 'moveOuts', 'tours', 'expirations'], start, end },
+      back: { sections: [], start: lookback.start, end: lookback.end, label: lookback.label },
+    },
     horizon: { end: horizon, days: opts.expiryDays == null ? 30 : opts.expiryDays },
     moveIns, moveOuts, tours, expirations,
     counts: {
@@ -257,4 +303,5 @@ function buildWeeklyBrief(src = {}, opts = {}) {
   };
 }
 
-module.exports = { buildWeeklyBrief, weekOf, priorWeekOf, addDays, firstPhone, DEAD_SHOWING };
+module.exports = { buildWeeklyBrief, weekOf, priorWeekOf, lookbackOf, LOOKBACK_MODES,
+  addDays, firstPhone, DEAD_SHOWING };

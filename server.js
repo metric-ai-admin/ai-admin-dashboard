@@ -732,6 +732,13 @@ function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
+    // A session issued after a temporary password can do exactly one thing:
+    // set a real one. Enforced HERE rather than in the client, because a
+    // must-change screen the browser draws is a suggestion — anybody who
+    // closes the dialog is logged in with a password an admin knows.
+    if (req.user.mustChangePassword && req.path !== '/api/auth/change-password') {
+      return res.status(403).json({ error: 'Password change required', mustChangePassword: true });
+    }
     next();
   } catch {
     res.status(401).json({ error: 'Session expired' });
@@ -824,6 +831,12 @@ app.post('/api/auth/login', async (req, res) => {
     // callAnalyzer travels with the session so the client can hide the tab without
     // mirroring the allowlist — the endpoints enforce it regardless.
     const payload = { userId: dbUser.id, email: dbUser.email, username: dbUser.username, name: dbUser.name, role: dbUser.role, agentName: dbUser.agent_name, callAnalyzer: mayUseCallAnalyzer(dbUser), vacancy: mayUseVacancy(dbUser) };
+    // Set by the temp-password route. The session is issued — she has to be
+    // signed in to change it — but requireAuth will refuse everything except
+    // the change itself.
+    if (authData.user.user_metadata && authData.user.user_metadata.must_change_password) {
+      payload.mustChangePassword = true;
+    }
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 
     res.cookie('dashboardToken', token, {
@@ -920,6 +933,125 @@ app.post('/api/auth/reset-password', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ---- the reset nobody could use --------------------------------------------
+//
+// Bekah, 2026-10-13: "it won't let me reset password when I try to". She is
+// right, and it was never going to. Three independent reasons:
+//
+//   1. Every account's address is <username>@metric.internal. That domain does
+//      not exist, so the reset mail above is sent into nothing. All twelve
+//      users have a null recovery_sent_at — not one reset has ever landed.
+//   2. redirectTo points at /login.html, which has no recovery handling at
+//      all. Even a delivered link would drop her on the sign-in form.
+//   3. There is no change-password screen anywhere for a signed-in user.
+//
+// Fixing (1) properly means giving everybody a real address in Supabase Auth,
+// which touches every login and is not a thing to do the afternoon somebody is
+// locked out. So: an admin sets a temporary password, and the dashboard makes
+// her replace it before she can do anything else.
+//
+// THE PASSWORD IS GENERATED ON THE SERVER AND RETURNED ONCE, to the admin's
+// browser. It is never logged, never written to the activity log, and never
+// put in a chat message — it is read off the screen and spoken.
+
+// Ambiguous characters are left out: this gets read aloud over a phone, and
+// "was that an l or a 1" is a second support call.
+const TEMP_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+function tempPassword() {
+  // require() inline: server.js destructures { randomUUID, timingSafeEqual }
+  // from crypto and binds no `crypto` identifier. This is the exact shape of
+  // the "AFP is not defined" bug — a reference that only fails when the route
+  // is called.
+  const bytes = require('crypto').randomBytes(20);
+  let out = '';
+  // Rejection-free modulo bias is irrelevant at 56 symbols over 20 bytes for a
+  // password that lives for one sign-in, but randomBytes is still the right
+  // source — Math.random() is not, ever, for anything anybody authenticates with.
+  for (const b of bytes) out += TEMP_ALPHABET[b % TEMP_ALPHABET.length];
+  return out.slice(0, 6) + '-' + out.slice(6, 12) + '-' + out.slice(12, 18);
+}
+
+// POST /api/auth/admin/temp-password  { username }
+app.post('/api/auth/admin/temp-password', requireMetricAdmin, async (req, res) => {
+  const username = String((req.body || {}).username || '').toLowerCase().trim();
+  if (!username) return res.status(400).json({ error: 'Username required' });
+  if (!supabaseAdmin) return res.status(503).json({ error: 'Service role key not configured' });
+  try {
+    const email = `${username}@metric.internal`;
+    const { data: list, error: listErr } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    if (listErr) throw new Error(listErr.message);
+    const user = (list.users || []).find(u => String(u.email || '').toLowerCase() === email);
+    if (!user) return res.status(404).json({ error: 'No such user' });
+
+    const password = tempPassword();
+    const { error } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
+      password,
+      user_metadata: { ...(user.user_metadata || {}), must_change_password: true },
+    });
+    if (error) throw new Error(error.message);
+
+    // The ACT is logged; the password is not. An activity log that carries a
+    // live credential is a credential store nobody meant to build.
+    activityLog.log({
+      user_email: req.user?.email || 'api-key', user_name: req.user?.name || 'API key',
+      user_role: 'admin', event: 'temp_password_issued', status_code: 200,
+      detail: 'for ' + username,
+    });
+    res.json({
+      ok: true, username,
+      password,
+      note: 'Shown once. Read it to them — do not paste it into chat or email. '
+        + 'They must change it at their next sign-in before anything else works.',
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/auth/change-password  { currentPassword, newPassword }
+//
+// The one route a must-change session may call. The current password is
+// verified by signing in with it rather than trusted from the cookie, so a
+// stolen session cannot change the password it did not know.
+app.post('/api/auth/change-password', requireAuth, async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  if (!currentPassword || !newPassword) return res.status(400).json({ error: 'Both passwords required' });
+  if (String(newPassword).length < 10) {
+    return res.status(400).json({ error: 'New password must be at least 10 characters' });
+  }
+  if (currentPassword === newPassword) {
+    return res.status(400).json({ error: 'The new password must be different' });
+  }
+  if (!supabaseAdmin) return res.status(503).json({ error: 'Service role key not configured' });
+  try {
+    const email = `${String(req.user.username).toLowerCase().trim()}@metric.internal`;
+    const { data: ok, error: signErr } = await supabasePublic.auth
+      .signInWithPassword({ email, password: currentPassword });
+    if (signErr || !ok?.user) return res.status(401).json({ error: 'Current password is wrong' });
+
+    const { error } = await supabaseAdmin.auth.admin.updateUserById(ok.user.id, {
+      password: newPassword,
+      user_metadata: { ...(ok.user.user_metadata || {}), must_change_password: false },
+    });
+    if (error) throw new Error(error.message);
+
+    // A fresh token WITHOUT the flag, so the session she is already in becomes
+    // a normal one — otherwise she would change her password and still be
+    // locked out of every other route until the cookie expired.
+    const { mustChangePassword, iat, exp, ...rest } = req.user;
+    const token = jwt.sign(rest, JWT_SECRET, { expiresIn: '7d' });
+    res.cookie('dashboardToken', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV !== 'development',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+    activityLog.log({
+      user_email: req.user.email, user_name: req.user.name, user_role: req.user.role,
+      event: 'password_changed', status_code: 200,
+    });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---- Helpers ---------------------------------------------------------------
@@ -15004,9 +15136,17 @@ app.get('/api/reports/daily/history', requireAuth, async (req, res) => {
     // cc_daily_state, ONLY when the report itself was never saved, and the
     // payload says where it came from so the screen can too.
     if (!today) {
-      const { data: st } = await client.from('cc_daily_state')
-        .select('state_date,total_tasks,completed_tasks,completed_auto,completed_routine,generated_at')
-        .eq('state_date', date).maybeSingle();
+      // capture_note (migration 090) marks a snapshot that was taken before
+      // its own day started. Asked for separately, because an unknown column
+      // fails the WHOLE select and losing the fallback to gain a column is the
+      // wrong trade — DRH derives the same verdict from generated_at anyway.
+      const COLS = 'state_date,total_tasks,completed_tasks,completed_auto,completed_routine,generated_at';
+      let { data: st, error: stErr } = await client.from('cc_daily_state')
+        .select(COLS + ',capture_note').eq('state_date', date).maybeSingle();
+      if (stErr && /capture_note/.test(stErr.message || '')) {
+        ({ data: st } = await client.from('cc_daily_state')
+          .select(COLS).eq('state_date', date).maybeSingle());
+      }
       view.fallback = DRH.fallbackFromState(st, date);
     }
     view.countersLiveFrom = DRH.COUNTERS_LIVE_FROM;
@@ -18318,6 +18458,85 @@ async function karaBriefRender(opts) {
     html: KARA_BRIEF_HTML.renderHtml(brief, o),
     brief, data,
   };
+}
+
+// GET /api/reports/make-ready-audit.xlsx — every open unit turn, unit by unit.
+//
+// FOR THE MEETING WITH ERICK AND JAY (2026-10-13). Bekah's correction is that
+// the 90+ day turns are not records to close — "they aren't done" — so the
+// argument needs the list, not the count. One sheet per property, a Summary
+// first, sorted by days open.
+//
+// A ROUTE AND NOT A SCRIPT because the three reports it joins live on the
+// Render disk and nowhere else. A script would have to be run there and the
+// file fetched off a shell; this downloads in a browser for anybody with an
+// admin session.
+//
+// Read-only, and no personal data: unit numbers, dates and work-order status.
+app.get('/api/reports/make-ready-audit.xlsx', requireMetricAdmin, async (req, res) => {
+  try {
+    const MRA = require('./lib/make-ready-audit.js');
+    const today = WEEK.todayYMD();
+    const af = require('./appfolio-reports.js');
+    const read = async id => ((await af.readReportData(id)) || {}).rows || [];
+
+    const [turns, rentRoll, workOrders] = await Promise.all([
+      read('unit_turn_detail'), read('rent_roll'), read('wo_all'),
+    ]);
+    const { data: apps } = await (supabaseAdmin || supabasePublic)
+      .from('leasing_applications')
+      .select('rental_application_id,property_name,unit,application_date,status,detailed_status');
+
+    const rows = MRA.turnRows({ turns, rentRoll, workOrders }, today);
+    const summary = MRA.summarise(rows);
+
+    const wb = XLSX.utils.book_new();
+
+    // Summary first: the shape of the problem before the detail of it.
+    const sum = [
+      ['Open unit turns by property — ' + today],
+      ['Open = the rent roll shows the unit vacant today. Records = somebody lives there.'],
+      [],
+      ['Property', 'Open make-readies', 'of those 90+ days', 'Oldest (days)',
+        'Open with no work order', 'Records to clean up'],
+      ...summary.map(s => [s.property, s.open, s.longOpen, s.oldest, s.noWorkOrder, s.records]),
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sum), 'Summary');
+
+    const HEAD = ['Unit', 'Turn started', 'Days open', 'Unit status today',
+      'Rent roll status', 'Make-ready WO', 'WO status', 'Verdict'];
+    const properties = [...new Set(rows.map(r => r.property))].sort();
+    properties.forEach(p => {
+      const mine = rows.filter(r => r.property === p);
+      const aoa = [[p + ' — open unit turns as of ' + today], [],
+        HEAD,
+        ...mine.map(r => [r.unit, r.started, r.days, r.unitToday, r.unitStatusRaw,
+          r.workOrder, r.workOrderStatus, r.verdict])];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), sheetName(p));
+    });
+
+    // Windy Hill's pending applications, which Bekah asked for beside the
+    // turns. Unit, date and age — no applicant name or contact details.
+    const WH = 'Windy Hill Apartment';
+    const appRows = MRA.applicationRows(apps || [], WH, today);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+      [WH + ' — applications still pending as of ' + today], [],
+      ['Unit', 'Received', 'Days pending', 'Status', 'Detailed status'],
+      ...appRows.map(a => [a.unit, a.received, a.days, a.status, a.detailedStatus]),
+    ]), 'WH applications');
+
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="make_ready_audit_' + today + '.xlsx"');
+    res.send(buf);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Excel refuses a sheet name over 31 characters or carrying []:*?/\ — and it
+// refuses the whole FILE, so a property name nobody sanitised produces a
+// workbook that will not open rather than a tab with an odd title.
+function sheetName(s) {
+  return String(s).replace(/[\[\]:*?/\\]/g, ' ').trim().slice(0, 31) || 'Sheet';
 }
 
 // POST /api/brief/kara/test — render it and send it to ARTURO.
