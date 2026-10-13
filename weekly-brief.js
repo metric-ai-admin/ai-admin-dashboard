@@ -90,36 +90,40 @@ function priorWeekOf(today) {
 
 // ---- the retrospective window ----------------------------------------------
 //
-// Bekah, 2026-10-13: "the previous 7 days, like the owners' KPI report". Those
-// are TWO RULES and on any day but Sunday they are different weeks:
+// THE SEVEN DAYS BEFORE THE BRIEF. Bekah, 2026-10-13, and the reason the first
+// reading of it was wrong: "like the owners' KPI report" does not mean Sun-Sat.
+// Her KPI report is not on that convention — she said so on 10-08, "the KPI
+// report doesn't use sunday-saturday", and Ascent's ran 09/30-10/06, a
+// Wednesday to a Tuesday. It is a rolling seven days ending the day before the
+// report goes out, which is exactly what she asked for here.
+//
+// So `rolling` is the default and `kpi` is the alternative, not the other way
+// round. The dashboard's own Sun-Sat week still drives the forward-looking
+// sections and the Goal Board; this window is only for what the brief says
+// about days that have already happened.
 //
 //   rolling   the seven days ending yesterday. Read on Monday 10/12 that is
-//             10/05-10/11 (Mon-Sun).
-//   kpi       the last complete Sun-Sat week, which is what the KPI report and
-//             the Goal Board publish. On the same Monday that is 10/04-10/10.
+//             10/05-10/11.
+//   kpi       the last complete Sun-Sat week, which is what the dashboard's
+//             Goal Board publishes. On that Monday, 10/04-10/10.
 //
-// DEFAULT IS kpi, because "like the KPI report" is the reason she gave and
-// Lyndsay already settled the same question on 2026-10-09: a digest whose
-// dates differ from the report it is read beside costs more than any tidiness.
-// A brief that says "last week" over a window the KPI report does not use is
-// two numbers nobody can reconcile.
-//
-// Both are implemented and the output NAMES the one it used with its dates, so
-// switching is a parameter rather than an edit, and no reader has to guess
-// which seven days they are looking at.
-const LOOKBACK_MODES = ['kpi', 'rolling'];
+// The brief PRINTS the window it used with its dates, so no reader has to work
+// out which seven days they are looking at, and switching is a parameter
+// rather than an edit.
+const LOOKBACK_MODES = ['rolling', 'kpi'];
+const LOOKBACK_DEFAULT = 'rolling';
 
 function lookbackOf(today, mode) {
-  if (mode === 'rolling') {
+  if ((mode || LOOKBACK_DEFAULT) !== 'kpi') {
     return {
       start: addDays(today, -7), end: addDays(today, -1), mode: 'rolling',
-      label: 'the 7 days to ' + addDays(today, -1),
+      label: 'the 7 days to ' + addDays(today, -1) + ' (not the Sun-Sat week)',
     };
   }
   const p = priorWeekOf(today);
   return {
     start: p.start, end: p.end, mode: 'kpi',
-    label: 'last week (' + p.start + ' to ' + p.end + '), the KPI report\'s week',
+    label: 'last week (' + p.start + ' to ' + p.end + '), the dashboard\'s Sun-Sat week',
   };
 }
 
@@ -304,4 +308,5 @@ function buildWeeklyBrief(src = {}, opts = {}) {
 }
 
 module.exports = { buildWeeklyBrief, weekOf, priorWeekOf, lookbackOf, LOOKBACK_MODES,
+  LOOKBACK_DEFAULT,
   addDays, firstPhone, DEAD_SHOWING };

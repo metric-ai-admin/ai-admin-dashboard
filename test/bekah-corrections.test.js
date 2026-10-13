@@ -217,22 +217,36 @@ t('a sheet name Excel would reject cannot be produced', () => {
 
 // ---- 2. the Monday Brief's two windows -------------------------------------
 
-t('retrospective means the KPI report\'s week, and says so', () => {
-  // Bekah gave two rules — "the previous 7 days" and "like the KPI report" —
-  // and on any day but Sunday they are different weeks. The KPI week wins
-  // because reconciling with the report beside it is the reason she gave.
+t('retrospective means the 7 days before the brief, by default', () => {
+  // Bekah, 2026-10-13. The first reading of "like the owners' KPI report" took
+  // it for Sun-Sat, which is the dashboard's convention and NOT her report's:
+  // she said on 10-08 "the KPI report doesn't use sunday-saturday", and
+  // Ascent's ran 09/30-10/06, a Wednesday to a Tuesday.
   const b = WB.buildWeeklyBrief({}, { today: '2026-10-12' });
-  assert.strictEqual(b.lookback.start, '2026-10-04');
-  assert.strictEqual(b.lookback.end, '2026-10-10');
-  assert.strictEqual(b.lookback.mode, 'kpi');
-  assert.ok(/KPI report/.test(b.lookback.label), 'a reader must not have to guess the window');
+  assert.strictEqual(b.lookback.start, '2026-10-05');
+  assert.strictEqual(b.lookback.end, '2026-10-11');
+  assert.strictEqual(b.lookback.mode, 'rolling');
+  assert.strictEqual(WB.LOOKBACK_DEFAULT, 'rolling');
+  assert.ok(/7 days to 2026-10-11/.test(b.lookback.label),
+    'a reader must not have to guess which seven days');
+  assert.ok(/not the Sun-Sat week/.test(b.lookback.label),
+    'the difference from the Goal Board is the thing most likely to confuse');
 });
 
-t('the rolling reading is implemented, so switching is a parameter', () => {
-  const r = WB.lookbackOf('2026-10-12', 'rolling');
-  assert.strictEqual(r.start, '2026-10-05');
-  assert.strictEqual(r.end, '2026-10-11');
-  assert.deepStrictEqual(WB.LOOKBACK_MODES, ['kpi', 'rolling']);
+t('a rolling window ends the day BEFORE the brief, never on the day itself', () => {
+  // A brief that counts today has counted a day that is not over.
+  ['2026-10-12', '2026-10-13', '2026-10-18'].forEach(d => {
+    const r = WB.lookbackOf(d);
+    assert.strictEqual(r.end, WB.addDays(d, -1), d);
+    assert.strictEqual(WB.addDays(r.start, 7), d, d + ': not seven days');
+  });
+});
+
+t('the Sun-Sat reading is still there, so switching is a parameter', () => {
+  const r = WB.lookbackOf('2026-10-12', 'kpi');
+  assert.strictEqual(r.start, '2026-10-04');
+  assert.strictEqual(r.end, '2026-10-10');
+  assert.deepStrictEqual(WB.LOOKBACK_MODES, ['rolling', 'kpi']);
 });
 
 t('forward-looking sections stay on the week in progress', () => {
