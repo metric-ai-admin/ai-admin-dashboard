@@ -18602,7 +18602,17 @@ app.post('/api/maintenance/oncall/generate', requireMetricAdmin, async (req, res
     // So it refuses, and says exactly which week it needs. The caller supplies
     // the pair (the panel asks for it) or imports the month with
     // scripts/import-oncall-xlsx.js.
-    const carryPair = req.body?.carryPair || carry.pair;
+    // A SUPPLIED carry-in is validated, not trusted. The panel once sent a
+    // MouseEvent here — addEventListener handed its listener the click event and
+    // ocGenerate's first parameter is the pair — and it arrived as an object
+    // that is neither an array nor empty. `||` treated it as a real answer, the
+    // route refused, and the message blamed a month it had just read correctly.
+    const supplied = req.body?.carryPair;
+    const suppliedOk = Array.isArray(supplied) && supplied.length === 2
+      && supplied.every(n => typeof n === 'string' && n.trim());
+    const suppliedBad = supplied !== undefined && supplied !== null && !suppliedOk;
+    const carryPair = suppliedOk ? supplied.map(n => n.trim()) : carry.pair;
+
     const needsCarry = ONCALL.weeksOf(year, month).carryDays > 0;
     if (needsCarry && (!Array.isArray(carryPair) || carryPair.length !== 2)) {
       const { weeks: prevWeeks } = ONCALL.weeksOf(prevYear, prevMonth);
@@ -18619,7 +18629,15 @@ app.post('/api/maintenance/oncall/generate', requireMetricAdmin, async (req, res
         // WHY, not just THAT. "October is not in the dashboard" was reported
         // twice about a month that was stored both times; without this the next
         // report is another round of guessing.
-        why: carry.why,
+        // NEVER EMPTY. A refusal with no stated reason is what sent two reports
+        // back here with nothing to act on. If the lookup succeeded, the reason
+        // is whatever the caller sent instead.
+        why: carry.why
+          || (suppliedBad
+            ? 'the request supplied a carryPair that is not two names: '
+              + JSON.stringify(supplied).slice(0, 80)
+            : 'the carry-in could not be determined and the lookup gave no reason '
+              + '— this is a bug, please report it with this message'),
         previousMonthFound: !!prev,
         readAs: supabaseAdmin ? 'service-role' : 'anon (RLS hides the table)',
         // ANY ACTIVE TECHNICIAN, not the on-call pool. Carlos covered Oct W5

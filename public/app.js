@@ -12787,8 +12787,14 @@ async function loadOnCall() {
       const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + 1);
       el.value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
     }
-    $('#oncall-load')?.addEventListener('click', ocFetch);
-    $('#oncall-generate')?.addEventListener('click', ocGenerate);
+    $('#oncall-load')?.addEventListener('click', () => ocFetch());
+    // WRAPPED, NOT PASSED. addEventListener hands the listener a MouseEvent as
+    // its first argument, and ocGenerate's first parameter is the carry-in
+    // pair — so clicking Generate sent the click event to the server as
+    // `carryPair`. It arrived as an object, failed the "is this an array of
+    // two" check, and the route refused with "October 2026 is not in the
+    // dashboard" about a month it had just read successfully.
+    $('#oncall-generate')?.addEventListener('click', () => ocGenerate());
     $('#oncall-month')?.addEventListener('change', ocFetch);
   }
   ocFetch();
@@ -12869,8 +12875,13 @@ function ocAskCarry(d) {
     + (c.note ? ` — ${esc(c.note)}` : '') + '</option>').join('');
   // WHY it is asking, from the server. "Not in the dashboard" was reported
   // twice about a month that was stored both times.
-  const why = [d.why, d.previousMonthFound === false ? null : 'the row was found',
-    d.readAs ? 'read as ' + d.readAs : null].filter(Boolean).join(' · ');
+  // NEVER EMPTY. "the row was found - read as service-role" with no reason is
+  // what the last report had to work with, and it was true and useless.
+  const why = [
+    d.why || 'the server gave no reason — report this line',
+    d.previousMonthFound === false ? 'the previous month has no row' : 'the row was found',
+    d.readAs ? 'read as ' + d.readAs : null,
+  ].filter(Boolean).join(' · ');
   $('#oncall-body').innerHTML = `
     <div class="card" style="padding:12px;max-width:640px">
       <h4 style="margin-top:0">Who is on call for the first days of the month?</h4>
@@ -12975,7 +12986,17 @@ function ocRender(d) {
     notes.push(`${esc(w.label)}: ${esc(w.guard.property)} given to ${esc(ocShort(w.guard.tech))} — `
       + 'straight proximity would have left them with no property at all.'));
 
+  // A DRAFT FROM BEFORE THE CURRENT RULES. November was generated under the
+  // ownership-and-proximity split, so it has no groups and every property reads
+  // "no group". Saying so beats leaving somebody to work out why the calendar
+  // on screen does not look like the rules they were just shown.
+  const stale = doc.scheme !== 'fixed-pairs'
+    ? '<div class="msg error" style="margin-bottom:8px">This draft was generated under the '
+      + 'previous rules — it has no Red/Blue groups. Press <b>Generate</b> to rebuild it.</div>'
+    : '';
+
   $('#oncall-body').innerHTML = `
+    ${stale}
     <div class="row" style="gap:10px;align-items:center;margin-bottom:8px">
       <span class="badge ${d.state === 'approved' ? 'badge-green' : 'badge-blue'}">${esc(OC_STATE_LABEL[d.state] || d.state)}</span>
       ${(d.approvals || []).map(a => `<span class="small muted">✔ ${esc(a.by)} · ${esc(String(a.at).slice(0, 10))}</span>`).join('')}

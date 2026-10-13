@@ -713,6 +713,69 @@ t('the refusal reports why, and which client it read with', () => {
 
 // ---- who can be named as the carry-in --------------------------------------
 
+t('Generate is WRAPPED, so a click event never arrives as the carry pair', () => {
+  // THE BUG. addEventListener hands its listener a MouseEvent, and
+  // ocGenerate's first parameter is the carry-in pair — so clicking Generate
+  // posted the click event as `carryPair`. It arrived as an object, failed the
+  // array check, and the route refused with "October 2026 is not in the
+  // dashboard" about a month it had just read correctly. Twice.
+  const app = src('public/app.js');
+  assert.ok(/addEventListener\('click', \(\) => ocGenerate\(\)\)/.test(app),
+    'the listener passes its event straight into ocGenerate');
+  assert.ok(!/addEventListener\('click', ocGenerate\)/.test(app));
+  // Same shape one line up: ocFetch takes no arguments today, and a listener
+  // bound bare is a parameter away from the same bug.
+  assert.ok(!/addEventListener\('click', ocFetch\)/.test(app));
+});
+
+t('a carryPair that is not two names is REFUSED, not used', () => {
+  // `||` treated a MouseEvent as a real answer. An object is neither an array
+  // nor falsy, which is the whole trap.
+  const s = src('server.js');
+  const at = s.indexOf('const supplied = req.body?.carryPair');
+  assert.ok(at > 0, 'the supplied pair is still trusted');
+  const block = s.slice(at, at + 700);
+  assert.ok(/Array\.isArray\(supplied\)/.test(block));
+  assert.ok(/supplied\.length === 2/.test(block));
+  assert.ok(/typeof n === 'string'/.test(block), 'two of anything would pass');
+  assert.ok(/suppliedOk \? supplied/.test(block),
+    'a malformed value can still shadow the looked-up pair');
+});
+
+t('the refusal NEVER comes back without a reason', () => {
+  // "the row was found - read as service-role" with no reason is what the last
+  // report had to work with: true, and useless.
+  const s = src('server.js');
+  const at = s.indexOf('why: carry.why');
+  assert.ok(at > 0);
+  const block = s.slice(at, at + 700);
+  assert.ok(/suppliedBad/.test(block), 'a bad carryPair produces an empty reason');
+  assert.ok(/this is a bug, please report it/.test(block),
+    'an unreachable case still has to say something');
+  const app = src('public/app.js');
+  assert.ok(/the server gave no reason — report this line/.test(app),
+    'the panel can still render an empty Why');
+});
+
+t('a draft from before the current rules says so', () => {
+  // The stored November predates the group scheme, so every property reads
+  // "no group". Saying why beats leaving somebody to work it out.
+  const app = src('public/app.js');
+  assert.ok(/doc\.scheme !== 'fixed-pairs'/.test(app));
+  assert.ok(/generated under the/.test(app) && /Press <b>Generate<\/b>/.test(app));
+});
+
+t('a regenerate replaces the draft and sends it back to draft state', () => {
+  const s = src('server.js');
+  const at = s.indexOf("app.post('/api/maintenance/oncall/generate'");
+  const block = s.slice(at, s.indexOf("app.post('/api/maintenance/oncall/edit'"));
+  assert.ok(/state: 'draft'/.test(block), 'a regenerated month keeps its old state');
+  assert.ok(/edits: \[\], approvals: \[\]/.test(block),
+    'approvals for the old calendar would carry over to a new one');
+  // Only an APPROVED month is protected; a pending one is still a draft.
+  assert.ok(/existing\.state === 'approved'/.test(block));
+});
+
 t('the carry-in picker is every ACTIVE technician, not the on-call pool', () => {
   // Carlos covered October Week 5 and Bekah has since taken him off the
   // rotation. A picker built from the pool cannot name who actually worked that
