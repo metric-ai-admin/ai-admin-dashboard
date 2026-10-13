@@ -25,11 +25,12 @@ const BLOCK = AT < 0 ? '' : server.slice(AT, server.indexOf("cron.schedule('30 5
 // [minute, 'label'] pairs, read out of the table itself.
 const SCHEDULE = [...BLOCK.matchAll(/\[(\d+),\s*'([a-z_-]+)'/g)].map(m => [Number(m[1]), m[2]]);
 
-t('all nine early feeds are scheduled', () => {
+t('all ten early feeds are scheduled', () => {
   assert.ok(AT >= 0, 'the EARLY_FEEDS table is gone');
   const want = ['applications', 'lease-history', 'showings',
     'unit_vacancy', 'rent_roll', 'lease_expiration_detail',
-    'tenant_tickler', 'work_order_labor_summary', 'occupancy_custom_fields'];
+    'tenant_tickler', 'work_order_labor_summary', 'occupancy_custom_fields',
+    'delinquency_kpi'];
   assert.deepStrictEqual(SCHEDULE.map(s => s[1]), want);
 });
 
@@ -71,6 +72,15 @@ t('unit_vacancy lands BEFORE the snapshot that reads its store', () => {
     server.indexOf('async function captureUnitVacancySnapshot(') + 900);
   assert.ok(/readReportData\('unit_vacancy'\)/.test(W),
     'the snapshot no longer reads the store — this ordering may no longer be the point');
+});
+
+t('delinquency lands before the 06:00 brief reads it', () => {
+  // Kara's brief reports rather than syncs, so whatever it finds on disk at
+  // 06:00 is what she sees. A delinquency pull at or after 06:00 would put
+  // yesterday evening's figure on her page every morning.
+  const dq = SCHEDULE.find(s => s[1] === 'delinquency_kpi');
+  assert.ok(dq, 'delinquency_kpi is not in the morning block');
+  assert.ok(dq[0] <= 55, 'it runs at :' + dq[0] + ', too late for a 06:00 brief');
 });
 
 t('every feed finishes well before the 8 AM reports', () => {

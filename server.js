@@ -18188,8 +18188,14 @@ const EOD_SENDER = process.env.EOD_SENDER || 'support@livewithmetric.com';
 const KARA_BRIEF = require('./lib/kara-brief.js');
 // Who it goes to once it is switched on. Empty means nobody.
 const KARA_BRIEF_TO = (process.env.KARA_BRIEF_TO || '').split(',').map(x => x.trim()).filter(Boolean);
-// Where the test copy goes. Arturo's own address, not Kara's.
-const KARA_BRIEF_TEST_TO = process.env.KARA_BRIEF_TEST_TO || 'support@metricpropertymanagement.com';
+// Where the test copy goes: Arturo's own address, and NOT a setting.
+//
+// It was reading an environment variable with a default. That meant the one
+// route whose whole purpose is "this cannot reach Kara" could be pointed
+// anywhere by a line in Render's dashboard — including at her. A constant is
+// the only version of that promise that holds, so changing it takes a commit
+// and a review.
+const KARA_BRIEF_TEST_TO = 'support@livewithmetric.com';
 
 // Sends the brief, from the same account as the EOD.
 //
@@ -18347,24 +18353,46 @@ async function karaBriefGather() {
     notices: pm.notices ?? null, delinquency: pm.dqTotal ?? null,
   };
 
-  // THE FRESHNESS BLOCK. Every gap the report reported becomes a failed line,
-  // because that is exactly what a gap is: a source that did not answer.
+  // THE FRESHNESS BLOCK, and the rule it turns on:
+  //
+  //   a source is NOT ok when it was not written THIS MORNING.
+  //
+  // Not "older than N hours". Every one of these has a scheduled run between
+  // 05:00 and 05:58, so the honest question is whether that run happened —
+  // and the answer is a date comparison, not an age. The first version asked
+  // "is it over six hours old", which at 06:00 is true of anything synced the
+  // evening before and raised the alarm every single day. An alarm that is
+  // always on is one nobody reads on the morning it is real.
+  const MORNING_FEEDS = ['delinquency_kpi', 'occupancy_custom_fields', 'unit_turn_detail',
+    'rent_roll', 'tenant_tickler'];
+  const af = require('./appfolio-reports.js');
   const lines = [];
+
   const f = report.freshness || {};
   lines.push({
-    source: 'occupancy', ok: !!f.as_of && !f.staleForWeek,
-    when: f.as_of ? 'as of ' + f.as_of : null,
-    note: f.as_of ? 'as of ' + f.as_of + ', behind the week being reported' : 'never synced',
+    source: 'occupancy', ok: f.as_of === todayCT,
+    when: f.as_of ? 'synced ' + f.as_of : null,
+    note: f.as_of ? 'last synced ' + f.as_of + ', not this morning' : 'never synced',
   });
-  Object.entries(report.sourceFreshness || {}).forEach(([k, v]) => {
+
+  for (const id of MORNING_FEEDS) {
+    let when = null;
+    try {
+      const d = await af.readReportData(id);
+      when = d && d.fetchedAt ? WEEK.toChicagoYMD(d.fetchedAt) : null;
+    } catch (e) { when = null; }
     lines.push({
-      source: k, ok: true,
-      when: v.refreshed ? 'refreshed this morning'
-        : (v.ageHours === null ? 'age unknown' : v.ageHours + 'h old'),
+      source: id,
+      ok: when === todayCT,
+      when: when ? 'synced ' + when : null,
+      note: when ? 'last synced ' + when + ', not this morning' : 'no data on disk',
     });
-  });
+  }
+
+  // A gap the report itself reported is a failure whatever the dates say.
   (report.gaps || []).forEach(g => {
     const src = String(g).split(':')[0];
+    if (lines.some(l => l.source === src && !l.ok)) return;   // already said
     lines.push({ source: src, ok: false, note: String(g).slice(src.length + 1).trim() });
   });
 
@@ -18915,6 +18943,27 @@ const EARLY_FEEDS = [
   // blank, so without this needToFile could only ever be zero while Katie
   // read 13 for the same week.
   [50, 'occupancy_custom_fields', () => require('./appfolio-reports.js').syncReport('occupancy_custom_fields').then(r => r?.rowCount)],
+  // DELINQUENCY IN THE MORNING TOO, not only at 17:45.
+  //
+  // The evening sync is for the Collections queue and stays. But Kara's 06:00
+  // brief read a store that was twelve hours old every single day, and a brief
+  // that says "the data is from yesterday evening" every morning trains its
+  // reader to skip that line — which is the one line that has to be believed
+  // on the morning it is actually true.
+  //
+  // ONLY delinquency_kpi, and the evening run of both stays.
+  //
+  // They are two different pulls of the same report: delinquency_as_of is
+  // Collections' filter (Current + Notice), delinquency_kpi adds Evict and is
+  // the one the brief and the KPI report read. Collections works off the
+  // evening sync and nobody asked for a second one, so adding it would be a
+  // morning AppFolio call bought for nothing.
+  //
+  // 05:55 is also the LAST slot available before the brief at 06:00: five
+  // minutes clear of occupancy_custom_fields at 05:50 and of the work-order
+  // sync at 06:00. Anything else needing a morning pull has to displace
+  // something, not squeeze between.
+  [55, 'delinquency_kpi',        () => require('./appfolio-reports.js').syncReport('delinquency_kpi').then(r => r?.rowCount)],
 ];
 EARLY_FEEDS.forEach(([minute, label, run]) => {
   cron.schedule(`${minute} 5 * * *`, () => {

@@ -152,7 +152,7 @@ t('no freshness at all is stated, not assumed fine', () => {
 });
 
 t('every field Kara asked for is on the page', () => {
-  ['Occupancy', 'Rentable occupancy', 'Preleased', 'Applications pending',
+  ['Occupancy', 'Rentable occupancy', 'Signed, not moved in', 'Applications pending',
     'Make-readies open', 'Move-ins this week', 'Move-outs this week', 'Notices',
     'Delinquency', 'PORTFOLIO TOTAL'].forEach(label =>
     assert.ok(RENDER.includes(label), 'missing: ' + label));
@@ -234,6 +234,54 @@ t('migration 088 exists, is not run, and seeds without overwriting', () => {
   assert.ok(/5000/.test(sql) && /7/.test(sql) && /3/.test(sql));
   assert.ok(/OCCUPANCY IS DELIBERATELY ABSENT/.test(sql),
     'a second place to set an occupancy goal is a second place for it to disagree');
+});
+
+
+// ---- 2026-10-13: three corrections before launch ---------------------------
+
+t('the test address is a constant, not a setting', () => {
+  // It read an environment variable with a default, so the one route whose
+  // purpose is "this cannot reach Kara" could be pointed anywhere from
+  // Render's dashboard — including at her.
+  assert.ok(/const KARA_BRIEF_TEST_TO = 'support@livewithmetric\.com';/.test(server),
+    'it is not a hardcoded constant, or not the right address');
+  assert.ok(!/KARA_BRIEF_TEST_TO = process\.env/.test(server),
+    'an environment variable can still redirect the test copy');
+});
+
+t('the test route names exactly one recipient, and it is that constant', () => {
+  const at = server.indexOf("app.post('/api/brief/kara/test'");
+  const end = server.indexOf('});', server.indexOf('catch (err)', at));
+  const route = server.slice(at, end);
+  const sends = [...route.matchAll(/briefSendMail\(([^,]+),/g)].map(m => m[1].trim());
+  assert.deepStrictEqual(sends, ['KARA_BRIEF_TEST_TO'],
+    'the test route sends to: ' + sends.join(', '));
+});
+
+t('"signed, not moved in" replaces "Preleased" on both blocks', () => {
+  // The KPI report's Preleased is occupied + vacant-rented — 42 at Windy Hill.
+  // This line is the vacant-rented count alone — 2. Calling both Preleased put
+  // a 2 beside a 42 on two reports read in the same week.
+  assert.ok(/Signed, not moved in/.test(RENDER));
+  assert.ok(!/Preleased/.test(RENDER), 'the old label is still on the page');
+  assert.strictEqual((RENDER.match(/Signed, not moved in/g) || []).length, 3,
+    'expected it on two properties and the portfolio');
+});
+
+t('a source is stale only when it missed THIS MORNING, not when it is old', () => {
+  // The first version asked "older than six hours", which at 06:00 is true of
+  // anything synced the evening before and raised the alarm every single day.
+  // An alarm that is always on is one nobody reads on the morning it is real.
+  const at = server.indexOf('const MORNING_FEEDS');
+  assert.ok(at > 0, 'the morning-feed list is gone');
+  const block = server.slice(at, at + 1600);
+  assert.ok(/ok: when === todayCT/.test(block), 'it still judges staleness by age');
+  assert.ok(/MORNING_FEEDS/.test(block) && /delinquency_kpi/.test(block));
+  assert.ok(/not this morning/.test(block), 'and it must say what it means');
+});
+
+t('occupancy is judged the same way', () => {
+  assert.ok(/source: 'occupancy', ok: f\.as_of === todayCT/.test(server));
 });
 
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
