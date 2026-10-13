@@ -18574,10 +18574,41 @@ app.post('/api/maintenance/oncall/generate', requireMetricAdmin, async (req, res
     const prev = await oncallRow(db, prevYear, prevMonth);
     const carry = carryFromPrevious(prev);
 
+    // THE MONTH BEFORE IS AN INPUT, NOT A DETAIL.
+    //
+    // November generated wrong because October had been built by hand and was
+    // never in the dashboard: the carry-in came back empty, so Week 1 could
+    // repeat the pair that was already working Nov 1–6, and the fairness table
+    // counted a week nobody was told about. An empty carry-in is not "no
+    // carry-in" — it is a missing fact, and generating around it produced a
+    // calendar that looked finished and was wrong.
+    //
+    // So it refuses, and says exactly which week it needs. The caller supplies
+    // the pair (the panel asks for it) or imports the month with
+    // scripts/import-oncall-xlsx.js.
+    const carryPair = req.body?.carryPair || carry.pair;
+    const needsCarry = ONCALL.weeksOf(year, month).carryDays > 0;
+    if (needsCarry && (!Array.isArray(carryPair) || carryPair.length !== 2)) {
+      const { weeks: prevWeeks } = ONCALL.weeksOf(prevYear, prevMonth);
+      const last = prevWeeks[prevWeeks.length - 1];
+      return res.status(409).json({
+        error: 'carry_pair_required',
+        message: ONCALL.MONTHS[prevMonth - 1] + ' ' + prevYear + ' is not in the dashboard, so '
+          + 'nobody knows who is on call for the first days of ' + ONCALL.MONTHS[month - 1] + '.',
+        need: {
+          week: last ? last.label : null,
+          range: last ? last.range : null,
+          month: ONCALL.MONTHS[prevMonth - 1] + ' ' + prevYear,
+        },
+        pool: ONCALL.poolFrom(technicians).pool.map(p => p.name),
+      });
+    }
+
     const draft = ONCALL.build({
       year, month, technicians, properties,
-      carryPair: req.body?.carryPair || carry.pair,
-      carryFrom: req.body?.carryFrom || carry.from,
+      carryPair,
+      carryFrom: req.body?.carryFrom || carry.from
+        || (ONCALL.MONTHS[prevMonth - 1] + ' ' + (ONCALL.weeksOf(prevYear, prevMonth).weeks.slice(-1)[0] || {}).label),
       balance: req.body?.balance,
     });
     draft.missingGeo = missingGeo;

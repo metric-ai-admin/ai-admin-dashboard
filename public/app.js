@@ -12828,21 +12828,76 @@ async function ocFetch() {
   }
 }
 
-async function ocGenerate() {
+async function ocGenerate(carryPair) {
   const ym = ocYM();
   if (!ym) return;
   const status = $('#oncall-status');
-  if (onCallDoc && onCallDoc.exists && !confirm('Regenerate ' + ocMonthValue()
+  if (!carryPair && onCallDoc && onCallDoc.exists && !confirm('Regenerate ' + ocMonthValue()
     + '? The draft is replaced. Hand edits are kept in the log but are NOT reapplied.')) return;
   if (status) status.textContent = 'Generating…';
+  const body = Object.assign({}, ym, { balance: !!$('#oncall-balance')?.checked });
+  if (carryPair) body.carryPair = carryPair;
   try {
-    await api('/api/maintenance/oncall/generate', {
+    const r = await fetch('/api/maintenance/oncall/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(Object.assign({}, ym, { balance: !!$('#oncall-balance')?.checked })),
+      credentials: 'same-origin', body: JSON.stringify(body),
     });
+    const d = await r.json();
+    // THE MONTH BEFORE IS AN INPUT. The server refuses rather than generating
+    // around a missing carry-in: without it the same pair can be handed Week 1
+    // while they are still covering the first days of the month, and the
+    // fairness table counts a week nobody was told about. That is what
+    // happened to November before October was in the dashboard.
+    if (r.status === 409 && d.error === 'carry_pair_required') {
+      if (status) status.textContent = '';
+      return ocAskCarry(d);
+    }
+    if (!r.ok) throw new Error(d.error || 'Could not generate');
     ocFetch();
   } catch (e) { if (status) status.textContent = 'Error: ' + e.message; }
 }
+
+// Ask who covered the first days of the month, when the month before is not in
+// the dashboard. Two pickers rather than a free-text prompt: a typo here is a
+// name the roster does not know and a carry-in that silently does nothing.
+function ocAskCarry(d) {
+  const opts = (d.pool || []).map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  $('#oncall-body').innerHTML = `
+    <div class="card" style="padding:12px;max-width:640px">
+      <h4 style="margin-top:0">Who is on call for the first days of the month?</h4>
+      <p class="small">${esc(d.message || '')}</p>
+      <p class="small muted">
+        ${esc((d.need && d.need.month) || 'The previous month')} &mdash;
+        <b>${esc((d.need && d.need.week) || 'the last week')}</b>
+        ${d.need && d.need.range ? '(' + esc(d.need.range) + ')' : ''}.
+        That week covers the start of this one, so it counts toward the fairness check
+        and neither of them can be given Week 1.
+      </p>
+      <div class="row" style="gap:8px;align-items:center">
+        <select id="oncall-carry-a"><option value="">—</option>${opts}</select>
+        <span>+</span>
+        <select id="oncall-carry-b"><option value="">—</option>${opts}</select>
+        <button class="btn" id="oncall-carry-go">Generate</button>
+      </div>
+      <p class="small muted" style="margin-bottom:0">
+        Better: load that month from its spreadsheet with
+        <code>scripts/import-oncall-xlsx.js</code> and this is never asked again.
+      </p>
+      <div class="msg" id="oncall-carry-msg"></div>
+    </div>`;
+  $('#oncall-carry-go')?.addEventListener('click', () => {
+    const a = $('#oncall-carry-a').value;
+    const b = $('#oncall-carry-b').value;
+    const msg = $('#oncall-carry-msg');
+    if (!a || !b || a === b) {
+      msg.className = 'msg error';
+      msg.textContent = 'Two different technicians.';
+      return;
+    }
+    ocGenerate([a, b]);
+  });
+}
+
 
 const OC_STATE_LABEL = {
   draft: 'Draft', pending_approval: 'Pending approval', approved: 'Approved',

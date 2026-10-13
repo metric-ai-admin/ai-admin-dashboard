@@ -453,5 +453,109 @@ t('the dashboard does not claim to write to AppFolio', () => {
   assert.ok(!/appfolio.*\.post|syncReport/i.test(routes), 'a route touches AppFolio');
 });
 
+// ---- the month before is an input ------------------------------------------
+//
+// November generated wrong: October had been built by hand and was never in the
+// dashboard, so the carry-in came back empty. The same pair was handed Week 1
+// while they were still covering Nov 1–6, both worked two weeks running, and
+// the fairness table counted a week nobody was told about.
+
+t('an empty carry-in lets the same pair work two weeks running', () => {
+  // The BUG, reproduced. This is what the refusal exists to prevent, so it is
+  // asserted rather than described — otherwise the guard could be removed and
+  // every test would still pass.
+  const broken = R.build({
+    year: 2026, month: 11, technicians: TECHS, properties: PROPS,
+    carryPair: [], carryFrom: null,
+  });
+  // With nothing carried, nobody is barred from Week 1 and the fairness table
+  // shows five technicians sharing eight weeks with no carry-in named.
+  assert.ok(!broken.fairness.rows.some(r => r.carried),
+    'a carry-in appeared from nowhere');
+  assert.ok(broken.weeks[0].pair.length === 2);
+});
+
+t('a known carry-in bars both of them from Week 1 and counts their week', () => {
+  const carry = ['Carlos Portilla', 'Angel Martinez'];
+  const good = R.build({
+    year: 2026, month: 11, technicians: TECHS, properties: PROPS,
+    carryPair: carry, carryFrom: 'October Week 5',
+  });
+  carry.forEach(n => assert.ok(!good.weeks[0].pair.includes(n),
+    n + ' works Week 1 straight after the carry-in week'));
+  assert.deepStrictEqual(good.fairness.rows.filter(r => r.carried).map(r => r.technician).sort(),
+    carry.slice().sort());
+  carry.forEach(n => assert.strictEqual(
+    good.fairness.rows.find(r => r.technician === n).weeks, 1,
+    n + ' owes one full week, not two'));
+  assert.ok(good.fairness.even);
+  // And the carry-in pair is not repeated as a pair later in the month.
+  assert.ok(!good.weeks.some(w => w.pair.slice().sort().join('|') === carry.slice().sort().join('|')));
+});
+
+t('the server REFUSES to generate without it, and says which week it needs', () => {
+  // Generating around a missing fact produced a calendar that looked finished
+  // and was wrong. Refusing is the only honest answer.
+  const s = src('server.js');
+  const at = s.indexOf('carry_pair_required');
+  assert.ok(at > 0, 'it still generates with an empty carry-in');
+  const block = s.slice(at - 1400, at + 900);
+  assert.ok(/weeksOf\(year, month\)\.carryDays > 0/.test(block),
+    'a month that starts on a Saturday has no carry-in and must not be blocked');
+  assert.ok(/need: \{/.test(block) && /range:/.test(block),
+    'it refuses without saying which week it means');
+  assert.ok(/pool: ONCALL\.poolFrom/.test(block), 'the caller has no list to choose from');
+});
+
+t('a month with no carry-in days is never blocked', () => {
+  // August 2026 starts on a Saturday. There is nothing to carry, so asking for
+  // a pair would be asking for a fact that does not exist.
+  assert.strictEqual(R.weeksOf(2026, 8).carryDays, 0);
+  const aug = R.build({ year: 2026, month: 8, technicians: TECHS, properties: PROPS, carryPair: [] });
+  assert.ok(aug.weeks.length >= 4);
+  assert.strictEqual(aug.carry.note, null);
+});
+
+t('the panel asks with pickers, not a free-text box', () => {
+  // A typo here is a name the roster does not know and a carry-in that
+  // silently does nothing — which is the bug again, one layer up.
+  const app = src('public/app.js');
+  assert.ok(/function ocAskCarry/.test(app));
+  const fn = app.slice(app.indexOf('function ocAskCarry'), app.indexOf('function ocAskCarry') + 2200);
+  assert.ok(/<select id="oncall-carry-a"/.test(fn) && /<select id="oncall-carry-b"/.test(fn));
+  assert.ok(/a === b/.test(fn), 'one technician could be picked twice');
+  assert.ok(/carry_pair_required/.test(app), 'the refusal is not handled at all');
+});
+
+// ---- importing a hand-built month ------------------------------------------
+
+t('the importer reads the carry-in out of the file, not from a prompt', () => {
+  // The October file's own DRAFT line says who covered Oct 01-02. Importing
+  // without it would store the same hole one month further back.
+  const s = src('scripts/import-oncall-xlsx.js');
+  assert.ok(/covered by \(\[A-Za-z\]\+ Week|covered by \(/.test(s.replace(/\\/g, '')),
+    'the carry-in note is not parsed');
+  assert.ok(/carryPair,\n\s*carryFrom,/.test(s) || /carryPair, carryFrom/.test(s));
+});
+
+t('the importer stores what was IN FORCE, not what the rule would say', () => {
+  // October Week 3 gave José the north and Angel the south, which Arturo has
+  // confirmed was an oversight. It is imported as it stands: a calendar nobody
+  // worked is not a record of the month.
+  const s = src('scripts/import-oncall-xlsx.js');
+  assert.ok(/imported from the hand-built calendar/.test(s));
+  assert.ok(/imported as the file has it/i.test(s), 'the disagreement is silently corrected');
+  // And the disagreement is measured against the FILE's pair, not the
+  // generated one — comparing two different pairings calls every cell a
+  // disagreement, which is how a diff becomes noise.
+  assert.ok(/R\.splitWeek\(w\.pair, properties, techByName/.test(s));
+});
+
+t('the importer refuses a file whose week count is not that month\'s', () => {
+  const s = src('scripts/import-oncall-xlsx.js');
+  assert.ok(/the file has \$\{weekCount\} weeks/.test(s),
+    'a September file imported as October would store five weeks of nonsense');
+});
+
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);
