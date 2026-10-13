@@ -223,12 +223,16 @@ t('the test route sends to Arturo and cannot send to Kara', () => {
   assert.ok(/dryRun/.test(route), 'there must be a way to render without sending');
 });
 
-t('it goes out from the EOD account, and keeps its alignment', () => {
+t('it goes out from the EOD account, as a real email', () => {
+  // The <pre> wrapper this used to assert is gone: it survived being opened
+  // and collapsed into one paragraph the moment anybody forwarded it. The
+  // layout and the escaping are checked in test/kara-brief-html.test.js, on
+  // the module that now does both.
   const at = server.indexOf('async function briefSendMail');
   const fn = server.slice(at, at + 1400);
   assert.ok(/EOD_SENDER/.test(fn), 'it uses a different sender from the EOD');
-  assert.ok(/<pre/.test(fn), 'Outlook reflows plain text and the columns collapse');
-  assert.ok(/replace\(\/&\/g/.test(fn), 'the text is not escaped into the HTML');
+  assert.ok(/buildMime/.test(fn), 'it no longer sends a multipart message');
+  assert.ok(!/<pre/.test(fn), 'the <pre> wrapper is back');
 });
 
 t('migration 088 exists, is not run, and seeds without overwriting', () => {

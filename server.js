@@ -18186,6 +18186,7 @@ const EOD_SENDER = process.env.EOD_SENDER || 'support@livewithmetric.com';
 // A report that reaches a VP before anybody has read one is how a wrong number
 // becomes a decision.
 const KARA_BRIEF = require('./lib/kara-brief.js');
+const KARA_BRIEF_HTML = require('./lib/kara-brief-html.js');
 // Property ids to names. karaBriefGather reads unit_turn_detail and
 // leasing_applications, both of which carry a property id or a name with an
 // address attached, and neither is the name the report uses.
@@ -18216,25 +18217,28 @@ const KARA_BRIEF_TEST_TO = 'support@livewithmetric.com';
 // WRAPPED IN <pre>, NOT SENT AS text/plain. Kara asked for aligned numbers and
 // no graphics; Outlook reflows plain text and the columns collapse. A <pre>
 // block in HTML is the plain-text layout that survives the trip.
-async function briefSendMail(to, subject, text) {
+// Sends the brief as a real email: HTML for reading, plain text for anybody
+// whose client will not show it.
+//
+// MIME, NOT GRAPH'S `body` FIELD. message.body takes ONE contentType, so a
+// JSON send can carry HTML or text and never both. A true
+// multipart/alternative needs the raw-MIME form of sendMail: Content-Type
+// text/plain on the request, and a base64 RFC-822 message as the payload.
+//
+// WHY BOTH PARTS MATTER. The HTML is what Kara reads. The text part is what
+// survives a client that strips HTML, and — the reason this was rewritten —
+// what a forward falls back to when the markup is mangled on the way.
+async function briefSendMail(to, subject, text, html) {
   const token = await graphMailToken();
-  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const html = '<pre style="font-family:Consolas,Menlo,monospace;font-size:13px;'
-    + 'white-space:pre;margin:0">' + esc(text) + '</pre>';
-  const payload = {
-    message: {
-      subject,
-      body: { contentType: 'HTML', content: html },
-      toRecipients: String(to).split(',').map(a => a.trim()).filter(Boolean)
-        .map(a => ({ emailAddress: { address: a } })),
-    },
-    saveToSentItems: true,
-  };
+  // Built in lib/kara-brief-html.js so a test can run it without a mailbox.
+  const mime = KARA_BRIEF_HTML.buildMime({ from: EOD_SENDER, to, subject, text, html });
   const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(EOD_SENDER)}/sendMail`;
   const r = await fetchFn(url, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    // text/plain plus a base64 RFC-822 body is Graph's raw-MIME send. The
+    // JSON form takes one contentType and cannot carry an alternative part.
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'text/plain' },
+    body: Buffer.from(mime, 'utf8').toString('base64'),
   });
   if (!r.ok) {
     const body = await r.text().catch(() => '');
@@ -18274,7 +18278,12 @@ async function karaBriefGather() {
 async function karaBriefRender(opts) {
   const data = await karaBriefGather();
   const brief = KARA_BRIEF.build(data);
-  return { text: KARA_BRIEF.render(brief, opts || {}), brief, data };
+  const o = opts || {};
+  return {
+    text: KARA_BRIEF.render(brief, o),
+    html: KARA_BRIEF_HTML.renderHtml(brief, o),
+    brief, data,
+  };
 }
 
 // POST /api/brief/kara/test — render it and send it to ARTURO.
@@ -18291,10 +18300,10 @@ async function karaBriefRender(opts) {
 // recipient.
 app.post('/api/brief/kara/test', requireMetricAdmin, async (req, res) => {
   try {
-    const { text, brief } = await karaBriefRender({ testMode: true });
+    const { text, html, brief } = await karaBriefRender({ testMode: true });
     const send = !(req.body && req.body.dryRun);
     if (send && GRAPH_CONFIGURED) {
-      await briefSendMail(KARA_BRIEF_TEST_TO, '[TEST] Metric — Morning Numbers', text);
+      await briefSendMail(KARA_BRIEF_TEST_TO, '[TEST] Metric — Morning Numbers', text, html);
     }
     res.json({
       ok: true, sentTo: send && GRAPH_CONFIGURED ? KARA_BRIEF_TEST_TO : null,
@@ -18310,13 +18319,13 @@ app.post('/api/brief/kara/test', requireMetricAdmin, async (req, res) => {
 cron.schedule('0 6 * * *', () => {
   if (!CRM_CONFIGURED) return;
   karaBriefRender({})
-    .then(({ text, brief }) => {
+    .then(({ text, html, brief }) => {
       if (!KARA_BRIEF_TO.length) {
         logLine('[kara-brief] rendered ' + brief.properties.length + ' properties, '
           + brief.red.length + ' red — NOT SENT (KARA_BRIEF_TO is unset)');
         return null;
       }
-      return briefSendMail(KARA_BRIEF_TO.join(','), 'Metric — Morning Numbers', text)
+      return briefSendMail(KARA_BRIEF_TO.join(','), 'Metric — Morning Numbers', text, html)
         .then(() => logLine('[kara-brief] sent to ' + KARA_BRIEF_TO.join(',')
           + ' — ' + brief.red.length + ' red'));
     })
