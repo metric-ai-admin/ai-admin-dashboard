@@ -75,13 +75,29 @@ function deps(over) {
       { property_name: 'Hyde Park Square', status: 'Decision Pending', application_date: '2026-10-12' },
     ]),
     buildKpiReport: () => Promise.resolve(reportStub(o.report)),
-    readReportData: id => Promise.resolve(id === 'unit_turn_detail'
-      ? { fetchedAt: TODAY + 'T10:30:00Z', rows: [
-        { property_name: 'Windy Hill Apartment', move_out_date: '2026-09-29', turn_end_date: '' },
-        { property_name: 'Windy Hill Apartment', move_out_date: '2026-10-11', turn_end_date: '' },
-        { property_name: 'Hyde Park Square', move_out_date: '2026-09-01', turn_end_date: '2026-09-20' },
-      ] }
-      : { fetchedAt: TODAY + 'T10:30:00Z', rows: [] }),
+    readReportData: id => Promise.resolve(
+      id === 'unit_turn_detail'
+        ? { fetchedAt: TODAY + 'T10:30:00Z', rows: [
+          // vacant today, 14 days — a real make-ready
+          { property_name: 'Windy Hill Apartment', unit: '101', move_out_date: '2026-09-29', turn_end_date: '' },
+          // vacant today, 2 days — also real
+          { property_name: 'Windy Hill Apartment', unit: '102', move_out_date: '2026-10-11', turn_end_date: '' },
+          // 490 days — a record, whatever the rent roll says
+          { property_name: 'Windy Hill Apartment', unit: '103', move_out_date: '2025-06-10', turn_end_date: '' },
+          // 8 days but somebody lives there — the turn finished, the record did not
+          { property_name: 'Hyde Park Square', unit: '201', move_out_date: '2026-10-05', turn_end_date: '' },
+          // finished properly
+          { property_name: 'Hyde Park Square', unit: '202', move_out_date: '2026-09-01', turn_end_date: '2026-09-20' },
+        ] }
+        : id === 'rent_roll'
+          ? { fetchedAt: TODAY + 'T10:30:00Z', rows: [
+            { property_name: 'Windy Hill Apartment', unit: '101', status: 'Vacant-Unrented', rent: '1400' },
+            { property_name: 'Windy Hill Apartment', unit: '102', status: 'Vacant-Unrented', rent: '1400' },
+            { property_name: 'Windy Hill Apartment', unit: '103', status: 'Current', rent: '1400' },
+            { property_name: 'Hyde Park Square', unit: '201', status: 'Current', rent: '1600' },
+            { property_name: 'Hyde Park Square', unit: '202', status: 'Current', rent: '1600' },
+          ] }
+          : { fetchedAt: TODAY + 'T10:30:00Z', rows: [] }),
     goalPctFor: name => (name === 'Windy Hill Apartment' ? 0.90 : 0.85),
   }, o.deps || {});
 }
@@ -126,14 +142,19 @@ console.log('kara brief, rendered end to end');
     assert.strictEqual(wh.applicationOldestDays, 9);
   });
 
-  await ta('an open make-ready is one with no end date, aged from the move-out', async () => {
+  await ta('a make-ready counts only on a unit that is vacant today', async () => {
     const data = await G.gather(deps());
     const wh = data.properties.find(p => p.name === 'Windy Hill Apartment');
-    assert.strictEqual(wh.makeReadyOpen, 2);
+    assert.strictEqual(wh.makeReadyOpen, 2, '101 and 102 are vacant');
     assert.strictEqual(wh.makeReadyOldestDays, 14);
+    assert.strictEqual(wh.staleMakeReadies, 1, '103 is 490 days old');
+    assert.strictEqual(wh.staleMakeReadyOldest, 490);
+
     const hp = data.properties.find(p => p.name === 'Hyde Park Square');
-    assert.strictEqual(hp.makeReadyOpen, 0, 'a finished turn is not open');
-    assert.strictEqual(hp.makeReadyOldestDays, null, 'and has no age');
+    assert.strictEqual(hp.makeReadyOpen, 0,
+      '201 is 8 days old but somebody lives there — the turn finished, the record did not');
+    assert.strictEqual(hp.staleMakeReadies, 1);
+    assert.strictEqual(hp.makeReadyOldestDays, null);
   });
 
   await ta('the rendered brief puts the right property in red, for the right reasons', async () => {
@@ -201,6 +222,82 @@ console.log('kara brief, rendered end to end');
     d.readReportData = () => Promise.reject(new Error('disk gone'));
     const text = K.render(K.build(await G.gather(d)), {});
     assert.ok(/no data on disk/.test(text));
+  });
+
+  // ---- records, not work ---------------------------------------------------
+
+  await ta('a stale record never puts a property in red', async () => {
+    // THE WHOLE POINT. Ascent came back with 40 "open make-readies", the
+    // oldest 490 days, and seven of eight properties went red on the first
+    // morning. A report that is all red is one nobody opens twice.
+    const data = await G.gather(deps());
+    const brief = K.build(data);
+    // Windy Hill DOES have a real one — unit 101, vacant, 14 days — so the
+    // flag is expected. What must not happen is the 490-day record driving it.
+    const wh = brief.properties.find(p => p.name === 'Windy Hill Apartment');
+    const mrFlag = wh.flags.find(f => f.kind === 'make_ready');
+    assert.ok(mrFlag, 'the real 14-day make-ready stopped raising a flag');
+    assert.ok(/14 days/.test(mrFlag.text), 'the flag reads: ' + mrFlag.text);
+    assert.ok(!/490/.test(mrFlag.text), 'the 490-day record is driving the flag');
+
+    // Hyde Park's only open turn is on an occupied unit, so it has none.
+    const hp = brief.properties.find(p => p.name === 'Hyde Park Square');
+    assert.deepStrictEqual(hp.flags.filter(f => f.kind === 'make_ready'), [],
+      'an occupied unit raised a make-ready flag');
+  });
+
+  await ta('an application pending past the cutoff is a record, not a decision', async () => {
+    const d = deps();
+    d.selectAll = () => Promise.resolve([
+      { property_name: 'Windy Hill Apartment', status: 'Decision Pending', application_date: '2026-07-16' },
+      { property_name: 'Windy Hill Apartment', status: 'Decision Pending', application_date: '2026-10-09' },
+    ]);
+    const data = await G.gather(d);
+    const wh = data.properties.find(p => p.name === 'Windy Hill Apartment');
+    assert.strictEqual(wh.applicationsPending, 1, 'the 89-day one is not pending');
+    assert.strictEqual(wh.applicationOldestDays, 4);
+    assert.strictEqual(wh.staleApplications, 1);
+    assert.strictEqual(wh.staleApplicationOldest, 89);
+    // The 4-day one is over the 3-day threshold, so a flag is expected — from
+    // IT, not from the 89-day record.
+    const flags = K.flagsFor(wh, K.thresholdsFor(wh.name, data.thresholds));
+    const apFlag = flags.find(f => f.kind === 'applications');
+    assert.ok(apFlag && /4 days/.test(apFlag.text), 'the flag reads: ' + (apFlag && apFlag.text));
+    assert.ok(!/89/.test(apFlag.text), 'the 89-day record is driving the flag');
+  });
+
+  await ta('the records section lists them, with counts and the oldest', async () => {
+    const text = K.render(K.build(await G.gather(deps())), {});
+    assert.ok(/RECORDS TO CLEAN UP IN APPFOLIO/.test(text));
+    assert.ok(/Windy Hill Apartment\s+1 unit turn \(oldest 490d\)/.test(text));
+    assert.ok(/Hyde Park Square\s+1 unit turn \(oldest 8d\)/.test(text));
+  });
+
+  await ta('nothing stale means no section at all', async () => {
+    const d = deps();
+    d.readReportData = id => Promise.resolve({ fetchedAt: TODAY + 'T10:30:00Z', rows: [] });
+    d.selectAll = () => Promise.resolve([]);
+    const text = K.render(K.build(await G.gather(d)), {});
+    assert.ok(!/RECORDS TO CLEAN UP/.test(text), 'an empty section is noise');
+  });
+
+  await ta('delinquency shows a share of rent beside the dollars', async () => {
+    // Kara may prefer a relative threshold once she can see both. BESIDE, not
+    // instead: the dollar figure is what the $5,000 threshold is set against.
+    const text = K.render(K.build(await G.gather(deps())), {});
+    assert.ok(/\$6,294/.test(text), 'the dollars are gone');
+    // Three units at $1,400 on the stub rent roll.
+    assert.ok(/% of \$4,200 monthly rent/.test(text), 'the share is missing');
+  });
+
+  await ta('no rent roll means no share, and the dollars still print', async () => {
+    const d = deps();
+    d.readReportData = id => Promise.resolve(id === 'rent_roll'
+      ? { fetchedAt: TODAY + 'T10:30:00Z', rows: [] }
+      : { fetchedAt: TODAY + 'T10:30:00Z', rows: [] });
+    const text = K.render(K.build(await G.gather(d)), {});
+    assert.ok(/\$6,294/.test(text));
+    assert.ok(!/monthly rent/.test(text), 'it invented a share with no rent to divide by');
   });
 
   // ---- the route is reachable from the Render shell ------------------------

@@ -48,7 +48,13 @@ t('no table at all falls back to the built-in defaults', () => {
 });
 
 t('the proposed defaults are the ones agreed', () => {
-  assert.deepStrictEqual(K.DEFAULTS, { delinquency_over: 5000, make_ready_days: 7, application_days: 3 });
+  // The first three are Kara's to tune. The last two are the line between work
+  // and paperwork, added 2026-10-13 after the first real brief put seven of
+  // eight properties in red on stale records.
+  assert.deepStrictEqual(K.DEFAULTS, {
+    delinquency_over: 5000, make_ready_days: 7, application_days: 3,
+    make_ready_stale_days: 90, application_stale_days: 60,
+  });
 });
 
 t('the property name is matched regardless of case', () => {
