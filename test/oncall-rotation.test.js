@@ -49,11 +49,6 @@ R.poolFrom(TECHS).pool.forEach(p => { byName[p.name] = p; });
 
 // ---- who is on call --------------------------------------------------------
 
-t('the pool is the five the real calendars use', () => {
-  const { pool } = R.poolFrom(TECHS);
-  assert.deepStrictEqual(pool.map(p => p.name), [
-    'Angel Martinez', 'Carlos Portilla', 'Emerson Garcia', 'José Rentería', 'Raul Martinez']);
-});
 
 t('Yeison is excluded WITH A REASON, not silently', () => {
   // An active maintenance tech whose role Erick has not confirmed. Dropping him
@@ -102,151 +97,255 @@ t('a month starting ON a Saturday has no carry-in', () => {
 
 // ---- the property split ----------------------------------------------------
 
-t('a technician on call takes their own properties', () => {
-  const s = R.splitWeek(['Angel Martinez', 'Raul Martinez'], PROPS, byName, {});
-  ['Hyde Park Square', 'The Chateau', 'The Highlander'].forEach(p =>
-    assert.strictEqual(s.assign[p], 'Angel Martinez', p));
-  ['iConic Round Rock', 'iConic Downtown'].forEach(p =>
-    assert.strictEqual(s.assign[p], 'Raul Martinez', p));
-  assert.strictEqual(s.reasons['Hyde Park Square'], 'assigned property (maintenance)');
+// ---- Bekah's group scheme (2026-10-13) -------------------------------------
+//
+// It REPLACES the ownership-and-proximity split. She kept the format, the
+// fairness table and the weekday handover, and asked for the two groups her old
+// tracker used — two sets that never move are something four people can hold in
+// their heads on a Saturday night.
+
+const G = require('../lib/oncall-groups.js');
+
+t('Carlos is off the rotation, with who decided it and when', () => {
+  // He is still an active technician with properties assigned to him. A name
+  // missing from a rota with nothing beside it is the first thing somebody
+  // puts back.
+  const { pool, excluded } = R.poolFrom(TECHS);
+  assert.ok(!pool.some(p => /Carlos/.test(p.name)), 'Carlos is still on call');
+  const c = excluded.find(e => /Carlos/.test(e.name));
+  assert.ok(c, 'Carlos vanished instead of being excluded');
+  assert.strictEqual(c.reason, 'removed from on-call by Bekah, 10/13');
 });
 
-t('when both own it, Raul wins — he is the most experienced', () => {
-  // Arturo, 2026-10-13, and it is rule 1 of the tiebreak. Sunset Palms is
-  // maintained by Raul AND Emerson, and proximity would give it to Emerson.
-  const s = R.splitWeek(['Raul Martinez', 'Emerson Garcia'], PROPS, byName, {});
-  assert.strictEqual(s.assign['Sunset Palms'], 'Raul Martinez');
-  assert.ok(/most experienced/.test(s.reasons['Sunset Palms']), s.reasons['Sunset Palms']);
+t('the pool is the four Bekah named', () => {
+  assert.deepStrictEqual(R.poolFrom(TECHS).pool.map(p => p.name),
+    ['Angel Martinez', 'Emerson Garcia', 'José Rentería', 'Raul Martinez']);
 });
 
-t('without Raul, the maintenance tech beats the grounds tech', () => {
-  // Hyde Park: Angel maintains it, Carlos keeps its grounds. Both are owners
-  // now that the grounds column counts, and Angel takes it.
-  const s = R.splitWeek(['Angel Martinez', 'Carlos Portilla'], PROPS, byName, {});
-  assert.strictEqual(s.assign['Hyde Park Square'], 'Angel Martinez');
-  assert.ok(/maintenance tech over grounds tech/.test(s.reasons['Hyde Park Square']));
+t('the groups are the two sets, and nothing is in neither', () => {
+  assert.deepStrictEqual(G.GROUPS.RED.properties,
+    ['Sunset Palms', 'The Chateau', 'Windy Hill Apartment']);
+  assert.deepStrictEqual(G.GROUPS.BLUE.properties,
+    ['Hyde Park Square', 'The Highlander', 'Ascent at Northgate',
+      'iConic Downtown', 'iConic Round Rock']);
+  PROPS.forEach(p => assert.ok(G.groupOf(p.name), p.name + ' is in no group'));
+  assert.strictEqual(G.GROUPS.RED.properties.length + G.GROUPS.BLUE.properties.length,
+    PROPS.length, 'a property is in both groups or missing from both');
 });
 
-t('the grounds column makes a technician an owner', () => {
-  // THE CLARIFICATION. A grounds tech also does the maintenance there, so
-  // Carlos owns Hyde Park, iConic Downtown and iConic Round Rock — before
-  // this he owned nothing and every week he was on call he carried one
-  // property.
-  const carlos = PROPS.filter(p => p.owners.some(o => /Carlos/.test(o.name))).map(p => p.name);
-  assert.deepStrictEqual(carlos.sort(),
-    ['Hyde Park Square', 'iConic Downtown', 'iConic Round Rock']);
-  // Fredy only does grounds and is not on the rotation, so he is not an owner.
-  assert.ok(!PROPS.some(p => p.owners.some(o => /Fredy/.test(o.name))),
-    'a grounds-only technician became an owner');
-});
-
-t('an accent is not a reason to lose a property', () => {
-  // technicians says "José Rentería"; property_assignments says "Jose
-  // Renteria". An exact-string match leaves him owning nothing, and a match
-  // that finds nothing looks exactly like a person who owns nothing.
-  const s = R.splitWeek(['José Rentería', 'Angel Martinez'], PROPS, byName, {});
-  assert.strictEqual(s.assign['Windy Hill Apartment'], 'José Rentería');
-  assert.ok(/assigned property/.test(s.reasons['Windy Hill Apartment']));
-});
-
-t('Carlos keeps iConic Round Rock unless Raul is on with him', () => {
-  // He keeps its grounds, so it is his — except against Raul, who maintains it
-  // and wins every shared property anyway.
-  ['Angel Martinez', 'Emerson Garcia', 'José Rentería'].forEach(other => {
-    const s = R.splitWeek(['Carlos Portilla', other], PROPS, byName, {});
-    assert.strictEqual(s.assign['iConic Round Rock'], 'Carlos Portilla', 'with ' + other);
+t('red goes to José or Angel, blue to Raúl or Emerson', () => {
+  G.PAIR_CYCLE.forEach(pair => {
+    const s = G.assignGroups(pair, PROPS);
+    assert.ok(G.GROUPS.RED.techs.some(x => G.same(x, s.groups.RED)),
+      s.groups.RED + ' took red');
+    assert.ok(G.GROUPS.BLUE.techs.some(x => G.same(x, s.groups.BLUE)),
+      s.groups.BLUE + ' took blue');
+    assert.strictEqual(s.note, null);
   });
-  const withRaul = R.splitWeek(['Carlos Portilla', 'Raul Martinez'], PROPS, byName, {});
-  assert.strictEqual(withRaul.assign['iConic Round Rock'], 'Raul Martinez');
 });
 
-t('every property is covered, every week, by one of the two', () => {
-  const pool = R.poolFrom(TECHS).pool.map(p => p.name);
-  for (let i = 0; i < pool.length; i++) {
-    for (let j = i + 1; j < pool.length; j++) {
-      const s = R.splitWeek([pool[i], pool[j]], PROPS, byName, {});
-      PROPS.forEach(p => assert.ok([pool[i], pool[j]].includes(s.assign[p.name]),
-        p.name + ' uncovered for ' + pool[i] + ' + ' + pool[j]));
-    }
+t('a group is never split across the two technicians', () => {
+  G.PAIR_CYCLE.forEach(pair => {
+    const s = G.assignGroups(pair, PROPS);
+    ['RED', 'BLUE'].forEach(k => {
+      const who = new Set(G.GROUPS[k].properties.map(n => s.assign[n]));
+      assert.strictEqual(who.size, 1, k + ' was split between ' + pair.join(' and '));
+    });
+  });
+});
+
+t('a pairing that does not split red/blue is REPORTED, not guessed', () => {
+  // Two red technicians cannot cover a week between them under this scheme.
+  // Saying so is the only honest answer; silently handing blue to a red
+  // technician is how a rota becomes wrong without anybody seeing it.
+  const s = G.assignGroups(['José Rentería', 'Angel Martinez'], PROPS);
+  assert.ok(s.note && /does not split red\/blue/.test(s.note), s.note);
+});
+
+// ---- the hard constraints --------------------------------------------------
+
+t('the two iConics always go to the same technician', () => {
+  assert.deepStrictEqual(G.violations({
+    'iConic Round Rock': 'Raul Martinez', 'iConic Downtown': 'Raul Martinez',
+  }), []);
+  const v = G.violations({
+    'iConic Round Rock': 'Raul Martinez', 'iConic Downtown': 'Emerson Garcia',
+  });
+  assert.strictEqual(v.length, 1);
+  assert.strictEqual(v[0].id, 'iconic-together');
+});
+
+t('Raúl and Emerson never have Windy Hill', () => {
+  ['Raul Martinez', 'Emerson Garcia'].forEach(n => {
+    const v = G.violations({ 'Windy Hill Apartment': n });
+    assert.strictEqual(v.length, 1, n + ' was allowed Windy Hill');
+    assert.strictEqual(v[0].id, 'windy-hill');
+  });
+  ['José Rentería', 'Angel Martinez'].forEach(n =>
+    assert.deepStrictEqual(G.violations({ 'Windy Hill Apartment': n }), []));
+});
+
+t('the scheme satisfies both constraints on every week it produces', () => {
+  G.PAIR_CYCLE.forEach(pair =>
+    assert.deepStrictEqual(G.violations(G.assignGroups(pair, PROPS).assign), [],
+      pair.join(' + ')));
+});
+
+// ---- fixed alternating pairs -----------------------------------------------
+
+t('the pairs are fixed and alternate', () => {
+  assert.deepStrictEqual(G.PAIR_CYCLE, [
+    ['Raul Martinez', 'José Rentería'],
+    ['Emerson Garcia', 'Angel Martinez'],
+  ]);
+  const p = G.fixedPairs(5, []);
+  assert.deepStrictEqual(p[0], p[2]);
+  assert.deepStrictEqual(p[1], p[3]);
+  assert.notDeepStrictEqual(p[0], p[1]);
+});
+
+t('a repeated PAIR is allowed now; a repeated PERSON back to back is not', () => {
+  // Four technicians in fixed pairs must repeat the pair. Bekah relaxed that
+  // rule for this scheme, which is said out loud rather than quietly dropped.
+  const p = G.fixedPairs(4, ['Carlos Portilla', 'Angel Martinez']);
+  for (let i = 1; i < p.length; i++) {
+    p[i].forEach(n => assert.ok(!p[i - 1].some(x => G.same(x, n)),
+      n + ' works two weeks running'));
   }
 });
 
-t('nobody ends a week with nothing', () => {
-  // THE RAUL + CARLOS CASE. Raúl owns three properties and is nearer than
-  // Carlos to all five others, so straight proximity hands Raúl all eight.
-  // A pair where one person is on call for nothing is not a pair.
-  const pool = R.poolFrom(TECHS).pool.map(p => p.name);
-  for (let i = 0; i < pool.length; i++) {
-    for (let j = i + 1; j < pool.length; j++) {
-      const s = R.splitWeek([pool[i], pool[j]], PROPS, byName, {});
-      const counts = { [pool[i]]: 0, [pool[j]]: 0 };
-      PROPS.forEach(p => { counts[s.assign[p.name]]++; });
-      assert.ok(counts[pool[i]] > 0 && counts[pool[j]] > 0,
-        pool[i] + ' + ' + pool[j] + ' split ' + JSON.stringify(counts));
-    }
-  }
+t('the alternation continues from whoever worked the carry-in week', () => {
+  // NOVEMBER. The carry-in is Carlos + Angel; Carlos is off the rotation and
+  // Angel cannot work two weeks running, so the month opens with Raúl + José.
+  assert.deepStrictEqual(G.fixedPairs(1, ['Carlos Portilla', 'Angel Martinez'])[0],
+    ['Raul Martinez', 'José Rentería']);
+  // And the other way round.
+  assert.deepStrictEqual(G.fixedPairs(1, ['Raul Martinez', 'José Rentería'])[0],
+    ['Emerson Garcia', 'Angel Martinez']);
 });
 
-t('balance keeps the week even, and never moves an owned property', () => {
-  const s = R.splitWeek(['Angel Martinez', 'Carlos Portilla'], PROPS, byName, {});
-  const mine = PROPS.filter(p => s.assign[p.name] === 'Angel Martinez').length;
-  assert.strictEqual(mine, 4, 'balance should halve the eight');
-  ['Hyde Park Square', 'The Chateau', 'The Highlander'].forEach(p =>
-    assert.strictEqual(s.assign[p], 'Angel Martinez', p + ' was balanced away from its owner'));
+t('a carry-in naming somebody off the rotation still bars their partner', () => {
+  // Carlos is not in the pool any more, but Angel worked beside him and the
+  // week he worked is still a week. Filtering the carry-in down to the current
+  // pool would lose that and put Angel back on Week 1.
+  const d = R.build({
+    year: 2026, month: 11, technicians: TECHS, properties: PROPS,
+    carryPair: ['Carlos Portilla', 'Angel Martinez'], carryFrom: 'October Week 5',
+  });
+  assert.ok(!d.weeks[0].pair.some(n => G.same(n, 'Angel Martinez')),
+    'Angel works Week 1 straight after the carry-in week');
+  assert.deepStrictEqual(d.carry.pair, ['Carlos Portilla', 'Angel Martinez']);
+  assert.ok(/Carlos \+ Angel/.test(d.carry.note), d.carry.note);
 });
 
-t('balance can be turned off, and then it is lopsided — by design', () => {
-  // Kept switchable because it is a deviation from the letter of the rule
-  // Arturo stated. The numbers are the argument for the default, so they are
-  // pinned here rather than described: without it, two of the ten possible
-  // pairs put seven of the eight properties on one person.
-  const pool = R.poolFrom(TECHS).pool.map(p => p.name);
-  const splits = [];
-  for (let i = 0; i < pool.length; i++) {
-    for (let j = i + 1; j < pool.length; j++) {
-      const s = R.splitWeek([pool[i], pool[j]], PROPS, byName, { balance: false });
-      const n = PROPS.filter(p => s.assign[p.name] === pool[i]).length;
-      splits.push(Math.max(n, PROPS.length - n));
-    }
-  }
-  assert.strictEqual(splits.filter(x => x === 7).length, 2, JSON.stringify(splits));
-  assert.strictEqual(splits.filter(x => x === 4).length, 1, 'only one pair is even on its own');
-});
-
-t('the zero guard is a net, and the data no longer trips it', () => {
-  // It fired for Raul + Carlos until the grounds column made Carlos an owner.
-  // Kept, because a roster change can strand somebody again, and a pair where
-  // one person is on call for nothing is not a pair.
-  const pool = R.poolFrom(TECHS).pool.map(p => p.name);
-  for (let i = 0; i < pool.length; i++) {
-    for (let j = i + 1; j < pool.length; j++) {
-      const s = R.splitWeek([pool[i], pool[j]], PROPS, byName, { balance: false });
-      assert.strictEqual(s.guard, null, pool[i] + ' + ' + pool[j] + ' needed the guard');
-    }
-  }
-  // Prove it still works: a pair where one of them owns nothing and is farther
-  // from every property.
-  const far = { ...byName, Nobody: { name: 'Nobody', lat: 10, lng: -10 } };
-  const s = R.splitWeek(['Raul Martinez', 'Nobody'], PROPS, far, { balance: false });
-  assert.ok(s.guard && s.guard.tech === 'Nobody', 'the guard no longer fires at all');
-});
-
-t('the north/south blocks are a tiebreak, not the rule', () => {
-  const lib = src('lib/oncall-rotation.js');
-  assert.ok(/ONLY to break a tie/.test(lib), 'the blocks are documented as the rule');
-  // A week where the pair owns properties on both sides is allowed to land
-  // somewhere other than the blocks (Arturo, 2026-10-13).
-  const s = R.splitWeek(['José Rentería', 'Emerson Garcia'], PROPS, byName, {});
-  const north = R.BLOCKS.North.map(p => s.assign[p]);
-  assert.ok(new Set(north).size >= 1);
-  assert.strictEqual(s.assign['Windy Hill Apartment'], 'José Rentería', 'his own property');
-});
-
-// ---- fairness and pairing --------------------------------------------------
+// ---- November, end to end --------------------------------------------------
 
 const NOV = R.build({
   year: 2026, month: 11, technicians: TECHS, properties: PROPS,
   carryPair: ['Carlos Portilla', 'Angel Martinez'], carryFrom: 'October Week 5',
+});
+
+t('November runs Raúl + José, then Emerson + Angel, alternating', () => {
+  assert.deepStrictEqual(NOV.weeks.map(w => w.pair), [
+    ['Raul Martinez', 'José Rentería'],
+    ['Emerson Garcia', 'Angel Martinez'],
+    ['Raul Martinez', 'José Rentería'],
+    ['Emerson Garcia', 'Angel Martinez'],
+  ]);
+  assert.strictEqual(NOV.scheme, 'fixed-pairs');
+  assert.deepStrictEqual(NOV.warnings, []);
+});
+
+t('every November week is clean against the hard constraints', () => {
+  NOV.weeks.forEach(w => assert.deepStrictEqual(w.violations, [], w.label));
+  NOV.weeks.forEach(w => {
+    assert.strictEqual(w.assign['iConic Round Rock'], w.assign['iConic Downtown'], w.label);
+    assert.ok(!['Raul Martinez', 'Emerson Garcia']
+      .some(n => G.same(n, w.assign['Windy Hill Apartment'])), w.label);
+  });
+});
+
+t('an uneven total caused only by the carry-in is explained, not alarmed', () => {
+  // Under fixed pairs the full weeks are always equal; the only thing that can
+  // tip the total is the week served in the previous month's calendar. A red
+  // warning on a number nobody can change is one people learn to ignore.
+  assert.strictEqual(NOV.fairness.even, false);
+  assert.strictEqual(NOV.fairness.fullSpread, 0, 'the full weeks should be equal');
+  assert.ok(/carry-in week/.test(NOV.fairness.note || ''), NOV.fairness.note);
+  NOV.fairness.rows.forEach(r => assert.strictEqual(r.weeks, 2, r.technician));
+});
+
+// ---- edits are re-validated ------------------------------------------------
+
+t('a hand edit that breaks a hard constraint is caught', () => {
+  // The rule never produces this. A person moving one property in the editor
+  // can, and the edit is the whole reason the constraints are written down.
+  const bad = R.applyEdits(NOV, [{
+    type: 'property', week: 1, property: 'Windy Hill Apartment', tech: 'Raul Martinez',
+  }], 'Arturo');
+  const v = bad.weeks[0].violations;
+  assert.strictEqual(v.length, 1, JSON.stringify(v));
+  assert.strictEqual(v[0].id, 'windy-hill');
+  assert.ok(bad.warnings.some(w => /Windy Hill/.test(w)), 'the warning is not on the draft');
+  // And the original is untouched.
+  assert.deepStrictEqual(NOV.weeks[0].violations, []);
+});
+
+t('splitting the two iConics by hand is caught', () => {
+  const bad = R.applyEdits(NOV, [{
+    type: 'property', week: 1, property: 'iConic Downtown',
+    tech: NOV.weeks[0].pair.find(n => n !== NOV.weeks[0].assign['iConic Downtown']),
+  }], 'Arturo');
+  assert.ok(bad.weeks[0].violations.some(v => v.id === 'iconic-together'));
+});
+
+t('fixing an edit clears the warning rather than leaving it stuck', () => {
+  const bad = R.applyEdits(NOV, [{
+    type: 'property', week: 1, property: 'Windy Hill Apartment', tech: 'Raul Martinez',
+  }], 'Arturo');
+  const fixed = R.applyEdits(bad, [{
+    type: 'property', week: 1, property: 'Windy Hill Apartment', tech: 'José Rentería',
+  }], 'Arturo');
+  assert.deepStrictEqual(fixed.weeks[0].violations, []);
+  assert.ok(!fixed.warnings.some(w => /Windy Hill/.test(w)), fixed.warnings.join(' | '));
+});
+
+// ---- the groups are visible, and named as well as coloured -----------------
+
+t('the panel shows the group colour AND its name', () => {
+  // Colour alone is lost on a photocopy and on a screen reader.
+  const app = src('public/app.js');
+  assert.ok(/doc\.groups \|\| \{\}/.test(app), 'the panel ignores the groups');
+  assert.ok(/esc\(g\.color\)/.test(app) && /esc\(g\.label\)/.test(app));
+  assert.ok(/no group/.test(app), 'a property in neither group would be invisible');
+});
+
+t('the workbook groups the rows and prints the legend', () => {
+  const rows = X.sheetRows({ ...NOV, state: 'draft' }, PROPS);
+  const names = rows.map(r => String(r[0]));
+  const red = names.findIndex(n => /^Sunset Palms/.test(n));
+  const blue = names.findIndex(n => /^Hyde Park Square/.test(n));
+  assert.ok(red > 0 && blue > red, 'red block should come before blue');
+  assert.ok(/\(Red\)$/.test(names[red]), names[red]);
+  assert.ok(/\(Blue\)$/.test(names[blue]), names[blue]);
+  assert.ok(names.some(n => /^GROUPS — Red:/.test(n)), 'no legend');
+  assert.ok(names.some(n => /Red goes to Jos|Red.*goes to/.test(n)), 'the legend does not say who takes which');
+});
+
+t('a broken constraint is on the face of the calendar, not in a log', () => {
+  const bad = R.applyEdits(NOV, [{
+    type: 'property', week: 1, property: 'Windy Hill Apartment', tech: 'Raul Martinez',
+  }], 'Arturo');
+  const rows = X.sheetRows({ ...bad, state: 'draft' }, PROPS);
+  assert.ok(rows.some(r => /Windy Hill Apartment, and Ra/.test(String(r[0]))),
+    'the three people approving it would never see it');
+});
+
+t('the PDF colours the group rows and resets afterwards', () => {
+  const s = src('server.js');
+  assert.ok(/G\.GROUPS\[gkey\]\.color/.test(s), 'the PDF ignores the group colour');
+  assert.ok(/pdf\.fillColor\('#000000'\);\n\s*pdf\.y = y \+ maxH/.test(s),
+    'the colour leaks into the next row');
 });
 
 t('November 2026 carries October Week 5 and says so', () => {
@@ -258,30 +357,7 @@ t('November 2026 carries October Week 5 and says so', () => {
   assert.strictEqual(NOV.weeks[3].spillsInto, 'December');
 });
 
-t('the carry-in pair counts toward fairness', () => {
-  // They served a week; it is in the previous month's calendar. Counting only
-  // full weeks would show them a week light and somebody would "fix" it.
-  assert.ok(NOV.fairness.even, JSON.stringify(NOV.fairness.rows));
-  const carried = NOV.fairness.rows.filter(r => r.carried).map(r => r.technician);
-  assert.deepStrictEqual(carried.sort(), ['Angel Martinez', 'Carlos Portilla']);
-  carried.forEach(n => {
-    const r = NOV.fairness.rows.find(x => x.technician === n);
-    assert.strictEqual(r.weeks, 1, n + ' owes one week, not two');
-  });
-});
 
-t('nobody works two weeks running and no pair repeats', () => {
-  const seen = new Set([['Carlos Portilla', 'Angel Martinez'].sort().join('|')]);
-  let prev = ['Carlos Portilla', 'Angel Martinez'];
-  NOV.weeks.forEach(w => {
-    w.pair.forEach(n => assert.ok(!prev.includes(n), n + ' works ' + w.label + ' back to back'));
-    const key = w.pair.slice().sort().join('|');
-    assert.ok(!seen.has(key), 'pair repeats in ' + w.label);
-    seen.add(key);
-    prev = w.pair;
-  });
-  assert.deepStrictEqual(NOV.warnings, []);
-});
 
 t('a month is generated on its own, never two at a time', () => {
   const lib = src('lib/oncall-rotation.js');
@@ -295,13 +371,15 @@ t('a month is generated on its own, never two at a time', () => {
 
 t('a hand edit is marked, and fairness is recomputed', () => {
   const before = NOV.fairness.rows.find(r => r.technician === 'Raul Martinez').weeks;
-  const other = NOV.weeks[0].pair[0] === 'Raul Martinez' ? 'José Rentería' : 'Raul Martinez';
-  const after = R.applyEdits(NOV, [{ type: 'pair', week: 1, pair: ['Raul Martinez', other] }], 'Arturo');
+  // A DIFFERENT pair, not a reordering of the same two — otherwise the fairness
+  // table has nothing to move and the test proves nothing.
+  const after = R.applyEdits(NOV,
+    [{ type: 'pair', week: 1, pair: ['Emerson Garcia', 'Angel Martinez'] }], 'Arturo');
   const w = after.weeks[0];
   assert.strictEqual(w.edited.length, 1);
   assert.strictEqual(w.edited[0].by, 'Arturo');
   assert.ok(w.edited[0].at, 'an edit with no timestamp cannot be reviewed');
-  assert.deepStrictEqual(w.edited[0].to, ['Raul Martinez', other]);
+  assert.deepStrictEqual(w.edited[0].to, ['Emerson Garcia', 'Angel Martinez']);
   // A fairness table describing the version before the edit is worse than none.
   assert.notStrictEqual(JSON.stringify(after.fairness), JSON.stringify(NOV.fairness),
     'fairness did not move after the pair changed');
@@ -351,7 +429,10 @@ t('the workbook has the title and the DRAFT line, verbatim', () => {
   const line = ROWS[1][0];
   assert.ok(line.startsWith('DRAFT — Pending approval from Josue, Rebekah, and Jay.'), line);
   assert.ok(line.includes('Prepared by Arturo Mendoza Carvajal.'));
-  assert.ok(line.includes('Properties assigned per on-call week (never by group) per standing policy.'));
+  // The policy sentence changed with the rule: the old one said "never by
+  // group", which is the exact opposite of what the table now shows.
+  assert.ok(line.includes('Properties assigned by group (Red / Blue) per on-call week'), line);
+  assert.ok(!/never by group/.test(line), 'the header contradicts the table under it');
   assert.ok(line.includes('Note: Nov 01–06'), 'the carry-in note is missing from the header');
 });
 
@@ -370,9 +451,10 @@ t('the On-Call Techs row carries full names and (draft)', () => {
 });
 
 t('one row per property, first names only', () => {
-  const names = ROWS.slice(5, 5 + PROPS.length).map(r => r[0]);
-  assert.deepStrictEqual(names.sort(), PROPS.map(p => p.name).sort());
-  const row = ROWS.slice(5, 5 + PROPS.length).find(r => r[0] === 'Hyde Park Square');
+  // The label now carries the group as text as well as the name.
+  const names = ROWS.slice(5, 5 + PROPS.length).map(r => String(r[0]));
+  PROPS.forEach(p => assert.ok(names.some(n => n.startsWith(p.name)), p.name + ' is missing'));
+  const row = ROWS.slice(5, 5 + PROPS.length).find(r => /^Hyde Park Square/.test(String(r[0])));
   assert.ok(/^[A-Z][a-z]+$/.test(row[1]), 'the grid shows first names: ' + row[1]);
 });
 
@@ -381,8 +463,9 @@ t('the fairness check is there, with the carry-in phrased as the originals do', 
   assert.ok(head, 'no fairness check');
   assert.ok(/\(Nov 2026 cycle\)/.test(head[0]), head[0]);
   assert.deepStrictEqual(ROWS[ROWS.indexOf(head) + 1], ['Technician', 'Weeks On-Call', 'Which Weeks']);
-  const carlos = ROWS.find(r => r[0] === 'Carlos Portilla');
-  assert.ok(/^1 \(\+Nov 01-06 via Oct W5\)$/.test(String(carlos[1])), carlos[1]);
+  // Angel carries the Nov 01-06 week now; Carlos is off the rotation.
+  const angel = ROWS.find(r => r[0] === 'Angel Martinez');
+  assert.ok(/^2 \(\+Nov 01-06 via Oct W5\)$/.test(String(angel[1])), angel[1]);
 });
 
 t('both 📌 notes are at the foot', () => {
@@ -390,8 +473,10 @@ t('both 📌 notes are at the foot', () => {
   assert.ok(notes.some(n => /covered by October Week 5/.test(n)), 'no carry-in note');
   assert.ok(notes.some(n => /spills into December/.test(n) && /carry forward unless/.test(n)),
     'no spill note');
-  assert.ok(notes.some(n => /Not in the on-call pool: Yeison/.test(n)),
-    'the excluded technician is not on the calendar anybody reads');
+  const pool = notes.find(n => /Not in the on-call pool/.test(n));
+  assert.ok(pool, 'the excluded technicians are not on the calendar anybody reads');
+  assert.ok(/Yeison/.test(pool) && /Carlos/.test(pool), pool);
+  assert.ok(/removed from on-call by Bekah/.test(pool), 'the reason is not carried');
 });
 
 t('an approved calendar does not still say DRAFT', () => {
@@ -410,7 +495,7 @@ t('a hand-edited cell is marked in the export', () => {
     tech: NOV.weeks[0].pair.find(n => n !== NOV.weeks[0].assign['Sunset Palms']),
   }], 'Arturo');
   const rows = X.sheetRows({ ...edited, state: 'draft' }, PROPS);
-  const row = rows.find(r => r[0] === 'Sunset Palms');
+  const row = rows.find(r => /^Sunset Palms/.test(String(r[0])));
   assert.ok(String(row[1]).endsWith('*'), 'the edit is invisible on the page people approve');
   assert.ok(rows.some(r => /marks a cell changed by hand/.test(String(r[0]))),
     'the asterisk is never explained');
@@ -483,14 +568,14 @@ t('a known carry-in bars both of them from Week 1 and counts their week', () => 
   });
   carry.forEach(n => assert.ok(!good.weeks[0].pair.includes(n),
     n + ' works Week 1 straight after the carry-in week'));
-  assert.deepStrictEqual(good.fairness.rows.filter(r => r.carried).map(r => r.technician).sort(),
-    carry.slice().sort());
-  carry.forEach(n => assert.strictEqual(
-    good.fairness.rows.find(r => r.technician === n).weeks, 1,
-    n + ' owes one full week, not two'));
-  assert.ok(good.fairness.even);
-  // And the carry-in pair is not repeated as a pair later in the month.
-  assert.ok(!good.weeks.some(w => w.pair.slice().sort().join('|') === carry.slice().sort().join('|')));
+  // Only Angel is counted: Carlos worked that week but is off the rotation, so
+  // he has no row in a fairness table about who is on call this month.
+  assert.deepStrictEqual(good.fairness.rows.filter(r => r.carried).map(r => r.technician),
+    ['Angel Martinez']);
+  // Under fixed pairs the FULL weeks stay equal; the carry-in is what tips the
+  // total, and that is explained rather than flagged.
+  assert.strictEqual(good.fairness.fullSpread, 0);
+  assert.ok(good.fairness.note, 'an uneven total with no explanation');
 });
 
 t('the server REFUSES to generate without it, and says which week it needs', () => {
@@ -579,7 +664,7 @@ t('the importer stores what was IN FORCE, not what the rule would say', () => {
   // And the disagreement is measured against the FILE's pair, not the
   // generated one — comparing two different pairings calls every cell a
   // disagreement, which is how a diff becomes noise.
-  assert.ok(/R\.splitWeek\(w\.pair, properties, techByName/.test(s));
+  assert.ok(/assignGroups\(w\.pair, properties\)/.test(s));
 });
 
 t('the importer refuses a file whose week count is not that month\'s', () => {

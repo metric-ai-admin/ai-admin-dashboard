@@ -146,8 +146,12 @@ const squash = s => clean(s).replace(/\s+/g, ' ');
     // What the RULE would have done with the pair the FILE names. Comparing
     // against the generated week would compare two different pairings and call
     // every cell a disagreement — which is how a diff becomes noise.
+    // Against the rule AS IT STANDS TODAY — Bekah's groups, not the
+    // ownership-and-proximity rule that was in force when this file was
+    // written. The diff is "what would we produce for this week now", which is
+    // the only question worth asking of an old calendar.
     const generated = w.pair.length === 2
-      ? R.splitWeek(w.pair, properties, techByName, {}).assign
+      ? require('../lib/oncall-groups.js').assignGroups(w.pair, properties).assign
       : {};
     assignRows.forEach(r => {
       const p = propByNorm.get(GEO.normName(r[0]));

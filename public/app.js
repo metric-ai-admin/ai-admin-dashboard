@@ -12923,11 +12923,27 @@ function ocRender(d) {
       + '</select>'
     : esc(ocShort(value)));
 
-  const rows = props.map(p => `<tr><td>${esc(p)}</td>`
-    + weeks.map(w => `<td${edited(w).has(p) ? ' class="oc-edited"' : ''}>`
-        + sel(w, p, w.assign[p]) + (edited(w).has(p) ? ' <span title="changed by hand">*</span>' : '')
-      + '</td>').join('')
-    + '</tr>').join('');
+  // Properties in GROUP ORDER with the group's colour on the name, the way
+  // Bekah's old tracker laid them out. The group is NAMED as well as coloured:
+  // colour alone is lost on a photocopy and on a screen reader.
+  const groups = doc.groups || {};
+  const ordered = [];
+  ['RED', 'BLUE'].forEach(k => (groups[k]?.properties || [])
+    .forEach(n => { if (props.includes(n)) ordered.push({ name: n, key: k }); }));
+  props.forEach(n => { if (!ordered.some(o => o.name === n)) ordered.push({ name: n, key: null }); });
+
+  const rows = ordered.map(({ name: p, key }) => {
+    const g = key ? groups[key] : null;
+    const label = g
+      ? `<span style="color:${esc(g.color)};font-weight:600">&#9632;</span> ${esc(p)}`
+        + ` <span class="small muted">${esc(g.label)}</span>`
+      : `${esc(p)} <span class="small" style="color:#b00020">no group</span>`;
+    return `<tr><td>${label}</td>`
+      + weeks.map(w => `<td${edited(w).has(p) ? ' class="oc-edited"' : ''}>`
+          + sel(w, p, w.assign[p]) + (edited(w).has(p) ? ' <span title="changed by hand">*</span>' : '')
+        + '</td>').join('')
+      + '</tr>';
+  }).join('');
 
   const fair = ((doc.fairness || {}).rows || []).map(r => `<tr>
       <td>${esc(r.technician)}</td>
@@ -12936,6 +12952,10 @@ function ocRender(d) {
 
   const notes = [];
   if (doc.carry && doc.carry.note) notes.push(esc(doc.carry.note));
+  Object.entries(groups).forEach(([k, g]) => notes.push(
+    `<span style="color:${esc(g.color)};font-weight:600">&#9632; ${esc(g.label)}</span>: `
+    + esc((g.properties || []).join(', '))
+    + ` <span class="muted">&mdash; ${esc((g.techs || []).map(ocShort).join(' or '))}</span>`));
   (doc.excluded || []).forEach(e =>
     notes.push(`Not in the on-call pool: <b>${esc(e.name)}</b> — ${esc(e.reason)}`));
   (doc.missingGeo || []).forEach(n =>
@@ -12961,9 +12981,8 @@ function ocRender(d) {
     <h4>Rotation fairness check — on-call weeks per technician</h4>
     <table class="table"><thead><tr><th>Technician</th><th>Weeks on-call</th><th>Which weeks</th></tr></thead>
       <tbody>${fair}</tbody></table>
-    ${(doc.fairness && !doc.fairness.even)
-      ? '<p class="small" style="color:#b00020">The weeks are not even this month — spread of '
-        + doc.fairness.spread + '. That can be correct when the number of weeks does not divide by the pool.</p>' : ''}
+    ${ocFairnessNote(doc)}
+    ${ocViolations(weeks)}
     ${notes.length ? '<ul class="small muted">' + notes.map(n => `<li>${n}</li>`).join('') + '</ul>' : ''}
     <p class="small muted">* marks a cell changed by hand after the rotation was generated.</p>`;
 
@@ -13013,4 +13032,31 @@ async function ocSetState(state) {
     });
     ocFetch();
   } catch (e) { $('#oncall-status').textContent = 'Error: ' + e.message; }
+}
+
+// Fairness, with WHY it is uneven rather than just that it is.
+//
+// Under fixed alternating pairs the full weeks always come out equal and the
+// only thing that can tip the total is the carry-in — the week served in the
+// previous month's calendar. A red warning on a number nobody can change is a
+// warning people learn to ignore, so that case is stated in grey. An uneven
+// FULL-WEEK count is a different thing and stays red.
+function ocFairnessNote(doc) {
+  const f = doc.fairness;
+  if (!f || f.even) return '';
+  if (f.note) return `<p class="small muted">${esc(f.note)}</p>`;
+  return '<p class="small" style="color:#b00020">The weeks are not even this month — spread of '
+    + f.spread + '. That can be correct when the number of weeks does not divide by the pool.</p>';
+}
+
+// A broken hard constraint is shown where the calendar is, not in a log. These
+// are checked on generation AND after every hand edit, because the rule would
+// never break them and a person moving one property can.
+function ocViolations(weeks) {
+  const all = [];
+  (weeks || []).forEach(w => (w.violations || []).forEach(v =>
+    all.push(`${esc(w.label)}: ${esc(v.message)}`)));
+  if (!all.length) return '';
+  return '<div class="msg error" style="margin-top:8px"><b>Check these:</b><ul style="margin:6px 0 0 18px">'
+    + all.map(a => `<li>${a}</li>`).join('') + '</ul></div>';
 }

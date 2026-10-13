@@ -18753,8 +18753,16 @@ app.get('/api/maintenance/oncall/export.:format', requireAuth, async (req, res) 
       if (i === 1) { pdf.font('Helvetica').fontSize(7.5).fillColor('#555').text(String(r[0] || ''), { width }); pdf.fillColor('#000').moveDown(0.5); return; }
       if (!r.length) { pdf.moveDown(0.4); return; }
       if (r.length === 1) { pdf.font('Helvetica').fontSize(7.5).text(String(r[0] || ''), { width }); return; }
-      const bold = i === 3 || i === 4 || /^(Technician|ROTATION)/.test(String(r[0]));
+      const bold = i === 3 || i === 4 || /^(Technician|ROTATION|GROUPS)/.test(String(r[0]));
       pdf.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(7.5);
+      // The group colour, on the property rows. SheetJS cannot write cell fills
+      // in the community build, so the Excel carries the group as TEXT in the
+      // row label — here the colour is real. Either way the name is there: a
+      // calendar photocopied in black and white still has to be readable.
+      const G = require('./lib/oncall-groups.js');
+      const gm = String(r[0]).match(/\((Red|Blue)\)\s*$/i);
+      const gkey = gm ? gm[1].toUpperCase() : null;
+      pdf.fillColor(gkey && G.GROUPS[gkey] ? G.GROUPS[gkey].color : '#000000');
       const y = pdf.y;
       let maxH = 0;
       r.forEach((cell, c) => {
@@ -18763,6 +18771,7 @@ app.get('/api/maintenance/oncall/export.:format', requireAuth, async (req, res) 
         if (h > maxH) maxH = h;
         pdf.text(text, 32 + c * colW, y, { width: colW - 6 });
       });
+      pdf.fillColor('#000000');
       pdf.y = y + maxH + 3;
       if (pdf.y > pdf.page.height - 50) pdf.addPage();
     });
