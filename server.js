@@ -5557,12 +5557,19 @@ async function decisionQueueData({ refresh = false } = {}) {
   // Who shares a number, from the projected tenant directory. Absent store =
   // no sharing reported, which is the safe direction: it never claims a call
   // belongs to one person when it might belong to two.
-  const residentsByNumber = await (async () => {
+  //
+  // The directory is also where the resident's PHONE comes from when the
+  // delinquency row has none. That row is a balance report and carries a
+  // number only sometimes; looking up calls on it alone made the card say
+  // "no number on file" for residents the directory knows the number of.
+  const directoryRows = await (async () => {
     try {
       const d = await require('./appfolio-reports.js').readReportData('tenant_directory');
-      return CM.indexResidents((d && d.rows) || []);
-    } catch (e) { return new Map(); }
+      return (d && d.rows) || [];
+    } catch (e) { return []; }
   })();
+  const residentsByNumber = CM.indexResidents(directoryRows);
+  const directoryIndex = CM.indexDirectory(directoryRows);
 
   // Month-over-month needs SEPARATE as-of snapshots. The report's
   // this_month / last_month / month_before_last columns are aging by charge
@@ -5608,7 +5615,9 @@ async function decisionQueueData({ refresh = false } = {}) {
   const todayCT = WEEK.todayYMD();
   result.queue = result.queue.map(a => ({
     ...a, key: keyOf(a), decision: decisions[keyOf(a)] || null,
-    calls: a.externallyManaged ? null : CM.summarise(a.phone && a.phone.tel, {
+    // Every number we have for them: the delinquency row's first, then the
+    // directory's for that unit, then for that name.
+    calls: a.externallyManaged ? null : CM.summarise(CM.numbersFor(a, directoryIndex), {
       callsByNumber, residentsByNumber, name: a.name, today: todayCT,
     }),
   }));

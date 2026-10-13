@@ -79,17 +79,23 @@ const pad = (s, w) => String(s).padEnd(w);
   const byNumber = new Map();
   const sourceStats = [];
   const addNumbers = (label, rows, propOf) => {
-    let numbers = 0;
+    let numbers = 0, rowsWithNumber = 0;
     (rows || []).forEach(r => {
       const p = String(propOf(r) || '').split(' - ')[0].trim() || '(no property)';
-      phonesOf(r).forEach(n => {
+      const found = phonesOf(r);
+      if (found.length) rowsWithNumber++;
+      found.forEach(n => {
         numbers++;
         if (!byNumber.has(n)) byNumber.set(n, { props: new Set(), sources: new Set() });
         byNumber.get(n).props.add(p);
         byNumber.get(n).sources.add(label);
       });
     });
-    sourceStats.push({ label, rows: (rows || []).length, numbers });
+    // ROWS WITH A NUMBER, not just how many numbers came out. A source that
+    // syncs 411 rows and contributes 3 numbers has a projection problem, and
+    // the old output could not tell that apart from a source with 411 rows
+    // that each carry one.
+    sourceStats.push({ label, rows: (rows || []).length, numbers, rowsWithNumber });
   };
 
   const af = require('../appfolio-reports.js');
@@ -108,6 +114,15 @@ const pad = (s, w) => String(s).padEnd(w);
   const dqNumbers = new Set();
   dq.forEach(r => phonesOf(r).forEach(n => dqNumbers.add(n)));
 
+  // tenant_directory is the one source that exists TO carry phone numbers:
+  // one row per current tenant, with phone and mobile. It is stored through a
+  // projection that drops resident dates of birth (see appfolio-reports.js),
+  // and the projection is why `rows with a number` is printed below — a
+  // projection that dropped the phone columns would look exactly like a report
+  // nobody had synced.
+  const directory = await store('tenant_directory');
+  addNumbers('tenant_directory', directory, r => r.property_name || r.property);
+
   const tickler = await store('tenant_tickler');
   addNumbers('tenant_tickler', tickler, r => r.property_name || r.property);
 
@@ -123,7 +138,9 @@ const pad = (s, w) => String(s).padEnd(w);
 
   console.log('\nresident phone sources:');
   sourceStats.forEach(s => console.log('   ' + pad(s.label, 26)
-    + pad(s.rows + ' rows', 14) + s.numbers + ' numbers'));
+    + pad(s.rows + ' rows', 14)
+    + pad(s.rowsWithNumber + ' with a number', 22)
+    + s.numbers + ' numbers'));
   console.log('   ' + pad('leasing_leads (not residents)', 26)
     + pad(leads.length + ' rows', 14) + leadNumbers.size + ' numbers');
   console.log('   distinct resident numbers : ' + byNumber.size);

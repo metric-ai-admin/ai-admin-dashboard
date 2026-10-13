@@ -229,5 +229,103 @@ t('no resident data is logged', () => {
   assert.ok(!/rows\[|\.phone|\.tenant_name/.test(block), 'it logs a row');
 });
 
+// ---- the directory is where the phone number comes from --------------------
+
+const DIRROWS = [
+  { tenant_name: 'Castilla, Dulce P.', property_name: 'Hyde Park Square', unit: '107',
+    phone: '512-555-0100', mobile: '' },
+  { tenant_name: 'Smith, John', property_name: 'Hyde Park Square', unit: '210',
+    phone: '', mobile: '(512) 555-7777' },
+  { tenant_name: 'Reyes, Ana', property_name: 'The Chateau', unit: '4', phone: '', mobile: '' },
+];
+const DIRIDX = CM.indexDirectory(DIRROWS);
+
+t('a delinquent account with NO phone still gets its calls', () => {
+  // THE BUG. The card looked up calls on the delinquency row's number, and
+  // that report is a balance report — it carries a phone only sometimes. The
+  // card said "no number on file" for residents the directory knows.
+  const nums = CM.numbersFor(
+    { name: 'Smith, John', property: 'Hyde Park Square', unit: '210', phone: null }, DIRIDX);
+  assert.deepStrictEqual(nums, ['5125557777']);
+});
+
+t('the delinquency row\'s own number is tried FIRST', () => {
+  const nums = CM.numbersFor(
+    { name: 'Castilla, Dulce P.', property: 'Hyde Park Square', unit: '107',
+      phone: { tel: '512-555-9999' } }, DIRIDX);
+  assert.strictEqual(nums[0], '5125559999');
+  assert.ok(nums.includes('5125550100'), 'the directory number is dropped');
+});
+
+t('the unit is the stronger key, and the name is the fallback', () => {
+  assert.deepStrictEqual(
+    CM.numbersFor({ property: 'Hyde Park Square', unit: '107' }, DIRIDX), ['5125550100']);
+  assert.deepStrictEqual(
+    CM.numbersFor({ property: 'Hyde Park Square', name: 'Smith, John' }, DIRIDX), ['5125557777']);
+});
+
+t('a resident the directory has no number for is still "no number on file"', () => {
+  const nums = CM.numbersFor({ name: 'Reyes, Ana', property: 'The Chateau', unit: '4' }, DIRIDX);
+  assert.deepStrictEqual(nums, []);
+  assert.strictEqual(CM.summarise(nums, { callsByNumber: CALLS, today: TODAY }).note,
+    'no number on file');
+});
+
+t('with two numbers, the one that has calls answers', () => {
+  // Picking the first and reporting "no calls" because the other line is the
+  // one they use is the same lie the inbound-only lookup told.
+  const s = CM.summarise(['5125558888', '512-555-0100'], { callsByNumber: CALLS, today: TODAY });
+  assert.strictEqual(s.phone, '5125550100');
+  assert.strictEqual(s.lastContact.date, '2026-10-11');
+  assert.strictEqual(s.numbersChecked, 2);
+});
+
+t('the 30-day count covers every number they have', () => {
+  const two = CM.indexCalls([
+    call('2026-10-11', 'inbound', '60', '5125550100'),
+    call('2026-10-09', 'inbound', '60', '5125558888'),
+  ]);
+  assert.strictEqual(CM.summarise(['5125550100', '5125558888'],
+    { callsByNumber: two, today: TODAY }).count30, 2);
+});
+
+t('no number anywhere is not reported as "no calls"', () => {
+  const s = CM.summarise([], { callsByNumber: CALLS, today: TODAY });
+  assert.strictEqual(s.note, 'no number on file');
+});
+
+t('the Collections card asks the directory, not just the delinquency row', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const at = server.indexOf('CM.summarise(');
+  assert.ok(at > 0, 'the card lost its call summary');
+  const block = server.slice(at - 300, at + 300);
+  assert.ok(/CM\.numbersFor\(a, directoryIndex\)/.test(block),
+    'it still looks up only a.phone.tel');
+  assert.ok(/CM\.indexDirectory\(directoryRows\)/.test(server));
+  // One read of the store for both indexes, not two round trips.
+  assert.strictEqual((server.match(/readReportData\('tenant_directory'\)/g) || []).length, 1,
+    'the directory is read more times than it needs to be');
+});
+
+t('the match script counts the directory, and rows WITH a number', () => {
+  // A source that syncs 411 rows and contributes 3 numbers has a projection
+  // problem, and a count of numbers alone cannot tell that apart from 411 rows
+  // each carrying one.
+  const sc = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'call-resident-match.js'), 'utf8');
+  assert.ok(/store\('tenant_directory'\)/.test(sc), 'the directory is not a source');
+  assert.ok(/addNumbers\('tenant_directory'/.test(sc));
+  assert.ok(/rowsWithNumber/.test(sc), 'it reports numbers without reporting coverage');
+});
+
+t('the Hyde Park spellings map, and the lookalikes still do not', () => {
+  [['High Park Square', 'Hyde Park Square'], ['Hyde Park', 'Hyde Park Square'],
+    ['Hyde Apartments', 'Hyde Park Square']].forEach(([from, to]) =>
+    assert.strictEqual(PA.canonical(from), to, from));
+  // Named by a person who knows the portfolio, not reached by a rule — so a
+  // neighbouring name must still come back null.
+  ['Hyde Park West', 'Hyde Park Tower', 'High Bar Square']
+    .forEach(v => assert.strictEqual(PA.canonical(v), null, v + ' was guessed'));
+});
+
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);
