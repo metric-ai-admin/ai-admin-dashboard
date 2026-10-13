@@ -115,6 +115,54 @@ t('the footnote no longer says a 90-day turn is a record', () => {
   assert.ok(/On an OCCUPIED unit it is a record/.test(text));
 });
 
+// ---- the make-ready caveat (Jay, 2026-10-13) -------------------------------
+
+t('the caveat is on both renderings, where the make-ready numbers are', () => {
+  const brief = B.build({ properties: [PROP] });
+  const text = B.render(brief, { today: TODAY });
+  const html = H.renderHtml(brief, { today: TODAY });
+  const line = 'Make-ready numbers are being cleaned up with Maintenance and may not be exact yet.';
+  assert.strictEqual(B.MAKE_READY_CAVEAT, line);
+  [['text', text], ['html', html]].forEach(([which, out]) => {
+    assert.ok(out.includes(line), which + ': the caveat is missing');
+    // Twice: in the long-open section and in the standing footnote. A caveat
+    // only in a footnote is one nobody reads next to the number it is about.
+    assert.ok(out.split(line).length - 1 >= 2, which + ': it appears only once');
+  });
+});
+
+t('an empty string in the table turns it OFF, with no deploy', () => {
+  // If empty meant "fall back to the default" there would be no way to turn it
+  // off from the table at all, which is the whole point of the column.
+  const off = B.build({ properties: [PROP], thresholds: [{ property: '*', make_ready_caveat: '' }] });
+  assert.strictEqual(off.makeReadyCaveat, null);
+  const text = B.render(off, { today: TODAY });
+  assert.ok(!/being cleaned up with Maintenance/.test(text));
+  assert.ok(!/being cleaned up with Maintenance/.test(H.renderHtml(off, { today: TODAY })));
+  // And the section it sat in is still there.
+  assert.ok(/LONG-OPEN MAKE-READIES/.test(text));
+});
+
+t('other text in the table replaces it', () => {
+  const b = B.build({ properties: [PROP],
+    thresholds: [{ property: '*', make_ready_caveat: 'Counts verified 11/01.' }] });
+  assert.strictEqual(b.makeReadyCaveat, 'Counts verified 11/01.');
+});
+
+t('a missing column (091 not run) still gives the default', () => {
+  // The thresholds row exists for the numbers; make_ready_caveat arrives only
+  // once the migration has been run, and the brief must not go quiet until then.
+  const b = B.build({ properties: [PROP], thresholds: [{ property: '*', delinquency_over: 7000 }] });
+  assert.strictEqual(b.makeReadyCaveat, B.MAKE_READY_CAVEAT);
+  assert.strictEqual(B.makeReadyCaveat([]), B.MAKE_READY_CAVEAT, 'no rows at all');
+});
+
+t('the migration documents how to turn it off', () => {
+  const sql = src('supabase/migrations/091_brief_make_ready_caveat.sql');
+  assert.ok(/ADD COLUMN IF NOT EXISTS make_ready_caveat/.test(sql));
+  assert.ok(/SET make_ready_caveat = ''/.test(sql), 'the off switch is not written down');
+});
+
 // ---- 1a. the workbook ------------------------------------------------------
 
 const RENT_ROLL = [
