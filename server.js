@@ -18186,6 +18186,16 @@ const EOD_SENDER = process.env.EOD_SENDER || 'support@livewithmetric.com';
 // A report that reaches a VP before anybody has read one is how a wrong number
 // becomes a decision.
 const KARA_BRIEF = require('./lib/kara-brief.js');
+// Property ids to names. karaBriefGather reads unit_turn_detail and
+// leasing_applications, both of which carry a property id or a name with an
+// address attached, and neither is the name the report uses.
+//
+// THIS WAS MISSING AND NOTHING CAUGHT IT. Every test on this feature read the
+// SOURCE of server.js and checked that the right calls were written. Not one
+// of them ran the function, so an undefined identifier sat in a route that
+// had passing tests. See test/kara-brief.test.js, which now renders the whole
+// brief against stub data for exactly this reason.
+const karaBriefGatherLib = require('./lib/kara-brief-gather.js');
 // Who it goes to once it is switched on. Empty means nobody.
 const KARA_BRIEF_TO = (process.env.KARA_BRIEF_TO || '').split(',').map(x => x.trim()).filter(Boolean);
 // Where the test copy goes: Arturo's own address, and NOT a setting.
@@ -18238,168 +18248,27 @@ async function briefSendMail(to, subject, text) {
 // READS WHAT THE KPI REPORT ALREADY BUILDS rather than re-deriving it. Two
 // paths to "occupancy" is two numbers that disagree on a Tuesday, and this one
 // would be the one nobody checks.
+// Everything the brief needs, per property.
+//
+// THE WORK IS IN lib/kara-brief-gather.js, with its dependencies passed in.
+// It used to be inline here and referenced AFP — a module required in
+// kpi-build.js and never in server.js — so the route threw "AFP is not
+// defined" the first time anybody called it, with a full suite of passing
+// tests behind it. Every one of those tests read this file as TEXT and checked
+// that the right calls were written down; none ran the function.
+//
+// A test that reads code cannot find an undefined identifier. Moving the
+// gather out is what lets one run it.
 async function karaBriefGather() {
-  const db = supabaseAdmin || supabasePublic;
-  const todayCT = WEEK.todayYMD();
-  const weekEnd = WEEK.leasingLastCompleteWeekEnding();
-  // maxAgeHours 0 — THE BRIEF REPORTS, IT DOES NOT SYNC.
-  //
-  // buildKpiReport normally re-pulls a store older than six hours. At 06:00
-  // the delinquency store is twelve hours old (it syncs at 17:45), so the
-  // brief would fire an AppFolio call at exactly the minute the work-order
-  // sync fires its own — the rate-limit collision the whole 05:00 block is
-  // staggered to avoid.
-  //
-  // And a morning brief that fetches is one that can be late, or fail, for a
-  // reason that has nothing to do with the numbers. It reads what the
-  // overnight feeds wrote and SAYS HOW OLD THAT IS, which is the job.
-  const report = await kpiBuild.buildKpiReport(db, { week_ending: weekEnd, maxAgeHours: 0 });
-
-  // Thresholds. A table that is not there yet costs the settings, not the
-  // brief: lib/kara-brief falls back to its own constants and says so.
-  let thresholds = [];
-  try {
-    const { data, error } = await db.from('brief_thresholds').select('*');
-    if (!error) thresholds = data || [];
-  } catch (e) { /* built-in defaults */ }
-
-  const flat = col => {
-    const out = {};
-    (col || []).forEach(sec => (sec.cards || []).concat(sec.funnel || [])
-      .forEach(c => { out[c.metric] = c.value; }));
-    return out;
-  };
-
-  // Open make-readies and their age, from the unit-turn store: a turn with a
-  // move-out and no end date is still open, and its age is days since the
-  // resident left.
-  let turns = [];
-  try {
-    const d = await require('./appfolio-reports.js').readReportData('unit_turn_detail');
-    turns = (d && d.rows) || [];
-  } catch (e) { turns = []; }
-  const daysSince = ymd => {
-    const d = String(ymd || '').slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
-    return Math.round((Date.parse(todayCT + 'T00:00:00Z') - Date.parse(d + 'T00:00:00Z')) / 86400000);
-  };
-  const mrBy = {};
-  turns.forEach(t => {
-    const name = AFP.resolveProperty(t.property_name || t.property);
-    if (!name) return;
-    const ended = String(t.turn_end_date || '').trim();
-    if (ended) return;                       // finished
-    const age = daysSince(t.move_out_date);
-    if (age === null || age < 0) return;
-    if (!mrBy[name]) mrBy[name] = { open: 0, oldest: 0 };
-    mrBy[name].open++;
-    if (age > mrBy[name].oldest) mrBy[name].oldest = age;
+  return karaBriefGatherLib.gather({
+    db: supabaseAdmin || supabasePublic,
+    selectAll,
+    buildKpiReport: kpiBuild.buildKpiReport,
+    readReportData: id => require('./appfolio-reports.js').readReportData(id),
+    // leasingGoalPct is a percentage; the brief works in fractions, the same
+    // way occPct does.
+    goalPctFor: name => leasingGoalPct(name) / 100,
   });
-
-  // Pending applications and the oldest one, from the table the KPI report
-  // reads — same rule, so the two cannot disagree.
-  const apps = await selectAll(() => db.from('leasing_applications')
-    .select('property_name,status,detailed_status,application_date'), { label: 'kara apps' });
-  const apBy = {};
-  apps.forEach(a => {
-    const name = AFP.resolveProperty(a.property_name);
-    if (!name) return;
-    const st = String(a.status || '').trim();
-    const det = String(a.detailed_status || '').trim();
-    if (/^cancel/i.test(st) || /denied|declined/i.test(st)) return;
-    if (det === 'Converted' || det === 'Converting') return;
-    const age = daysSince(a.application_date);
-    if (!apBy[name]) apBy[name] = { pending: 0, oldest: null };
-    apBy[name].pending++;
-    if (age !== null && (apBy[name].oldest === null || age > apBy[name].oldest)) apBy[name].oldest = age;
-  });
-
-  const names = (report.columns || []).filter(c =>
-    c !== 'Portfolio' && c !== kpiReport.ROUND_ROCK.name
-    && !Object.prototype.hasOwnProperty.call(kpiReport.VIRTUAL_GROUPS, c));
-
-  const properties = names.map(name => {
-    const m = flat(report.properties[name]);
-    const rent = (report.rentable || {})[name] || null;
-    return {
-      name,
-      units: m.units ?? null,
-      occupied: m.occupied ?? null,
-      occupancyPct: m.occPct ?? null,
-      goalPct: leasingGoalPct(name) / 100,
-      rentableUnits: rent ? rent.rentableUnits : null,
-      rentableOccupied: rent ? rent.rentableOccupied : null,
-      rentableOccupancyPct: rent ? rent.rentablePct : null,
-      rentableNote: rent && rent.rules.length ? 'excludes ' + rent.rules.map(r => r.label).join(', ') : null,
-      preleased: m.vacantRented ?? null,
-      applicationsPending: (apBy[name] || {}).pending ?? 0,
-      applicationOldestDays: (apBy[name] || {}).oldest ?? null,
-      makeReadyOpen: (mrBy[name] || {}).open ?? 0,
-      makeReadyOldestDays: mrBy[name] ? mrBy[name].oldest : null,
-      moveInsExpected: m.moveIns ?? null,
-      moveOutsExpected: m.moveOuts ?? null,
-      notices: m.notices ?? null,
-      delinquency: m.dqTotal ?? null,
-    };
-  });
-
-  const pm = flat(report.portfolio);
-  const portfolio = {
-    units: pm.units ?? null, occupied: pm.occupied ?? null, occupancyPct: pm.occPct ?? null,
-    preleased: pm.vacantRented ?? null,
-    applicationsPending: properties.reduce((a, p) => a + (p.applicationsPending || 0), 0),
-    makeReadyOpen: properties.reduce((a, p) => a + (p.makeReadyOpen || 0), 0),
-    moveInsExpected: pm.moveIns ?? null, moveOutsExpected: pm.moveOuts ?? null,
-    notices: pm.notices ?? null, delinquency: pm.dqTotal ?? null,
-  };
-
-  // THE FRESHNESS BLOCK, and the rule it turns on:
-  //
-  //   a source is NOT ok when it was not written THIS MORNING.
-  //
-  // Not "older than N hours". Every one of these has a scheduled run between
-  // 05:00 and 05:58, so the honest question is whether that run happened —
-  // and the answer is a date comparison, not an age. The first version asked
-  // "is it over six hours old", which at 06:00 is true of anything synced the
-  // evening before and raised the alarm every single day. An alarm that is
-  // always on is one nobody reads on the morning it is real.
-  const MORNING_FEEDS = ['delinquency_kpi', 'occupancy_custom_fields', 'unit_turn_detail',
-    'rent_roll', 'tenant_tickler'];
-  const af = require('./appfolio-reports.js');
-  const lines = [];
-
-  const f = report.freshness || {};
-  lines.push({
-    source: 'occupancy', ok: f.as_of === todayCT,
-    when: f.as_of ? 'synced ' + f.as_of : null,
-    note: f.as_of ? 'last synced ' + f.as_of + ', not this morning' : 'never synced',
-  });
-
-  for (const id of MORNING_FEEDS) {
-    let when = null;
-    try {
-      const d = await af.readReportData(id);
-      when = d && d.fetchedAt ? WEEK.toChicagoYMD(d.fetchedAt) : null;
-    } catch (e) { when = null; }
-    lines.push({
-      source: id,
-      ok: when === todayCT,
-      when: when ? 'synced ' + when : null,
-      note: when ? 'last synced ' + when + ', not this morning' : 'no data on disk',
-    });
-  }
-
-  // A gap the report itself reported is a failure whatever the dates say.
-  (report.gaps || []).forEach(g => {
-    const src = String(g).split(':')[0];
-    if (lines.some(l => l.source === src && !l.ok)) return;   // already said
-    lines.push({ source: src, ok: false, note: String(g).slice(src.length + 1).trim() });
-  });
-
-  return {
-    properties, portfolio, thresholds,
-    freshness: { asOf: todayCT + ' (Central), for the week ending ' + report.week_ending, lines },
-  };
 }
 
 async function karaBriefRender(opts) {
@@ -18412,7 +18281,15 @@ async function karaBriefRender(opts) {
 //
 // Separate route from any send-to-Kara path on purpose: there is no flag on
 // this one that could be set wrong.
-app.post('/api/brief/kara/test', requireAuth, requireRole('admin'), async (req, res) => {
+// requireMetricAdmin, NOT requireAuth: this is run from the Render shell with
+// the API key, the same way the reconcile route is, and requireAuth has no
+// session to find there. The key branch answers "is this allowed"; it does not
+// answer "who", which is right — an API-key call is not a person.
+//
+// It changes who may CALL the route, not where the mail goes. That is a
+// constant, and the test below asserts the route still names exactly one
+// recipient.
+app.post('/api/brief/kara/test', requireMetricAdmin, async (req, res) => {
   try {
     const { text, brief } = await karaBriefRender({ testMode: true });
     const send = !(req.body && req.body.dryRun);

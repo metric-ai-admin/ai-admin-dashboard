@@ -268,20 +268,26 @@ t('"signed, not moved in" replaces "Preleased" on both blocks', () => {
     'expected it on two properties and the portfolio');
 });
 
+// These two moved out of server.js into lib/kara-brief-gather.js when the
+// gather was extracted — which is itself the point: a test that reads a file
+// breaks when the code moves, and passes while the code is broken. The
+// BEHAVIOUR is covered by test/kara-brief-render.test.js, which runs it.
+// These stay as a check on the rule being written down somewhere.
+const gatherSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kara-brief-gather.js'), 'utf8');
+
 t('a source is stale only when it missed THIS MORNING, not when it is old', () => {
   // The first version asked "older than six hours", which at 06:00 is true of
   // anything synced the evening before and raised the alarm every single day.
   // An alarm that is always on is one nobody reads on the morning it is real.
-  const at = server.indexOf('const MORNING_FEEDS');
+  const at = gatherSrc.indexOf('const MORNING_FEEDS');
   assert.ok(at > 0, 'the morning-feed list is gone');
-  const block = server.slice(at, at + 1600);
-  assert.ok(/ok: when === todayCT/.test(block), 'it still judges staleness by age');
-  assert.ok(/MORNING_FEEDS/.test(block) && /delinquency_kpi/.test(block));
-  assert.ok(/not this morning/.test(block), 'and it must say what it means');
+  assert.ok(/ok: when === todayCT/.test(gatherSrc), 'it still judges staleness by age');
+  assert.ok(/delinquency_kpi/.test(gatherSrc));
+  assert.ok(/not this morning/.test(gatherSrc), 'and it must say what it means');
 });
 
 t('occupancy is judged the same way', () => {
-  assert.ok(/source: 'occupancy', ok: f\.as_of === todayCT/.test(server));
+  assert.ok(/source: 'occupancy', ok: f\.as_of === todayCT/.test(gatherSrc));
 });
 
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
