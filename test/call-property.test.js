@@ -159,11 +159,44 @@ t('the normalisation marks its rows differently from the match', () => {
   assert.notStrictEqual(CP.SOURCE.GRADER, CP.SOURCE.MATCH);
 });
 
-t('an undo clears the source as well as the name', () => {
-  // Leaving property_source reading 'resident_match' over a restored value
-  // would be a worse state than the one being undone.
+t('the backup is in the DATABASE, not only in a file', () => {
+  // exports/ is gitignored and on the Render disk — gone when the instance
+  // recycles — and this script runs on Render because the resident stores only
+  // exist there. The file is the convenience; call_grades_history is the backup.
+  const s = src('scripts/fill-call-properties.js');
+  assert.ok(/call_grades_history/.test(s), 'the only backup is a file on a disk that forgets');
+  assert.ok(/select\('\*'\)\.in\('id'/.test(s), 'it snapshots two columns, not the row');
+  // Written and READ BACK before anything is overwritten.
+  const hist = s.indexOf('call_grades_history');
+  const update = s.indexOf(".update({ property_name: p");
+  assert.ok(hist < update, 'rows are overwritten before the history is safe');
+  assert.ok(/refusing to overwrite anything/.test(s),
+    'a failed history write does not stop the run');
+});
+
+t('the undo can be run from a batch id, with no file', () => {
   const s = src('scripts/restore-call-properties.js');
-  assert.ok(/property_source: null/.test(s));
+  assert.ok(/--batch/.test(s));
+  assert.ok(/from\('call_grades_history'\)/.test(s));
+  // It restores the property only. The history row holds the whole grade, and
+  // putting back a score nothing touched would be a second change dressed up
+  // as a restore.
+  assert.ok(/property_name: w\.property_name, property_source: w\.property_source/.test(s));
+  assert.ok(!/overall_score|summary:/.test(s), 'it restores fields the fill never changed');
+});
+
+t('an undo puts the source back too, not just the name', () => {
+  // Leaving property_source reading 'resident_match' over a restored value
+  // would be a worse state than the one being undone. It restores the PREVIOUS
+  // source rather than hard-nulling it, so undoing a fill over a row the
+  // normalisation had already marked gives that row its 'normalised' back.
+  const s = src('scripts/restore-call-properties.js');
+  assert.ok(/property_source: w\.property_source/.test(s));
+  // A file saved before 092 carries no source, and null is the honest restore.
+  assert.ok(/r\.property_source \?\? null/.test(s));
+  // A row is only written when something actually differs, so a second run is
+  // a no-op rather than 1,896 pointless updates.
+  assert.ok(/const todo = now\.filter\(differs\)/.test(s));
 });
 
 t('migration 092 adds the column without touching a row', () => {

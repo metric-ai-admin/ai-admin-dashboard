@@ -145,27 +145,77 @@ function propertyOf(row) {
   if (!WRITE) { console.log('\nDRY RUN — nothing written. Re-run with --write.'); return; }
   if (!fill.length) { console.log('\nNothing to do.'); return; }
 
-  // The backup is every row's CURRENT property and source, not just the ones
-  // about to change — the case a backup is for is the one where the plan was
-  // wrong about more than it listed.
+  // ---- the durable backup, before a single row changes ---------------------
+  //
+  // A FILE IS NOT A BACKUP HERE. exports/ is gitignored and lives on the Render
+  // disk; it is gone the moment that instance recycles, and this runs on Render
+  // precisely because the resident stores only exist there. call_grades_history
+  // (migration 060) is in the database and is not.
+  //
+  // Written FIRST and read back. If history cannot be recorded, nothing is
+  // overwritten — an un-auditable overwrite is the exact thing that table was
+  // added to prevent, and the same rule regrade-sample.js follows.
+  //
+  // The snapshot is the WHOLE row, not just the two columns about to change.
+  // `previous` is jsonb for the reason migration 060 gives: call_grades has
+  // gained columns five times and a mirrored subset drifts, losing exactly the
+  // fields nobody thought to add.
+  const ids = fill.map(f => f.id);
+  const current = [];
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data, error } = await db.from('call_grades').select('*').in('id', ids.slice(i, i + 200));
+    if (error) throw new Error('could not read the rows to back up: ' + error.message);
+    current.push(...(data || []));
+  }
+  if (current.length !== fill.length) {
+    throw new Error(`read back ${current.length} of ${fill.length} rows — refusing to write`);
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const batchId = 'propfill_' + stamp;
+  const { error: histErr } = await db.from('call_grades_history').insert(current.map(row => ({
+    recording_id: row.recording_id,
+    previous: row,
+    previous_score: row.overall_score ?? null,
+    previous_grade: row.overall_grade ?? null,
+    previous_graded_by: row.graded_by ?? null,
+    previous_graded_at: row.graded_at ?? null,
+    batch_id: batchId,
+    replaced_by: 'property filled from ' + CP.SOURCE.MATCH,
+    source: 'scripts/fill-call-properties.js',
+  })));
+  if (histErr) {
+    throw new Error('could not write call_grades_history: ' + histErr.message
+      + '\nNothing was overwritten. If the table is missing, run'
+      + ' supabase/migrations/060_call_grades_history.sql first.');
+  }
+  const { count: histCount, error: cErr } = await db.from('call_grades_history')
+    .select('id', { count: 'exact', head: true }).eq('batch_id', batchId);
+  if (cErr || histCount !== current.length) {
+    throw new Error(`history did not read back intact (${histCount} of ${current.length})`
+      + ' — refusing to overwrite anything');
+  }
+  console.log('\nhistory: ' + histCount + ' rows saved to call_grades_history, batch ' + batchId);
+
+  // The file as well, because a local copy is faster to read and costs nothing.
+  // It is the convenience; the table is the backup.
   const fs = require('fs');
   const pathm = require('path');
   const dir = pathm.join(__dirname, '..', 'exports');
   fs.mkdirSync(dir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const backup = pathm.join(dir, 'call_grades_property_fill_' + stamp + '.json');
-  fs.writeFileSync(backup, JSON.stringify(
-    grades.map(g => ({ id: g.id, property_name: g.property_name })), null, 0));
-  console.log('\nbackup: ' + backup + ' (' + grades.length + ' rows)');
-  console.log('undo:   node scripts/restore-call-properties.js "' + backup + '"');
+  fs.writeFileSync(backup, JSON.stringify(current.map(g =>
+    ({ id: g.id, property_name: g.property_name, property_source: g.property_source ?? null })), null, 0));
+  console.log('file:    ' + backup + ' (a convenience copy; the Render disk may lose it)');
+  console.log('undo:    node scripts/restore-call-properties.js --batch ' + batchId);
 
   // One update per property, not per row: the ids are grouped so 900 fills are
   // eight round trips.
   let done = 0;
   for (const [p, n] of Object.entries(byProperty)) {
-    const ids = fill.filter(f => f.to === p).map(f => f.id);
-    for (let i = 0; i < ids.length; i += 200) {
-      const chunk = ids.slice(i, i + 200);
+    const pIds = fill.filter(f => f.to === p).map(f => f.id);
+    for (let i = 0; i < pIds.length; i += 200) {
+      const chunk = pIds.slice(i, i + 200);
       const { data, error } = await db.from('call_grades')
         .update({ property_name: p, property_source: CP.SOURCE.MATCH })
         .in('id', chunk).select('id');
