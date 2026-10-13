@@ -7779,6 +7779,16 @@ async function svGradeCurrent() {
 
 // The grade result, shown in the same panel with a back button. Reuses the
 // transcript section's flex:1 scroll region so it scrolls to any length.
+// A call's property, or null when the value is a placeholder rather than a
+// property. 'Unidentified' was the old prompt's word; the closed list uses
+// 'Unknown' for a call that had a property nobody could name and 'Not
+// property-specific' for one that had none. Neither is a pin on a map.
+function cqaProperty(g) {
+  const v = (g && g.property_name ? String(g.property_name) : '').trim();
+  if (!v || v === 'Unidentified' || v === 'Unknown' || v === 'Not property-specific') return null;
+  return v;
+}
+
 function svShowGrade(g) {
   const panel = $('#sv-panel');
   if (!panel || !g) return;
@@ -7787,7 +7797,7 @@ function svShowGrade(g) {
     g.agent_name || (svPanelState?.t?.agent_name),
     g.call_date, row?.direction,
     (g.duration_seconds != null ? svDuration(g.duration_seconds) : (row?.duration ? svDuration(row.duration) : null)),
-    g.property_name && g.property_name !== 'Unidentified' ? '📍 ' + g.property_name : null,
+    cqaProperty(g) ? '📍 ' + cqaProperty(g) : null,
   ].filter(Boolean).join(' · ');
   const ns = svgNotScoreable(g);
   panel.innerHTML = `
@@ -8283,7 +8293,7 @@ function svgCallListHtml(list) {
           ${g.call_date ? `<span>${esc(g.call_date)}</span>` : ''}
           ${g.call_direction ? `<span>· ${esc(g.call_direction)}</span>` : ''}
           ${g.duration_seconds != null ? `<span>· ${svDuration(g.duration_seconds)}</span>` : ''}
-          ${g.property_name && g.property_name !== 'Unidentified' ? `<span>· 📍 ${esc(g.property_name)}</span>` : ''}
+          ${cqaProperty(g) ? `<span>· 📍 ${esc(cqaProperty(g))}</span>` : ''}
           ${!ns && svgIsFlagged(g) ? '<span>🚩</span>' : ''}
         </div>
       </div>
@@ -8327,7 +8337,7 @@ function svgDetailHtml() {
   const ns = svgNotScoreable(g);
   const metaLine = [g.agent_name, g.call_date, g.call_direction,
     g.duration_seconds != null ? svDuration(g.duration_seconds) : null,
-    g.property_name && g.property_name !== 'Unidentified' ? '📍 ' + g.property_name : null].filter(Boolean).join(' · ');
+    cqaProperty(g) ? '📍 ' + cqaProperty(g) : null].filter(Boolean).join(' · ');
   return `<div class="cqa-panel cqa-detail">
     <div class="cqa-detail-header">
       <div class="cqa-detail-gradebox${ns ? ' ns' : ''}" style="background:${svgBadgeColor(g)}">

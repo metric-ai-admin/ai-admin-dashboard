@@ -81,8 +81,17 @@ const pad = (s, w) => String(s).padEnd(w);
   // would be 1,500 round trips doing nothing.
   let changed = 0;
   for (const c of p.change) {
-    const { data, error } = await db.from('call_grades')
-      .update({ property_name: c.to }).eq('property_name', c.from).select('id');
+    // Marked 'normalised': the model DID name this property, we only corrected
+    // the spelling. That is a different claim from 'resident_match', where the
+    // model said nothing and the number told us.
+    const SRC = require('../lib/call-property.js').SOURCE.NORMALISED;
+    let { data, error } = await db.from('call_grades')
+      .update({ property_name: c.to, property_source: SRC })
+      .eq('property_name', c.from).select('id');
+    if (error && /property_source/.test(error.message || '')) {
+      ({ data, error } = await db.from('call_grades')
+        .update({ property_name: c.to }).eq('property_name', c.from).select('id'));
+    }
     if (error) { console.log('FAILED ' + c.from + ': ' + error.message); continue; }
     changed += (data || []).length;
     console.log('   ' + pad(c.from, 32) + '-> ' + pad(c.to, 24) + (data || []).length + ' rows');

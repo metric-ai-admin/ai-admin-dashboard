@@ -33,6 +33,11 @@ const db = createClient(process.env.SUPABASE_URL,
   const now = await selectAll(() => db.from('call_grades').select('id,property_name'),
     { label: 'call_grades' });
 
+  // A restore puts property_source back to NULL along with the name. Leaving
+  // it reading 'resident_match' over a value the match did not produce would
+  // be a worse state than the one being undone — the column exists to say
+  // where the value came from, and after a restore the honest answer is
+  // "whatever it was before", which is what NULL means on these rows.
   const todo = now.filter(r => want.has(r.id) && want.get(r.id) !== r.property_name);
   const gone = saved.filter(r => !now.some(n => n.id === r.id));
   console.log('differ: ' + todo.length + ' rows');
@@ -42,8 +47,13 @@ const db = createClient(process.env.SUPABASE_URL,
 
   let done = 0;
   for (const r of todo) {
-    const { error } = await db.from('call_grades')
-      .update({ property_name: want.get(r.id) }).eq('id', r.id);
+    let { error } = await db.from('call_grades')
+      .update({ property_name: want.get(r.id), property_source: null }).eq('id', r.id);
+    // Before migration 092 the column does not exist; the name still goes back.
+    if (error && /property_source/.test(error.message || '')) {
+      ({ error } = await db.from('call_grades')
+        .update({ property_name: want.get(r.id) }).eq('id', r.id));
+    }
     if (error) { console.log('FAILED ' + r.id + ': ' + error.message); continue; }
     done++;
   }

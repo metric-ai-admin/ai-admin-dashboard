@@ -54,6 +54,10 @@ const { registerAllTools } = require('./mcp-tools.cjs');
 // The browser is served this same file at /lib/week.js — not a copy.
 const WEEK = require('./lib/week.js');
 const RED = require('./lib/redact.js');
+// The closed list of properties a call can be filed under. Bound at the top, not
+// required inside the function that uses it — an identifier that only resolves
+// when a route runs is how "AFP is not defined" shipped with a green suite.
+const CALL_PROPERTY = require('./lib/call-property.js');
 // Reads a whole table past PostgREST's 1000-row ceiling. See lib/db-page.js.
 const { selectAll, selectAllResult } = require('./lib/db-page.js');
 const EB = require('./lib/excluded-buildings.js');
@@ -9336,7 +9340,18 @@ function callGradeRow(parsed, meta) {
     call_date:         /^\d{4}-\d{2}-\d{2}$/.test(String(meta.call_date || '')) ? meta.call_date : null,
     call_direction:    meta.call_direction || null,
     duration_seconds:  Number.isFinite(+meta.duration_seconds) ? Math.round(+meta.duration_seconds) : null,
-    property_name:     (parsed.property_name && String(parsed.property_name).trim()) || meta.property_name || 'Unidentified',
+    // A CHOICE, NOT A TEXT BOX. The prompt now offers eight properties plus
+    // "Not property-specific" and "Unknown", and this forces whatever comes
+    // back onto that list — through the same alias table the normalisation
+    // uses, so an older spelling still lands, and to "Unknown" when it will
+    // not map. A value the reports cannot group is worth less than an
+    // admission, and 352 distinct answers over 1,896 calls is what the text
+    // box produced.
+    property_name:     CALL_PROPERTY.fromGrader(parsed.property_name || meta.property_name),
+    // Written so a property the resident match derived is never mistaken for
+    // one the model heard on the call. Different error modes, and a reader
+    // comparing a property report against a transcript needs to know which.
+    property_source:   CALL_PROPERTY.SOURCE.GRADER,
     // Computed from the breakdown, with the grade derived from it, so the score
     // and the criteria beside it can never disagree. See computeGradeScore.
     overall_score:     notScoreable ? null : scoring.score,
@@ -9371,7 +9386,9 @@ function callGradeRow(parsed, meta) {
 // them yet (Postgres 42703, undefined_column). A deploy can land before the
 // migration is run in the SQL editor, and losing three classification fields is
 // a far better outcome than losing every grade in the run.
-const CALL_GRADE_V2_COLS = ['agent_role', 'call_type', 'rubric_applied'];
+// property_source joins them for the same reason (migration 092): losing where
+// a property came from is better than losing the grade.
+const CALL_GRADE_V2_COLS = ['agent_role', 'call_type', 'rubric_applied', 'property_source'];
 let _warnedMissingV2Cols = false;
 
 async function saveCallGrade(db, row) {

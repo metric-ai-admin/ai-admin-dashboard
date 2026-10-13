@@ -103,7 +103,7 @@ response.
   "agent_role": "the role from Step 1, e.g. Receptionist / Leasing Agent / Collections Specialist / Maintenance Coordinator / Resident Success / Administrative",
   "call_type": "the type from Step 2, e.g. LEASING / APPLICANT / MAINTENANCE / COLLECTIONS-PAYMENT / RENEWAL-NTV / COMPLAINT-DISPUTE / TRANSFER-ROUTING / PORTAL-TECH / BUSINESS DEVELOPMENT / PACKAGE-MAIL / GENERAL INQUIRY",
   "rubric_applied": "the rubric letter and name applied, e.g. 'A — Receptionist' or 'I — Transfer/Routing'",
-  "property_name": "the property discussed, or 'Unidentified'",
+  "property_name": "ONE of the exact strings listed under FIELD RULES below",
   "not_scoreable": false,
   "not_scoreable_reason": "",
   "overall_score": 0,
@@ -127,6 +127,8 @@ response.
 }
 
 FIELD RULES — these carry the requirements from the steps above:
+
+${require('../lib/call-property.js').promptBlock()}
 
 - "overall_score" is COMPUTED, not judged. It must satisfy exactly:
 
