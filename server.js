@@ -18173,6 +18173,251 @@ function eodRenderHtml(data) {
 // (client-credential) token, so /users/{sender}/sendMail is the correct call —
 // there is no signed-in user for me/sendMail.
 const EOD_SENDER = process.env.EOD_SENDER || 'support@livewithmetric.com';
+
+// =====================================================================
+// KARA'S 6 AM BRIEF
+// =====================================================================
+//
+// Kara asked for numbers and no graphics — "old school" — every property and
+// the portfolio, red ones first, each red saying which threshold it broke.
+//
+// OFF FOR KARA UNTIL ARTURO TURNS IT ON. KARA_BRIEF_TO is unset by default, so
+// the cron renders the brief, logs that it would have sent, and sends nothing.
+// A report that reaches a VP before anybody has read one is how a wrong number
+// becomes a decision.
+const KARA_BRIEF = require('./lib/kara-brief.js');
+// Who it goes to once it is switched on. Empty means nobody.
+const KARA_BRIEF_TO = (process.env.KARA_BRIEF_TO || '').split(',').map(x => x.trim()).filter(Boolean);
+// Where the test copy goes. Arturo's own address, not Kara's.
+const KARA_BRIEF_TEST_TO = process.env.KARA_BRIEF_TEST_TO || 'support@metricpropertymanagement.com';
+
+// Sends the brief, from the same account as the EOD.
+//
+// eodSendEmail hardcodes its recipient, which is right for the EOD and no use
+// here, so this is its sibling rather than a parameter bolted onto it — the
+// EOD must not be able to acquire a new recipient by accident.
+//
+// WRAPPED IN <pre>, NOT SENT AS text/plain. Kara asked for aligned numbers and
+// no graphics; Outlook reflows plain text and the columns collapse. A <pre>
+// block in HTML is the plain-text layout that survives the trip.
+async function briefSendMail(to, subject, text) {
+  const token = await graphMailToken();
+  const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const html = '<pre style="font-family:Consolas,Menlo,monospace;font-size:13px;'
+    + 'white-space:pre;margin:0">' + esc(text) + '</pre>';
+  const payload = {
+    message: {
+      subject,
+      body: { contentType: 'HTML', content: html },
+      toRecipients: String(to).split(',').map(a => a.trim()).filter(Boolean)
+        .map(a => ({ emailAddress: { address: a } })),
+    },
+    saveToSentItems: true,
+  };
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(EOD_SENDER)}/sendMail`;
+  const r = await fetchFn(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    throw new Error(`Graph sendMail ${r.status} (sender ${EOD_SENDER}): ${body.slice(0, 300) || r.statusText}`);
+  }
+  return true;
+}
+
+// Everything the brief needs, per property.
+//
+// READS WHAT THE KPI REPORT ALREADY BUILDS rather than re-deriving it. Two
+// paths to "occupancy" is two numbers that disagree on a Tuesday, and this one
+// would be the one nobody checks.
+async function karaBriefGather() {
+  const db = supabaseAdmin || supabasePublic;
+  const todayCT = WEEK.todayYMD();
+  const weekEnd = WEEK.leasingLastCompleteWeekEnding();
+  // maxAgeHours 0 — THE BRIEF REPORTS, IT DOES NOT SYNC.
+  //
+  // buildKpiReport normally re-pulls a store older than six hours. At 06:00
+  // the delinquency store is twelve hours old (it syncs at 17:45), so the
+  // brief would fire an AppFolio call at exactly the minute the work-order
+  // sync fires its own — the rate-limit collision the whole 05:00 block is
+  // staggered to avoid.
+  //
+  // And a morning brief that fetches is one that can be late, or fail, for a
+  // reason that has nothing to do with the numbers. It reads what the
+  // overnight feeds wrote and SAYS HOW OLD THAT IS, which is the job.
+  const report = await kpiBuild.buildKpiReport(db, { week_ending: weekEnd, maxAgeHours: 0 });
+
+  // Thresholds. A table that is not there yet costs the settings, not the
+  // brief: lib/kara-brief falls back to its own constants and says so.
+  let thresholds = [];
+  try {
+    const { data, error } = await db.from('brief_thresholds').select('*');
+    if (!error) thresholds = data || [];
+  } catch (e) { /* built-in defaults */ }
+
+  const flat = col => {
+    const out = {};
+    (col || []).forEach(sec => (sec.cards || []).concat(sec.funnel || [])
+      .forEach(c => { out[c.metric] = c.value; }));
+    return out;
+  };
+
+  // Open make-readies and their age, from the unit-turn store: a turn with a
+  // move-out and no end date is still open, and its age is days since the
+  // resident left.
+  let turns = [];
+  try {
+    const d = await require('./appfolio-reports.js').readReportData('unit_turn_detail');
+    turns = (d && d.rows) || [];
+  } catch (e) { turns = []; }
+  const daysSince = ymd => {
+    const d = String(ymd || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return null;
+    return Math.round((Date.parse(todayCT + 'T00:00:00Z') - Date.parse(d + 'T00:00:00Z')) / 86400000);
+  };
+  const mrBy = {};
+  turns.forEach(t => {
+    const name = AFP.resolveProperty(t.property_name || t.property);
+    if (!name) return;
+    const ended = String(t.turn_end_date || '').trim();
+    if (ended) return;                       // finished
+    const age = daysSince(t.move_out_date);
+    if (age === null || age < 0) return;
+    if (!mrBy[name]) mrBy[name] = { open: 0, oldest: 0 };
+    mrBy[name].open++;
+    if (age > mrBy[name].oldest) mrBy[name].oldest = age;
+  });
+
+  // Pending applications and the oldest one, from the table the KPI report
+  // reads — same rule, so the two cannot disagree.
+  const apps = await selectAll(() => db.from('leasing_applications')
+    .select('property_name,status,detailed_status,application_date'), { label: 'kara apps' });
+  const apBy = {};
+  apps.forEach(a => {
+    const name = AFP.resolveProperty(a.property_name);
+    if (!name) return;
+    const st = String(a.status || '').trim();
+    const det = String(a.detailed_status || '').trim();
+    if (/^cancel/i.test(st) || /denied|declined/i.test(st)) return;
+    if (det === 'Converted' || det === 'Converting') return;
+    const age = daysSince(a.application_date);
+    if (!apBy[name]) apBy[name] = { pending: 0, oldest: null };
+    apBy[name].pending++;
+    if (age !== null && (apBy[name].oldest === null || age > apBy[name].oldest)) apBy[name].oldest = age;
+  });
+
+  const names = (report.columns || []).filter(c =>
+    c !== 'Portfolio' && c !== kpiReport.ROUND_ROCK.name
+    && !Object.prototype.hasOwnProperty.call(kpiReport.VIRTUAL_GROUPS, c));
+
+  const properties = names.map(name => {
+    const m = flat(report.properties[name]);
+    const rent = (report.rentable || {})[name] || null;
+    return {
+      name,
+      units: m.units ?? null,
+      occupied: m.occupied ?? null,
+      occupancyPct: m.occPct ?? null,
+      goalPct: leasingGoalPct(name) / 100,
+      rentableUnits: rent ? rent.rentableUnits : null,
+      rentableOccupied: rent ? rent.rentableOccupied : null,
+      rentableOccupancyPct: rent ? rent.rentablePct : null,
+      rentableNote: rent && rent.rules.length ? 'excludes ' + rent.rules.map(r => r.label).join(', ') : null,
+      preleased: m.vacantRented ?? null,
+      applicationsPending: (apBy[name] || {}).pending ?? 0,
+      applicationOldestDays: (apBy[name] || {}).oldest ?? null,
+      makeReadyOpen: (mrBy[name] || {}).open ?? 0,
+      makeReadyOldestDays: mrBy[name] ? mrBy[name].oldest : null,
+      moveInsExpected: m.moveIns ?? null,
+      moveOutsExpected: m.moveOuts ?? null,
+      notices: m.notices ?? null,
+      delinquency: m.dqTotal ?? null,
+    };
+  });
+
+  const pm = flat(report.portfolio);
+  const portfolio = {
+    units: pm.units ?? null, occupied: pm.occupied ?? null, occupancyPct: pm.occPct ?? null,
+    preleased: pm.vacantRented ?? null,
+    applicationsPending: properties.reduce((a, p) => a + (p.applicationsPending || 0), 0),
+    makeReadyOpen: properties.reduce((a, p) => a + (p.makeReadyOpen || 0), 0),
+    moveInsExpected: pm.moveIns ?? null, moveOutsExpected: pm.moveOuts ?? null,
+    notices: pm.notices ?? null, delinquency: pm.dqTotal ?? null,
+  };
+
+  // THE FRESHNESS BLOCK. Every gap the report reported becomes a failed line,
+  // because that is exactly what a gap is: a source that did not answer.
+  const lines = [];
+  const f = report.freshness || {};
+  lines.push({
+    source: 'occupancy', ok: !!f.as_of && !f.staleForWeek,
+    when: f.as_of ? 'as of ' + f.as_of : null,
+    note: f.as_of ? 'as of ' + f.as_of + ', behind the week being reported' : 'never synced',
+  });
+  Object.entries(report.sourceFreshness || {}).forEach(([k, v]) => {
+    lines.push({
+      source: k, ok: true,
+      when: v.refreshed ? 'refreshed this morning'
+        : (v.ageHours === null ? 'age unknown' : v.ageHours + 'h old'),
+    });
+  });
+  (report.gaps || []).forEach(g => {
+    const src = String(g).split(':')[0];
+    lines.push({ source: src, ok: false, note: String(g).slice(src.length + 1).trim() });
+  });
+
+  return {
+    properties, portfolio, thresholds,
+    freshness: { asOf: todayCT + ' (Central), for the week ending ' + report.week_ending, lines },
+  };
+}
+
+async function karaBriefRender(opts) {
+  const data = await karaBriefGather();
+  const brief = KARA_BRIEF.build(data);
+  return { text: KARA_BRIEF.render(brief, opts || {}), brief, data };
+}
+
+// POST /api/brief/kara/test — render it and send it to ARTURO.
+//
+// Separate route from any send-to-Kara path on purpose: there is no flag on
+// this one that could be set wrong.
+app.post('/api/brief/kara/test', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const { text, brief } = await karaBriefRender({ testMode: true });
+    const send = !(req.body && req.body.dryRun);
+    if (send && GRAPH_CONFIGURED) {
+      await briefSendMail(KARA_BRIEF_TEST_TO, '[TEST] Metric — Morning Numbers', text);
+    }
+    res.json({
+      ok: true, sentTo: send && GRAPH_CONFIGURED ? KARA_BRIEF_TEST_TO : null,
+      red: brief.red.length, properties: brief.properties.length, text,
+    });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// 06:00 Central, after the 05:00-05:50 feeds and the 06:00 work-order sync.
+//
+// SENDS NOTHING UNTIL KARA_BRIEF_TO IS SET. It still renders, so a failure in
+// the gathering shows up in the log before anybody is relying on the mail.
+cron.schedule('0 6 * * *', () => {
+  if (!CRM_CONFIGURED) return;
+  karaBriefRender({})
+    .then(({ text, brief }) => {
+      if (!KARA_BRIEF_TO.length) {
+        logLine('[kara-brief] rendered ' + brief.properties.length + ' properties, '
+          + brief.red.length + ' red — NOT SENT (KARA_BRIEF_TO is unset)');
+        return null;
+      }
+      return briefSendMail(KARA_BRIEF_TO.join(','), 'Metric — Morning Numbers', text)
+        .then(() => logLine('[kara-brief] sent to ' + KARA_BRIEF_TO.join(',')
+          + ' — ' + brief.red.length + ' red'));
+    })
+    .catch(err => logLine('[kara-brief] FAILED: ' + err.message));
+}, { timezone: LYNDSAY_TIMEZONE });
+
 const EOD_RECIPIENT = process.env.EOD_RECIPIENT || 'lyndsay@metricpropertymanagement.com';
 // CC recipients get the same report. Env-overridable (comma-separated).
 const EOD_CC = (process.env.EOD_CC || 'kgarst@metricpropertymanagement.com')

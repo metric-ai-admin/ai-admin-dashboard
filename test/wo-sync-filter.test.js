@@ -138,7 +138,11 @@ t('the 6 AM cron does NOT reconcile', () => {
   // Worth pinning. The reconciliation marks anything outside its two feeds
   // Unknown; running it nightly against a narrower feed than the sweep would
   // undo the 13 work orders the sweep reopened, every morning, silently.
-  const i = code.indexOf("cron.schedule('0 6 * * *'");
+  // Anchored on THIS cron's own body. There are two at 06:00 now — the work
+  // orders and Kara's brief — and indexOf found whichever came first in the
+  // file, which is not a fact about either of them.
+  const i = code.lastIndexOf("cron.schedule('0 6 * * *'",
+    code.indexOf("callOwnRoute('/api/maintenance/sync'"));
   const body = code.slice(i, i + 400);
   assert.ok(/callOwnRoute\('\/api\/maintenance\/sync', \{\}\)/.test(body));
   assert.ok(!/reconcile/i.test(body), 'the nightly cron reconciles');
