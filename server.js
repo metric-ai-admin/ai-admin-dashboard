@@ -19741,6 +19741,34 @@ const EARLY_FEEDS = [
   [55, 'delinquency_kpi',        () => require('./appfolio-reports.js').syncReport('delinquency_kpi').then(r => r?.rowCount)],
 ];
 
+// Month-to-date collections, per property and for the portfolio.
+//
+// 04:30, BEFORE the 05:00 block rather than inside it. The block is full to
+// :55 and the brief reads this table at 06:00, so there is no slot after it —
+// the comment at delinquency_kpi says anything else has to displace something,
+// and this displaces nothing by running the half hour before the block opens.
+// Nine spaced AppFolio calls take about ten minutes, which still clears 05:00
+// by twenty.
+//
+// IT HAS TO LAND BEFORE THE BRIEF, not merely some time today. The comparison
+// is this month to date against the same stretch of last month, and both sides
+// are captures: a run at 06:35 would leave Kara's email reading yesterday's
+// figure as today's. If this fails, the alert says NOT MEASURABLE TODAY rather
+// than reporting that no property is down — see lib/collections-mtd.js.
+cron.schedule('30 4 * * *', () => {
+  if (!CRM_CONFIGURED) return;
+  // The script's own output is a table meant for a shell. Only the two kinds
+  // of line that mean something went wrong are carried into the log: a
+  // property that failed is otherwise a row missing from the history with
+  // nothing anywhere saying why.
+  const keep = m => /FAILED|not captured/.test(String(m));
+  require('./scripts/sync-collections-mtd.js').syncCollectionsMtd({
+    log: m => { if (keep(m)) logLine('[collections-mtd] ' + String(m).trim()); },
+  })
+    .then(r => logLine(`[collections-mtd] ${r?.written ?? 0} rows for ${r?.day}`))
+    .catch(err => logLine(`[collections-mtd] FAILED: ${err.message}`));
+}, { timezone: LYNDSAY_TIMEZONE });
+
 // Resident phone numbers, for the Collections call match.
 //
 // 06:30, not in the 05:00 block: that hour is full to :55, and the brief at
