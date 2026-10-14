@@ -11448,12 +11448,25 @@ function mbSection(id, title, rows, cols, opts = {}) {
 
 function renderBrief() {
   if (!mbData) return;
-  const { week, horizon, moveIns, moveOuts, tours, expirations, syncedAt } = mbData;
+  const { week, horizon, moveIns, moveOuts, tours, expirations, syncedAt, lookback } = mbData;
   const freshest = [syncedAt?.tickler, syncedAt?.vacancy, syncedAt?.rentRoll].filter(Boolean).sort().pop();
 
+  // THE TWO WINDOWS, BOTH NAMED.
+  //
+  // Everything on this page looks FORWARD and runs on the week in progress.
+  // The retrospective window is a rolling seven days (Bekah, 2026-10-13) and is
+  // NOT the same span — on any day but Sunday the two differ, and the Goal
+  // Board beside this page is on the Sun-Sat week. Carrying the lookback in the
+  // payload and printing nothing meant nobody could tell which seven days a
+  // number came from.
   document.getElementById('mb-sub').innerHTML =
     `Week of ${mbEsc(mbDay(week.start))} — ${mbEsc(mbDay(week.end))}`
     + (week.convention ? ` (${mbEsc(week.convention)})` : '')
+    + ' <span class="muted">— move-ins, move-outs and tours</span>'
+    + (lookback
+      ? `<br>Looking back: ${mbEsc(mbDay(lookback.start))} — ${mbEsc(mbDay(lookback.end))}`
+        + ` <span class="muted">${mbEsc(lookback.label)}</span>`
+      : '')
     + ` · data as of ${mbEsc(mbWhen(freshest))}`;
 
   const prop = r => mbEsc(r.property) + (r.unit ? ` <span class="muted">${mbEsc(r.unit)}</span>` : '');

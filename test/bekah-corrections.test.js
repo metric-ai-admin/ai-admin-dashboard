@@ -297,6 +297,29 @@ t('the Sun-Sat reading is still there, so switching is a parameter', () => {
   assert.deepStrictEqual(WB.LOOKBACK_MODES, ['rolling', 'kpi']);
 });
 
+t('the window is PRINTED, not just carried in the payload', () => {
+  // It was in `lookback` from the start and nothing rendered it, so "the brief
+  // prints which window it used" was true of the JSON and false of anything a
+  // person reads. The two windows differ on any day but Sunday and the Goal
+  // Board beside this page is on the Sun-Sat week.
+  const app = src('public/app.js');
+  const at = app.indexOf('function renderBrief');
+  assert.ok(at > 0);
+  const fn = app.slice(at, app.indexOf("document.getElementById('mb-sections').innerHTML", at));
+  assert.ok(/lookback/.test(fn), 'renderBrief never reads the lookback');
+  assert.ok(/Looking back:/.test(fn), 'the header does not name the retrospective window');
+  assert.ok(/lookback\.label/.test(fn), 'the dates are shown without saying which convention');
+});
+
+t('the preview says the window and sends nothing', () => {
+  const s = src('scripts/brief-preview.js');
+  assert.ok(/--today/.test(s), 'the window cannot be checked for another date');
+  assert.ok(/NOTHING WAS SENT/.test(s));
+  assert.ok(!/sendMail|graphPost|\.insert\(|\.update\(|\.upsert\(/.test(s),
+    'a preview that writes or sends is not a preview');
+  assert.ok(/brief\.lookback\.mode/.test(s), 'it does not report which mode is in force');
+});
+
 t('forward-looking sections stay on the week in progress', () => {
   const b = WB.buildWeeklyBrief({}, { today: '2026-10-12' });
   assert.strictEqual(b.windows.forward.start, b.week.start);
