@@ -150,12 +150,27 @@ async function inventory(workspace) {
   let sampled = 0;
 
   for (const p of active) {
-    const tasks = await getAll('/projects/' + p.gid + '/tasks', {
-      opt_fields: 'created_at,completed,completed_at,created_by.name,assignee.name,'
-        + 'due_on,due_at,start_on,num_subtasks,parent,notes,resource_subtype,'
-        + 'custom_fields.name,custom_fields.display_value,tags.name,'
-        + 'dependencies,dependents,followers,liked,memberships.section.name',
+    // ONLY THE TASKS THAT MOVED IN THE WINDOW, not all 10,630.
+    //
+    // Paging a project that size is "exceptionally expensive" by Asana's own
+    // reckoning and comes back 429 — which is where the first run died. The
+    // fix is not a sample: `modified_since` is EXACT for the question being
+    // asked, because a task created in the window or completed in the window
+    // was necessarily modified in the window. It also returns old tasks merely
+    // touched in the window, and those are filtered out below.
+    //
+    // The all-time totals still come from the counts endpoint, which is one
+    // cheap call and does not need the tasks at all.
+    const FIELDS = 'created_at,completed,completed_at,created_by.name,assignee.name,'
+      + 'due_on,due_at,start_on,num_subtasks,parent,notes,resource_subtype,'
+      + 'custom_fields.name,custom_fields.display_value,tags.name,'
+      + 'dependencies,dependents,followers,liked';
+    const tasks = await getAll('/tasks', {
+      project: p.gid, modified_since: SINCE, opt_fields: FIELDS,
     });
+    const counts = await get('/projects/' + p.gid + '/task_counts', {
+      opt_fields: 'num_tasks,num_completed_tasks,num_incomplete_tasks',
+    }).then(j => j.data).catch(() => null);
     const inWindow = tasks.filter(t => t.created_at && t.created_at >= SINCE);
     const doneInWindow = tasks.filter(t => t.completed_at && t.completed_at >= SINCE);
     recent += inWindow.length;
@@ -166,8 +181,8 @@ async function inventory(workspace) {
     feature.sectionsNamed += sections.filter(s => !/^untitled/i.test(s.name || '')).length;
 
     console.log('   ' + pad(p.name.slice(0, 40), 42)
-      + pad(tasks.length, 8)
-      + pad(tasks.filter(t => !t.completed).length, 7)
+      + pad(counts ? counts.num_tasks : '?', 8)
+      + pad(counts ? counts.num_incomplete_tasks : '?', 7)
       + pad(inWindow.length, 9)
       + pad(doneInWindow.length, 11)
       + String(p.modified_at || '').slice(0, 10));
