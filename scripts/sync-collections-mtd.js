@@ -7,31 +7,34 @@
 //   node scripts/sync-collections-mtd.js --dry-run
 //   node scripts/sync-collections-mtd.js --explain
 //
-// WHY WE KEEP OUR OWN HISTORY. income_statement filters by property —
-// properties: {properties_ids:["1703"]} — and ignores every date parameter in
-// every shape tried, so it answers one period of its own choosing and cannot be
-// asked about September. Kara's "this month against the same stretch of last
-// month" is therefore impossible until a month of these rows exists. The alert
-// says that rather than going quiet.
+// ONE CALL A DAY. income_statement_comparison returns account_name /
+// properties / total, and `properties` is the per-property breakdown keyed by
+// AppFolio id — [{"id":1703,"value":"42164.55"}, ...]. So every property is
+// captured from the SAME INSTANT, rather than across the ten minutes nine
+// spaced calls used to take. The rate-limit dance went with it.
 //
-// --explain answers the question nobody can ask the report: WHAT PERIOD IS
-// THIS? It holds each property's figure against its monthly rent from the rent
-// roll and prints the ratio with the reasoning. It is a check, not a verdict:
-// "it is probably the current month" is a sentence a person writes after
-// seeing the number, not one this script should assert.
+// CASH BASIS, and that is the whole point. accounting_basis is honoured on
+// this report (Cash 311,166.40 against Accrual 379,725.88) and ignored on
+// income_statement. Kara's alert is about money RECEIVED; billed income would
+// answer a different question with an equally confident number.
 //
-// ONE CALL PER PROPERTY, spaced. The Reports API throttles on cost and nine
-// calls in a burst is how the Asana inventory died.
+// THE DATE IS IGNORED. Every date parameter, in every shape, on both reports.
+// The figure is month-to-date as of TODAY and there is no way to ask what the
+// 5th looked like — which is why the history has to be ours, and why October
+// is seeded from Katie's workbooks (scripts/seed-collections-mtd.js) rather
+// than fetched.
 require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
 const C = require('../lib/collections-mtd.js');
 const WEEK = require('../lib/week.js');
 const PA = require('../lib/property-aliases.js');
+const AFP = require('../lib/appfolio-properties.js');
 
 const ID = process.env.APPFOLIO_REPORTS_CLIENT_ID;
 const SECRET = process.env.APPFOLIO_REPORTS_CLIENT_SECRET;
 const HOST = process.env.APPFOLIO_REPORTS_HOST || 'metricpropertymanagement.appfolio.com';
+const LIST_ID = process.env.COLLECTIONS_MTD_LIST_ID || 'l_32';
 
 const db = createClient(process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY,
@@ -42,35 +45,42 @@ const pad = (s, w) => String(s).padEnd(w);
 const money = n => (n === null || n === undefined ? '—'
   : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }));
 
-async function statement(propertyId, attempt) {
-  const body = { property_visibility: 'active', paginate_results: false };
-  // THE SHAPE THAT WORKS. properties_ids / property_ids / property_id are all
-  // ignored; this one filters. Probed 2026-10-16.
-  if (propertyId) body.properties = { properties_ids: [String(propertyId)] };
+const PERIOD_NOTE = 'cash basis, income_statement_comparison; month-to-date as of '
+  + 'the capture date — the report ignores every date parameter, so it can only '
+  + 'ever answer about today';
 
-  const r = await global.fetch('https://' + HOST + '/api/v2/reports/income_statement.json', {
+async function statement(attempt) {
+  const r = await global.fetch('https://' + HOST + '/api/v2/reports/income_statement_comparison.json', {
     method: 'POST',
     headers: {
       Authorization: 'Basic ' + Buffer.from(ID + ':' + SECRET).toString('base64'),
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      property_visibility: 'active',
+      paginate_results: false,
+      accounting_basis: 'Cash',
+      properties: { properties_ids: [LIST_ID] },
+    }),
   });
   if (r.status === 429) {
     const n = (attempt || 0) + 1;
-    if (n > 6) throw new Error('rate limited six times on property ' + propertyId);
+    if (n > 6) throw new Error('rate limited six times');
     const wait = Number(r.headers.get('retry-after')) || 30;
-    log('      (rate limited, waiting ' + wait + 's)');
     await sleep(wait * 1000);
-    return statement(propertyId, n);
+    return statement(n);
   }
-  if (!r.ok) throw new Error('AppFolio ' + r.status + ' for property ' + propertyId);
+  if (!r.ok) throw new Error('AppFolio ' + r.status + ' on income_statement_comparison');
   const j = await r.json().catch(() => null);
   return Array.isArray(j) ? j : ((j && (j.results || j.data)) || []);
 }
 
-// Exported so the 04:30 cron in server.js runs THE SAME CODE this is tested
-// with. A cron that re-implements the script is a second thing to keep right.
+const RENT_LINE = /^rent income$/i;
+const TOTAL_LINE = /^total (income|revenue|operating income)$/i;
+const INCOME_SECTION = /income|revenue|receipt/i;
+
+// Exported so the cron in server.js runs THE SAME CODE this is tested with. A
+// cron that re-implements the script is a second thing to keep right.
 async function syncCollectionsMtd(opts) {
   const o = opts || {};
   const DRY = o.dryRun || false;
@@ -79,61 +89,127 @@ async function syncCollectionsMtd(opts) {
   if (!ID || !SECRET) {
     throw new Error('APPFOLIO_REPORTS_CLIENT_ID / _SECRET are not set. Run on Render.');
   }
+
   const today = WEEK.todayYMD();
-  const AFP = require('../lib/appfolio-properties.js');
-  // BY_ID is the id -> name map lib/appfolio-properties.js derives from six
-  // synced tables. Using it means a property added there is captured here
-  // without anybody remembering this file.
-  // THE EIGHT WE MANAGE, not all sixteen ids AppFolio knows about. BY_ID also
-  // holds "Metric Property Management of Texas LLC", "Live With Metric",
-  // Brazos Lofts, The Sidney and a street address — capturing those would be
-  // sixteen calls a day and a history of entities nobody is asking about.
+  const rows = await statement();
+  log('captured ' + today + ' (Central) — one call, ' + rows.length + ' account lines');
+
+  // ---- fold the report into per-property account maps ----------------------
   //
-  // THE SKIPPED ONES ARE PRINTED. Filtering quietly is how a property stops
-  // being measured and nobody notices for a quarter.
-  const all = Object.entries(AFP.BY_ID || {});
-  const ids = all.filter(([, name]) => PA.canonical(name));
-  const skipped = all.filter(([, name]) => !PA.canonical(name)).map(([, n]) => n);
-  log('capturing ' + today + ' (Central) — ' + ids.length + ' properties + portfolio');
-  if (skipped.length) log('not captured: ' + skipped.join(', '));
-  log('');
+  // Each row is one account line with a breakdown across properties. We want
+  // the transpose: one account map per property.
+  const byProperty = new Map();   // name -> { accounts, id }
+  const portfolio = {};
+  const unresolved = new Map();   // id -> the account lines it appeared on
+  const notOurs = new Set();      // resolved, but not one of the eight
+  let shapeProblem = null;
 
-  const rows = [];
+  rows.forEach(row => {
+    const account = C.clean(row.account_name);
+    if (!account) return;
+    const keep = INCOME_SECTION.test(account) || RENT_LINE.test(account);
+    if (!keep) return;
 
-  // The portfolio first, so a failure part-way still leaves the total.
-  const portfolio = C.readStatement(await statement(null));
-  rows.push({
-    captured_on: today, property: C.PORTFOLIO, property_id: null,
-    rent_income: portfolio.rentIncome, total_income: portfolio.totalIncome,
-    accounts: portfolio.accounts, source: 'income_statement',
-    period_note: 'the report accepts no date parameter; the period is whatever it chooses',
+    const total = C.num(row.total);
+    if (total !== null) portfolio[account] = total;
+
+    const b = C.breakdown(row.properties);
+    // A shape this code does not recognise must be LOUD. An empty breakdown
+    // and an absent one look identical from the outside, and that is how the
+    // tenant directory stored 411 residents and zero phone numbers.
+    if (!Object.keys(b.map).length && !shapeProblem) shapeProblem = b.how;
+
+    const { named, unknown } = C.resolveNames(b, AFP.BY_ID || {});
+    Object.entries(named).forEach(([name, value]) => {
+      const canon = PA.canonical(name);
+      if (!canon) {
+        // Resolves to a name, but not one of the eight we manage — the LLC
+        // entities, Brazos Lofts, 17th Street. Deliberately not stored, and
+        // deliberately NAMED: a property quietly missing from the capture and
+        // a property we chose not to capture look identical in the table a
+        // month later.
+        notOurs.add(name);
+        return;
+      }
+      if (!byProperty.has(canon)) byProperty.set(canon, { accounts: {}, id: null });
+      byProperty.get(canon).accounts[account] = value;
+    });
+    Object.keys(unknown).forEach(id => {
+      if (!unresolved.has(id)) unresolved.set(id, []);
+      unresolved.get(id).push(account);
+    });
   });
-  log(pad('PORTFOLIO', 26) + pad(money(portfolio.rentIncome), 14)
-    + Object.keys(portfolio.accounts).length + ' income lines');
-  await sleep(900);
 
-  for (const [id, name] of ids) {
-    try {
-      const s = C.readStatement(await statement(id));
-      rows.push({
-        captured_on: today, property: name, property_id: String(id),
-        rent_income: s.rentIncome, total_income: s.totalIncome,
-        accounts: s.accounts, source: 'income_statement',
-        period_note: 'the report accepts no date parameter; the period is whatever it chooses',
-      });
-      log(pad(name, 26) + pad(money(s.rentIncome), 14)
-        + Object.keys(s.accounts).length + ' income lines');
-    } catch (e) {
-      // A property that fails is REPORTED and left out; a zero would enter the
-      // history as a collapse in collections.
-      log(pad(name, 26) + 'FAILED: ' + e.message);
-    }
-    await sleep(900);
+  if (shapeProblem) {
+    throw new Error('the `properties` field was not readable: ' + shapeProblem
+      + ' — nothing captured, because a capture of zeroes would enter the history '
+      + 'as a month where nobody paid');
   }
 
-  // ---- what period is this -------------------------------------------------
+  // The id for each property we did resolve, for the stored row.
+  const idByName = {};
+  Object.entries(AFP.BY_ID || {}).forEach(([id, name]) => {
+    const canon = PA.canonical(name);
+    if (canon && !idByName[canon]) idByName[canon] = String(id);
+  });
+
+  // ---- the rows ------------------------------------------------------------
+  const payload = [{
+    captured_on: today,
+    property: C.PORTFOLIO,
+    property_id: null,
+    rent_income: portfolio[Object.keys(portfolio).find(k => RENT_LINE.test(k)) || ''] ?? null,
+    total_income: portfolio[Object.keys(portfolio).find(k => TOTAL_LINE.test(k)) || ''] ?? null,
+    accounts: portfolio,
+    source: 'income_statement_comparison_cash',
+    period_note: PERIOD_NOTE,
+  }];
+
+  [...byProperty.entries()].sort().forEach(([name, { accounts }]) => {
+    const rentKey = Object.keys(accounts).find(k => RENT_LINE.test(k));
+    const totalKey = Object.keys(accounts).find(k => TOTAL_LINE.test(k));
+    payload.push({
+      captured_on: today,
+      property: name,
+      property_id: idByName[name] || null,
+      rent_income: rentKey ? accounts[rentKey] : null,
+      total_income: totalKey ? accounts[totalKey] : null,
+      accounts,
+      source: 'income_statement_comparison_cash',
+      period_note: PERIOD_NOTE,
+    });
+  });
+
+  payload.forEach(r => log(pad(r.property === C.PORTFOLIO ? 'PORTFOLIO' : r.property, 26)
+    + pad(money(r.rent_income), 14) + Object.keys(r.accounts).length + ' income lines'));
+
+  // ---- what we did not capture, out loud -----------------------------------
+  if (notOurs.size) {
+    log('not captured (not one of the eight we manage): ' + [...notOurs].sort().join(', '));
+  }
+  if (unresolved.size) {
+    log('not captured: ' + unresolved.size + ' AppFolio id(s) with no name in the id map — '
+      + [...unresolved.keys()].join(', '));
+    log('   add them to lib/appfolio-properties.js or confirm they are not ours. '
+      + 'An id that stops resolving looks exactly like a property that collected nothing.');
+  }
+
+  // ---- does the arithmetic hold -------------------------------------------
+  //
+  // The per-property figures have to add up to the report's own total. If they
+  // do not, the breakdown is not a decomposition and the capture is fifteen
+  // numbers that merely arrived together.
+  const rentKey = Object.keys(portfolio).find(k => RENT_LINE.test(k));
+  if (rentKey) {
+    const ours = payload.filter(r => r.property !== C.PORTFOLIO)
+      .reduce((a, r) => a + (r.rent_income || 0), 0);
+    log('our ' + (payload.length - 1) + ' properties: ' + money(ours)
+      + ' of a portfolio ' + money(portfolio[rentKey]));
+  }
+
   if (EXPLAIN) {
-    log('\nWHAT PERIOD DOES THE REPORT COVER?');
+    log('');
+    log('WHAT PERIOD DOES THE REPORT COVER?');
     log('   Held against each property\'s monthly rent from the rent roll.');
     const af = require('../appfolio-reports.js');
     const rr = (((await af.readReportData('rent_roll')) || {}).rows) || [];
@@ -143,33 +219,34 @@ async function syncCollectionsMtd(opts) {
       const v = C.num(r.rent);
       if (p && v) monthly[p] = (monthly[p] || 0) + v;
     });
-    rows.filter(r => r.property !== C.PORTFOLIO).forEach(r => {
+    payload.filter(r => r.property !== C.PORTFOLIO).forEach(r => {
       const chk = C.periodCheck(r.rent_income, monthly[r.property], today);
-      log('   ' + pad(r.property, 24)
-        + pad(money(r.rent_income), 12) + 'of ' + pad(money(monthly[r.property]), 12)
+      log('   ' + pad(r.property, 24) + pad(money(r.rent_income), 12)
+        + 'of ' + pad(money(monthly[r.property]), 12)
         + (chk ? '= ' + chk.ratio + '   ' + chk.note : 'no rent roll figure'));
     });
-    log('\n   The month is ' + Math.round(100 * (Number(today.slice(8)) / 30))
-      + '% elapsed. A figure near a full month means the current month-to-date;');
-    log('   far below one means the report is describing something else.');
     log('   THIS IS A CHECK, NOT A VERDICT — read it and decide.');
   }
 
   const accountNames = new Set();
-  rows.forEach(r => Object.keys(r.accounts).forEach(k => accountNames.add(k)));
-  log('\nINCOME LINES SEEN (these are what "cash receipts" has to be chosen from):');
+  payload.forEach(r => Object.keys(r.accounts).forEach(k => accountNames.add(k)));
+  log('');
+  log('INCOME LINES SEEN (these are what "cash receipts" has to be chosen from):');
   [...accountNames].sort().forEach(n => log('   ' + n));
-  log('\n   All of them are stored whole, so the definition can change without');
+  log('   All of them are stored whole, so the definition can change without');
   log('   re-syncing. rent_income is denormalised because it is what the');
   log('   comparison currently uses.');
 
-  if (DRY) { log('\nDRY RUN — nothing written.'); return { captured: rows.length, written: 0, day: today }; }
+  if (DRY) {
+    log('DRY RUN — nothing written.');
+    return { captured: payload.length, written: 0, day: today };
+  }
 
   const { error } = await db.from('collections_mtd')
-    .upsert(rows, { onConflict: 'captured_on,property' });
+    .upsert(payload, { onConflict: 'captured_on,property' });
   if (error) throw new Error(error.message);
-  log('\nstored: ' + rows.length + ' rows for ' + today);
-  return { captured: rows.length, written: rows.length, day: today };
+  log('stored: ' + payload.length + ' rows for ' + today);
+  return { captured: payload.length, written: payload.length, day: today };
 }
 
 module.exports = { syncCollectionsMtd };

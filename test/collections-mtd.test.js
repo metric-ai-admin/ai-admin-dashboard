@@ -10,6 +10,16 @@
 // The second half is about the sync writing only what it was asked to write,
 // and about the eight properties being eight on purpose — BY_ID holds sixteen
 // ids, half of them entities nobody is asking about.
+// Placeholder credentials, set BEFORE anything requires the sync: it reads
+// these at module load, and the fold cannot be exercised without them. Every
+// test that runs the sync stubs global.fetch, so these never reach AppFolio —
+// and they are obvious nonsense so that a request escaping the stub fails
+// loudly rather than authenticating.
+process.env.APPFOLIO_REPORTS_CLIENT_ID =
+  process.env.APPFOLIO_REPORTS_CLIENT_ID || 'test-not-a-real-id';
+process.env.APPFOLIO_REPORTS_CLIENT_SECRET =
+  process.env.APPFOLIO_REPORTS_CLIENT_SECRET || 'test-not-a-real-secret';
+
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
@@ -261,10 +271,22 @@ t('--dry-run reaches the upsert check before the upsert', () => {
     'the dry-run return is above the write');
 });
 
-t('the calls are spaced', () => {
-  // Nine calls in a burst is how the Asana inventory died.
-  assert.ok(/sleep\(900\)/.test(code), 'there is a wait between properties');
-  assert.ok(/429/.test(syncSrc), 'rate limiting is handled');
+t('the capture is ONE call, not one per property', () => {
+  // The per-property breakdown made nine spaced calls unnecessary, and with
+  // them went the ten-minute window across which eight properties used to be
+  // captured from eight different instants.
+  const fetches = (code.match(/global\.fetch\(/g) || []).length;
+  assert.strictEqual(fetches, 1, 'one fetch in the file');
+  assert.ok(/429/.test(syncSrc), 'rate limiting is still handled');
+});
+
+t('it asks for the cash basis explicitly', () => {
+  // accounting_basis is honoured on this report and ignored on
+  // income_statement, which is the entire reason the report changed.
+  assert.match(syncSrc, /accounting_basis: 'Cash'/);
+  assert.match(syncSrc, /income_statement_comparison/);
+  assert.ok(!/reports\/income_statement\.json/.test(code),
+    'the endpoint that ignores the basis is no longer called');
 });
 
 t('the property filter is the one shape that actually filters', () => {
@@ -275,9 +297,19 @@ t('the property filter is the one shape that actually filters', () => {
   assert.ok(!/body\.property_ids/.test(code));
 });
 
-t('the properties it skips are printed, not dropped quietly', () => {
-  assert.ok(/skipped/.test(code), 'the skipped list exists');
-  assert.ok(/not captured/.test(syncSrc), 'and it is printed');
+t('ids it cannot resolve are printed, not dropped quietly', () => {
+  // A property added in AppFolio and not yet in the id map would otherwise
+  // vanish from the capture and look exactly like one that collected nothing.
+  assert.ok(/unresolved/.test(code), 'unresolved ids are tracked');
+  assert.ok(/not captured/.test(syncSrc), 'and they are printed');
+});
+
+t('an unreadable breakdown stops the capture instead of storing zeroes', () => {
+  assert.ok(/shapeProblem/.test(code), 'an unrecognised shape is noticed');
+  assert.ok(/throw new Error/.test(code.slice(code.indexOf('shapeProblem'))),
+    'and it throws rather than continuing');
+  assert.ok(code.indexOf('shapeProblem') < code.indexOf('.upsert('),
+    'the check is before the write');
 });
 
 t('the sync is importable, so the cron runs the tested code', () => {
@@ -495,5 +527,82 @@ t('the seed writes to collections_mtd and nothing else', () => {
   assert.ok(!/\.delete\(/.test(src) && !/\.insert\(/.test(src));
 });
 
-console.log('\n' + pass + ' passed, ' + fail + ' failed');
-process.exit(fail ? 1 : 0);
+// ---- the fold, against a stubbed report -------------------------------------
+//
+// The transpose — account lines carrying a per-property breakdown, turned into
+// one account map per property — is the riskiest new code, and grepping the
+// source for words cannot tell whether it adds up. This runs it.
+//
+// These are async, so they go last and own the exit.
+const ta = (name, fn) => fn().then(
+  () => { pass++; console.log('  ok   ' + name); },
+  e => { fail++; console.log('  FAIL ' + name + '\n       ' + e.message); });
+
+const REPORT_ROWS = [
+  { account_name: 'Rent Income', total: '54164.66',
+    properties: [{ id: 1703, value: '42164.55' }, { id: 1803, value: '12000.11' },
+      { id: 1925, value: '0.00' }] },
+  { account_name: 'Other Income', total: '1510.00',
+    properties: [{ id: 1703, value: '1200.00' }, { id: 1803, value: '300.00' }] },
+  { account_name: 'Repairs and Maintenance', total: '9999.00',
+    properties: [{ id: 1703, value: '9999.00' }] },
+];
+
+async function runSync(rows) {
+  const real = global.fetch;
+  global.fetch = async () => ({
+    ok: true, status: 200, headers: { get: () => null },
+    json: async () => rows, text: async () => JSON.stringify(rows),
+  });
+  const out = [];
+  try {
+    const { syncCollectionsMtd } = require('../scripts/sync-collections-mtd.js');
+    const result = await syncCollectionsMtd({ dryRun: true, log: m => out.push(String(m)) });
+    return { result, text: out.join('\n') };
+  } finally { global.fetch = real; }
+}
+
+(async () => {
+  await ta('one call produces the portfolio row and a row per property', async () => {
+    const { result, text } = await runSync(REPORT_ROWS);
+    assert.ok(result.captured >= 2, 'the portfolio plus at least one property');
+    assert.strictEqual(result.written, 0, 'a dry run writes nothing');
+    assert.match(text, /one call/);
+    assert.match(text, /PORTFOLIO/);
+  });
+
+  await ta('entities we choose not to capture are named', async () => {
+    // 1925 is 17th Street, held out until somebody confirms it is a managed
+    // property. Holding it out quietly would make it indistinguishable, a
+    // month from now, from a property that fell out of the capture.
+    const { text } = await runSync(REPORT_ROWS);
+    assert.match(text, /not captured \(not one of the eight/);
+  });
+
+  await ta('an expense line is not folded into income', async () => {
+    const { text } = await runSync(REPORT_ROWS);
+    assert.ok(!/Repairs and Maintenance/.test(text),
+      'an expense account never reaches the income lines');
+  });
+
+  await ta('an unreadable breakdown throws rather than capturing zeroes', async () => {
+    // The shape changed once already: [{id, value}] was not recognised by the
+    // first version of breakdown(). If it changes again the capture must stop
+    // — a row of zeroes would enter the history as a month in which nobody
+    // paid, and every property would read as a collapse for thirty days.
+    await assert.rejects(
+      () => runSync([{ account_name: 'Rent Income', total: '100',
+        properties: [{ surprise: 1, newShape: 2 }] }]),
+      /not readable|nothing captured/i);
+  });
+
+  await ta('a genuine zero is captured, not treated as a missing property', async () => {
+    const { text } = await runSync([{ account_name: 'Rent Income', total: '0.00',
+      properties: [{ id: 1703, value: '0.00' }] }]);
+    assert.match(text, /income lines/, 'the capture still happens');
+    assert.ok(!/FAILED/.test(text));
+  });
+
+  console.log('\n' + pass + ' passed, ' + fail + ' failed');
+  process.exit(fail ? 1 : 0);
+})();
