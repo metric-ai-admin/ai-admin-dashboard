@@ -13131,7 +13131,11 @@ async function loadMoveOutAlerts() {
     // EVERY ALERT SAYS WHICH SIGNAL DECIDED IT. 'turn' is the structural link
     // from unit_turn_id; 'name' means we read free text and may be wrong, and
     // the reader is told which they are looking at.
-    const alerts = (d.walkOverdue || []).map(a => {
+    // TWO TABLES. "Not marked done" is a click in AppFolio; "nothing recorded"
+    // is a technician going back to the unit. One heading for both sends people
+    // to re-walk units that have already been walked, which is how an alert
+    // gets switched off.
+    const rowFor = a => {
       const maybe = (a.unnamedInspections || []).length
         ? `<div class="small muted" style="margin-top:3px">`
           + `${a.unnamedInspections.length} inspection`
@@ -13150,17 +13154,27 @@ async function loadMoveOutAlerts() {
         <td class="small">${esc2(a.moveOut)}</td>
         <td class="small">${esc2(a.due)}</td>
         <td class="small" style="color:#b00020"><b>${a.businessDaysOverdue || 0}d late</b></td>
-        <td>${basis}${a.openWalk ? ` <span class="small muted">open (${esc2(a.openWalk)})</span>` : ''}${maybe}</td>
+        <td>${basis}${a.openWalk
+          ? ` <span class="small muted">${esc2(a.openName || 'an inspection')} is ${esc2(a.openWalk)}</span>`
+          : ''}${maybe}</td>
       </tr>`;
-    }).join('');
+    };
+    const all = d.walkOverdue || [];
+    const openOnes = all.filter(a => a.state === 'open');
+    const missing = all.filter(a => a.state !== 'open');
+    const table = rows => `<table class="table"><thead><tr><th>Property / unit</th>
+        <th>Moved out</th><th>Due</th><th>Late</th><th>How we know</th></tr></thead>
+        <tbody>${rows.map(rowFor).join('')}</tbody></table>`;
 
     body.innerHTML = `
       <h4 style="margin:10px 0 2px 0">Today</h4>${today}
-      <h4 style="margin:10px 0 2px 0">No move-out inspection recorded after 2 business days</h4>
-      ${alerts
-        ? `<table class="table"><thead><tr><th>Property / unit</th><th>Moved out</th>
-             <th>Due</th><th>Late</th><th>How we know</th></tr></thead><tbody>${alerts}</tbody></table>`
-        : '<p class="small muted">None overdue.</p>'}
+      <h4 style="margin:12px 0 2px 0;color:#8a6d00">Inspection exists but is not marked done in AppFolio</h4>
+      ${openOnes.length
+        ? `<p class="small muted">Somebody has to close these. Do not send anyone back to the unit.</p>`
+          + table(openOnes)
+        : '<p class="small muted">None.</p>'}
+      <h4 style="margin:12px 0 2px 0;color:#b00020">No move-out inspection recorded after 2 business days</h4>
+      ${missing.length ? table(missing) : '<p class="small muted">None overdue.</p>'}
       <p class="small muted" style="margin-top:8px">${esc2(d.caveat || '')}</p>`;
   } catch (e) {
     body.innerHTML = `<div class="msg error">${esc(e.message || 'Could not load.')}</div>`;

@@ -184,13 +184,16 @@ t('an inspection done BEFORE the move-out does not count', () => {
   assert.ok(out.some(a => a.property === 'The Chateau'));
 });
 
-t('an inspection that is open is not a pass, but it is said', () => {
+t('an open inspection is reported as open, not as missing', () => {
+  // This used to assert "not a pass, but it is said" — one state with a note.
+  // It is its own state now: somebody has to close it, not re-walk the unit.
   const open = [{ property_name: 'The Chateau', unit: '4', status: 'NEW',
     inspected_on: null, inspection_name: 'Move Out Damage and Occupancy Inspection' }];
   const a = M.walkOverdue({ turns: TURNS, inspections: open }, TODAY, { businessDays: 2 })
     .find(x => x.property === 'The Chateau');
+  assert.strictEqual(a.state, 'open');
   assert.strictEqual(a.openWalk, 'NEW');
-  assert.ok(/an inspection is open \(NEW\)/.test(M.line(a)));
+  assert.ok(/NOT marked done in AppFolio/.test(M.line(a)));
 });
 
 t('a turn-linked inspection counts even when its name is a person', () => {
@@ -234,86 +237,14 @@ t('the alert says which signal it used', () => {
   assert.strictEqual(b2.openWalk, 'NEW');
 });
 
-t('the measurement separates turn from name from none', () => {
-  // The breakdown is the point: "found by name only" is right about as often
-  // as people type carefully, and a total hides that.
+t('the measurement names what it cannot do', () => {
   const sc = src('scripts/measure-moveout-walks.js');
-  assert.ok(/by unit_turn_id/.test(sc) && /by name only/.test(sc) && /none found/.test(sc));
   assert.ok(/MIGRATION 095 HAS NOT BEEN RUN/.test(sc),
     'it would report the old numbers under the new headings');
   // NOT an escaped BACKSLASH: /\./ matches nothing here, so the assertion
   // would pass whatever the script did.
   assert.ok(!/\.insert\(|\.update\(|\.upsert\(/.test(sc), 'the measurement writes');
   assert.ok(/no resident name or unit was printed/.test(sc));
-});
-
-t('a turn id that matches NOTHING must not veto the name', () => {
-  // THE BUG. 39 of 39 move-outs came back "none" with 202 linked inspections
-  // in the table: the turn id vetoed in both directions, so when the two id
-  // namespaces did not line up, every inspection was rejected and the name
-  // pass never ran.
-  const turns = [{ property_name: 'The Chateau', unit: '4',
-    move_out_date: '2026-10-08', unit_turn_id: 'TURN-202' }];
-  const insp = [{ property_name: 'The Chateau', unit: '4', unit_turn_id: '99999',
-    inspection_name: 'Move Out Damage and Occupancy Inspection',
-    status: 'DONE', inspected_on: '2026-10-09' }];
-  assert.deepStrictEqual(
-    M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 }), [],
-    'a named, done walk was rejected because its turn id did not match');
-});
-
-t('a turn id is only ever a POSITIVE signal', () => {
-  const { byTurn, byUnit } = M.indexInspections([
-    { property_name: 'A', unit: '1', unit_turn_id: 'OTHER',
-      inspection_name: 'Move Out Inspection', status: 'DONE', inspected_on: '2026-10-09' },
-  ]);
-  const m = M.matchWalk({ turn: { unit_turn_id: 'MINE' }, byTurn, byUnit,
-    property: 'A', unit: '1', moveOut: '2026-10-08' });
-  assert.ok(m.walk, 'the name pass did not run');
-  assert.strictEqual(m.basis, 'name', 'a name match must not be reported as structural');
-});
-
-t('a matching turn id still wins, and is reported as structural', () => {
-  const { byTurn, byUnit } = M.indexInspections([
-    { property_name: 'A', unit: '1', unit_turn_id: 'MINE',
-      inspection_name: 'Untitled', status: 'DONE', inspected_on: '2026-10-09' },
-  ]);
-  const m = M.matchWalk({ turn: { unit_turn_id: 'MINE' }, byTurn, byUnit,
-    property: 'A', unit: '1', moveOut: '2026-10-08' });
-  assert.ok(m.walk);
-  assert.strictEqual(m.basis, 'turn');
-});
-
-t('"rejected only by the date" is its own answer', () => {
-  // A done, correctly-named inspection that predates the move-out is a real
-  // finding and a different one from nothing being recorded.
-  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08' }];
-  const insp = [{ property_name: 'A', unit: '1', inspection_name: 'Move Out Inspection',
-    status: 'DONE', inspected_on: '2026-10-01' }];
-  const a = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 })[0];
-  assert.strictEqual(a.tooEarly.length, 1);
-  assert.strictEqual(a.tooEarly[0].inspectedOn, '2026-10-01');
-  assert.ok(/done BEFORE the move-out/.test(M.line(a)), M.line(a));
-});
-
-t('"no turn id" and "the turn id matched nothing" are different sentences', () => {
-  // Saying the wrong one sends somebody to fix the wrong thing.
-  const base = { property_name: 'A', unit: '1', move_out_date: '2026-10-08' };
-  const withId = M.walkOverdue({ turns: [{ ...base, unit_turn_id: 'T1' }], inspections: [] },
-    TODAY, { businessDays: 2 })[0];
-  const without = M.walkOverdue({ turns: [base], inspections: [] },
-    TODAY, { businessDays: 2 })[0];
-  assert.ok(/turn id on this move-out matched no inspection/.test(M.line(withId)));
-  assert.ok(/no turn id on this move-out/.test(M.line(without)));
-});
-
-t('the measurement and the alert share ONE matcher', () => {
-  // The measurement had its own copy of the rule and reported 0/0/39 while the
-  // alert would have said something else. Two implementations of one rule is
-  // one of them being wrong without anybody noticing.
-  const sc = src('scripts/measure-moveout-walks.js');
-  assert.ok(/M\.matchWalk\(/.test(sc), 'the measurement reimplements the matching rule');
-  assert.ok(!/isWalk\(r, \{\}\)/.test(sc), 'an old private copy is still there');
 });
 
 t('the id diagnostic reads every column, not a guessed shortlist', () => {
@@ -323,6 +254,93 @@ t('the id diagnostic reads every column, not a guessed shortlist', () => {
   assert.ok(/IN INSPECTIONS/.test(sc), 'it does not report the overlap');
   assert.ok(/no unit or resident name was printed/.test(sc));
   assert.ok(!/\.insert\(|\.update\(|\.upsert\(/.test(sc), 'the diagnostic writes');
+});
+
+// ---- the three states (Arturo, 2026-10-14) ---------------------------------
+//
+// The measurement found it: 33 of 39 move-outs had an inspection named like a
+// walk and only 6 were DONE, and those 6 were thrown away on a date. The walks
+// are HAPPENING; what is missing is the click in AppFolio. Reporting all 33 as
+// "no inspection" would send people to re-walk units that were already walked,
+// which is how an alert gets switched off.
+
+t('a turn-linked inspection counts WHATEVER its date', () => {
+  // The date rule exists to stop a walk from the previous tenancy counting, and
+  // a turn id already rules that out — a stronger statement than any date.
+  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08', unit_turn_id: 'T1' }];
+  const insp = [{ property_name: 'A', unit: '1', unit_turn_id: 'T1',
+    inspection_name: 'Untitled', status: 'DONE', inspected_on: '2026-10-01' }];
+  assert.deepStrictEqual(M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 }), [],
+    'a linked, done inspection was rejected on a date the link had already answered');
+});
+
+t('the date rule still applies to the NAME fallback', () => {
+  // Without a turn id there is nothing else to tell this move-out's walk from
+  // the last one's.
+  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08' }];
+  const insp = [{ property_name: 'A', unit: '1', inspection_name: 'Move Out Inspection',
+    status: 'DONE', inspected_on: '2026-10-01' }];
+  const out = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 });
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].state, 'none');
+  assert.strictEqual(out[0].tooEarly.length, 1);
+});
+
+t('"exists but not marked done" is its own state', () => {
+  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08', unit_turn_id: 'T1' }];
+  const insp = [{ property_name: 'A', unit: '1', unit_turn_id: 'T1',
+    inspection_name: 'Move Out Inspection', status: 'NEW', inspected_on: '2026-10-09' }];
+  const a = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 })[0];
+  assert.strictEqual(a.state, 'open');
+  assert.strictEqual(a.openName, 'Move Out Inspection');
+  const l = M.line(a);
+  assert.ok(/NOT marked done in AppFolio/.test(l), l);
+  assert.ok(/close it, not re-walk the unit/.test(l), l);
+  assert.ok(!/No move-out inspection recorded/.test(l), 'it still reads as missing');
+});
+
+t('only "none" means go and inspect', () => {
+  assert.deepStrictEqual(M.STATES, ['done', 'open', 'none']);
+  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08' }];
+  const a = M.walkOverdue({ turns, inspections: [] }, TODAY, { businessDays: 2 })[0];
+  assert.strictEqual(a.state, 'none');
+  assert.ok(/No move-out inspection recorded/.test(M.line(a)));
+});
+
+t('an open inspection found only by NAME is still "open"', () => {
+  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08' }];
+  const insp = [{ property_name: 'A', unit: '1', inspection_name: 'Move Out Damage and Occupancy Inspection',
+    status: 'IN PROGRESS', inspected_on: '2026-10-09' }];
+  const a = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 })[0];
+  assert.strictEqual(a.state, 'open');
+  assert.strictEqual(a.basis, 'name');
+});
+
+t('the brief and the panel keep the two apart', () => {
+  // One heading for both sends people to re-walk units already walked.
+  const open = { property: 'A', unit: '1', moveOut: '2026-10-08', due: '2026-10-12',
+    state: 'open', openWalk: 'NEW', openName: 'Move Out Inspection', basis: 'turn',
+    businessDaysOverdue: 2, tooEarly: [], unnamedInspections: [] };
+  const none = { ...open, state: 'none', openWalk: null, openName: null, property: 'B' };
+  const brief = B.build({ properties: [],
+    moveOuts: { today: [], walkOverdue: [open, none], sourceEmpty: false } });
+  const text = B.render(brief, { today: TODAY });
+  const html = H.renderHtml(brief, { today: TODAY });
+  [['text', text], ['html', html]].forEach(([which, out]) => {
+    assert.ok(/not marked done in AppFolio/i.test(out), which + ': no "open" section');
+    assert.ok(/No move-out inspection recorded/i.test(out), which + ': no "missing" section');
+  });
+  const app = src('public/app.js');
+  assert.ok(/a\.state === 'open'/.test(app), 'the panel shows one list');
+  assert.ok(/Do not send anyone back to the unit/.test(app));
+});
+
+t('the measurement reports the three states by property', () => {
+  const sc = src('scripts/measure-moveout-walks.js');
+  assert.ok(/THE THREE STATES/.test(sc));
+  assert.ok(/inspection EXISTS, not marked done/.test(sc));
+  assert.ok(/BY PROPERTY/.test(sc) && /done  open  none/.test(sc));
+  assert.ok(/M\.matchWalk\(/.test(sc), 'it reimplements the rule again');
 });
 
 // ---- the brief -------------------------------------------------------------

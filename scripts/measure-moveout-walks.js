@@ -76,44 +76,42 @@ const pad = (s, w) => String(s).padEnd(w);
     + '   with a turn id: ' + turns.filter(t => M.turnOf(t)).length);
 
   const { byUnit, byTurn } = M.indexInspections(insp);
-  const tally = { turn: 0, nameOnly: 0, none: 0, noTurnId: 0, dateOnly: 0 };
+  const tally = { done: 0, open: 0, none: 0, byTurn: 0, byName: 0, dateOnly: 0, noTurnId: 0 };
   const byProperty = {};
 
   turns.forEach(t => {
     const moveOut = M.ymd(t.move_out_date);
     const property = M.clean(t.property_name || t.property) || '(no property)';
     const unit = M.clean(t.unit || t.unit_name);
-    const turnId = M.turnOf(t);
-    if (!turnId) tally.noTurnId++;
+    if (!M.turnOf(t)) tally.noTurnId++;
 
-    // THE SAME FUNCTION THE ALERT USES. The measurement had its own copy of
-    // the matching rule and reported 0/0/39 while the alert would have said
-    // something else — two implementations of one rule is one of them being
-    // wrong without anybody noticing.
+    // THE SAME FUNCTION THE ALERT USES. This had its own copy of the rule and
+    // reported 0/0/39 for a rule that had already changed — two
+    // implementations of one rule is one of them being wrong unnoticed.
     const m = M.matchWalk({ turn: t, byTurn, byUnit, property, unit, moveOut });
-    const verdict = m.walk ? m.basis : 'none';
-    tally[verdict === 'turn' ? 'turn' : (verdict === 'name' ? 'nameOnly' : 'none')]++;
-    if (!m.walk && m.tooEarly.length) tally.dateOnly++;
-    const key = verdict === 'turn' ? 'turn' : (verdict === 'name' ? 'nameOnly' : 'none');
-    byProperty[property] = byProperty[property] || { turn: 0, nameOnly: 0, none: 0 };
-    byProperty[property][key]++;
+    tally[m.state]++;
+    if (m.state === 'done') tally[m.basis === 'turn' ? 'byTurn' : 'byName']++;
+    if (m.state === 'none' && (m.tooEarly || []).length) tally.dateOnly++;
+
+    byProperty[property] = byProperty[property] || { done: 0, open: 0, none: 0 };
+    byProperty[property][m.state]++;
   });
 
   const n = turns.length;
-  console.log('\nHOW THE INSPECTION WAS FOUND');
-  console.log('   ' + pad('by unit_turn_id', 22) + pad(tally.turn, 6) + pct(tally.turn, n)
-    + '   structural — no name read');
-  console.log('   ' + pad('by name only', 22) + pad(tally.nameOnly, 6) + pct(tally.nameOnly, n)
-    + '   right about as often as people type carefully');
-  console.log('   ' + pad('none found', 22) + pad(tally.none, 6) + pct(tally.none, n)
-    + '   the backlog, plus whatever the other two missed');
-  console.log('\n   move-outs with no turn id at all: ' + tally.noTurnId
-    + '  (those can only ever be matched by name)');
-
-  console.log('\nBY PROPERTY            turn  name  none');
-  Object.entries(byProperty).sort((a, b) => b[1].none - a[1].none).forEach(([p, c]) =>
-    console.log('   ' + pad(p, 22) + String(c.turn).padStart(4)
-      + String(c.nameOnly).padStart(6) + String(c.none).padStart(6)));
+  console.log('');
+  console.log('THE THREE STATES');
+  console.log('   ' + pad('inspection DONE', 35) + pad(tally.done, 6) + pct(tally.done, n));
+  console.log('      ' + pad('matched by unit_turn_id', 31) + pad(tally.byTurn, 6) + '   structural — date irrelevant');
+  console.log('      ' + pad('matched by name', 31) + pad(tally.byName, 6) + '   free text, on or after the move-out');
+  console.log('   ' + pad('inspection EXISTS, not marked done', 35) + pad(tally.open, 6) + pct(tally.open, n) + '   close it in AppFolio, do not re-walk');
+  console.log('   ' + pad('NO inspection at all', 35) + pad(tally.none, 6) + pct(tally.none, n) + '   the only one that means "go and inspect"');
+  console.log('');
+  console.log('   of the "none", rejected only because the inspection predates the move-out: ' + tally.dateOnly);
+  console.log('   move-outs with no turn id at all: ' + tally.noTurnId);
+  console.log('');
+  console.log('BY PROPERTY                 done  open  none');
+  Object.entries(byProperty).sort((a, b) => b[1].none - a[1].none || b[1].open - a[1].open)
+    .forEach(([p2, c]) => console.log('   ' + pad(p2, 26) + String(c.done).padStart(4) + String(c.open).padStart(6) + String(c.none).padStart(6)));
 
   console.log('\nNothing was written, and no resident name or unit was printed.');
 })().catch(e => { console.error('FAILED: ' + e.message); process.exitCode = 1; });
