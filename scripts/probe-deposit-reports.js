@@ -23,9 +23,11 @@
 //      "Security Deposit Refund", then both alerts can be built by reading the
 //      ledger per move-out.
 //
-// NOTHING PERSONAL IS PRINTED. Descriptions are SYSTEM labels and are shown
-// with their counts; amounts, payers, names, units and dates of individual
-// rows are never printed.
+// NOTHING PERSONAL IS PRINTED — and the first version of this file was WRONG
+// about that. It said descriptions are system labels. They are not: AppFolio
+// interpolates the resident, the property and the unit into them, and two
+// names reached the terminal on 2026-10-15. Descriptions now go through
+// lib/ledger-mask.js, which patterns them and then checks what is left.
 require('dotenv').config();
 
 const ID = process.env.APPFOLIO_REPORTS_CLIENT_ID;
@@ -130,18 +132,18 @@ const CANDIDATES = [
       console.log('   ' + pad(key, 16) + (r.status >= 400 ? 'REJECTED' : r.status + '  ' + rows.length + ' rows'));
       if (r.status < 400 && rows.length) {
         // SYSTEM LABELS ONLY, with counts. No amount, no payer, no date.
-        const desc = {};
-        rows.forEach(x => {
-          const d = String((x && x.description) || '').trim() || '(blank)';
-          desc[d] = (desc[d] || 0) + 1;
-        });
-        const list = Object.entries(desc).sort((a, b) => b[1] - a[1]);
-        console.log('      ' + list.length + ' distinct descriptions:');
-        list.slice(0, 30).forEach(([d, n]) => console.log('         ' + pad(n, 6) + d));
-        const interesting = list.filter(([d]) =>
-          /final account|statement|deposit|refund|disposition|forwarding/i.test(d));
+        // MASKED. This printed two resident names on 2026-10-15: AppFolio
+        // interpolates the resident, property and unit INTO the description,
+        // and I had treated the field as a system label. Everything goes
+        // through lib/ledger-mask.js now.
+        const MASK = require('../lib/ledger-mask.js');
+        const t = MASK.tally(rows, 'description', []);
+        console.log('      ' + t.rows.length + ' distinct description PATTERNS:');
+        t.rows.slice(0, 30).forEach(x => console.log('         ' + pad(x.count, 6) + x.pattern));
+        const interesting = t.rows.filter(x =>
+          /final account|statement|deposit|refund|disposition|forwarding/i.test(x.pattern));
         console.log('      of those, mentioning FAS / deposit / refund: '
-          + (interesting.length ? interesting.map(([d]) => d).join(' | ') : 'NONE'));
+          + (interesting.length ? interesting.map(x => x.pattern).join(' | ') : 'NONE'));
         break;
       }
       await sleep(500);
