@@ -109,6 +109,7 @@
             <button data-maint-view="properties">Properties</button>
             <button data-maint-view="coverage">Coverage Map</button>
             <button data-maint-view="oncall">On-Call Rotation</button>
+            <button data-maint-view="moveouts">Move-outs</button>
             <button data-maint-view="efficiency">Maintenance Efficiency</button>
             <button data-maint-view="technician">Technician Activity</button>
             <button data-maint-view="wo-scheduling">WO Scheduling</button>
@@ -1701,6 +1702,27 @@
     </div>
 
     <!-- 8. Coverage Map -->
+    <div id="maint-view-moveouts" class="maint-view hidden">
+      <div class="row" style="align-items:center;gap:10px">
+        <h2 style="margin:0">Move-outs</h2>
+        <span style="flex:1"></span>
+        <label class="small">Last
+          <select id="mor-days">
+            <option value="30">30 days</option>
+            <option value="60" selected>60 days</option>
+            <option value="90">90 days</option>
+          </select>
+        </label>
+        <button class="btn btn-ghost" id="mor-refresh">↻</button>
+        <a class="btn" id="mor-xlsx" target="_blank" rel="noopener">Excel</a>
+      </div>
+      <p class="small muted">
+        Every move-out and where its inspection stands. <b>No balances here</b> &mdash; this is
+        the maintenance view of the same facts Collections sees.
+      </p>
+      <div id="mor-body"><p class="small muted">Loading…</p></div>
+    </div>
+
     <div id="maint-view-oncall" class="maint-view hidden">
       <h2>On-Call Rotation</h2>
       <p class="small muted">

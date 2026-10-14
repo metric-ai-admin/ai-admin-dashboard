@@ -18533,6 +18533,103 @@ app.get('/api/maintenance/moveout-alerts', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// THE SAME FACTS, FOR THE MAINTENANCE TAB.
+//
+// Erick holds Maintenance and does NOT hold Collections, and should not: that
+// tab carries balances. So the move-out picture lives in both places and this
+// one is built from fields a maintenance conversation needs — property, unit,
+// dates, state, the inspection we found and how. No balance, no delinquency,
+// and a test asserts this payload cannot carry one.
+//
+// It is also the WHOLE register, not only the overdue: Erick is the person who
+// closes an inspection or sends somebody back to a unit, and a list of only
+// the failures cannot be checked against the ones that went fine.
+async function moveOutRegisterData(db, todayCT, days) {
+  const af = require('./appfolio-reports.js');
+  const turns = ((await af.readReportData('unit_turn_detail')) || {}).rows || [];
+  const inspections = await selectAll(() => db.from('maintenance_inspections')
+    .select('inspection_id,inspection_name,property_name,unit,status,inspected_on,marked_done_on,created_on,unit_turn_id'),
+  { label: 'inspections', order: 'inspection_id' });
+  const rows = MOVEOUT.register({ turns, inspections }, todayCT, { days });
+  const counts = { done: 0, open: 0, none: 0 };
+  rows.forEach(r => { counts[r.state]++; });
+  return {
+    today: todayCT, days, rows, counts,
+    stateLabels: MOVEOUT.STATE_LABEL,
+    sourceEmpty: !inspections.length,
+    caveat: 'An inspection is matched by its unit turn id where AppFolio set one, and '
+      + 'by its name otherwise. A name is free text, so a row that says "No inspection '
+      + 'recorded" can mean the walk was done under a name nothing recognises.',
+  };
+}
+
+const MOVEOUT_ROLES = ['admin', 'maintenance', 'regional_director', 'resident_success'];
+
+app.get('/api/maintenance/moveout-register', requireAuth, async (req, res) => {
+  try {
+    if (!MOVEOUT_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: 'Not your view' });
+    }
+    const db = supabaseAdmin || supabasePublic;
+    const days = Math.min(Math.max(Number(req.query.days) || 60, 1), 365);
+    res.json(await moveOutRegisterData(db, WEEK.todayYMD(), days));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// One sheet per state, for the Unit Turns meeting.
+app.get('/api/maintenance/moveout-register.xlsx', requireAuth, async (req, res) => {
+  try {
+    if (!MOVEOUT_ROLES.includes(req.user?.role)) {
+      return res.status(403).json({ error: 'Not your view' });
+    }
+    const db = supabaseAdmin || supabasePublic;
+    const days = Math.min(Math.max(Number(req.query.days) || 60, 1), 365);
+    const d = await moveOutRegisterData(db, WEEK.todayYMD(), days);
+
+    const HEAD = ['Property', 'Unit', 'Moved out', 'Business days since', 'Due',
+      'State', 'Inspection found', 'Inspection date', 'Inspection status',
+      'How it was matched', 'Unrecognised inspections on the unit'];
+    const toRows = rows => rows.map(r => [
+      r.property, r.unit || '', r.moveOut, r.businessDaysSince, r.due,
+      MOVEOUT.STATE_LABEL[r.state], r.inspectionName || '', r.inspectionDate || '',
+      r.inspectionStatus || '', r.basis === 'turn' ? 'unit turn id' : 'inspection name',
+      r.unnamedCount || 0,
+    ]);
+
+    const wb = XLSX.utils.book_new();
+    // Summary first: the shape before the detail, and the caveat where nobody
+    // can miss it.
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+      ['Move-outs, last ' + days + ' days — as of ' + d.today],
+      [],
+      ['State', 'Count'],
+      [MOVEOUT.STATE_LABEL.done, d.counts.done],
+      [MOVEOUT.STATE_LABEL.open, d.counts.open],
+      [MOVEOUT.STATE_LABEL.none, d.counts.none],
+      [],
+      [d.caveat],
+      ['"Inspection exists, not marked done" needs somebody to close it in AppFolio, '
+        + 'not a technician back at the unit.'],
+    ]), 'Summary');
+
+    // ONE SHEET PER STATE, and an empty state still gets its sheet: a missing
+    // tab reads as "we did not look", which is the opposite of zero.
+    ['none', 'open', 'done'].forEach(state => {
+      const rows = d.rows.filter(r => r.state === state);
+      const ws = XLSX.utils.aoa_to_sheet([[MOVEOUT.STATE_LABEL[state] + ' — ' + rows.length], [],
+        HEAD, ...toRows(rows)]);
+      ws['!cols'] = [{ wch: 22 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 12 },
+        { wch: 30 }, { wch: 34 }, { wch: 13 }, { wch: 12 }, { wch: 18 }, { wch: 10 }];
+      XLSX.utils.book_append_sheet(wb, ws, MOVEOUT.STATE_LABEL[state].slice(0, 31));
+    });
+
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="move_outs_' + d.today + '.xlsx"');
+    res.send(buf);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---- verbal notices --------------------------------------------------------
 //
 // ANY SIGNED-IN USER (Arturo, 2026-10-14). A technician standing in the unit is

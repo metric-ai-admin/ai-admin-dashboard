@@ -5764,6 +5764,7 @@ function switchMaintenanceView(view) {
     'properties':     async () => { await loadTechnicians(); loadPropertyAssignments(); },
     'coverage':       loadMaintenanceCoverage,
     'oncall':         loadOnCall,
+    'moveouts':       loadMoveOutRegister,
     'efficiency':     loadEfficiency,
     'technician':     loadTechActivity,
     'wo-scheduling':  loadWoScheduling,   // wo-scheduling.js
@@ -13349,3 +13350,101 @@ function wireLossReasonSelects(root) {
     });
   });
 }
+
+// ── Move-outs, the Maintenance view ──────────────────────────────────
+//
+// THE SAME FACTS AS COLLECTIONS, WITHOUT A SINGLE BALANCE. Erick holds
+// Maintenance and does not hold Collections, and should not: that tab carries
+// delinquency. So this is built from the fields a maintenance conversation
+// needs — property, unit, dates, state, the inspection we found and how — and
+// a test asserts no balance word ever appears in it.
+//
+// It is the WHOLE register, not only the overdue ones. Erick is the person who
+// closes an inspection or sends somebody back to a unit, and a list of only
+// the failures cannot be checked against the ones that went fine.
+
+let morData = null;
+
+function morDays() {
+  return Number(document.getElementById('mor-days')?.value || 60);
+}
+
+async function loadMoveOutRegister() {
+  const body = document.getElementById('mor-body');
+  if (!body) return;
+  const link = document.getElementById('mor-xlsx');
+  if (link) link.href = '/api/maintenance/moveout-register.xlsx?days=' + morDays();
+  body.innerHTML = '<p class="small muted">Loading…</p>';
+  try {
+    const d = await api('/api/maintenance/moveout-register?days=' + morDays());
+    morData = d;
+    renderMoveOutRegister(d);
+  } catch (e) {
+    body.innerHTML = `<div class="msg error">${esc(e.message || 'Could not load.')}</div>`;
+  }
+}
+
+const MOR_STATE_STYLE = {
+  // Amber, not red: a click in AppFolio is not a trip to the unit.
+  open: 'background:#fdf0d5;color:#8a6d00',
+  none: 'background:#fdecec;color:#b00020',
+  done: 'background:#eaf6ea;color:#1b5e20',
+};
+
+function renderMoveOutRegister(d) {
+  const L = d.stateLabels || {};
+  const chip = s => `<span class="badge" style="${MOR_STATE_STYLE[s] || ''}">${esc(L[s] || s)}</span>`;
+
+  const row = r => `<tr>
+    <td>${esc(r.property)}</td>
+    <td><b>${esc(r.unit || '(no unit)')}</b></td>
+    <td class="small">${esc(r.moveOut)}</td>
+    <td class="small">${r.businessDaysSince}</td>
+    <td>${chip(r.state)}</td>
+    <td class="small">${esc(r.inspectionName || '—')}</td>
+    <td class="small">${esc(r.inspectionDate || '—')}</td>
+    <td class="small">${r.basis === 'turn'
+      ? '<span title="Matched on the unit turn id — structural">turn id</span>'
+      : '<span title="No turn link, so this was read off the inspection name">name</span>'}
+      ${r.unnamedCount
+        ? `<span class="muted" title="Inspections on this unit with a name nothing recognises">
+             · ${r.unnamedCount} unrecognised</span>` : ''}</td>
+  </tr>`;
+
+  // Grouped by state, worst first: what needs doing, then what needs closing,
+  // then what is finished. A single sorted table buries the six that matter
+  // under the thirty that do not.
+  const section = s => {
+    const rows = (d.rows || []).filter(r => r.state === s);
+    const note = s === 'open'
+      ? '<p class="small muted">Somebody has to close these in AppFolio. Do not send anyone back to the unit.</p>'
+      : (s === 'none'
+        ? '<p class="small muted">The only state that means a unit still needs inspecting.</p>'
+        : '');
+    return `<h4 style="margin:14px 0 2px 0">${esc(L[s] || s)} <span class="muted">${rows.length}</span></h4>`
+      + note
+      + (rows.length
+        ? `<table class="table"><thead><tr><th>Property</th><th>Unit</th><th>Moved out</th>
+             <th>Bus. days</th><th>State</th><th>Inspection found</th><th>Inspection date</th>
+             <th>Matched by</th></tr></thead><tbody>${rows.map(row).join('')}</tbody></table>`
+        : '<p class="small muted">None.</p>');
+  };
+
+  document.getElementById('mor-body').innerHTML = `
+    <div class="row" style="gap:16px;margin:6px 0">
+      <span>${chip('none')} <b>${d.counts.none}</b></span>
+      <span>${chip('open')} <b>${d.counts.open}</b></span>
+      <span>${chip('done')} <b>${d.counts.done}</b></span>
+      <span class="small muted">${d.rows.length} move-outs in the last ${d.days} days</span>
+    </div>
+    ${d.sourceEmpty
+      ? '<div class="msg error">No inspections were read at all. Every row below says '
+        + '&ldquo;no inspection&rdquo; because the source is empty, not because the walks '
+        + 'are missing.</div>'
+      : ''}
+    ${section('none')}${section('open')}${section('done')}
+    <p class="small muted" style="margin-top:10px">${esc(d.caveat || '')}</p>`;
+}
+
+document.getElementById('mor-refresh')?.addEventListener('click', () => loadMoveOutRegister());
+document.getElementById('mor-days')?.addEventListener('change', () => loadMoveOutRegister());

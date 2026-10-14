@@ -523,6 +523,98 @@ t('the loss-reason dropdown is empty-safe and wired to one route', () => {
   assert.ok(/stays on the leads already annotated/.test(app));
 });
 
+// ---- the Maintenance view (Erick does not hold Collections) ----------------
+
+t('the register returns EVERY move-out, not only the overdue', () => {
+  // Erick is the person who closes an inspection or sends somebody back to a
+  // unit. A list of only the failures cannot be checked against the ones that
+  // went fine.
+  const turns = [
+    { property_name: 'A', unit: '1', move_out_date: '2026-10-08', unit_turn_id: 'T1' },
+    { property_name: 'B', unit: '2', move_out_date: '2026-10-09' },
+    { property_name: 'C', unit: '3', move_out_date: '2026-10-13' },
+  ];
+  const insp = [
+    { property_name: 'A', unit: '1', unit_turn_id: 'T1', inspection_name: 'Untitled',
+      status: 'DONE', inspected_on: '2026-10-02' },
+    { property_name: 'B', unit: '2', inspection_name: 'Move Out Inspection',
+      status: 'NEW', inspected_on: '2026-10-10' },
+  ];
+  const rows = M.register({ turns, inspections: insp }, TODAY, { days: 60 });
+  assert.strictEqual(rows.length, 3, 'a move-out inside the window was dropped');
+  assert.deepStrictEqual(rows.map(r => r.state), ['none', 'open', 'done'],
+    'newest first: C none, B open, A done');
+  // The inspection is NAMED, so somebody can open it instead of hunting for it.
+  assert.strictEqual(rows[2].inspectionName, 'Untitled');
+  assert.strictEqual(rows[2].inspectionDate, '2026-10-02');
+  assert.strictEqual(rows[2].basis, 'turn');
+  assert.strictEqual(rows[1].inspectionStatus, 'NEW');
+});
+
+t('a move-out outside the window is not in the register', () => {
+  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-01-01' }];
+  assert.deepStrictEqual(M.register({ turns, inspections: [] }, TODAY, { days: 60 }), []);
+});
+
+t('NO BALANCE OR DELINQUENCY can reach the maintenance view', () => {
+  // THE WHOLE POINT. Erick holds Maintenance and not Collections, and should
+  // not: that tab carries balances. This is asserted on the payload and on the
+  // screen, because "I did not add one" is not a control.
+  const rows = M.register({
+    turns: [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08',
+      balance: 1234, delinquent_rent: 999, amount_receivable: 50, tenant: 'Somebody' }],
+    inspections: [],
+  }, TODAY, { days: 60 });
+  const text = JSON.stringify(rows);
+  ['balance', 'delinquen', 'receivable', 'amount', 'tenant', 'resident']
+    .forEach(k => assert.ok(!new RegExp(k, 'i').test(text), k + ' reached the register'));
+
+  const s = src('server.js');
+  const at = s.indexOf('async function moveOutRegisterData');
+  const block = s.slice(at, s.indexOf("app.get('/api/maintenance/moveout-register.xlsx'", at))
+    .replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(!/balance|delinquen|receivable/i.test(block), 'the route reads a balance');
+});
+
+t('the maintenance view is reachable by Erick and not by nobody', () => {
+  const s = src('server.js');
+  assert.ok(/MOVEOUT_ROLES = \['admin', 'maintenance'/.test(s), 'Erick cannot open it');
+  assert.ok(/MOVEOUT_ROLES\.includes\(req\.user\?\.role\)/.test(s), 'the route is ungated');
+  // Both the view and the export are gated the same way — an export that is
+  // more permissive than the screen it came from is the leak.
+  assert.strictEqual((s.match(/MOVEOUT_ROLES\.includes/g) || []).length, 2);
+  const html = src('public/index.html');
+  assert.ok(/data-maint-view="moveouts"/.test(html), 'the tab is missing');
+  assert.ok(/No balances here/.test(html), 'the screen does not say what it leaves out');
+});
+
+t('Collections keeps its own view, unchanged', () => {
+  const app = src('public/app.js');
+  assert.ok(/function loadMoveOutAlerts/.test(app), 'the Collections panel was replaced');
+  assert.ok(/function loadMoveOutRegister/.test(app));
+  const s = src('server.js');
+  assert.ok(/app\.get\('\/api\/maintenance\/moveout-alerts'/.test(s));
+  assert.ok(/app\.get\('\/api\/maintenance\/moveout-register'/.test(s));
+});
+
+t('the export has one sheet per state, including the empty ones', () => {
+  // A missing tab reads as "we did not look", which is the opposite of zero.
+  const s = src('server.js');
+  const at = s.indexOf("app.get('/api/maintenance/moveout-register.xlsx'");
+  const block = s.slice(at, at + 2800);
+  assert.ok(/\['none', 'open', 'done'\]\.forEach/.test(block));
+  assert.ok(/'Summary'/.test(block), 'no summary sheet');
+  assert.ok(/d\.caveat/.test(block), 'the caveat is not in the file people take to a meeting');
+  assert.ok(/not a technician back at the unit/.test(block));
+});
+
+t('an empty inspections source is not a page of clean rows', () => {
+  const app = src('public/app.js');
+  const fn = app.slice(app.indexOf('function renderMoveOutRegister'));
+  assert.ok(/sourceEmpty/.test(fn), 'an empty source would read as "no inspections done"');
+  assert.ok(/because the source is empty/.test(fn));
+});
+
 // ---- the probe that could not see the report -------------------------------
 
 t('the probe can read a report that is not in the registry', () => {
