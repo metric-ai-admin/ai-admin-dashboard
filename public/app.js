@@ -435,10 +435,11 @@ function loadTab(tab) {
   if (tab === 'calls') loadCallAnalyzer();
   if (tab === 'evictions') loadEvictions();
   if (tab === 'vacancy') loadVacancy();
-  if (tab === 'collections') { loadCollections(); loadDecisionQueue(); }
+  if (tab === 'collections') { loadCollections(); loadDecisionQueue(); loadMoveOutAlerts(); }
   if (tab === 'kpi') { loadRegional(); loadBrief(); kcInit(); }
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
+  if (tab === 'leasing') { loadVerbalNotices(); loadLossReasons(); }
   if (tab === 'marketing') loadMarketing();
   if (tab === 'kpirecaps') loadKpiRecaps();
   if (tab === 'activity') loadActivity();
@@ -13103,4 +13104,234 @@ function ocViolations(weeks) {
   if (!all.length) return '';
   return '<div class="msg error" style="margin-top:8px"><b>Check these:</b><ul style="margin:6px 0 0 18px">'
     + all.map(a => `<li>${a}</li>`).join('') + '</ul></div>';
+}
+
+// ── Kara's Phase C ───────────────────────────────────────────────────
+// Move-out alerts, verbal notices, lost-lead reasons.
+//
+// The FAS alert is deliberately absent: the only trace of a Final Account
+// Statement in this data is an INSPECTION named after one, and Kara was asked
+// what she means by "FAS done" before anything is built on that.
+
+// ---- move-out alerts (Collections) ----------------------------------------
+
+async function loadMoveOutAlerts() {
+  const body = document.getElementById('mo-body');
+  if (!body) return;
+  try {
+    const d = await api('/api/maintenance/moveout-alerts');
+    const esc2 = esc;
+    const today = (d.movingOutToday || []).length
+      ? '<ul class="small" style="margin:4px 0 10px 18px">'
+        + d.movingOutToday.map(m => `<li>${esc2(m.property)} <b>${esc2(m.unit || '(no unit)')}</b>`
+          + (m.turnClosed ? ' <span class="muted">turn closed</span>' : '') + '</li>').join('')
+        + '</ul>'
+      : '<p class="small muted">Nobody is moving out today.</p>';
+
+    // EVERY ALERT SAYS WHICH SIGNAL DECIDED IT. 'turn' is the structural link
+    // from unit_turn_id; 'name' means we read free text and may be wrong, and
+    // the reader is told which they are looking at.
+    const alerts = (d.walkOverdue || []).map(a => {
+      const maybe = (a.unnamedInspections || []).length
+        ? `<div class="small muted" style="margin-top:3px">`
+          + `${a.unnamedInspections.length} inspection`
+          + (a.unnamedInspections.length === 1 ? '' : 's')
+          + ' on this unit with an unrecognised name — one of them may be the walk: '
+          + a.unnamedInspections.slice(0, 5).map(u =>
+            `<b>${esc2(u.name)}</b>${u.inspectedOn ? ' ' + esc2(u.inspectedOn) : ''}`).join(', ')
+          + '</div>'
+        : '';
+      const basis = a.basis === 'turn'
+        ? '<span class="badge badge-gray" title="Matched by unit_turn_id — structural">turn id</span>'
+        : '<span class="badge" style="background:#fdf0d5;color:#8a6d00" '
+          + 'title="No turn id on this move-out, so this was decided by inspection name">by name</span>';
+      return `<tr>
+        <td>${esc2(a.property)} <b>${esc2(a.unit || '(no unit)')}</b></td>
+        <td class="small">${esc2(a.moveOut)}</td>
+        <td class="small">${esc2(a.due)}</td>
+        <td class="small" style="color:#b00020"><b>${a.businessDaysOverdue || 0}d late</b></td>
+        <td>${basis}${a.openWalk ? ` <span class="small muted">open (${esc2(a.openWalk)})</span>` : ''}${maybe}</td>
+      </tr>`;
+    }).join('');
+
+    body.innerHTML = `
+      <h4 style="margin:10px 0 2px 0">Today</h4>${today}
+      <h4 style="margin:10px 0 2px 0">No move-out inspection recorded after 2 business days</h4>
+      ${alerts
+        ? `<table class="table"><thead><tr><th>Property / unit</th><th>Moved out</th>
+             <th>Due</th><th>Late</th><th>How we know</th></tr></thead><tbody>${alerts}</tbody></table>`
+        : '<p class="small muted">None overdue.</p>'}
+      <p class="small muted" style="margin-top:8px">${esc2(d.caveat || '')}</p>`;
+  } catch (e) {
+    body.innerHTML = `<div class="msg error">${esc(e.message || 'Could not load.')}</div>`;
+  }
+}
+
+document.getElementById('mo-refresh')?.addEventListener('click', () => loadMoveOutAlerts());
+
+// ---- verbal notices (Leasing) ---------------------------------------------
+
+async function loadVerbalNotices() {
+  const list = document.getElementById('vn-list');
+  if (!list) return;
+  try {
+    const d = await api('/api/leasing/verbal-notices');
+    const roster = document.getElementById('vn-roster');
+    if (roster) roster.innerHTML = (d.roster || []).map(n => `<option value="${esc(n)}">`).join('');
+
+    const rows = (d.rows || []).map(r => {
+      // THE OPEN ONES ARE THE POINT. A verbal notice that never became a
+      // written one is what this list exists to make findable.
+      const written = r.written_notice_received
+        ? `<span class="badge badge-green">written ${esc(r.written_notice_received)}</span>`
+        : `<button class="btn-sm" data-vn-written="${esc(r.id)}">mark written notice received</button>`;
+      const mail = r.notified_at
+        ? `<span class="small muted" title="${esc(r.notified_at)}">emailed</span>`
+        : `<span class="small" style="color:#b00020" title="${esc(r.notify_error || '')}">not emailed</span>`;
+      return `<tr${r.written_notice_received ? '' : ' style="background:#fffdf5"'}>
+        <td class="small">${esc(r.notice_date)}</td>
+        <td>${esc(r.property)} ${esc(r.unit || '')}</td>
+        <td class="small">${esc(r.resident || '—')}</td>
+        <td class="small">${esc(r.received_by)}</td>
+        <td>${written}</td>
+        <td>${mail}</td>
+      </tr>`;
+    }).join('');
+
+    const open = (d.rows || []).filter(r => !r.written_notice_received).length;
+    list.innerHTML = rows
+      ? `<p class="small">${open} still waiting on written notice.</p>`
+        + `<table class="table"><thead><tr><th>Date</th><th>Property / unit</th><th>Resident</th>
+           <th>Received by</th><th>Written notice</th><th>Email</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="small muted">None logged.</p>';
+
+    list.querySelectorAll('[data-vn-written]').forEach(b =>
+      b.addEventListener('click', () => vnMarkWritten(b.dataset.vnWritten)));
+  } catch (e) {
+    list.innerHTML = `<div class="msg error">${esc(e.message || 'Could not load.')}</div>`;
+  }
+}
+
+async function vnMarkWritten(id) {
+  const when = prompt('Date the written notice was received (YYYY-MM-DD):',
+    new Date().toLocaleDateString('en-CA'));
+  if (!when) return;
+  try {
+    await api('/api/leasing/verbal-notices/' + encodeURIComponent(id) + '/written', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ writtenNoticeReceived: when }),
+    });
+    loadVerbalNotices();
+  } catch (e) { alert(e.message); }
+}
+
+document.getElementById('vn-form')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const msg = document.getElementById('vn-msg');
+  const btn = document.getElementById('vn-save');
+  msg.className = 'msg';
+  msg.textContent = '';
+  btn.disabled = true;
+  try {
+    const d = await api('/api/leasing/verbal-notices', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        property: document.getElementById('vn-property').value,
+        unit: document.getElementById('vn-unit').value,
+        resident: document.getElementById('vn-resident').value,
+        noticeDate: document.getElementById('vn-date').value,
+        receivedBy: document.getElementById('vn-received').value,
+        notes: document.getElementById('vn-notes').value,
+      }),
+    });
+    // THE REMINDER IS THE POINT OF THE CONFIRMATION, not "saved".
+    msg.className = d.notifyError ? 'msg error' : 'msg';
+    msg.innerHTML = `<b>${esc(d.reminder)}</b>`
+      + (d.notifyError
+        ? `<br>Saved, but the email did not send: ${esc(d.notifyError)} — tell Bekah and Kara yourself.`
+        : `<br>Emailed ${esc((d.notifiedTo || []).join(', '))}.`);
+    e.target.reset();
+    loadVerbalNotices();
+  } catch (err) {
+    msg.className = 'msg error';
+    msg.textContent = err.message;
+  } finally { btn.disabled = false; }
+});
+
+// ---- lost-lead reasons (Leasing) ------------------------------------------
+
+async function loadLossReasons() {
+  const body = document.getElementById('lr-body');
+  if (!body) return;
+  try {
+    const d = await api('/api/leasing/loss-reasons');
+    LOSS_REASONS = (d.rows || []).filter(r => r.active);
+    const rows = (d.rows || []).map(r => `<tr${r.active ? '' : ' class="muted"'}>
+      <td>${esc(r.label)}</td>
+      <td class="small">${r.active ? 'in use' : 'retired'}</td>
+      <td>${d.canEdit && r.active
+        ? `<button class="btn-sm" data-lr-retire="${esc(r.id)}">retire</button>` : ''}</td>
+    </tr>`).join('');
+    body.innerHTML = `<table class="table"><thead><tr><th>Reason</th><th></th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table>`
+      + (d.canEdit
+        ? `<form class="row" id="lr-add" style="gap:6px;margin-top:8px">
+             <input id="lr-label" placeholder="new reason" required>
+             <button class="btn-sm primary" type="submit">Add</button>
+           </form>` : '')
+      // A retired reason stays on the leads that already carry it. A history
+      // that changes when somebody edits a dropdown is not a history.
+      + '<p class="small muted">Retiring a reason stops it being offered. '
+      + 'It stays on the leads already annotated with it.</p>';
+
+    body.querySelectorAll('[data-lr-retire]').forEach(b =>
+      b.addEventListener('click', () => lrSave({ id: b.dataset.lrRetire, active: false })));
+    document.getElementById('lr-add')?.addEventListener('submit', e => {
+      e.preventDefault();
+      lrSave({ label: document.getElementById('lr-label').value });
+    });
+  } catch (e) {
+    body.innerHTML = `<div class="msg error">${esc(e.message || 'Could not load.')}</div>`;
+  }
+}
+
+let LOSS_REASONS = [];
+
+async function lrSave(payload) {
+  try {
+    await api('/api/leasing/loss-reasons', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    loadLossReasons();
+  } catch (e) { alert(e.message); }
+}
+
+document.getElementById('lr-refresh')?.addEventListener('click', () => loadLossReasons());
+
+// The dropdown a lead row shows. Returns '' when the list has not loaded, so a
+// lead view never renders an empty select that looks like "no reason".
+function lossReasonSelect(lead) {
+  if (!LOSS_REASONS.length) return '';
+  const cur = (lead && lead.loss_reason) || '';
+  return `<select class="crm-select" data-loss-lead="${esc(lead.id)}">`
+    + `<option value=""${cur ? '' : ' selected'}>— lost reason —</option>`
+    + LOSS_REASONS.map(r => `<option value="${esc(r.label)}"`
+      + (r.label === cur ? ' selected' : '') + `>${esc(r.label)}</option>`).join('')
+    + '</select>';
+}
+
+function wireLossReasonSelects(root) {
+  (root || document).querySelectorAll('[data-loss-lead]').forEach(sel => {
+    if (sel.dataset.lossWired) return;
+    sel.dataset.lossWired = '1';
+    sel.addEventListener('change', async () => {
+      try {
+        await api('/api/leasing/leads/' + encodeURIComponent(sel.dataset.lossLead) + '/loss-reason', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: sel.value }),
+        });
+      } catch (e) { alert(e.message); }
+    });
+  });
 }

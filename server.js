@@ -18623,6 +18623,23 @@ app.post('/api/leasing/verbal-notices', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// The written notice finally arrived. Marked, not deleted: the verbal one is
+// still a fact about when the resident first said it, and the gap between the
+// two dates is the thing worth seeing.
+app.post('/api/leasing/verbal-notices/:id/written', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const when = String(req.body?.writtenNoticeReceived || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(when)) {
+      return res.status(400).json({ error: 'A date (YYYY-MM-DD) is required' });
+    }
+    const { error } = await db.from('verbal_notices')
+      .update({ written_notice_received: when }).eq('id', req.params.id);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---- lost-lead reasons -----------------------------------------------------
 //
 // An editable list and an OPTIONAL annotation. IT CHANGES NO COUNT: nothing in

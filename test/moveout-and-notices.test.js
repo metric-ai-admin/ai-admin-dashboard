@@ -359,6 +359,69 @@ t('the six reasons Kara named are seeded', () => {
     .forEach(r => assert.ok(sql.includes("'" + r + "'"), r + ' is not seeded'));
 });
 
+// ---- the screens -----------------------------------------------------------
+
+t('the move-out panel says which signal decided each alert', () => {
+  // A reader should know when they are being told something read off free
+  // text. 'turn id' is structural; 'by name' may be wrong.
+  const app = src('public/app.js');
+  assert.ok(/function loadMoveOutAlerts/.test(app));
+  const fn = app.slice(app.indexOf('function loadMoveOutAlerts'), app.indexOf('function loadVerbalNotices'));
+  assert.ok(/turn id/.test(fn) && /by name/.test(fn), 'the basis is not shown');
+  assert.ok(/may be the walk/.test(fn), 'the unrecognised inspections are not listed');
+  assert.ok(/d\.caveat/.test(fn), 'the screen drops the caveat the route sends');
+  assert.ok(!/FAS|Final Account/.test(fn), 'an unapproved FAS alert reached the screen');
+});
+
+t('the verbal-notice form leads with what it is NOT', () => {
+  const html = src('public/index.html');
+  const at = html.indexOf('id="vn-wrap"');
+  assert.ok(at > 0, 'the form is missing');
+  const block = html.slice(at, at + 1600);
+  assert.ok(/not<\/b> the formal notice/.test(block), 'the warning is not on the form');
+  assert.ok(/nothing is written to AppFolio/.test(block));
+  assert.ok(/written\s*\n?\s*notice in the portal/.test(block), 'the reminder is missing');
+});
+
+t('the confirmation repeats the reminder, not "saved"', () => {
+  const app = src('public/app.js');
+  const at = app.indexOf("document.getElementById('vn-form')");
+  const fn = app.slice(at, app.indexOf('// ---- lost-lead reasons', at));
+  assert.ok(/esc\(d\.reminder\)/.test(fn), 'the reminder from the server is thrown away');
+  // A failed email must not read as a clean save.
+  assert.ok(/d\.notifyError/.test(fn) && /tell Bekah and Kara yourself/.test(fn));
+});
+
+t('an open verbal notice is visible as open', () => {
+  const app = src('public/app.js');
+  const fn = app.slice(app.indexOf('function loadVerbalNotices'), app.indexOf('async function vnMarkWritten'));
+  assert.ok(/still waiting on written notice/.test(fn));
+  assert.ok(/mark written notice received/.test(fn));
+  assert.ok(/not emailed/.test(fn), 'a row could look notified when the send failed');
+});
+
+t('marking the written notice does not delete the verbal one', () => {
+  // The gap between the two dates is the thing worth seeing.
+  const s = src('server.js');
+  const at = s.indexOf("app.post('/api/leasing/verbal-notices/:id/written'");
+  assert.ok(at > 0, 'the route is missing');
+  const block = s.slice(at, at + 900);
+  assert.ok(/update\(\{ written_notice_received: when \}\)/.test(block));
+  assert.ok(!/\.delete\(/.test(block));
+});
+
+t('the loss-reason dropdown is empty-safe and wired to one route', () => {
+  const app = src('public/app.js');
+  assert.ok(/function lossReasonSelect/.test(app));
+  const fn = app.slice(app.indexOf('function lossReasonSelect'), app.indexOf('function wireLossReasonSelects'));
+  // An empty select would read as "no reason" rather than "not loaded".
+  assert.ok(/if \(!LOSS_REASONS\.length\) return ''/.test(fn));
+  assert.ok(/leads\/' \+ encodeURIComponent/.test(app));
+  // Retired reasons are not offered, but the list still shows them.
+  assert.ok(/\.filter\(r => r\.active\)/.test(app));
+  assert.ok(/stays on the leads already annotated/.test(app));
+});
+
 // ---- the probe that could not see the report -------------------------------
 
 t('the probe can read a report that is not in the registry', () => {
