@@ -295,7 +295,9 @@ t('"exists but not marked done" is its own state', () => {
   assert.strictEqual(a.openName, 'Move Out Inspection');
   const l = M.line(a);
   assert.ok(/NOT marked done in AppFolio/.test(l), l);
-  assert.ok(/close it, not re-walk the unit/.test(l), l);
+  // The advice changed on 2026-10-14: the open records are empty, so closing
+  // one records a walk that never happened.
+  assert.ok(/check it before closing it/.test(l), l);
   assert.ok(!/No move-out inspection recorded/.test(l), 'it still reads as missing');
 });
 
@@ -332,7 +334,7 @@ t('the brief and the panel keep the two apart', () => {
   });
   const app = src('public/app.js');
   assert.ok(/a\.state === 'open'/.test(app), 'the panel shows one list');
-  assert.ok(/Do not send anyone back to the unit/.test(app));
+  assert.ok(/all were empty/.test(app), 'the panel does not carry the finding');
 });
 
 t('the measurement reports the three states by property', () => {
@@ -521,6 +523,91 @@ t('the loss-reason dropdown is empty-safe and wired to one route', () => {
   // Retired reasons are not offered, but the list still shows them.
   assert.ok(/\.filter\(r => r\.active\)/.test(app));
   assert.ok(/stays on the leads already annotated/.test(app));
+});
+
+// ---- what Erick found on 2026-10-14 ----------------------------------------
+//
+// He opened every open move-out inspection and ALL WERE EMPTY — no areas, no
+// photos. In twenty of those units the real walk was recorded in a different
+// inspection, under a technician's name or "Untitled".
+//
+// So "somebody has to close it, not re-walk the unit" was advice to record a
+// walk that never happened in that record — and it is the record a charge to a
+// resident rests on. Two changes, no new state: the wording, and attaching the
+// evidence that was already being calculated and thrown away.
+
+t('the open state no longer tells anybody to just close it', () => {
+  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08', unit_turn_id: 'T1' }];
+  const insp = [{ property_name: 'A', unit: '1', unit_turn_id: 'T1',
+    inspection_name: 'Move Out Inspection', status: 'NEW', inspected_on: '2026-10-09' }];
+  const a = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 })[0];
+  const l = M.line(a);
+  assert.ok(/all were empty/.test(l), l);
+  assert.ok(/check it before closing it/.test(l), l);
+  assert.ok(!/not re-walk the unit/.test(l), 'the old advice survived');
+  assert.ok(/2026-10-14/.test(l), 'the date of the check is not stated');
+});
+
+t('the open state carries the unrecognised inspections, like none does', () => {
+  // THE TWENTY UNITS. An empty open shell plus the real walk under a
+  // technician's name used to show as "open — close it" with no mention of the
+  // other inspection: the alert hid the evidence exactly where somebody was
+  // deciding whether to close an empty record.
+  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08', unit_turn_id: 'T1' }];
+  const insp = [
+    { property_name: 'A', unit: '1', unit_turn_id: 'T1',
+      inspection_name: 'Move Out Damage and Occupancy Inspection', status: 'NEW',
+      inspected_on: '2026-10-09' },
+    { property_name: 'A', unit: '1', inspection_name: 'Andres luevano',
+      status: 'DONE', inspected_on: '2026-10-10' },
+  ];
+  const a = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 })[0];
+  assert.strictEqual(a.state, 'open', 'this is not the fourth state');
+  assert.strictEqual(a.unnamedInspections.length, 1);
+  assert.strictEqual(a.unnamedInspections[0].name, 'Andres luevano');
+  assert.strictEqual(a.unnamedInspections[0].inspectedOn, '2026-10-10');
+  assert.strictEqual(a.unnamedInspections[0].status, 'DONE');
+  assert.ok(/may be the walk/.test(M.line(a)));
+});
+
+t('the same is true when the open one was found by name', () => {
+  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08' }];
+  const insp = [
+    { property_name: 'A', unit: '1', inspection_name: 'Move Out Inspection',
+      status: 'IN PROGRESS', inspected_on: '2026-10-09' },
+    { property_name: 'A', unit: '1', inspection_name: 'Untitled',
+      status: 'DONE', inspected_on: '2026-10-09' },
+  ];
+  const a = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 })[0];
+  assert.strictEqual(a.state, 'open');
+  assert.strictEqual(a.unnamedInspections.length, 1);
+});
+
+t('NO FOURTH STATE was added', () => {
+  // Jay and Bekah have not decided how inspections will be recorded, and a
+  // fourth state is a patch over that decision.
+  assert.deepStrictEqual(M.STATES, ['done', 'open', 'none']);
+  const lib = src('lib/moveout-alerts.js');
+  assert.ok(!/probably done under another name/i.test(lib));
+});
+
+t('all three renderings say it and show the evidence', () => {
+  const open = { property: 'A', unit: '1', moveOut: '2026-10-08', due: '2026-10-12',
+    state: 'open', openWalk: 'NEW', openName: 'Move Out Inspection', basis: 'turn',
+    businessDaysOverdue: 2, tooEarly: [],
+    unnamedInspections: [{ name: 'Andres luevano', status: 'DONE', inspectedOn: '2026-10-10' }] };
+  const brief = B.build({ properties: [],
+    moveOuts: { today: [], walkOverdue: [open], sourceEmpty: false } });
+  const text = B.render(brief, { today: TODAY });
+  const html = H.renderHtml(brief, { today: TODAY });
+  [['text', text], ['html', html]].forEach(([which, out]) => {
+    assert.ok(/all were EMPTY|all were empty/.test(out), which + ': the finding is not stated');
+    assert.ok(!/do not re-walk/i.test(out), which + ': the old advice survived');
+  });
+  assert.ok(html.includes('Andres luevano'), 'the html drops the evidence');
+  const app = src('public/app.js');
+  assert.ok(/all were empty/.test(app), 'the panels do not state the finding');
+  assert.ok(!/Do not send anyone back to the unit/.test(app), 'the old advice survived on screen');
 });
 
 // ---- the Maintenance view (Erick does not hold Collections) ----------------

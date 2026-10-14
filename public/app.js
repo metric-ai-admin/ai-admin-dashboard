@@ -13171,7 +13171,9 @@ async function loadMoveOutAlerts() {
       <h4 style="margin:10px 0 2px 0">Today</h4>${today}
       <h4 style="margin:12px 0 2px 0;color:#8a6d00">Inspection exists but is not marked done in AppFolio</h4>
       ${openOnes.length
-        ? `<p class="small muted">Somebody has to close these. Do not send anyone back to the unit.</p>`
+        ? '<p class="small" style="color:#8a6d00">Erick checked the open ones on 2026-10-14 and '
+          + '<b>all were empty</b> — check before closing. Where a unit shows an unrecognised '
+          + 'inspection below, that is probably where the real walk was recorded.</p>'
           + table(openOnes)
         : '<p class="small muted">None.</p>'}
       <h4 style="margin:12px 0 2px 0;color:#b00020">No move-out inspection recorded after 2 business days</h4>
@@ -13417,7 +13419,9 @@ function renderMoveOutRegister(d) {
   const section = s => {
     const rows = (d.rows || []).filter(r => r.state === s);
     const note = s === 'open'
-      ? '<p class="small muted">Somebody has to close these in AppFolio. Do not send anyone back to the unit.</p>'
+      ? '<p class="small" style="color:#8a6d00">Erick checked the open ones on 2026-10-14 and '
+        + '<b>all were empty</b> — check before closing. An unrecognised inspection on the same '
+        + 'unit is probably where the real walk was recorded.</p>'
       : (s === 'none'
         ? '<p class="small muted">The only state that means a unit still needs inspecting.</p>'
         : '');
