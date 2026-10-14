@@ -70,6 +70,20 @@ async function getAll(path, params) {
   return out;
 }
 
+// The Asana ids of tasks the DASHBOARD created, from its own store. Matching
+// on the gid the mirror wrote back beats matching on a title format: a task
+// somebody renamed is still counted correctly.
+async function dashboardGids() {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const dir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, 'tasks.json'), 'utf8'));
+    const arr = Array.isArray(raw) ? raw : (raw.tasks || []);
+    return new Set(arr.map(t => t && t.asana_gid).filter(Boolean).map(String));
+  } catch (e) { return new Set(); }
+}
+
 const bump = (m, k) => { if (k) m[k] = (m[k] || 0) + 1; };
 const top = (m, n) => Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, n || 12);
 
@@ -144,6 +158,7 @@ async function inventory(workspace) {
     liked: 0, notes: 0,
   };
   const creators = {};
+  const createdGids = new Set();
   const completers = {};
   let recent = 0;
   let recentDone = 0;
@@ -161,7 +176,7 @@ async function inventory(workspace) {
     //
     // The all-time totals still come from the counts endpoint, which is one
     // cheap call and does not need the tasks at all.
-    const FIELDS = 'created_at,completed,completed_at,created_by.name,assignee.name,'
+    const FIELDS = 'gid,created_at,completed,completed_at,created_by.name,assignee.name,'
       + 'due_on,due_at,start_on,num_subtasks,parent,notes,resource_subtype,'
       + 'custom_fields.name,custom_fields.display_value,tags.name,'
       + 'dependencies,dependents,followers,liked';
@@ -192,6 +207,7 @@ async function inventory(workspace) {
     // for keeping a plan.
     inWindow.forEach(t => {
       sampled++;
+      if (t.gid) createdGids.add(String(t.gid));
       bump(creators, t.created_by && t.created_by.name);
       if (t.assignee) feature.assigned++;
       if (t.due_on || t.due_at) feature.dueDates++;
@@ -220,8 +236,32 @@ async function inventory(workspace) {
   console.log('\n   ' + pad('TOTAL', 42) + pad('', 8) + pad('', 7)
     + pad(recent, 9) + pad(recentDone, 11));
 
+  // ---- the dashboard's own tasks, separated out ---------------------------
+  //
+  // THE DASHBOARD MIRRORS EVERY TASK IT CREATES INTO ASANA, with Arturo's
+  // token — asanaSyncCreate() in server.js — so they land under his name and
+  // sit inside his total. Reporting that total as "Arturo created 482" is
+  // wrong about who did the work, which is the one thing this table is for.
+  //
+  // The mirrored ones are identifiable: data/tasks.json carries the asana_gid
+  // the mirror wrote back. Matched on the GID rather than on a title format,
+  // so a task somebody renamed is still counted correctly.
+  const mirrored = await dashboardGids();
+  const dashCreated = [...createdGids].filter(g => mirrored.has(g)).length;
+
   console.log('\nWHO CREATES (last ' + DAYS + ' days, tasks created: ' + sampled + ')');
-  top(creators).forEach(([n, c]) => console.log('   ' + pad(n, 34) + pad(c, 7) + pct(c, sampled)));
+  top(creators).forEach(([n, c]) => {
+    const isArturo = /arturo/i.test(n);
+    const own = isArturo ? c - dashCreated : c;
+    console.log('   ' + pad(n, 34) + pad(c, 7) + pct(c, sampled)
+      + (isArturo && dashCreated
+        ? '   of which ' + dashCreated + ' by THE DASHBOARD, ' + own + ' by hand' : ''));
+  });
+  if (!mirrored.size) {
+    console.log('\n   data/tasks.json is empty or absent here, so the dashboard\'s own');
+    console.log('   tasks could not be separated out. That file lives on the Render');
+    console.log('   disk — run this there for the split.');
+  }
   console.log('\n   completed_by is NOT on the task resource. Getting it means one');
   console.log('   request per task — thousands of calls — so it is left blank rather');
   console.log('   than inferred from the assignee, who is a different person often');
