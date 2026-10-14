@@ -348,6 +348,46 @@ t('the alert is not labelled as cash until it is cash', () => {
   assert.ok(/billed/i.test(lib), 'the basis problem is written down in the module');
 });
 
+// ---- the comparison report's per-property field -----------------------------
+
+t('an object keyed by property is read', () => {
+  const b = C.breakdown({ 'Ascent at Northgate': '42,164.55', 'Hyde Park Square': 12000 });
+  assert.strictEqual(b.map['Ascent at Northgate'], 42164.55);
+  assert.strictEqual(b.map['Hyde Park Square'], 12000);
+  assert.match(b.how, /object with 2 keys/);
+});
+
+t('an array of name/amount pairs is read', () => {
+  const b = C.breakdown([
+    { name: 'Ascent at Northgate', amount: '42,164.55' },
+    { property_name: 'Hyde Park Square', value: 12000 },
+  ]);
+  assert.strictEqual(b.map['Ascent at Northgate'], 42164.55);
+  assert.strictEqual(b.map['Hyde Park Square'], 12000);
+});
+
+t('an UNRECOGNISED shape says so instead of returning an empty map', () => {
+  // An empty breakdown and an absent one look identical from the outside.
+  // That is exactly how the tenant directory synced 411 rows and zero phone
+  // numbers: the projection could not report what it had thrown away.
+  const b = C.breakdown([{ unexpected: 1, fields: 2 }]);
+  assert.deepStrictEqual(b.map, {});
+  assert.match(b.how, /unrecognised shape/);
+  assert.match(b.how, /unexpected/, 'and it shows what it actually got');
+});
+
+t('a single number is not mistaken for a breakdown', () => {
+  const b = C.breakdown('311,166.40');
+  assert.deepStrictEqual(b.map, {});
+  assert.match(b.how, /not per property/);
+});
+
+t('an absent field is distinguished from an empty one', () => {
+  assert.match(C.breakdown(null).how, /absent/);
+  assert.match(C.breakdown(undefined).how, /absent/);
+  assert.match(C.breakdown({}).how, /object with 0 keys/);
+});
+
 // ---- seeding October from Katie's workbooks ---------------------------------
 //
 // The workbooks hold two tabs of the SAME report: MTD Cash and MTD Accrual.
