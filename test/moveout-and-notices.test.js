@@ -204,29 +204,34 @@ t('a turn-linked inspection counts even when its name is a person', () => {
   assert.deepStrictEqual(out, [], 'a linked inspection was ignored because of its name');
 });
 
-t('an inspection linked to ANOTHER turn does not cover this one', () => {
+t('an inspection linked to another turn is still read by NAME', () => {
+  // This test used to assert the opposite, and the opposite was the bug: a
+  // non-matching turn id vetoed the name, so when the two id namespaces did
+  // not line up nothing could ever match. A turn id is a positive signal only.
   const turns = [{ property_name: 'The Chateau', unit: '4',
     move_out_date: '2026-10-08', unit_turn_id: '202' }];
   const insp = [{ property_name: 'The Chateau', unit: '4', unit_turn_id: '999',
     inspection_name: 'Move Out Damage and Occupancy Inspection',
     status: 'DONE', inspected_on: '2026-10-09' }];
   const out = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 });
-  assert.strictEqual(out.length, 1, 'a perfectly-named inspection from another turn was accepted');
-  assert.strictEqual(out[0].basis, 'turn');
+  assert.strictEqual(out.length, 0, 'the name pass did not run');
 });
 
 t('the alert says which signal it used', () => {
-  // A turn-linked verdict is structural. A name-based one is reading free text
-  // and may be wrong, and the reader is told which they are looking at.
+  // 'turn' only when the link actually produced candidates. A turn id that
+  // matched nothing means the verdict rests on names, and saying "turn" there
+  // would claim a structural certainty we do not have.
   const noTurn = [{ property_name: 'The Highlander', unit: '9', move_out_date: '2026-10-06' }];
   const a = M.walkOverdue({ turns: noTurn, inspections: [] }, TODAY, { businessDays: 2 })[0];
   assert.strictEqual(a.basis, 'name');
-  assert.ok(/decided by inspection NAME/.test(M.line(a)), M.line(a));
-  const withTurn = [{ property_name: 'The Chateau', unit: '4',
-    move_out_date: '2026-10-08', unit_turn_id: '202' }];
-  const b2 = M.walkOverdue({ turns: withTurn, inspections: [] }, TODAY, { businessDays: 2 })[0];
-  assert.strictEqual(b2.basis, 'turn');
-  assert.ok(!/decided by inspection NAME/.test(M.line(b2)));
+  assert.ok(/no turn id on this move-out/.test(M.line(a)), M.line(a));
+
+  const linked = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-06', unit_turn_id: 'T1' }];
+  const insp = [{ property_name: 'A', unit: '1', unit_turn_id: 'T1',
+    inspection_name: 'Untitled', status: 'NEW', inspected_on: '2026-10-07' }];
+  const b2 = M.walkOverdue({ turns: linked, inspections: insp }, TODAY, { businessDays: 2 })[0];
+  assert.strictEqual(b2.basis, 'turn', 'the link produced a candidate and was not credited');
+  assert.strictEqual(b2.openWalk, 'NEW');
 });
 
 t('the measurement separates turn from name from none', () => {
@@ -240,6 +245,84 @@ t('the measurement separates turn from name from none', () => {
   // would pass whatever the script did.
   assert.ok(!/\.insert\(|\.update\(|\.upsert\(/.test(sc), 'the measurement writes');
   assert.ok(/no resident name or unit was printed/.test(sc));
+});
+
+t('a turn id that matches NOTHING must not veto the name', () => {
+  // THE BUG. 39 of 39 move-outs came back "none" with 202 linked inspections
+  // in the table: the turn id vetoed in both directions, so when the two id
+  // namespaces did not line up, every inspection was rejected and the name
+  // pass never ran.
+  const turns = [{ property_name: 'The Chateau', unit: '4',
+    move_out_date: '2026-10-08', unit_turn_id: 'TURN-202' }];
+  const insp = [{ property_name: 'The Chateau', unit: '4', unit_turn_id: '99999',
+    inspection_name: 'Move Out Damage and Occupancy Inspection',
+    status: 'DONE', inspected_on: '2026-10-09' }];
+  assert.deepStrictEqual(
+    M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 }), [],
+    'a named, done walk was rejected because its turn id did not match');
+});
+
+t('a turn id is only ever a POSITIVE signal', () => {
+  const { byTurn, byUnit } = M.indexInspections([
+    { property_name: 'A', unit: '1', unit_turn_id: 'OTHER',
+      inspection_name: 'Move Out Inspection', status: 'DONE', inspected_on: '2026-10-09' },
+  ]);
+  const m = M.matchWalk({ turn: { unit_turn_id: 'MINE' }, byTurn, byUnit,
+    property: 'A', unit: '1', moveOut: '2026-10-08' });
+  assert.ok(m.walk, 'the name pass did not run');
+  assert.strictEqual(m.basis, 'name', 'a name match must not be reported as structural');
+});
+
+t('a matching turn id still wins, and is reported as structural', () => {
+  const { byTurn, byUnit } = M.indexInspections([
+    { property_name: 'A', unit: '1', unit_turn_id: 'MINE',
+      inspection_name: 'Untitled', status: 'DONE', inspected_on: '2026-10-09' },
+  ]);
+  const m = M.matchWalk({ turn: { unit_turn_id: 'MINE' }, byTurn, byUnit,
+    property: 'A', unit: '1', moveOut: '2026-10-08' });
+  assert.ok(m.walk);
+  assert.strictEqual(m.basis, 'turn');
+});
+
+t('"rejected only by the date" is its own answer', () => {
+  // A done, correctly-named inspection that predates the move-out is a real
+  // finding and a different one from nothing being recorded.
+  const turns = [{ property_name: 'A', unit: '1', move_out_date: '2026-10-08' }];
+  const insp = [{ property_name: 'A', unit: '1', inspection_name: 'Move Out Inspection',
+    status: 'DONE', inspected_on: '2026-10-01' }];
+  const a = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 })[0];
+  assert.strictEqual(a.tooEarly.length, 1);
+  assert.strictEqual(a.tooEarly[0].inspectedOn, '2026-10-01');
+  assert.ok(/done BEFORE the move-out/.test(M.line(a)), M.line(a));
+});
+
+t('"no turn id" and "the turn id matched nothing" are different sentences', () => {
+  // Saying the wrong one sends somebody to fix the wrong thing.
+  const base = { property_name: 'A', unit: '1', move_out_date: '2026-10-08' };
+  const withId = M.walkOverdue({ turns: [{ ...base, unit_turn_id: 'T1' }], inspections: [] },
+    TODAY, { businessDays: 2 })[0];
+  const without = M.walkOverdue({ turns: [base], inspections: [] },
+    TODAY, { businessDays: 2 })[0];
+  assert.ok(/turn id on this move-out matched no inspection/.test(M.line(withId)));
+  assert.ok(/no turn id on this move-out/.test(M.line(without)));
+});
+
+t('the measurement and the alert share ONE matcher', () => {
+  // The measurement had its own copy of the rule and reported 0/0/39 while the
+  // alert would have said something else. Two implementations of one rule is
+  // one of them being wrong without anybody noticing.
+  const sc = src('scripts/measure-moveout-walks.js');
+  assert.ok(/M\.matchWalk\(/.test(sc), 'the measurement reimplements the matching rule');
+  assert.ok(!/isWalk\(r, \{\}\)/.test(sc), 'an old private copy is still there');
+});
+
+t('the id diagnostic reads every column, not a guessed shortlist', () => {
+  // A list of names I thought of is how we got here.
+  const sc = src('scripts/diagnose-turn-ids.js');
+  assert.ok(/Object\.keys\(t \|\| \{\}\)\.forEach/.test(sc));
+  assert.ok(/IN INSPECTIONS/.test(sc), 'it does not report the overlap');
+  assert.ok(/no unit or resident name was printed/.test(sc));
+  assert.ok(!/\.insert\(|\.update\(|\.upsert\(/.test(sc), 'the diagnostic writes');
 });
 
 // ---- the brief -------------------------------------------------------------

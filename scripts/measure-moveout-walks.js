@@ -76,7 +76,7 @@ const pad = (s, w) => String(s).padEnd(w);
     + '   with a turn id: ' + turns.filter(t => M.turnOf(t)).length);
 
   const { byUnit, byTurn } = M.indexInspections(insp);
-  const tally = { turn: 0, nameOnly: 0, none: 0, noTurnId: 0 };
+  const tally = { turn: 0, nameOnly: 0, none: 0, noTurnId: 0, dateOnly: 0 };
   const byProperty = {};
 
   turns.forEach(t => {
@@ -86,17 +86,17 @@ const pad = (s, w) => String(s).padEnd(w);
     const turnId = M.turnOf(t);
     if (!turnId) tally.noTurnId++;
 
-    const done = r => M.DONE.test(M.clean(r.status))
-      && M.inspectedOn(r) && M.inspectedOn(r) >= moveOut;
-
-    const linked = (turnId ? (byTurn.get(turnId) || []) : []).filter(done);
-    const named = (byUnit.get(M.unitKey(property, unit)) || [])
-      .filter(r => !M.turnIdOf(r) && M.isWalk(r, {}) && done(r));
-
-    const verdict = linked.length ? 'turn' : (named.length ? 'nameOnly' : 'none');
-    tally[verdict]++;
+    // THE SAME FUNCTION THE ALERT USES. The measurement had its own copy of
+    // the matching rule and reported 0/0/39 while the alert would have said
+    // something else — two implementations of one rule is one of them being
+    // wrong without anybody noticing.
+    const m = M.matchWalk({ turn: t, byTurn, byUnit, property, unit, moveOut });
+    const verdict = m.walk ? m.basis : 'none';
+    tally[verdict === 'turn' ? 'turn' : (verdict === 'name' ? 'nameOnly' : 'none')]++;
+    if (!m.walk && m.tooEarly.length) tally.dateOnly++;
+    const key = verdict === 'turn' ? 'turn' : (verdict === 'name' ? 'nameOnly' : 'none');
     byProperty[property] = byProperty[property] || { turn: 0, nameOnly: 0, none: 0 };
-    byProperty[property][verdict]++;
+    byProperty[property][key]++;
   });
 
   const n = turns.length;
