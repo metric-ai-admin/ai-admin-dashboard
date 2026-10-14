@@ -128,6 +128,10 @@ t('the FAS pattern exists but nothing uses it yet', () => {
 // ---- the alerts ------------------------------------------------------------
 
 const TODAY = '2026-10-14';
+
+// The move-out section is OFF unless somebody turns it on. Tests about what
+// the section SAYS switch it on; whether it appears at all is its own test.
+const SECTION_ON = [{ property: '*', move_out_section_enabled: true }];
 const TURNS = [
   { property_name: 'Hyde Park Square', unit: '107', move_out_date: '2026-10-14' },
   { property_name: 'The Chateau', unit: '4', move_out_date: '2026-10-08' },
@@ -324,7 +328,7 @@ t('the brief and the panel keep the two apart', () => {
     state: 'open', openWalk: 'NEW', openName: 'Move Out Inspection', basis: 'turn',
     businessDaysOverdue: 2, tooEarly: [], unnamedInspections: [] };
   const none = { ...open, state: 'none', openWalk: null, openName: null, property: 'B' };
-  const brief = B.build({ properties: [],
+  const brief = B.build({ properties: [], thresholds: SECTION_ON,
     moveOuts: { today: [], walkOverdue: [open, none], sourceEmpty: false } });
   const text = B.render(brief, { today: TODAY });
   const html = H.renderHtml(brief, { today: TODAY });
@@ -349,7 +353,9 @@ t('the measurement reports the three states by property', () => {
 
 t('the brief carries the section, in both renderings', () => {
   const mo = { today: M.moveOutsOn(TURNS, TODAY), walkOverdue: OVERDUE, sourceEmpty: false };
-  const brief = B.build({ properties: [], moveOuts: mo });
+  // Switched ON explicitly: this test is about what the section SAYS. Whether
+  // it appears at all is move_out_section_enabled, tested on its own above.
+  const brief = B.build({ properties: [], moveOuts: mo, thresholds: SECTION_ON });
   const text = B.render(brief, { today: TODAY });
   const html = H.renderHtml(brief, { today: TODAY });
   [['text', text], ['html', html]].forEach(([which, out]) => {
@@ -363,7 +369,7 @@ t('the brief carries the section, in both renderings', () => {
 t('NO INSPECTIONS AT ALL is a warning, not a clean week', () => {
   // A section that goes quiet because its source is empty is the most
   // expensive kind of quiet.
-  const brief = B.build({ properties: [],
+  const brief = B.build({ properties: [], thresholds: SECTION_ON,
     moveOuts: { today: [], walkOverdue: [], sourceEmpty: true } });
   const text = B.render(brief, { today: TODAY });
   assert.ok(/broken source, not a clean week/.test(text), text.slice(0, 400));
@@ -601,7 +607,7 @@ t('all three renderings say it and show the evidence', () => {
     state: 'open', openWalk: 'NEW', openName: 'Move Out Inspection', basis: 'turn',
     businessDaysOverdue: 2, tooEarly: [],
     unnamedInspections: [{ name: 'Andres luevano', status: 'DONE', inspectedOn: '2026-10-10' }] };
-  const brief = B.build({ properties: [],
+  const brief = B.build({ properties: [], thresholds: SECTION_ON,
     moveOuts: { today: [], walkOverdue: [open], sourceEmpty: false } });
   const text = B.render(brief, { today: TODAY });
   const html = H.renderHtml(brief, { today: TODAY });
@@ -613,6 +619,90 @@ t('all three renderings say it and show the evidence', () => {
   const app = src('public/app.js');
   assert.ok(/all were empty/.test(app), 'the panels do not state the finding');
   assert.ok(!/Do not send anyone back to the unit/.test(app), 'the old advice survived on screen');
+});
+
+// ---- the email section is OFF until somebody turns it on -------------------
+//
+// Arturo, 2026-10-16: the section does not go in Kara's email until Erick has
+// finished cleaning up the inspections, and KARA_BRIEF_TO is live — the next
+// 6 AM send would have carried it.
+
+const MO_FIXTURE = {
+  today: [{ property: 'A', unit: '1', moveOut: '2026-10-16' }],
+  walkOverdue: [{ property: 'B', unit: '2', moveOut: '2026-10-08', due: '2026-10-12',
+    state: 'open', openWalk: 'NEW', openName: 'x', basis: 'turn',
+    businessDaysOverdue: 2, tooEarly: [], unnamedInspections: [] }],
+  sourceEmpty: false,
+};
+
+t('OFF when nothing says otherwise — no row, no column, null', () => {
+  // The live brief_thresholds row has no such column, so the section is off
+  // without migration 096 running at all. An absent column, an absent row and
+  // a null must all mean off, or the email goes out tomorrow with it.
+  [[], [{ property: '*', delinquency_over: 5000 }],
+    [{ property: '*', move_out_section_enabled: null }],
+    [{ property: '*', move_out_section_enabled: false }]].forEach(th => {
+    const b = B.build({ properties: [], moveOuts: MO_FIXTURE, thresholds: th });
+    assert.strictEqual(b.moveOutSection, false, JSON.stringify(th));
+    assert.strictEqual(b.moveOuts, null, 'the data is still on the brief: ' + JSON.stringify(th));
+    assert.ok(!/MOVE-OUTS/.test(B.render(b, { today: TODAY })), JSON.stringify(th));
+    assert.ok(!/Move-outs/.test(H.renderHtml(b, { today: TODAY })), JSON.stringify(th));
+  });
+});
+
+t('ON only when somebody writes true', () => {
+  const b = B.build({ properties: [], moveOuts: MO_FIXTURE,
+    thresholds: [{ property: '*', move_out_section_enabled: true }] });
+  assert.strictEqual(b.moveOutSection, true);
+  assert.ok(/MOVE-OUTS/.test(B.render(b, { today: TODAY })));
+  assert.ok(/Move-outs/.test(H.renderHtml(b, { today: TODAY })));
+});
+
+t('the gate is in ONE place, so it cannot leak through one renderer', () => {
+  // Dropping the data in build() means the email payload never carries it.
+  // Gating in each renderer would mean a change to one and not the other
+  // quietly puts the section back.
+  const b = B.build({ properties: [], moveOuts: MO_FIXTURE, thresholds: [] });
+  assert.strictEqual(b.moveOuts, null);
+  const lib = src('lib/kara-brief.js');
+  assert.ok(/moveOutSectionEnabled\(thresholds\) \? \(o\.moveOuts \|\| null\) : null/.test(lib));
+});
+
+t('the rest of the brief is untouched', () => {
+  // PROP lives in test/bekah-corrections.test.js; a long-open property is
+  // built here so this file does not depend on another one's fixture.
+  const prop = { name: 'Ascent at Northgate', occupancyPct: 0.95, goalPct: 0.9,
+    makeReadyOpen: 2, makeReadyOldestDays: 490,
+    longOpenMakeReadies: 1, longOpenOldestDays: 490,
+    longOpenUnits: [{ unit: '5-127', days: 490, since: '2025-06-10' }] };
+  const b = B.build({ properties: [prop], moveOuts: MO_FIXTURE, thresholds: [] });
+  const text = B.render(b, { today: TODAY });
+  assert.ok(/being cleaned up with Maintenance/.test(text), 'the make-ready caveat vanished');
+  assert.ok(/LONG-OPEN MAKE-READIES/.test(text), 'the long-open section vanished');
+  assert.ok(!/MOVE-OUTS/.test(text), 'the move-out section came back');
+});
+
+t('Collections and Maintenance are NOT gated by it', () => {
+  // Erick needs the register to do the clean-up. It is the EMAIL that waits.
+  const s = src('server.js');
+  ['/api/maintenance/moveout-alerts', '/api/maintenance/moveout-register'].forEach(r => {
+    const at = s.indexOf("app.get('" + r + "'");
+    assert.ok(at > 0, r + ' is gone');
+    const block = s.slice(at, at + 600);
+    assert.ok(!/move_out_section_enabled/.test(block), r + ' was gated by the email switch');
+  });
+  const app = src('public/app.js');
+  assert.ok(!/move_out_section_enabled/.test(app), 'a panel reads the email switch');
+});
+
+t('migration 096 is not what turns it off', () => {
+  // It is already off without running anything; the column exists so it can be
+  // turned ON later without a deploy.
+  const sql = src('supabase/migrations/096_brief_moveout_section.sql');
+  assert.ok(/add column if not exists move_out_section_enabled/i.test(sql));
+  assert.ok(/NOT WHAT TURNS IT OFF/.test(sql));
+  assert.ok(!/UPDATE brief_thresholds SET move_out_section_enabled = false/i.test(sql),
+    'it relies on a write to be safe');
 });
 
 // ---- the Maintenance view (Erick does not hold Collections) ----------------
