@@ -587,8 +587,13 @@ t('NO FOURTH STATE was added', () => {
   // Jay and Bekah have not decided how inspections will be recorded, and a
   // fourth state is a patch over that decision.
   assert.deepStrictEqual(M.STATES, ['done', 'open', 'none']);
-  const lib = src('lib/moveout-alerts.js');
-  assert.ok(!/probably done under another name/i.test(lib));
+  // CODE ONLY. The file now records the decisions Erick's review produced, and
+  // those name the state that is not built — a guard that matches the note
+  // explaining why something is absent fires on the explanation. Fifth time
+  // this repo's own prose has tripped one of my searches.
+  const code = src('lib/moveout-alerts.js').replace(/^\s*\/\/.*$/gm, '');
+  assert.ok(!/probably done under another name/i.test(code));
+  assert.ok(!/state\('probably/.test(code), 'a fourth state arrived');
 });
 
 t('all three renderings say it and show the evidence', () => {
