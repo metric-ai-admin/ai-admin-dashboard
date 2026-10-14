@@ -8966,11 +8966,24 @@ const MAINT_SUPPORT_REPORTS = {
       unit:             mwoPick(r, ['unit_name', 'unit']),
       primary_resident: mwoPick(r, ['primary_tenant', 'primary_resident', 'resident']),
       status:           mwoPick(r, ['status', 'inspection_status']),
-      inspection_date:  leasingDateOnly(mwoPick(r, ['inspection_date', 'scheduled_date', 'date'])),
+      // THE COLUMN WE ASKED FOR DOES NOT EXIST. The probe of 2026-10-14 shows
+      // inspection_detail returns `inspected_on` on all 635 rows and no
+      // `inspection_date` at all — so this mapped a name AppFolio never sends
+      // and the column has been null since the sync was written. A guessed
+      // field name fails exactly like a field nobody fills in.
+      inspected_on:     leasingDateOnly(mwoPick(r, ['inspected_on', 'inspection_date', 'scheduled_date', 'date'])),
+      // Kept for the rows already stored; new syncs will leave it null.
+      inspection_date:  leasingDateOnly(mwoPick(r, ['inspection_date'])),
       marked_done_on:   leasingDateOnly(mwoPick(r, ['marked_done_on', 'completed_on', 'done_on'])),
       marked_done_by:   mwoPick(r, ['marked_done_by', 'completed_by', 'done_by']),
       created_on:       leasingDateOnly(mwoPick(r, ['created_on', 'created_at', 'created'])),
       property_id:      mwoStr(mwoPick(r, ['property_id'])),
+      // THE STRUCTURAL LINK (202 of 635 rows). An inspection carrying the unit
+      // turn's id belongs to that move-out — no name to read, nothing to
+      // misspell. It is the primary signal now and the name is the fallback.
+      unit_turn_id:     mwoStr(mwoPick(r, ['unit_turn_id'])),
+      unit_id:          mwoStr(mwoPick(r, ['unit_id'])),
+      occupancy_id:     mwoStr(mwoPick(r, ['occupancy_id'])),
     }),
   },
   billable: {

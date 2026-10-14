@@ -56,17 +56,55 @@ t('the move-out walk is recognised by name', () => {
   assert.ok(!M.isWalk({ inspection_name: 'Monthly Property Inspection' }));
 });
 
-t('a STRUCTURED type wins over the name, when there is one', () => {
-  // The sync keeps eleven columns of inspection_detail and drops the rest, so
-  // a type field may exist and have never reached the database. Confirming one
-  // is a config change, not a rewrite.
-  assert.ok(M.isWalk({ inspection_type: 'move_out', inspection_name: 'Untitled' }));
-  assert.ok(M.isWalk({ inspection_type: 'Move-Out', inspection_name: 'Andres luevano' }));
-  // A type that is present and says something else is an ANSWER, not a gap.
-  assert.ok(!M.isWalk({ inspection_type: 'annual', inspection_name: 'Untitled' }));
-  // ...unless the name also says move-out, in which case the name is kept
-  // rather than silently overruled by a value nobody has verified yet.
-  assert.ok(M.isWalk({ inspection_type: 'annual', inspection_name: 'Move Out Inspection' }));
+t('THE TURN ID WINS over the name', () => {
+  // The probe of 2026-10-14 settled it: no type column, but unit_turn_id on
+  // 202 of 635 rows. An inspection carrying this move-out's turn id IS its
+  // walk — nothing to read, nothing to misspell.
+  assert.ok(M.isWalk({ unit_turn_id: '202', inspection_name: 'Untitled' }, { turnId: '202' }));
+  assert.ok(M.isWalk({ unit_turn_id: '202', inspection_name: 'Andres luevano' }, { turnId: '202' }));
+  // Linked to a DIFFERENT turn: not this move-out's walk, however it is named.
+  assert.ok(!M.isWalk({ unit_turn_id: '999', inspection_name: 'Move Out Damage and Occupancy Inspection' },
+    { turnId: '202' }));
+  // No turn id at all: the name is the fallback, which is the honest ordering.
+  assert.ok(M.isWalk({ inspection_name: 'Move Out Inspection' }, { turnId: '202' }));
+  assert.ok(!M.isWalk({ inspection_name: 'Untitled' }, { turnId: '202' }));
+});
+
+t('ids are compared as trimmed strings', () => {
+  // One side arrives from Supabase as text and the other from the report as a
+  // number, and 202 === '202' is false.
+  assert.ok(M.belongsToTurn({ unit_turn_id: 202 }, '202'));
+  assert.ok(M.belongsToTurn({ unit_turn_id: ' 202 ' }, 202));
+  assert.ok(!M.belongsToTurn({ unit_turn_id: '' }, ''), 'two blanks are not a match');
+});
+
+t('the date is inspected_on, with marked_done_on as the fallback', () => {
+  // inspection_date is NOT a column inspection_detail returns — the sync asked
+  // for a name AppFolio never sends, so it was null on all 635 rows.
+  assert.strictEqual(M.inspectedOn({ inspected_on: '2026-10-08', marked_done_on: '2026-10-09' }),
+    '2026-10-08');
+  assert.strictEqual(M.inspectedOn({ marked_done_on: '2026-10-09' }), '2026-10-09');
+  // created_on is NOT used: when a record was created says nothing about when
+  // somebody walked the unit.
+  assert.strictEqual(M.inspectedOn({ created_on: '2026-10-01' }), null);
+  const lib = src('lib/moveout-alerts.js');
+  assert.ok(/IS NOT A COLUMN inspection_detail returns/.test(lib));
+});
+
+t('the sync stores the columns the report actually has', () => {
+  const s = src('server.js');
+  const at = s.indexOf("report: '/api/v2/reports/inspection_detail.json'");
+  assert.ok(at > 0);
+  const block = s.slice(at, at + 2200);
+  assert.ok(/inspected_on:\s+leasingDateOnly\(mwoPick\(r, \['inspected_on'/.test(block),
+    'the real date column is still not stored');
+  assert.ok(/unit_turn_id:\s+mwoStr\(mwoPick\(r, \['unit_turn_id'\]\)\)/.test(block),
+    'the structural link is still dropped');
+  const sql = src('supabase/migrations/095_inspection_turn_link.sql');
+  assert.ok(/add column if not exists inspected_on/i.test(sql));
+  assert.ok(/add column if not exists unit_turn_id/i.test(sql));
+  // The dead column is not dropped — that is a different decision.
+  assert.ok(!/drop column/i.test(sql));
 });
 
 t('a name nobody can classify is UNRECOGNISED, not "not a walk"', () => {
@@ -97,9 +135,9 @@ const TURNS = [
   { property_name: 'The Highlander', unit: '9', move_out_date: '2026-10-13' },
 ];
 const INSP = [
-  { property_name: 'Sunset Palms', unit: '12', status: 'DONE', marked_done_on: '2026-10-08',
+  { property_name: 'Sunset Palms', unit: '12', status: 'DONE', inspected_on: '2026-10-08',
     inspection_name: 'Move Out Damage and Occupancy Inspection' },
-  { property_name: 'The Chateau', unit: '4', status: 'DONE', marked_done_on: '2026-10-09',
+  { property_name: 'The Chateau', unit: '4', status: 'DONE', inspected_on: '2026-10-09',
     inspection_name: 'Andres luevano' },
 ];
 const OVERDUE = M.walkOverdue({ turns: TURNS, inspections: INSP }, TODAY, { businessDays: 2 });
@@ -141,18 +179,67 @@ t('the alert says RECORDED, never that nobody did the walk', () => {
 t('an inspection done BEFORE the move-out does not count', () => {
   // That one was about the resident still living there.
   const early = [{ property_name: 'The Chateau', unit: '4', status: 'DONE',
-    marked_done_on: '2026-10-01', inspection_name: 'Move Out Damage and Occupancy Inspection' }];
+    inspected_on: '2026-10-01', inspection_name: 'Move Out Damage and Occupancy Inspection' }];
   const out = M.walkOverdue({ turns: TURNS, inspections: early }, TODAY, { businessDays: 2 });
   assert.ok(out.some(a => a.property === 'The Chateau'));
 });
 
 t('an inspection that is open is not a pass, but it is said', () => {
   const open = [{ property_name: 'The Chateau', unit: '4', status: 'NEW',
-    marked_done_on: null, inspection_name: 'Move Out Damage and Occupancy Inspection' }];
+    inspected_on: null, inspection_name: 'Move Out Damage and Occupancy Inspection' }];
   const a = M.walkOverdue({ turns: TURNS, inspections: open }, TODAY, { businessDays: 2 })
     .find(x => x.property === 'The Chateau');
   assert.strictEqual(a.openWalk, 'NEW');
   assert.ok(/an inspection is open \(NEW\)/.test(M.line(a)));
+});
+
+t('a turn-linked inspection counts even when its name is a person', () => {
+  // THE WHOLE WIN. "Andres luevano" on turn 303 is the walk for turn 303, and
+  // the 388 unreadable names stop mattering wherever the link exists.
+  const turns = [{ property_name: 'Sunset Palms', unit: '12',
+    move_out_date: '2026-10-07', unit_turn_id: '303' }];
+  const insp = [{ property_name: 'Sunset Palms', unit: '12', unit_turn_id: '303',
+    inspection_name: 'Andres luevano', status: 'DONE', inspected_on: '2026-10-08' }];
+  const out = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 });
+  assert.deepStrictEqual(out, [], 'a linked inspection was ignored because of its name');
+});
+
+t('an inspection linked to ANOTHER turn does not cover this one', () => {
+  const turns = [{ property_name: 'The Chateau', unit: '4',
+    move_out_date: '2026-10-08', unit_turn_id: '202' }];
+  const insp = [{ property_name: 'The Chateau', unit: '4', unit_turn_id: '999',
+    inspection_name: 'Move Out Damage and Occupancy Inspection',
+    status: 'DONE', inspected_on: '2026-10-09' }];
+  const out = M.walkOverdue({ turns, inspections: insp }, TODAY, { businessDays: 2 });
+  assert.strictEqual(out.length, 1, 'a perfectly-named inspection from another turn was accepted');
+  assert.strictEqual(out[0].basis, 'turn');
+});
+
+t('the alert says which signal it used', () => {
+  // A turn-linked verdict is structural. A name-based one is reading free text
+  // and may be wrong, and the reader is told which they are looking at.
+  const noTurn = [{ property_name: 'The Highlander', unit: '9', move_out_date: '2026-10-06' }];
+  const a = M.walkOverdue({ turns: noTurn, inspections: [] }, TODAY, { businessDays: 2 })[0];
+  assert.strictEqual(a.basis, 'name');
+  assert.ok(/decided by inspection NAME/.test(M.line(a)), M.line(a));
+  const withTurn = [{ property_name: 'The Chateau', unit: '4',
+    move_out_date: '2026-10-08', unit_turn_id: '202' }];
+  const b2 = M.walkOverdue({ turns: withTurn, inspections: [] }, TODAY, { businessDays: 2 })[0];
+  assert.strictEqual(b2.basis, 'turn');
+  assert.ok(!/decided by inspection NAME/.test(M.line(b2)));
+});
+
+t('the measurement separates turn from name from none', () => {
+  // The breakdown is the point: "found by name only" is right about as often
+  // as people type carefully, and a total hides that.
+  const sc = src('scripts/measure-moveout-walks.js');
+  assert.ok(/by unit_turn_id/.test(sc) && /by name only/.test(sc) && /none found/.test(sc));
+  assert.ok(/MIGRATION 095 HAS NOT BEEN RUN/.test(sc),
+    'it would report the old numbers under the new headings');
+  // NOT an escaped BACKSLASH: /\./ matches nothing here, so the assertion
+  // would pass whatever the script did.
+  assert.ok(!/\.insert\(|\.update\(|\.upsert\(/.test(sc), 'the measurement writes');
+  assert.ok(/no resident name or unit was printed/.test(sc));
 });
 
 // ---- the brief -------------------------------------------------------------
