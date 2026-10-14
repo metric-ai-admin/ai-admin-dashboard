@@ -321,5 +321,32 @@ t('it does not land inside the 05:00 block', () => {
   assert.notStrictEqual(cronSlot().hour, 5, 'not in the 05:00 hour');
 });
 
+t('the capture does not run until the basis is settled', () => {
+  // Arturo, 2026-10-14: income_statement reports BILLED income, not cash
+  // received — Ascent came back above its own monthly rent while carrying
+  // 16,118 of delinquency. A month of history on the wrong basis would look
+  // healthy the whole time and then answer the wrong question, by property, in
+  // Kara's 6 AM email. The cron stays gated until a cash source is found or
+  // the alert is relabelled.
+  const at = server.indexOf('sync-collections-mtd.js');
+  const block = server.slice(server.lastIndexOf('cron.schedule', at), at);
+  assert.ok(/COLLECTIONS_MTD_ON/.test(block), 'the job checks the gate');
+  assert.ok(/COLLECTIONS_MTD_SYNC/.test(server), 'the gate is an environment variable');
+  // Default OFF: the gate opens only on the exact string, so an unset or
+  // misspelled variable keeps it closed.
+  // The const line, not the comment above it that names the variable in prose.
+  const def = server.match(/const COLLECTIONS_MTD_ON[^\n]*\n/)[0];
+  assert.ok(/\|\|\s*''/.test(def), 'an unset variable is empty, not undefined');
+  assert.ok(/===\s*'on'/.test(def), 'it opens only on the exact string');
+});
+
+t('the alert is not labelled as cash until it is cash', () => {
+  // Point 2 of the same message: if there is no cash-basis source, the alert
+  // must not say "collections". This holds the file to carrying that warning
+  // so the next person to wire it up meets the question.
+  const lib = fs.readFileSync(path.join(__dirname, '..', 'lib', 'collections-mtd.js'), 'utf8');
+  assert.ok(/billed/i.test(lib), 'the basis problem is written down in the module');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

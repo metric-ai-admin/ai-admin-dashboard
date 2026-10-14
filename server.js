@@ -19755,8 +19755,27 @@ const EARLY_FEEDS = [
 // are captures: a run at 06:35 would leave Kara's email reading yesterday's
 // figure as today's. If this fails, the alert says NOT MEASURABLE TODAY rather
 // than reporting that no property is down — see lib/collections-mtd.js.
+//
+// OFF UNTIL THE BASIS IS SETTLED. Arturo, 2026-10-14: the dry run showed
+// income_statement is reporting BILLED income, not cash received. Ascent came
+// back 56,336 against 47,301 of monthly rent while carrying 16,118 of
+// delinquency — more than it bills, with a sixth of it unpaid — and
+// accounting_basis is ignored like every other parameter. Kara's alert is
+// about money RECEIVED.
+//
+// A history captured on the wrong basis is worse than no history: it would
+// accumulate for a month looking perfectly healthy and then answer the wrong
+// question with a confident number, by property, in her 6 AM email. So this
+// does not run until a cash-basis source is found (scripts/probe-cash-basis.js)
+// or the alert is relabelled "billed income" — Arturo's call, with Kara.
+//
+// To turn on: set COLLECTIONS_MTD_SYNC=on in the Render environment. The gate
+// is an env var rather than a commented-out block so that turning it on is not
+// a deploy, and so nothing silently starts capturing on a redeploy.
+const COLLECTIONS_MTD_ON = String(process.env.COLLECTIONS_MTD_SYNC || '').toLowerCase() === 'on';
 cron.schedule('30 4 * * *', () => {
   if (!CRM_CONFIGURED) return;
+  if (!COLLECTIONS_MTD_ON) return;
   // The script's own output is a table meant for a shell. Only the two kinds
   // of line that mean something went wrong are carried into the log: a
   // property that failed is otherwise a row missing from the history with
