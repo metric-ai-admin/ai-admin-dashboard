@@ -18486,6 +18486,178 @@ async function karaBriefRender(opts) {
   };
 }
 
+// ---- Kara's Phase C (form of 2026-10-09) -----------------------------------
+//
+// Move-out alerts, verbal notices, lost-lead reasons. The FAS alert is NOT
+// here: it is waiting on Kara's answer to what "FAS done" means, because the
+// only trace of a Final Account Statement in this data is an INSPECTION named
+// after one. See the note at the top of lib/moveout-alerts.js.
+const MOVEOUT = require('./lib/moveout-alerts.js');
+
+async function moveOutAlertData(db, todayCT) {
+  const af = require('./appfolio-reports.js');
+  const turns = ((await af.readReportData('unit_turn_detail')) || {}).rows || [];
+  const insp = await selectAll(() => db.from('maintenance_inspections')
+    .select('inspection_id,inspection_name,property_name,unit,status,marked_done_on,created_on'),
+  { label: 'inspections', order: 'inspection_id' });
+  return {
+    today: todayCT,
+    movingOutToday: MOVEOUT.moveOutsOn(turns, todayCT),
+    walkOverdue: MOVEOUT.walkOverdue({ turns, inspections: insp }, todayCT, { businessDays: 2 }),
+    // Stated on the screen, not just in the code: the alert can only speak
+    // about what was RECORDED, and 388 of 635 inspections carry a name nobody
+    // can classify.
+    caveat: 'An inspection is recognised by its name, which is free text in AppFolio. '
+      + '"No move-out inspection recorded" can mean the walk was done and the record '
+      + 'was named something else — any unrecognised inspections on the unit are listed beside it.',
+  };
+}
+
+app.get('/api/maintenance/moveout-alerts', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    res.json(await moveOutAlertData(db, WEEK.todayYMD()));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- verbal notices --------------------------------------------------------
+//
+// ANY SIGNED-IN USER (Arturo, 2026-10-14). A technician standing in the unit is
+// often the person who hears it, and a form only leasing can reach is a form
+// that does not get used.
+app.get('/api/leasing/verbal-notices', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('verbal_notices')
+      .select('*').order('notice_date', { ascending: false }).limit(500);
+    if (error) throw new Error(error.message);
+    res.json({ rows: data || [], roster: await oncallRosterNames(db) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+async function oncallRosterNames(db) {
+  const { data } = await db.from('technicians').select('full_name,active').eq('active', true);
+  const { data: users } = await db.from('dashboard_users').select('name,active').eq('active', true);
+  const names = (data || []).map(t => t.full_name).concat((users || []).map(u => u.name));
+  return [...new Set(names.filter(Boolean))].sort();
+}
+
+const VERBAL_SUBJECT_PREFIX = 'VERBAL NOTICE (not a formal notice)';
+
+app.post('/api/leasing/verbal-notices', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const b = req.body || {};
+    const property = String(b.property || '').trim();
+    const noticeDate = String(b.noticeDate || '').trim();
+    const receivedBy = String(b.receivedBy || '').trim();
+    if (!property) return res.status(400).json({ error: 'Property is required' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(noticeDate)) {
+      return res.status(400).json({ error: 'A notice date (YYYY-MM-DD) is required' });
+    }
+    if (!receivedBy) return res.status(400).json({ error: 'Who received it is required' });
+
+    const row = {
+      property, unit: String(b.unit || '').trim() || null,
+      resident: String(b.resident || '').trim() || null,
+      notice_date: noticeDate, received_by: receivedBy,
+      notes: String(b.notes || '').trim() || null,
+      created_by: req.user?.name || req.user?.username || 'unknown',
+    };
+    const { data, error } = await db.from('verbal_notices').insert(row).select('*').single();
+    if (error) throw new Error(error.message);
+
+    // THE WARNING IS IN THE SUBJECT, not only in the body. A body that explains
+    // under a subject that does not gets forwarded without the explanation.
+    const subject = VERBAL_SUBJECT_PREFIX + ' — ' + property
+      + (row.unit ? ' ' + row.unit : '') + ' — ' + noticeDate;
+    const text = [
+      'A resident gave VERBAL notice. This is NOT the formal notice and nothing has',
+      'been filed in AppFolio.',
+      '',
+      'Property: ' + property,
+      'Unit: ' + (row.unit || '—'),
+      'Resident: ' + (row.resident || '—'),
+      'Date given: ' + noticeDate,
+      'Received by: ' + receivedBy,
+      'Logged by: ' + row.created_by,
+      '',
+      'Notes: ' + (row.notes || '—'),
+      '',
+      'The resident still has to give written notice in the portal. Until they do,',
+      'this is a conversation, not a notice.',
+    ].join('\n');
+
+    let notified = null;
+    let notifyError = null;
+    const to = (process.env.VERBAL_NOTICE_TO || 'bekah@livewithmetric.com,kara@livewithmetric.com')
+      .split(',').map(s => s.trim()).filter(Boolean);
+    try {
+      for (const addr of to) await briefSendMail(addr, subject, text, null);
+      notified = new Date().toISOString();
+    } catch (e) {
+      // The row stays. A notice nobody emailed is still a notice somebody gave,
+      // and losing it because Graph was down would be the worse failure.
+      notifyError = e.message;
+    }
+    await db.from('verbal_notices')
+      .update({ notified_at: notified, notify_error: notifyError }).eq('id', data.id);
+
+    res.json({
+      ok: true, id: data.id, notifiedTo: notified ? to : [], notifyError,
+      reminder: 'Tell the resident to file written notice in the portal — this is not it.',
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- lost-lead reasons -----------------------------------------------------
+//
+// An editable list and an OPTIONAL annotation. IT CHANGES NO COUNT: nothing in
+// the Goal Board or the KPI report reads leasing_leads.loss_reason, and
+// test/moveout-and-notices.test.js asserts that by reading their source.
+app.get('/api/leasing/loss-reasons', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('lead_loss_reasons')
+      .select('*').order('sort_order').order('label');
+    if (error) throw new Error(error.message);
+    res.json({ rows: data || [], canEdit: req.user?.role === 'admin' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/leasing/loss-reasons', requireMetricAdmin, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const label = String(req.body?.label || '').trim();
+    const id = String(req.body?.id || '').trim();
+    // RETIRED, NEVER DELETED. A reason removed from the list must not vanish
+    // from the leads already annotated with it — a history that changes when
+    // somebody edits a dropdown is not a history.
+    if (id && req.body?.active === false) {
+      const { error } = await db.from('lead_loss_reasons').update({ active: false }).eq('id', id);
+      if (error) throw new Error(error.message);
+      return res.json({ ok: true, retired: id });
+    }
+    if (!label) return res.status(400).json({ error: 'A label is required' });
+    const { error } = await db.from('lead_loss_reasons')
+      .upsert({ label, sort_order: Number(req.body?.sortOrder) || 100, active: true },
+        { onConflict: 'label' });
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/leasing/leads/:id/loss-reason', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const reason = String(req.body?.reason || '').trim() || null;
+    const { error } = await db.from('leasing_leads')
+      .update({ loss_reason: reason }).eq('id', req.params.id);
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---- On-call rotation (Erick, 2026-10-06) ----------------------------------
 //
 // One calendar per month, generated from the roster and the property

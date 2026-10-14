@@ -26,22 +26,78 @@ const SP = require('../lib/safe-print.js');
 const WANT = process.argv[2];
 const clean = s => String(s == null ? '' : s).trim();
 
+// The maintenance sync's path, copied: Reports API credentials, the hard-coded
+// host, and paginate_results:false. Nothing is written.
+async function reportsApiPull(report) {
+  const id = process.env.APPFOLIO_REPORTS_CLIENT_ID;
+  const secret = process.env.APPFOLIO_REPORTS_CLIENT_SECRET;
+  if (!id || !secret) {
+    throw new Error('APPFOLIO_REPORTS_CLIENT_ID / APPFOLIO_REPORTS_CLIENT_SECRET are not set '
+      + 'in this shell. These are the Reports API credentials the maintenance sync uses, '
+      + 'not APPFOLIO_CLIENT_ID. Run this on Render.');
+  }
+  const url = 'https://metricpropertymanagement.appfolio.com/api/v2/reports/'
+    + encodeURIComponent(report) + '.json';
+  const resp = await global.fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Basic ' + Buffer.from(id + ':' + secret).toString('base64'),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ property_visibility: 'active', paginate_results: false }),
+  });
+  if (!resp.ok) {
+    const j = await resp.json().catch(() => null);
+    throw new Error('AppFolio ' + resp.status + ': '
+      + ((j && (j.error || j.message)) || resp.statusText));
+  }
+  const j = await resp.json().catch(() => null);
+  // paginate_results:false answers with a bare array. The other shapes are
+  // accepted so a change at AppFolio's end does not read as "no rows".
+  return Array.isArray(j) ? j : ((j && (j.results || j.data)) || []);
+}
+
 (async () => {
   const af = require('../appfolio-reports.js');
   const { fetchReport } = require('../appfolio-client.js');
 
-  const def = (af.REPORTS || []).find(r => r.id === WANT);
-  if (!def) {
-    console.log('Pass a report id. Registered:');
+  if (!WANT) {
+    console.log('Pass a report id or an AppFolio report NAME. Registered reports:');
     (af.REPORTS || []).forEach(r => console.log('   ' + r.id.padEnd(30) + r.label));
-    process.exit(2);
+    console.log('\nAny other name is fetched straight from the Reports API, e.g.');
+    console.log('   node scripts/probe-report-columns.js inspection_detail');
+    process.exitCode = 2;
+    return;
   }
 
-  const params = typeof def.params === 'function' ? def.params() : (def.params || {});
-  console.log('Fetching ' + def.resource + ' live from AppFolio (nothing is saved)…');
-  const fetched = await fetchReport(def.resource, params);
-  const rows = fetched.rows || [];
-  console.log(WANT + ': ' + rows.length + ' rows, ' + fetched.pages + ' page(s)');
+  const def = (af.REPORTS || []).find(r => r.id === WANT);
+
+  // NOT EVERY REPORT IS IN THE REGISTRY. inspection_detail is pulled by the
+  // maintenance sync through appfolioReportsFetch() in server.js, not through
+  // appfolio-reports.js — so "Pass a report id" was the only answer this script
+  // had for the one report somebody needed to look at.
+  //
+  // An unregistered name is treated as an AppFolio report name and fetched the
+  // way that sync fetches it. The two paths are NOT interchangeable: different
+  // credentials, a hard-coded host, and paginate_results:false, which makes
+  // AppFolio answer with a bare array that fetchReport() cannot unwrap. See
+  // scripts/probe-inspection-review.js, where getting this wrong looked like a
+  // 404 about a wrong report name.
+  let rows;
+  let label;
+  if (def) {
+    const params = typeof def.params === 'function' ? def.params() : (def.params || {});
+    console.log('Fetching ' + def.resource + ' live from AppFolio (registered; nothing is saved)…');
+    const fetched = await fetchReport(def.resource, params);
+    rows = fetched.rows || [];
+    label = WANT + ': ' + rows.length + ' rows, ' + fetched.pages + ' page(s)';
+  } else {
+    console.log('"' + WANT + '" is not a registered report — fetching it as an AppFolio '
+      + 'report name through the Reports API (nothing is saved)…');
+    rows = await reportsApiPull(WANT);
+    label = WANT + ': ' + rows.length + ' rows';
+  }
+  console.log(label);
   if (!rows.length) { console.log('The report returned nothing. That is the answer.'); return; }
 
   // Every key seen on ANY row: these reports omit empty columns on some rows,
@@ -53,7 +109,7 @@ const clean = s => String(s == null ? '' : s).trim();
   // What the registered projection would do with each column, which is the
   // question being asked. A column marked DROPPED that holds the phone numbers
   // is the bug, stated.
-  const projected = typeof def.project === 'function'
+  const projected = def && typeof def.project === 'function'
     ? new Set(Object.keys(def.project(Object.fromEntries(list.map(k => [k, 'x'])))))
     : null;
   const kept = k => {
