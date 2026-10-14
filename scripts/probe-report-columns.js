@@ -23,7 +23,11 @@ require('dotenv').config();
 
 const SP = require('../lib/safe-print.js');
 
-const WANT = process.argv[2];
+// SEVERAL NAMES IN ONE RUN. Finding where a fact lives means trying the
+// handful of reports it could be in, and one name per invocation turns that
+// into six round trips to a shell somebody has to keep open.
+const WANTED = process.argv.slice(2).filter(a => !a.startsWith('--'));
+const WANT = WANTED[0];
 const clean = s => String(s == null ? '' : s).trim();
 
 // The maintenance sync's path, copied: Reports API credentials, the hard-coded
@@ -61,6 +65,26 @@ async function reportsApiPull(report) {
   const af = require('../appfolio-reports.js');
   const { fetchReport } = require('../appfolio-client.js');
 
+  if (WANTED.length > 1) {
+    // Each one on its own, and a failure on one does not lose the others: a
+    // report name that does not exist is an ANSWER, and the run has to get to
+    // the next candidate to be worth starting.
+    for (const name of WANTED) {
+      console.log('\n' + '='.repeat(72));
+      try {
+        await describe(name, af, fetchReport);
+      } catch (e) {
+        console.log(name + ': ' + e.message);
+        console.log('   (a name AppFolio rejects is an answer — the fact is not there)');
+      }
+    }
+    return;
+  }
+
+  await describe(WANT, af, fetchReport);
+})().catch(e => { console.error('FAILED: ' + e.message); process.exitCode = 1; });
+
+async function describe(WANT, af, fetchReport) {
   if (!WANT) {
     console.log('Pass a report id or an AppFolio report NAME. Registered reports:');
     (af.REPORTS || []).forEach(r => console.log('   ' + r.id.padEnd(30) + r.label));
@@ -138,4 +162,4 @@ async function reportsApiPull(report) {
     + 'this report does not carry a phone number at all, and the match needs a '
     + 'different source'));
   console.log('\nNothing was written, and no cell value was printed.');
-})().catch(e => { console.error('FAILED: ' + e.message); process.exit(1); });
+}
