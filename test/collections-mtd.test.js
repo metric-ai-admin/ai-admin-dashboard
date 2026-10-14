@@ -348,5 +348,112 @@ t('the alert is not labelled as cash until it is cash', () => {
   assert.ok(/billed/i.test(lib), 'the basis problem is written down in the module');
 });
 
+// ---- seeding October from Katie's workbooks ---------------------------------
+//
+// The workbooks hold two tabs of the SAME report: MTD Cash and MTD Accrual.
+// Ascent at 10/12 is 42,164.55 cash against 48,175.63 accrual. Seeding the
+// wrong one would put the wrong basis into the history silently — which is the
+// whole reason the daily capture is switched off.
+const XLSX = require('xlsx');
+const { spawnSync } = require('child_process');
+const os = require('os');
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mtd-seed-'));
+function workbook(name, sheets) {
+  const wb = XLSX.utils.book_new();
+  Object.entries(sheets).forEach(([tab, aoa]) =>
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), tab));
+  const file = path.join(tmp, name);
+  XLSX.writeFile(wb, file);
+  return file;
+}
+const CASH_SHEET = [
+  ['Income Statement - Property Comparison', null, null, null],
+  ['Accounting Basis: Cash   Period Basis: Calendar', null, null, null],
+  ['Account', 'Ascent at Northgate', 'Hyde Park Square', 'Some Other LLC'],
+  ['Rent Income', 42164.55, 12000.11, 999.99],
+  ['Total Income', 43364.55, 12300.11, 1009.99],
+];
+const ACCRUAL_SHEET = CASH_SHEET.map((r, i) =>
+  (i === 3 ? ['Rent Income', 48175.63, 13000, 1100] : r.slice()));
+
+const seed = (...args) => spawnSync(process.execPath,
+  [path.join(__dirname, '..', 'scripts', 'seed-collections-mtd.js'), ...args],
+  { encoding: 'utf8' });
+
+t('the seed reads the cash tab and ignores the accrual one', () => {
+  const f = workbook('both.xlsx', { 'MTD Cash': CASH_SHEET, 'MTD Accrual': ACCRUAL_SHEET });
+  const r = seed('--as-of', '2026-10-12', '--dry-run', f);
+  assert.match(r.stdout, /42,164\.55/, 'the cash figure');
+  assert.ok(!/48,175\.63/.test(r.stdout), 'the accrual figure never appears');
+  assert.match(r.stdout, /MTD Cash/);
+});
+
+t('a workbook with only an accrual tab is REFUSED, not read anyway', () => {
+  const f = workbook('accrual.xlsx', { 'MTD Accrual': ACCRUAL_SHEET });
+  const r = seed('--as-of', '2026-10-12', '--dry-run', f);
+  assert.notStrictEqual(r.status, 0, 'it fails rather than seeding the wrong basis');
+  assert.match(r.stderr + r.stdout, /no cash tab/);
+});
+
+t('the header is found below the title rows', () => {
+  // Row 0 is the report title and row 1 the settings line. Reading row 0 as
+  // the header would make every column unrecognisable and seed nothing, which
+  // looks identical to a workbook with no properties in it.
+  const f = workbook('titled.xlsx', { 'MTD Cash': CASH_SHEET });
+  const r = seed('--describe', f);
+  assert.match(r.stdout, /header row: #3/);
+  assert.match(r.stdout, /Rent Income" row: FOUND/);
+});
+
+t('columns that are not one of our properties are named, not dropped', () => {
+  const f = workbook('extra.xlsx', { 'MTD Cash': CASH_SHEET });
+  const r = seed('--as-of', '2026-10-12', '--dry-run', f);
+  assert.match(r.stdout, /not seeded: Some Other LLC/);
+});
+
+t('no portfolio row is seeded', () => {
+  // The sum of the columns we recognise is not the portfolio — the report
+  // carries sixteen entities. Storing it under '*' would make November's
+  // portfolio comparison show a cliff that is pure arithmetic.
+  const f = workbook('port.xlsx', { 'MTD Cash': CASH_SHEET });
+  const r = seed('--as-of', '2026-10-12', '--dry-run', f);
+  assert.match(r.stdout, /NO PORTFOLIO ROW IS WRITTEN/);
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'seed-collections-mtd.js'), 'utf8');
+  assert.ok(!/property:\s*C\.PORTFOLIO/.test(src), 'it never builds a portfolio row');
+});
+
+t('--as-of is required, and --write without it reaches no database', () => {
+  const f = workbook('noasof.xlsx', { 'MTD Cash': CASH_SHEET });
+  const r = seed('--write', f);
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /--as-of/);
+  assert.ok(!/stored:/.test(r.stdout), 'nothing was stored');
+});
+
+t('two workbooks at once are refused — each has its own as-of date', () => {
+  const a = workbook('a.xlsx', { 'MTD Cash': CASH_SHEET });
+  const b = workbook('b.xlsx', { 'MTD Cash': CASH_SHEET });
+  const r = seed('--as-of', '2026-10-12', '--dry-run', a, b);
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /One file at a time/);
+});
+
+t('seeded rows are marked as seeded', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'seed-collections-mtd.js'), 'utf8');
+  assert.match(src, /katie_workbook_cash/, 'the source distinguishes them from captures');
+  assert.match(src, /cash basis/, 'the period note records the basis');
+});
+
+t('the seed writes to collections_mtd and nothing else', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'seed-collections-mtd.js'), 'utf8');
+  const named = [...src.matchAll(/db\.from\('([^']+)'\)/g)].map(m => m[1]);
+  assert.deepStrictEqual(named, ['collections_mtd']);
+  assert.ok(!/\.delete\(/.test(src) && !/\.insert\(/.test(src));
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

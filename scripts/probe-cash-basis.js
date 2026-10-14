@@ -1,48 +1,65 @@
 #!/usr/bin/env node
 //
-// Is there a CASH-BASIS collections figure, per property, anywhere in the
-// Reports API? READ ONLY — report reads, nothing written anywhere.
+// Is there a CASH-BASIS collections figure, per property, in the Reports API?
+// READ ONLY — report reads, nothing written anywhere.
 //
 //   node scripts/probe-cash-basis.js
-//   PROBE_PROPERTY_ID=1703 node scripts/probe-cash-basis.js
 //
-// WHY THIS EXISTS. The dry run on 2026-10-14 showed income_statement is
-// reporting BILLED income, not money received. Ascent: 56,336 against 47,301
-// of monthly rent, while carrying 16,118 of delinquency — it cannot have
-// collected more than it bills with a sixth of it unpaid. accounting_basis is
-// ignored like every other parameter, so the basis cannot be changed by asking.
+// WHY THIS EXISTS. The dry run on 2026-10-14 showed income_statement reports
+// BILLED income, not money received: Ascent came back at 56,336 against 47,301
+// of monthly rent while carrying 16,118 of delinquency. Kara's alert is about
+// cash RECEIVED.
 //
-// Kara's alert is about money RECEIVED. A month of history captured on the
-// wrong basis would look healthy the whole time and then answer the wrong
-// question with a confident number, by property, in her 6 AM email.
+// WHAT KATIE'S WORKBOOKS GAVE US. Her saved report is "Income Statement -
+// Property Comparison", Accounting Basis: Cash, Period Basis: Calendar, one
+// column per property. The tab URLs carry the filters the UI actually sends:
 //
-// THE TEST IS ARITHMETIC, NOT NAMING. A report called "cash flow" proves
-// nothing. The anchor is:
+//   filters[properties_ids][0]=l_32
+//   filters[posted_on_relative_to]=2026-10-12
 //
-//   billed (income_statement)  minus  what is owed (delinquency)  ~=  received
+// Two things in there that every previous probe missed. `posted_on_relative_to`
+// is a date parameter NAME WE NEVER TRIED — the earlier sweep guessed
+// period_from, posted_on_from, accounting_date_from and a filters object, and
+// concluded "no date parameter works", which was only ever a statement about
+// the names in that list. And the property id is `l_32`, not the bare `1703`
+// that works on income_statement: a different id namespace, so both are tried.
 //
-// so a cash-basis source must come back LOWER than income_statement, and lower
-// by an amount in the neighbourhood of the delinquency — not lower by 2%, and
-// not higher. The verdict compares VALUES. A parameter that is accepted and
-// ignored returns a full-looking response with the same numbers in it, which
-// is how `from_date` on the applications report cost a morning.
+// THE ANCHOR IS ARITHMETIC. Ascent at 10/12, from the workbook:
 //
-// PRIVACY. Receipt and ledger reports carry resident names, unit numbers and
-// amounts per line. NOTHING here prints a row. Only column NAMES, row counts
-// and column totals leave this script — a probe printed an applicant's email,
-// phone, employer and salary on 2026-10-13 and that must not happen again.
+//   Cash Rent Income     42,164.55
+//   Accrual Rent Income  48,175.63
+//
+// So a request that is genuinely honouring the basis must return LESS on Cash
+// than on Accrual for the same date. That comparison is the whole test. A
+// parameter that is accepted and ignored returns a full-looking response with
+// identical numbers, which is how `from_date` on the applications report cost
+// a morning and how income_statement wasted three probes.
+//
+// PRIVACY. Nothing here prints a row. Column headers on this report are
+// PROPERTY names, which are fine; account lines are fine. No resident data
+// exists in an income statement, but the row printer is restricted anyway.
 require('dotenv').config();
 
 const ID = process.env.APPFOLIO_REPORTS_CLIENT_ID;
 const SECRET = process.env.APPFOLIO_REPORTS_CLIENT_SECRET;
 const HOST = process.env.APPFOLIO_REPORTS_HOST || 'metricpropertymanagement.appfolio.com';
-const PROP = process.env.PROBE_PROPERTY_ID || '1703';   // Ascent
+
+// Ascent, in both namespaces. 1703 is the id that filters income_statement;
+// l_32 is what the saved report's URL carries.
+const PROP = process.env.PROBE_PROPERTY_ID || '1703';
+const PROP_ALT = process.env.PROBE_PROPERTY_ALT || 'l_32';
 const PROP_NAME = process.env.PROBE_PROPERTY_NAME || 'Ascent';
+const AS_OF = process.env.PROBE_AS_OF || '2026-10-12';
+
+// From Katie's workbook, same property, same date. The numbers this is trying
+// to reproduce.
+const WB_CASH = 42164.55;
+const WB_ACCRUAL = 48175.63;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const pad = (s, w) => String(s).padEnd(w);
 const money = n => (n === null || n === undefined ? '—'
-  : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }));
+  : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 
 function num(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -65,8 +82,9 @@ async function call(report, body, attempt) {
   });
   if (r.status === 429) {
     const n = (attempt || 0) + 1;
-    if (n > 5) return { status: 429, rows: [], note: 'rate limited five times' };
+    if (n > 5) return { status: 429, rows: [], err: 'rate limited five times' };
     const wait = Number(r.headers.get('retry-after')) || 30;
+    console.log('      (rate limited, waiting ' + wait + 's)');
     await sleep(wait * 1000);
     return call(report, body, n);
   }
@@ -74,65 +92,79 @@ async function call(report, body, attempt) {
   let j = null;
   try { j = JSON.parse(text); } catch (e) { /* not json */ }
   const rows = Array.isArray(j) ? j : ((j && (j.results || j.data)) || []);
-  // The error text is the useful part of a failure — "Id is not a valid report"
-  // means the name is wrong, a 500 means the name is right and the shape is
-  // not. It is a system message with no resident data in it, but it is
-  // truncated anyway rather than trusted.
-  const err = r.ok ? null : String((j && (j.error || j.message)) || text).slice(0, 120);
+  const err = r.ok ? null : String((j && (j.error || j.message)) || text).slice(0, 140);
   return { status: r.status, rows, err };
 }
 
-// Candidate cash-side reports. Nobody has a catalogue — the documented list
-// probe came back empty on 2026-10-13 — so this is a sweep of the names
-// AppFolio uses elsewhere in its product. An invalid name costs one call and
-// answers instantly.
-const CANDIDATES = [
-  'cash_flow',
-  'cash_flow_statement',
-  'twelve_month_cash_flow',
-  'income_statement_cash',
-  'income_statement_detail',
-  'general_ledger',
-  'gl_transactions',
-  'journal_ledger',
-  'receipts',
-  'receipt_detail',
-  'tenant_receipts',
-  'payment_detail',
-  'payments',
-  'deposit_register',
-  'bank_deposit_detail',
-  'bank_transactions',
-  'rent_collection',
-  'collections_detail',
-  'owner_statement',
-  'budget_vs_actual',
-  'trust_account_balance',
-];
-
-// A money column, found by shape rather than by name. We have been wrong about
-// a column name three times this month.
-function totals(rows) {
-  const sums = {};
-  const counts = {};
-  (rows || []).forEach(r => {
-    Object.entries(r || {}).forEach(([k, v]) => {
-      const n = num(v);
-      if (n === null) return;
-      sums[k] = (sums[k] || 0) + n;
-      counts[k] = (counts[k] || 0) + 1;
-    });
-  });
-  return { sums, counts };
-}
-
-// The line that reads like rent income, if the report has named lines at all.
-function rentLine(rows) {
+// ---- finding Ascent's rent in whatever shape comes back ---------------------
+//
+// Two layouts are possible and the extractor handles both WITHOUT being told
+// which: a plain income statement (one value column) and a property comparison
+// (one column PER PROPERTY, so the figure sits under a header containing the
+// property name). Being told which layout to expect is how a reader ends up
+// confirming the layout it assumed.
+function rentFor(rows, propertyName) {
   const row = (rows || []).find(r =>
     Object.values(r || {}).some(v => /^rent income$/i.test(String(v || '').trim())));
-  if (!row) return null;
-  const vals = Object.values(row).map(num).filter(n => n !== null && n !== 0);
-  return vals.length ? vals[0] : null;
+  if (!row) return { value: null, how: 'no Rent Income line' };
+
+  // Comparison layout: a column whose NAME contains the property.
+  const byCol = Object.entries(row).find(([k]) =>
+    new RegExp(propertyName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(k));
+  if (byCol && num(byCol[1]) !== null) {
+    return { value: num(byCol[1]), how: 'column "' + byCol[0] + '"' };
+  }
+
+  // Plain layout: the first non-zero number on the line.
+  const first = Object.entries(row)
+    .map(([k, v]) => [k, num(v)])
+    .find(([, n]) => n !== null && n !== 0);
+  return first
+    ? { value: first[1], how: 'column "' + first[0] + '"' }
+    : { value: null, how: 'Rent Income line has no number' };
+}
+
+const REPORTS = [
+  'income_statement_comparison',
+  'income_statement_property_comparison',
+  'property_comparison',
+  'income_statement_by_property',
+  'income_statement',            // the control: we know it answers accrual
+];
+
+// Basis and date shapes. Capitalisation included on purpose — the saved report
+// shows "Cash" with a capital, and the earlier probe only ever sent 'cash'.
+const BASIS = [
+  ['Cash', { accounting_basis: 'Cash' }],
+  ['cash', { accounting_basis: 'cash' }],
+  ['Cash (nested)', { filters: { accounting_basis: 'Cash' } }],
+  ['Accrual', { accounting_basis: 'Accrual' }],
+];
+
+const DATES = [
+  ['posted_on_relative_to', { posted_on_relative_to: AS_OF }],
+  ['filters.posted_on_relative_to', { filters: { posted_on_relative_to: AS_OF } }],
+  ['posted_on_to', { posted_on_to: AS_OF }],
+  ['none', {}],
+];
+
+const PROPS = [
+  ['properties_ids [' + PROP + ']', { properties: { properties_ids: [PROP] } }],
+  ['properties_ids [' + PROP_ALT + ']', { properties: { properties_ids: [PROP_ALT] } }],
+  ['filters.properties_ids [' + PROP_ALT + ']', { filters: { properties_ids: [PROP_ALT] } }],
+];
+
+// Merge that does not let a later `filters` object clobber an earlier one —
+// the whole point of several shapes is combining them.
+function merge(...parts) {
+  const out = {};
+  parts.forEach(p => {
+    Object.entries(p || {}).forEach(([k, v]) => {
+      if (k === 'filters' && out.filters) out.filters = { ...out.filters, ...v };
+      else out[k] = v;
+    });
+  });
+  return out;
 }
 
 (async () => {
@@ -141,103 +173,117 @@ function rentLine(rows) {
     process.exitCode = 1;
     return;
   }
-  console.log('READ ONLY. Report reads only. Nothing is written anywhere.');
-  console.log('No row is printed — only column names, counts and column totals.\n');
+  console.log('READ ONLY. Report reads only. Nothing is written anywhere.\n');
+  console.log('TARGET, from Katie\'s workbook — ' + PROP_NAME + ' at ' + AS_OF + ':');
+  console.log('   Cash Rent Income     ' + money(WB_CASH));
+  console.log('   Accrual Rent Income  ' + money(WB_ACCRUAL));
+  console.log('   A request honouring the basis returns LESS on Cash than on Accrual.\n');
 
-  const filter = { properties: { properties_ids: [PROP] } };
   const base = { property_visibility: 'active', paginate_results: false };
 
-  // ---- the two anchors ------------------------------------------------------
-  console.log('ANCHORS for ' + PROP_NAME + ' (property ' + PROP + ')');
-
-  const inc = await call('income_statement', { ...filter, ...base });
-  const billed = rentLine(inc.rows);
-  console.log('   income_statement Rent Income   ' + money(billed) + '   (billed — what we have)');
-  await sleep(800);
-
-  // What is owed, from the report Collections already uses. If cash is real,
-  // the gap between billed and cash should be of this order.
-  let owed = null;
-  try {
-    const dq = await call('delinquency_as_of', { ...filter, ...base, tenant_statuses: ['0', '4'] });
-    const t = totals(dq.rows);
-    // The biggest positive money column is the balance; named differently in
-    // different pulls, so taken by shape.
-    const best = Object.entries(t.sums)
-      .filter(([k]) => /balance|owed|total|delinq/i.test(k))
-      .sort((a, b) => b[1] - a[1])[0];
-    owed = best ? best[1] : null;
-    console.log('   delinquency_as_of outstanding  ' + money(owed)
-      + (best ? '   (column "' + best[0] + '", ' + dq.rows.length + ' rows)' : ''));
-  } catch (e) {
-    console.log('   delinquency_as_of              failed: ' + e.message);
-  }
-  await sleep(800);
-
-  const expected = (billed !== null && owed !== null) ? billed - owed : null;
-  console.log('\n   A cash figure should be BELOW ' + money(billed)
-    + (expected !== null ? ', in the neighbourhood of ' + money(expected) : '') + '.');
-  console.log('   Equal to it means the same accrual number under another name.');
-  console.log('   Above it means it is not collections at all.\n');
-
-  // ---- the sweep ------------------------------------------------------------
-  console.log('CANDIDATE REPORTS (same property filter)');
-  const found = [];
-
-  for (const report of CANDIDATES) {
-    const r = await call(report, { ...filter, ...base });
+  // ---- 1. which of these report names exist --------------------------------
+  console.log('DO THESE REPORTS EXIST?');
+  const live = [];
+  for (const report of REPORTS) {
+    const r = await call(report, base);
     if (r.status === 404 || /not a valid report/i.test(r.err || '')) {
-      console.log('   ' + pad(report, 26) + 'does not exist');
-      await sleep(700);
-      continue;
+      console.log('   ' + pad(report, 38) + 'does not exist');
+    } else if (r.status >= 400) {
+      // The name is RIGHT and the parameters are wrong — that is a lead, not a
+      // dead end. income_statement's property filter was found this way.
+      console.log('   ' + pad(report, 38) + 'EXISTS, errored ' + r.status + ': ' + (r.err || ''));
+      live.push(report);
+    } else {
+      console.log('   ' + pad(report, 38) + 'OK, ' + r.rows.length + ' rows'
+        + (r.rows.length ? '   columns: ' + Object.keys(r.rows[0]).slice(0, 8).join(', ') : ''));
+      live.push(report);
     }
-    if (r.status >= 400) {
-      // A 500 means the NAME is right and the parameters are wrong — worth a
-      // human look, unlike a 404.
-      console.log('   ' + pad(report, 26) + 'EXISTS but errored ' + r.status + ': ' + (r.err || ''));
-      found.push({ report, status: r.status, rows: 0, note: 'exists, parameters wrong' });
-      await sleep(700);
-      continue;
-    }
-    const t = totals(r.rows);
-    const rent = rentLine(r.rows);
-    const cols = Object.keys(r.rows[0] || {});
-    console.log('   ' + pad(report, 26) + 'OK  ' + pad(r.rows.length + ' rows', 12)
-      + (rent !== null ? 'Rent Income ' + money(rent) : 'no Rent Income line'));
-    found.push({ report, rows: r.rows.length, cols, sums: t.sums, rent });
     await sleep(700);
   }
 
-  // ---- what any of it means ---------------------------------------------------
-  console.log('\nWHAT CAME BACK, scored against the anchors');
-  if (!found.filter(f => f.rows).length) {
-    console.log('   Nothing returned rows. There is no cash-basis report under any of');
-    console.log('   these names.');
+  if (!live.length) {
+    console.log('\n   None of these names exist. The saved report is not reachable under');
+    console.log('   any of them, and the next question is for AppFolio support: what is');
+    console.log('   the API id of "Income Statement - Property Comparison"?');
+    console.log('\nNothing was written.');
+    return;
   }
-  found.filter(f => f.rows).forEach(f => {
-    console.log('\n   ' + f.report + '  (' + f.rows + ' rows)');
-    console.log('      columns: ' + (f.cols || []).join(', '));
-    // Column totals only. Never a row.
-    const money_cols = Object.entries(f.sums)
-      .filter(([, v]) => Math.abs(v) > 1)
-      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-      .slice(0, 6);
-    money_cols.forEach(([k, v]) => {
-      let verdict = '';
-      if (billed !== null && Math.abs(v - billed) < 1) verdict = '  <-- EQUALS the billed figure (same accrual number)';
-      else if (billed !== null && v > 0 && v < billed) {
-        const gap = billed - v;
-        verdict = '  <-- BELOW billed by ' + money(gap)
-          + (owed ? ' (owed is ' + money(owed) + ')' : '');
-        if (owed && Math.abs(gap - owed) < owed * 0.5) verdict += '  *** CONSISTENT WITH CASH ***';
-      }
-      console.log('      ' + pad(k, 30) + pad(money(v), 14) + verdict);
-    });
-  });
 
-  console.log('\nVERDICT IS YOURS TO WRITE. This prints arithmetic, not a conclusion.');
-  console.log('   A column marked CONSISTENT WITH CASH is a candidate, not an answer:');
-  console.log('   check it against one property\'s actual receipts in AppFolio before');
-  console.log('   anything starts capturing it daily.');
+  // ---- 2. does the basis actually change the number ------------------------
+  //
+  // Run on each surviving report: the SAME date and property, Cash against
+  // Accrual. If the two come back equal, the parameter is decoration.
+  console.log('\nDOES ACCOUNTING_BASIS CHANGE THE NUMBER?');
+  const hits = [];
+
+  for (const report of live) {
+    console.log('\n   ' + report);
+    // The control is already understood: it answers accrual and ignores every
+    // date name tried so far. Only the NEW parameter is worth spending calls
+    // on there — the rest would be 48 requests to re-learn a known answer.
+    const dates = report === 'income_statement'
+      ? DATES.filter(([l]) => /posted_on_relative_to/.test(l))
+      : DATES;
+    let done = false;
+    for (const [dLabel, dBody] of dates) {
+      if (done) break;
+      for (const [pLabel, pBody] of PROPS) {
+        const results = {};
+        for (const [bLabel, bBody] of BASIS) {
+          const r = await call(report, merge(base, pBody, dBody, bBody));
+          results[bLabel] = r.status >= 400
+            ? { value: null, how: 'HTTP ' + r.status }
+            : rentFor(r.rows, PROP_NAME);
+          await sleep(700);
+        }
+        const cash = results['Cash'].value;
+        const accrual = results['Accrual'].value;
+        const line = pad(dLabel + ' + ' + pLabel, 52)
+          + 'Cash ' + pad(money(cash), 16) + 'Accrual ' + pad(money(accrual), 16);
+
+        let verdict = '';
+        if (cash === null && accrual === null) verdict = 'no figure';
+        else if (cash !== null && accrual !== null && Math.abs(cash - accrual) < 0.01) {
+          verdict = 'IDENTICAL — basis ignored';
+        } else if (cash !== null && accrual !== null && cash < accrual) {
+          verdict = 'CASH < ACCRUAL — the basis is being honoured';
+          if (Math.abs(cash - WB_CASH) < 0.01) verdict += '  *** MATCHES THE WORKBOOK EXACTLY ***';
+          else if (Math.abs(cash - WB_CASH) < WB_CASH * 0.1) verdict += '  *** within 10% of the workbook ***';
+          hits.push({ report, date: dLabel, prop: pLabel, cash, accrual,
+            exact: Math.abs(cash - WB_CASH) < 0.01 });
+        } else if (cash !== null && accrual !== null) {
+          verdict = 'cash ABOVE accrual — not what the basis means';
+        } else {
+          verdict = 'only one side answered';
+        }
+        console.log('      ' + line + verdict);
+        // An exact reproduction of the workbook answers the question. Carrying
+        // on would be another sixty calls to confirm it twice.
+        if (hits.length && hits[hits.length - 1].exact) { done = true; break; }
+      }
+    }
+  }
+
+  // ---- 3. the answer --------------------------------------------------------
+  console.log('\nWHAT THIS SETTLES');
+  if (!hits.length) {
+    console.log('   No combination made Cash differ from Accrual. The basis cannot be');
+    console.log('   chosen through the API with any of these names, and the collections');
+    console.log('   alert has to be relabelled "billed income" or left unbuilt — the');
+    console.log('   decision Arturo is taking with Kara.');
+  } else {
+    const exact = hits.filter(h => h.exact);
+    (exact.length ? exact : hits).slice(0, 5).forEach(h => {
+      console.log('   ' + h.report + '  with  ' + h.date + '  +  ' + h.prop);
+      console.log('      Cash ' + money(h.cash) + '   Accrual ' + money(h.accrual)
+        + (h.exact ? '   — reproduces the workbook exactly' : ''));
+    });
+    console.log('\n   ' + (exact.length
+      ? 'An exact match means this IS Katie\'s saved report. Wire collections_mtd'
+        + '\n   to it and the alert can honestly say "collections".'
+      : 'Close but not exact. Before anything captures daily, check why it differs'
+        + '\n   — a near miss is usually a different date anchor or a second account'
+        + '\n   line, and both change what the history means.'));
+  }
   console.log('\nNothing was written. No row was printed.');
 })().catch(e => { console.error('FAILED: ' + e.message); process.exitCode = 1; });
