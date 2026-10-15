@@ -7,7 +7,8 @@
 //   node scripts/seed-collections-mtd.js --as-of 2026-10-12 --dry-run "<file.xlsx>"
 //   node scripts/seed-collections-mtd.js --as-of 2026-10-12 --write "<file.xlsx>"
 //
-// WHY A SEED AT ALL. income_statement cannot be asked about a past period, so
+// WHY A SEED AT ALL. AppFolio answers for a whole past month but ignores the
+// day, so a PART of last month cannot be asked for, and
 // the history can only start the day the sync starts — which would put the
 // first real comparison in December. Katie's workbooks already hold the
 // figures for 10/05 and 10/12, taken from the saved report "Income Statement -

@@ -37,7 +37,6 @@ const CP = require('../lib/call-property.js');
 const AFP = require('../lib/appfolio-properties.js');
 const PA = require('../lib/property-aliases.js');
 
-const WRITE = process.argv.includes('--write');
 
 const db = createClient(process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY,
@@ -54,7 +53,13 @@ function propertyOf(row) {
   return PA.canonical(raw) || AFP.resolveProperty(raw) || null;
 }
 
-(async () => {
+// Exported so the nightly cron in server.js runs THE SAME CODE this is tested
+// and dry-run with. A cron that re-implements the rule is a second rule to
+// keep right, and this one is narrow on purpose.
+async function fillCallProperties(opts) {
+  const o = opts || {};
+  const WRITE = o.write || false;
+  const log = o.log || console.log;
   const af = require('../appfolio-reports.js');
   const store = async id => {
     try { const d = await af.readReportData(id); return (d && d.rows) || []; }
@@ -76,13 +81,13 @@ function propertyOf(row) {
         used++;
       });
     });
-    console.log('   ' + pad(label, 22) + pad(rows.length + ' rows', 12) + used + ' numbers');
+    log('   ' + pad(label, 22) + pad(rows.length + ' rows', 12) + used + ' numbers');
   };
 
-  console.log('resident sources:');
+  log('resident sources:');
   addSource(await store('tenant_directory'), 'tenant_directory');
   addSource(await store('delinquency_kpi'), 'delinquency_kpi');
-  console.log('   ' + pad('distinct numbers', 22) + props.size);
+  log('   ' + pad('distinct numbers', 22) + props.size);
 
   // ---- the calls ----------------------------------------------------------
   const calls = await selectAll(() => db.from('simplevoip_daily_calls')
@@ -96,11 +101,11 @@ function propertyOf(row) {
   const grades = await selectAll(() => db.from('call_grades')
     .select('id,recording_id,property_name'), { label: 'call_grades' });
 
-  console.log('\ncall_grades: ' + grades.length + ' rows');
+  log('\ncall_grades: ' + grades.length + ' rows');
 
   const open = grades.filter(g => CP.needsProperty(g.property_name));
-  console.log('   without a usable property : ' + open.length);
-  console.log('   already placed            : ' + (grades.length - open.length));
+  log('   without a usable property : ' + open.length);
+  log('   already placed            : ' + (grades.length - open.length));
 
   // ---- the verdicts --------------------------------------------------------
   const fill = [];
@@ -122,28 +127,28 @@ function propertyOf(row) {
   const byProperty = {};
   fill.forEach(f => { byProperty[f.to] = (byProperty[f.to] || 0) + 1; });
 
-  console.log('\nWOULD FILL: ' + fill.length + ' of ' + open.length);
+  log('\nWOULD FILL: ' + fill.length + ' of ' + open.length);
   Object.entries(byProperty).sort((a, b) => b[1] - a[1])
-    .forEach(([p, n]) => console.log('   ' + String(n).padStart(5) + '  ' + p));
+    .forEach(([p, n]) => log('   ' + String(n).padStart(5) + '  ' + p));
 
-  console.log('\nLEFT ALONE: ' + (open.length - fill.length));
-  console.log('   ' + pad('no recording id', 30) + skipped.noRecording);
-  console.log('   ' + pad('no number on the call', 30) + skipped.noNumber
+  log('\nLEFT ALONE: ' + (open.length - fill.length));
+  log('   ' + pad('no recording id', 30) + skipped.noRecording);
+  log('   ' + pad('no number on the call', 30) + skipped.noNumber
     + '   (blocked, withheld, or before 2026-09-29)');
-  console.log('   ' + pad('number is nobody we know', 30) + skipped.noResident
+  log('   ' + pad('number is nobody we know', 30) + skipped.noResident
     + '   (vendors, our own lines, prospects)');
-  console.log('   ' + pad('number shared by residents', 30) + skipped.shared
+  log('   ' + pad('number shared by residents', 30) + skipped.shared
     + '   (deliberately not attributed)');
-  console.log('   ' + pad('resident at two properties', 30) + skipped.twoProperties);
+  log('   ' + pad('resident at two properties', 30) + skipped.twoProperties);
 
   const after = grades.length - open.length + fill.length;
-  console.log('\nAfter this run, ' + after + ' of ' + grades.length + ' calls ('
+  log('\nAfter this run, ' + after + ' of ' + grades.length + ' calls ('
     + ((100 * after) / grades.length).toFixed(0) + '%) have a property.');
-  console.log('The rest mostly have no number to match: a property for those needs');
-  console.log('the transcript, which is the grader\'s job and not this script\'s.');
+  log('The rest mostly have no number to match: a property for those needs');
+  log('the transcript, which is the grader\'s job and not this script\'s.');
 
-  if (!WRITE) { console.log('\nDRY RUN — nothing written. Re-run with --write.'); return; }
-  if (!fill.length) { console.log('\nNothing to do.'); return; }
+  if (!WRITE) { log('\nDRY RUN — nothing written. Re-run with --write.'); return; }
+  if (!fill.length) { log('\nNothing to do.'); return; }
 
   // ---- the durable backup, before a single row changes ---------------------
   //
@@ -195,7 +200,7 @@ function propertyOf(row) {
     throw new Error(`history did not read back intact (${histCount} of ${current.length})`
       + ' — refusing to overwrite anything');
   }
-  console.log('\nhistory: ' + histCount + ' rows saved to call_grades_history, batch ' + batchId);
+  log('\nhistory: ' + histCount + ' rows saved to call_grades_history, batch ' + batchId);
 
   // The file as well, because a local copy is faster to read and costs nothing.
   // It is the convenience; the table is the backup.
@@ -206,8 +211,8 @@ function propertyOf(row) {
   const backup = pathm.join(dir, 'call_grades_property_fill_' + stamp + '.json');
   fs.writeFileSync(backup, JSON.stringify(current.map(g =>
     ({ id: g.id, property_name: g.property_name, property_source: g.property_source ?? null })), null, 0));
-  console.log('file:    ' + backup + ' (a convenience copy; the Render disk may lose it)');
-  console.log('undo:    node scripts/restore-call-properties.js --batch ' + batchId);
+  log('file:    ' + backup + ' (a convenience copy; the Render disk may lose it)');
+  log('undo:    node scripts/restore-call-properties.js --batch ' + batchId);
 
   // One update per property, not per row: the ids are grouped so 900 fills are
   // eight round trips.
@@ -220,17 +225,25 @@ function propertyOf(row) {
         .update({ property_name: p, property_source: CP.SOURCE.MATCH })
         .in('id', chunk).select('id');
       if (error) {
-        console.log('FAILED ' + p + ': ' + error.message);
+        log('FAILED ' + p + ': ' + error.message);
         if (/property_source/.test(error.message || '')) {
-          console.log('   run supabase/migrations/092_call_grades_property_source.sql first.');
+          log('   run supabase/migrations/092_call_grades_property_source.sql first.');
           return;
         }
         continue;
       }
       done += (data || []).length;
     }
-    console.log('   ' + pad(p, 24) + n + ' rows');
+    log('   ' + pad(p, 24) + n + ' rows');
   }
-  console.log('\nfilled: ' + done + ' rows, marked ' + CP.SOURCE.MATCH);
-  console.log('No call was re-graded: scores, rubrics and summaries are untouched.');
-})().catch(e => { console.error('FAILED: ' + e.message); process.exit(1); });
+  log('\nfilled: ' + done + ' rows, marked ' + CP.SOURCE.MATCH);
+  log('No call was re-graded: scores, rubrics and summaries are untouched.');
+  return { filled: done, wrote: WRITE };
+}
+
+module.exports = { fillCallProperties };
+
+if (require.main === module) {
+  fillCallProperties({ write: process.argv.includes('--write') })
+    .catch(e => { console.error('FAILED: ' + e.message); process.exit(1); });
+}

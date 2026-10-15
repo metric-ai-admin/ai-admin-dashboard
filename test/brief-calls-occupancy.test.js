@@ -334,5 +334,147 @@ t('the gatherer uses a membership test, not the normaliser', () => {
   assert.ok(PA.canonical('Ascent at Northgate'));
 });
 
+// ---- the occupancy red, which went missing ----------------------------------
+//
+// On 2026-10-13 the brief said ">> occupancy 51.4% against a 85.0% goal". On
+// the 15th no property had that flag and the footer still promised it. The
+// brief that actually went out was fine; the PREVIEW was handed a goal
+// function returning null, so nothing was ever under goal. A preview that
+// disagrees with the email is worse than no preview, because it is believed.
+
+const GOALS = require('../lib/leasing-goals.js');
+
+t('a property under its goal is RED, and says by how much', () => {
+  const brief = B.build({
+    thresholds: [],
+    properties: [{
+      name: 'Ascent at Northgate', units: 111, occupied: 57,
+      occupancyPct: 57 / 111, goalPct: GOALS.leasingGoalFraction('Ascent at Northgate'),
+    }],
+  });
+  assert.strictEqual(brief.red.length, 1, 'it is in the red list');
+  const flag = brief.red[0].flags.find(f => f.kind === 'occupancy');
+  assert.ok(flag, 'with an occupancy flag');
+  assert.match(flag.text, /51\.4%/);
+  assert.match(flag.text, /85\.0%/);
+  const text = B.render(brief);
+  assert.match(text, /occupancy 51\.4% against a 85\.0% goal/);
+});
+
+t('the goals are the Goal Board\'s, and come from one place', () => {
+  // The table used to be a const inside server.js, which is why anything
+  // outside it had to be handed a goal function — and why one caller could be
+  // handed a broken one without a test noticing.
+  assert.strictEqual(GOALS.leasingGoalPct('iConic Round Rock'), 92);
+  assert.strictEqual(GOALS.leasingGoalPct('Windy Hill Apartment'), 90);
+  assert.strictEqual(GOALS.leasingGoalPct('Ascent at Northgate'), 85);
+  assert.strictEqual(GOALS.leasingGoalPct('Somewhere New'), 85, 'default');
+  const board = fs.readFileSync(path.join(__dirname, '..', 'public', 'tools',
+    'weekly_leasing_goal_board.html'), 'utf8');
+  const override = board.match(/const GOAL_OVERRIDE=\{[^}]*\}/);
+  assert.ok(override, 'the Goal Board still has its overrides');
+  assert.match(override[0], /"iConic Round Rock":0\.92/);
+  assert.match(override[0], /"Windy Hill Apartment":0\.90/);
+});
+
+t('no property is under goal when every goal is null — which is the bug', () => {
+  // Pinning the failure mode itself: with no goals, the flag cannot fire, so
+  // a caller that supplies none renders a brief with no occupancy reds at all
+  // while the footer still names the threshold.
+  const brief = B.build({
+    thresholds: [],
+    properties: [{ name: 'Ascent at Northgate', units: 111, occupied: 57,
+      occupancyPct: 57 / 111, goalPct: null }],
+  });
+  assert.strictEqual(brief.red.length, 0);
+  assert.match(B.render(brief), /occupancy below the property goal/,
+    'and the footer promises what the body did not deliver');
+});
+
+t('the preview passes the real goals, not nulls', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'kara-brief-preview.js'), 'utf8');
+  assert.match(src, /goalPctFor:[\s\S]{0,120}leasingGoalFraction/,
+    'the preview uses the shared table');
+  assert.ok(!/goalPctFor:\s*\(\)\s*=>\s*null/.test(src));
+});
+
+t('server.js and the preview read the same goal table', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(server, /require\('\.\/lib\/leasing-goals\.js'\)/);
+  assert.ok(!/const LEASING_GOAL_PCT = \{/.test(server),
+    'the table is not redefined in server.js');
+});
+
+// ---- undated signed leases --------------------------------------------------
+
+t('signed leases with no date land in the first week and are declared', () => {
+  // The email prints "Signed, not moved in" per property. A projection that
+  // drops the undated ones ends lower than a count three inches above it, in
+  // the same message.
+  const r = OCC.project({
+    todayCT: TODAY, properties: [{ name: 'Windy Hill Apartment', units: 100, occupied: 90 }],
+    moveOuts: [], moveIns: [],
+    undatedMoveInsBy: { 'Windy Hill Apartment': 2 },
+  });
+  assert.strictEqual(r.undatedMoveIns, 2);
+  assert.strictEqual(r.rows[0].weeks[0].undatedPlaced, 2);
+  assert.strictEqual(r.rows[0].weeks[0].occupied, 92);
+  assert.strictEqual(r.rows[0].weeks[1].undatedPlaced, 0, 'placed once, not every week');
+  const text = B.render(B.build({ properties: [], thresholds: [], occupancy: r }));
+  assert.match(text, /no move-in date/);
+  assert.match(text, /FIRST week/);
+  assert.match(text, /not a date anybody gave us/);
+});
+
+t('undated leases are ignored when the move-in source is absent entirely', () => {
+  // Without a source there is nothing to reconcile against, and inventing
+  // arrivals from a count alone would be worse than the gap it fills.
+  const r = OCC.project({
+    todayCT: TODAY, properties: [{ name: 'A', units: 10, occupied: 5 }],
+    moveOuts: [], undatedMoveInsBy: { A: 3 },
+  });
+  assert.strictEqual(r.moveInsKnown, false);
+  assert.strictEqual(r.rows[0].weeks[0].occupied, 5);
+});
+
+// ---- the collections sentence -----------------------------------------------
+
+t('the brief no longer claims AppFolio cannot be asked about a past period', () => {
+  // It can: posted_on_from/to = "2026-09" returns all of September. What it
+  // will not do is part of a month. I wrote the stronger claim and it was
+  // wrong by the time it shipped.
+  const COLL = require('../lib/collections-mtd.js');
+  const note = COLL.alert([{ captured_on: '2026-10-05', property: 'A', rent_income: 1 }],
+    '2026-10-15').note;
+  assert.ok(!/cannot be asked about a past period/.test(note));
+  assert.match(note, /whole past month/);
+  assert.match(note, /not about part of one/);
+  assert.match(note, /comparison starts 2026-11-05/);
+});
+
+// ---- the nightly property fill ----------------------------------------------
+
+t('the call-property fill is scheduled between grading and the brief', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const at = server.indexOf('fill-call-properties.js');
+  assert.ok(at > 0, 'it is wired into a cron');
+  const starts = [...server.slice(0, at).matchAll(/cron\.schedule\('(\d+) (\d+) \* \* \*'/g)];
+  const last = starts[starts.length - 1];
+  const hour = Number(last[2]);
+  assert.ok(hour > 2, 'after the 02:00 auto-grade that creates the rows (got ' + hour + ')');
+  assert.ok(hour < 6, 'before the 06:00 brief that counts them (got ' + hour + ')');
+});
+
+t('the fill is importable and does not run on require', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'fill-call-properties.js'), 'utf8');
+  assert.match(src, /require\.main === module/, 'the CLI entry point is guarded');
+  assert.match(src, /module\.exports = \{ fillCallProperties \}/);
+  // The rule that makes it safe to run unattended.
+  assert.match(src, /call_grades_history/, 'previous values are kept');
+  assert.match(src, /property_source: CP\.SOURCE\.MATCH/, 'and every row is marked');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

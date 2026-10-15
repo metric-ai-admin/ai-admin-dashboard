@@ -62,7 +62,13 @@ async function selectAll(build, opts) {
     selectAll,
     buildKpiReport: kpiBuild.buildKpiReport,
     readReportData: id => af.readReportData(id),
-    goalPctFor: () => null,
+    // THE REAL GOALS, from the same table server.js uses. Passing () => null
+    // here is what made this preview lie: no property had a goal, so no
+    // property was red for occupancy, while the footer still said "occupancy
+    // below the property goal". The email going out was correct the whole
+    // time, which is the worst version of that bug — a preview that disagrees
+    // with the email is worse than no preview, because it gets believed.
+    goalPctFor: name => require('../lib/leasing-goals.js').leasingGoalFraction(name),
     now: TODAY === WEEK.todayYMD() ? undefined : new Date(TODAY + 'T12:00:00Z'),
   });
 

@@ -7348,25 +7348,15 @@ app.get('/api/leasing/weeks', requireMetricAccess, async (req, res) => {
 
 // Occupancy goal per community, as a fraction of total units. Hardcoded for now
 // (per spec); move to a leasing_goals table later if these need editing in-app.
-const LEASING_GOAL_PCT = {
-  'ascent at northgate': 85,
-  'windy hill apartment': 90,
-  'the highlander': 85,
-  'sunset palms': 85,
-  'the chateau': 85,
-  'hyde park square': 85,
-  'the sidney': 85,
-  'iconic round rock': 92,
-  'iconic downtown': 92,
-  'live with metric': 85,
-};
-const LEASING_GOAL_DEFAULT = 85;
-const leasingGoalPct = name => {
-  const k = String(name || '').trim().toLowerCase();
-  if (LEASING_GOAL_PCT[k] != null) return LEASING_GOAL_PCT[k];
-  for (const key of Object.keys(LEASING_GOAL_PCT)) if (k.includes(key)) return LEASING_GOAL_PCT[key];
-  return LEASING_GOAL_DEFAULT;
-};
+// Moved to lib/leasing-goals.js so the brief preview and the tests can reach
+// the same table. It was a const here, which is why the preview had to be
+// handed a goal function and was handed one returning null — every property
+// rendered without a goal while the footer still named the threshold.
+const LEASING_GOALS = require('./lib/leasing-goals.js');
+const LEASING_GOAL_PCT = LEASING_GOALS.LEASING_GOAL_PCT;
+const LEASING_GOAL_DEFAULT = LEASING_GOALS.LEASING_GOAL_DEFAULT;
+const leasingGoalPct = LEASING_GOALS.leasingGoalPct;
+
 const leasingStatusIs = (status, ...needles) => {
   const s = String(status || '').toLowerCase();
   return needles.some(n => s.includes(n));
@@ -19740,6 +19730,33 @@ const EARLY_FEEDS = [
   // something, not squeeze between.
   [55, 'delinquency_kpi',        () => require('./appfolio-reports.js').syncReport('delinquency_kpi').then(r => r?.rowCount)],
 ];
+
+// Fill in the property on calls the grader could not place, from whose number
+// it was. No AI, no re-grading.
+//
+// 03:30: AFTER the 02:00 auto-grade, which is what creates the rows this
+// fixes, and BEFORE Kara's 06:00 brief, which counts call scores per property.
+// On 2026-10-14 the brief put 15 of 18 failed calls under "Unidentified /
+// Unknown" — a number that says nothing about any property and everything
+// about the matching, and it is fixable without a person doing anything.
+//
+// THE RULE IS DELIBERATELY NARROW and lives in the script, not here: the
+// number belongs to exactly one resident, at exactly one property. A number
+// shared between residents is LEFT ALONE rather than attributed to whichever
+// sorts first — a wrong attribution looks exactly like a right one. Previous
+// values go to call_grades_history before anything is overwritten, and
+// property_source marks every row it touched as 'resident_match'.
+cron.schedule('30 3 * * *', () => {
+  if (!CRM_CONFIGURED) return;
+  // Only the lines that mean something went wrong, or that say what changed.
+  const keep = m => /FAILED|filled:|LEFT ALONE|history:/.test(String(m));
+  require('./scripts/fill-call-properties.js').fillCallProperties({
+    write: true,
+    log: m => { if (keep(m)) logLine('[call-property] ' + String(m).trim()); },
+  })
+    .then(r => logLine(`[call-property] ${r?.filled ?? 0} calls placed by resident match`))
+    .catch(err => logLine(`[call-property] FAILED: ${err.message}`));
+}, { timezone: LYNDSAY_TIMEZONE });
 
 // Month-to-date collections, per property and for the portfolio.
 //
