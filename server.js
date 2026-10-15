@@ -5055,11 +5055,13 @@ async function collectionsVoipUsers(db) {
 // 'cedar and sage' removed 2026-09-22 — it is a live management relationship
 // and should appear across the platform. See EXTERNALLY_MANAGED_FRAGMENTS below
 // for how it differs from a full Metric property.
-const METRIC_EXCLUDED_PROPERTY_FRAGMENTS = ['lily pad', 'wolf ridge', 'sidney', 'brazos', 'live with metric'];
-const propertyIsExcluded = name => {
-  const n = String(name || '').trim().toLowerCase();
-  return METRIC_EXCLUDED_PROPERTY_FRAGMENTS.some(frag => n.includes(frag));
-};
+// Moved to lib/excluded-properties.js so scripts and tests read the same list
+// instead of keeping their own copy — a list two files define separately is a
+// list that will disagree with itself. Same reason lib/leasing-goals.js came
+// out of here.
+const EXCLUDED = require('./lib/excluded-properties.js');
+const METRIC_EXCLUDED_PROPERTY_FRAGMENTS = EXCLUDED.METRIC_EXCLUDED_PROPERTY_FRAGMENTS;
+const propertyIsExcluded = EXCLUDED.propertyIsExcluded;
 
 // Properties Metric touches but does not fully manage. They are NOT excluded —
 // they belong in delinquency, leasing and vacancy views — but they behave
@@ -19640,6 +19642,10 @@ async function captureUnitVacancySnapshot(asOf) {
     const property = r.property_name || r.property;
     const unit = r.unit == null ? '' : String(r.unit).trim();
     if (!property || !unit) continue;
+    // The same gap the occupancy snapshot had: every VIEW filters this list,
+    // but a snapshot writes HISTORY and was copying the store unfiltered, so
+    // properties Metric does not manage were entering the weekly series.
+    if (propertyIsExcluded(property)) continue;
     // The table is unique on (as_of, property, unit); a duplicate inside one
     // batch would make the whole upsert fail rather than one row.
     const key = property + '|' + unit;

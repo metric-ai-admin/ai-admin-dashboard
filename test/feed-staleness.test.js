@@ -211,7 +211,15 @@ t('the weekly occupancy snapshot stops archiving excluded properties', () => {
 });
 
 t('The Sidney is on the exclusion list already', () => {
-  assert.match(server, /METRIC_EXCLUDED_PROPERTY_FRAGMENTS = \[[^\]]*'sidney'/);
+  // The list moved to lib/excluded-properties.js; server.js requires it.
+  const EX = require('../lib/excluded-properties.js');
+  assert.ok(EX.propertyIsExcluded('The Sidney'));
+  assert.ok(EX.propertyIsExcluded('513 Wolf Ridge Georgetown, TX 78628'),
+    'fragments, not names — AppFolio spells them several ways');
+  assert.ok(!EX.propertyIsExcluded('Ascent at Northgate'));
+  assert.match(server, /require\('\.\/lib\/excluded-properties\.js'\)/);
+  assert.ok(!/const METRIC_EXCLUDED_PROPERTY_FRAGMENTS = \[/.test(server),
+    'and the list is not redefined in server.js');
 });
 
 t('closed weeks are not rewritten', () => {

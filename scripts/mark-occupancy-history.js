@@ -22,6 +22,7 @@ require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
 const { selectAll } = require('../lib/db-page.js');
+const EXCLUDED = require('../lib/excluded-properties.js');
 
 const WRITE = process.argv.includes('--write');
 
@@ -54,8 +55,19 @@ const db = createClient(process.env.SUPABASE_URL,
   const plan = [];
   Object.keys(weeks).sort().forEach(w => {
     const list = weeks[w];
-    const occ = list.reduce((s, r) => s + (r.occupied_units || 0), 0);
-    const units = list.reduce((s, r) => s + (r.total_units || 0), 0);
+    // THE PORTFOLIO FIGURE EXCLUDES WHAT METRIC DOES NOT MANAGE, at read time.
+    // The stored rows are left exactly as they are — rewriting a week that has
+    // been reported is not a correction — but the number printed here is the
+    // one anybody would check against the Goal Board: 279/398, not 334/478.
+    const live = EXCLUDED.liveRows(list);
+    const occ = live.reduce((s, r) => s + (r.occupied_units || 0), 0);
+    const units = live.reduce((s, r) => s + (r.total_units || 0), 0);
+    const dropped = list.length - live.length;
+    if (dropped) {
+      console.log('  (' + w + ': ' + dropped + ' row(s) not counted — '
+        + list.filter(r => EXCLUDED.propertyIsExcluded(r.property_name))
+          .map(r => r.property_name).join(', ') + ')');
+    }
     const already = [...new Set(list.map(r => r.source_as_of).filter(Boolean))];
     const want = KNOWN[w];
     console.log(w + '  ' + String(list.length).padStart(2) + ' properties   '
