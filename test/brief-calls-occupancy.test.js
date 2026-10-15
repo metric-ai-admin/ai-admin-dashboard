@@ -681,6 +681,70 @@ t('held-out applications leave Records to clean up and are NAMED', () => {
   assert.match(html, /units under construction/);
 });
 
+t('the card and the portfolio total agree with the held-out section', () => {
+  // The first version held the applications out of the flags and out of
+  // Records, and left them in both the property card and the portfolio count:
+  // "Applications pending 4 oldest 56d" under a heading saying those four
+  // were held out, and a portfolio total of 5 that nobody could reconcile
+  // against the cards above it.
+  const brief = B.build({
+    thresholds: [{ property: 'Windy Hill Apartment', applications_excluded: true }],
+    portfolio: { units: 400, occupied: 300, occupancyPct: 0.75, applicationsPending: 5 },
+    properties: [
+      { name: 'Windy Hill Apartment', units: 100, occupied: 95, occupancyPct: 0.95,
+        goalPct: 0.9, applicationsPending: 4, applicationOldestDays: 56 },
+      { name: 'Ascent at Northgate', units: 10, occupied: 9, occupancyPct: 0.9,
+        goalPct: 0.85, applicationsPending: 1, applicationOldestDays: 2 },
+    ],
+  });
+
+  assert.strictEqual(brief.portfolio.applicationsPending, 1, '5 minus the 4 held out');
+  assert.strictEqual(brief.portfolio.applicationsHeldOut, 4);
+
+  const text = B.render(brief);
+  assert.match(text, /Applications pending\s+held out \(4\)/, 'the card says held out');
+  assert.ok(!/oldest 56d/.test(text),
+    'and drops the age, which is what invites action on a decision nobody has');
+  assert.match(text, /Applications pending\s+1\s+\(4 held out, not counted\)/,
+    'the portfolio total says what it left out rather than quietly dropping it');
+  // Scoped to Ascent's own block rather than matched across the whole brief:
+  // there are other lines between the name and this one, and a looser pattern
+  // would pass on Windy Hill's card.
+  const ascent = text.slice(text.indexOf('Ascent at Northgate'));
+  assert.match(ascent.slice(0, 400), /Applications pending\s+1\s+oldest 2d/,
+    'a normal property is untouched');
+
+  const html = H.renderHtml(brief);
+  assert.match(html, /held out \(4\)/);
+  assert.match(html, /4 held out, not counted/);
+  assert.ok(!/56d/.test(html));
+});
+
+t('the portfolio total is untouched when nothing is held out', () => {
+  const brief = B.build({
+    thresholds: [],
+    portfolio: { units: 400, occupied: 300, applicationsPending: 5 },
+    properties: [{ name: 'Ascent at Northgate', units: 10, occupied: 9,
+      occupancyPct: 0.9, goalPct: 0.85, applicationsPending: 5 }],
+  });
+  assert.strictEqual(brief.portfolio.applicationsPending, 5);
+  assert.strictEqual(brief.portfolio.applicationsHeldOut, undefined);
+});
+
+t('a portfolio total never goes below zero', () => {
+  // If the per-property counts and the portfolio count ever disagree, a
+  // negative total would be the first thing anybody noticed — and the least
+  // useful. It floors at zero and still reports what it held out.
+  const brief = B.build({
+    thresholds: [{ property: 'Windy Hill Apartment', applications_excluded: true }],
+    portfolio: { units: 400, occupied: 300, applicationsPending: 2 },
+    properties: [{ name: 'Windy Hill Apartment', units: 100, occupied: 95,
+      occupancyPct: 0.95, goalPct: 0.9, applicationsPending: 6 }],
+  });
+  assert.strictEqual(brief.portfolio.applicationsPending, 0);
+  assert.strictEqual(brief.portfolio.applicationsHeldOut, 6);
+});
+
 t('without a note the brief still says who to ask', () => {
   const brief = B.build({
     thresholds: [{ property: 'Windy Hill Apartment', applications_excluded: true }],
