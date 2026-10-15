@@ -18,11 +18,20 @@
 // income_statement. Kara's alert is about money RECEIVED; billed income would
 // answer a different question with an equally confident number.
 //
-// THE DATE IS IGNORED. Every date parameter, in every shape, on both reports.
-// The figure is month-to-date as of TODAY and there is no way to ask what the
-// 5th looked like — which is why the history has to be ours, and why October
-// is seeded from Katie's workbooks (scripts/seed-collections-mtd.js) rather
-// than fetched.
+// THE PERIOD IS NOT SETTLED, AND THIS WILL NOT RUN UNTIL IT IS. Arturo opened
+// the saved report in AppFolio on 2026-10-15: October reads 278,803.67 total,
+// Ascent 43,055.01. The API's default period returns 311,166.40 and 56,335.98
+// — a DIFFERENT PERIOD, probably September, and nothing in the response says
+// which. Capturing that and dating it today would fill the history with the
+// wrong month under the right date, and every comparison built on it would be
+// nonsense that looks like arithmetic.
+//
+// So PERIOD_PARAMS below is empty and the sync refuses to run. Fill it in with
+// what scripts/probe-income-period.js finds, once it reproduces those two
+// numbers TO THE CENT. Not "close" — a parameter that is accepted and ignored
+// returns a plausible number every time, which is what four probes already
+// bought.
+const PERIOD_PARAMS = null;
 require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
@@ -49,7 +58,7 @@ const PERIOD_NOTE = 'cash basis, income_statement_comparison; month-to-date as o
   + 'the capture date — the report ignores every date parameter, so it can only '
   + 'ever answer about today';
 
-async function statement(attempt) {
+async function statement(period, attempt) {
   const r = await global.fetch('https://' + HOST + '/api/v2/reports/income_statement_comparison.json', {
     method: 'POST',
     headers: {
@@ -61,6 +70,7 @@ async function statement(attempt) {
       paginate_results: false,
       accounting_basis: 'Cash',
       properties: { properties_ids: [LIST_ID] },
+      ...(period || {}),
     }),
   });
   if (r.status === 429) {
@@ -68,7 +78,7 @@ async function statement(attempt) {
     if (n > 6) throw new Error('rate limited six times');
     const wait = Number(r.headers.get('retry-after')) || 30;
     await sleep(wait * 1000);
-    return statement(n);
+    return statement(period, n);
   }
   if (!r.ok) throw new Error('AppFolio ' + r.status + ' on income_statement_comparison');
   const j = await r.json().catch(() => null);
@@ -89,9 +99,23 @@ async function syncCollectionsMtd(opts) {
   if (!ID || !SECRET) {
     throw new Error('APPFOLIO_REPORTS_CLIENT_ID / _SECRET are not set. Run on Render.');
   }
+  // REFUSE RATHER THAN CAPTURE THE WRONG MONTH. Without a period parameter
+  // the report answers for a period of its own choosing — 311,166.40 where
+  // AppFolio shows October as 278,803.67 — and the row would be stored under
+  // today's date. A history of the wrong month under the right dates is worse
+  // than no history: every figure in it is real, so nothing ever looks wrong.
+  // o.period lets a test exercise the fold without the real parameter being
+  // known. The cron passes nothing, so the guard below still stops it.
+  const period = PERIOD_PARAMS || o.period || null;
+  if (!period) {
+    throw new Error('the period parameter has not been found yet, so this would '
+      + 'capture whatever period the report defaults to and date it today. Run '
+      + 'scripts/probe-income-period.js and set PERIOD_PARAMS to what reproduces '
+      + 'AppFolio\'s October figures to the cent.');
+  }
 
   const today = WEEK.todayYMD();
-  const rows = await statement();
+  const rows = await statement(period);
   log('captured ' + today + ' (Central) — one call, ' + rows.length + ' account lines');
 
   // ---- fold the report into per-property account maps ----------------------

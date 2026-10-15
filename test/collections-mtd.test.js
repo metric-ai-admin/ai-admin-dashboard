@@ -557,7 +557,11 @@ async function runSync(rows) {
   const out = [];
   try {
     const { syncCollectionsMtd } = require('../scripts/sync-collections-mtd.js');
-    const result = await syncCollectionsMtd({ dryRun: true, log: m => out.push(String(m)) });
+    // A stand-in period: the real parameter is not known yet, and without one
+    // the sync refuses to run (see the test below). This exercises the fold.
+    const result = await syncCollectionsMtd({
+      dryRun: true, period: { probe_only: '2026-10' }, log: m => out.push(String(m)),
+    });
     return { result, text: out.join('\n') };
   } finally { global.fetch = real; }
 }
@@ -601,6 +605,30 @@ async function runSync(rows) {
       properties: [{ id: 1703, value: '0.00' }] }]);
     assert.match(text, /income lines/, 'the capture still happens');
     assert.ok(!/FAILED/.test(text));
+  });
+
+  await ta('without a period parameter the sync REFUSES to capture', async () => {
+    // The report answers for a period of its own choosing — 311,166.40 where
+    // AppFolio shows October as 278,803.67 — and the row would be stored under
+    // today's date. A history of the wrong month under the right dates is
+    // worse than no history: every figure in it is real, so nothing ever looks
+    // wrong. This is what the cron hits today, by design.
+    const real = global.fetch;
+    global.fetch = async () => { throw new Error('the sync must not reach AppFolio at all'); };
+    try {
+      const { syncCollectionsMtd } = require('../scripts/sync-collections-mtd.js');
+      await assert.rejects(() => syncCollectionsMtd({ dryRun: true, log: () => {} }),
+        /period parameter has not been found/);
+    } finally { global.fetch = real; }
+  });
+
+  await ta('the refusal happens before any request is made', async () => {
+    // Not after fetching and discarding: a refusal that still calls AppFolio
+    // every morning is a quota spent on a result thrown away.
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', 'scripts', 'sync-collections-mtd.js'), 'utf8');
+    assert.ok(src.indexOf('period parameter has not been found') < src.indexOf('await statement('),
+      'the guard is above the call');
   });
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
