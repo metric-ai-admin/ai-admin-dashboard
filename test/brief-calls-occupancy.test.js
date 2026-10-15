@@ -590,5 +590,119 @@ t('the fill is importable and does not run on require', () => {
   assert.match(src, /property_source: CP\.SOURCE\.MATCH/, 'and every row is marked');
 });
 
+// ---- stale lease rows -------------------------------------------------------
+//
+// The sync UPSERTS what the report returns and never removes what it does not,
+// so a lease that falls out — rescheduled, completed, cancelled — keeps its
+// last known values for ever and reads exactly like today's.
+//
+// The Chateau, 2026-10-15: a "future move-in" dated 2026-11-10 whose row had
+// not been touched since 2026-10-02, while 31 others were refreshed that
+// morning. Leasing says the real date is 10/11 — in the past, which is why it
+// had left the report. The projection counted a phantom arrival and raised a
+// data conflict over it.
+
+t('a future move-in from a stale row is left out and counted', () => {
+  const r = OCC.project({
+    todayCT: TODAY, moveOuts: [], moveIns: [],
+    properties: [{ name: 'The Chateau', units: 30, occupied: 30 }],
+    staleLeaseRows: 51, staleLeaseFutureMoveIns: 1,
+  });
+  assert.strictEqual(r.conflicts.length, 0, 'no phantom conflict');
+  const text = B.render(B.build({ properties: [], thresholds: [], occupancy: r }));
+  assert.match(text, /1 lease with a future move-in date was LEFT OUT/);
+  assert.match(text, /51 lease rows in all have not been refreshed/);
+});
+
+t('the gatherer trusts only rows the latest sync returned', () => {
+  // Not an age in hours: the question is "was this in the report this
+  // morning", and the answer is whether synced_at matches the newest present.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'lib', 'kara-brief-gather.js'), 'utf8');
+  const block = src.slice(src.indexOf('const newest ='), src.indexOf('return fresh'));
+  assert.match(block, /synced_at/);
+  assert.match(block, /staleLeaseFutureMoveIns/);
+  assert.ok(/fresh = \(rows \|\| \[\]\)\.filter/.test(block), 'it filters to the newest batch');
+  assert.ok(!/hours|Date\.now\(\)/.test(block), 'and not by an age in hours');
+});
+
+// ---- applications held out --------------------------------------------------
+
+t('an excluded property raises no application flag, but keeps its other reds', () => {
+  const brief = B.build({
+    thresholds: [{ property: 'Windy Hill Apartment', applications_excluded: true }],
+    properties: [{
+      name: 'Windy Hill Apartment', units: 100, occupied: 50,
+      occupancyPct: 0.5, goalPct: 0.9, delinquency: 9000, applicationOldestDays: 91,
+    }],
+  });
+  assert.deepStrictEqual(brief.properties[0].flags.map(f => f.kind),
+    ['occupancy', 'delinquency'],
+    'only the application flag is suppressed');
+});
+
+t('the exclusion is NEVER inherited from the star row', () => {
+  // "Every property is under construction" is not a thing anybody means to
+  // say, and a flag switched on portfolio-wide by accident would silence the
+  // application alerts everywhere at once.
+  const brief = B.build({
+    thresholds: [{ property: '*', applications_excluded: true }],
+    properties: [{ name: 'Ascent at Northgate', units: 10, occupied: 9,
+      occupancyPct: 0.9, goalPct: 0.85, applicationOldestDays: 91 }],
+  });
+  assert.ok(brief.properties[0].flags.some(f => f.kind === 'applications'));
+});
+
+t('held-out applications leave Records to clean up and are NAMED', () => {
+  // Dropped without a word, the property is indistinguishable from one with
+  // nothing outstanding.
+  const brief = B.build({
+    thresholds: [{ property: 'Windy Hill Apartment', applications_excluded: true,
+      applications_excluded_note: 'units under construction — waiting on Sammy and Bekah' }],
+    properties: [
+      { name: 'Windy Hill Apartment', units: 100, occupied: 95, occupancyPct: 0.95,
+        goalPct: 0.9, applicationsPending: 6, applicationOldestDays: 91,
+        staleApplications: 6, staleApplicationOldest: 91 },
+      { name: 'Ascent at Northgate', units: 10, occupied: 9, occupancyPct: 0.9,
+        goalPct: 0.85, staleApplications: 2, staleApplicationOldest: 70 },
+    ],
+  });
+  const text = B.render(brief);
+  const records = text.slice(text.indexOf('RECORDS TO CLEAN UP'),
+    text.indexOf('APPLICATIONS HELD OUT'));
+  assert.ok(!/Windy Hill/.test(records), 'out of the records list');
+  assert.match(records, /Ascent at Northgate\s+2 applications/, 'others unaffected');
+  assert.match(text, /APPLICATIONS HELD OUT/);
+  assert.match(text, /Windy Hill Apartment\s+6 applications not counted or flagged/);
+  assert.match(text, /units under construction — waiting on Sammy and Bekah/);
+
+  const html = H.renderHtml(brief);
+  assert.match(html, />Applications held out</);
+  assert.match(html, /units under construction/);
+});
+
+t('without a note the brief still says who to ask', () => {
+  const brief = B.build({
+    thresholds: [{ property: 'Windy Hill Apartment', applications_excluded: true }],
+    properties: [{ name: 'Windy Hill Apartment', units: 100, occupied: 95,
+      occupancyPct: 0.95, goalPct: 0.9, applicationsPending: 6 }],
+  });
+  assert.match(B.render(brief), /held out by request — ask Arturo why/);
+});
+
+t('the unit-level filter that was asked for is not faked', () => {
+  // Rocío asked for "building 3, or units with no CO". leasing_applications
+  // carries no unit — all 46 Windy Hill rows have it NULL — so a filter
+  // written against that column would exclude everything or nothing and look
+  // like it was doing the finer job either way. The migration says so.
+  const sql = fs.readFileSync(path.join(__dirname, '..', 'supabase', 'migrations',
+    '099_applications_under_construction.sql'), 'utf8');
+  assert.match(sql, /carries no unit/i);
+  assert.match(sql, /applications_excluded/);
+  const brief = require('../lib/kara-brief.js');
+  const t2 = brief.thresholdsFor('Anything', []);
+  assert.strictEqual(t2.applications_excluded, false, 'off by default');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
