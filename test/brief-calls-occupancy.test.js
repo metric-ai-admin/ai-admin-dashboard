@@ -234,9 +234,10 @@ t('the Metric total is recomputed from units, never averaged from percentages', 
   assert.ok(Math.abs(first.pct - mean) > 1e-6, 'and it is not the mean of the two');
 });
 
-t('nothing is clamped', () => {
-  // A projection below zero means the inputs disagree. Hiding that behind a
-  // clamp turns a data problem into a quiet quarter.
+t('below zero is still not clamped', () => {
+  // It has not happened, the cause would be different — more departures than
+  // residents — and inventing a floor for a case nobody has seen is how a
+  // future bug gets hidden.
   const r = OCC.project({
     todayCT: TODAY, moveIns: [],
     properties: [{ name: 'A', units: 10, occupied: 2 }],
@@ -244,6 +245,119 @@ t('nothing is clamped', () => {
   });
   assert.strictEqual(r.rows[0].weeks[0].occupied, -3);
   assert.ok(r.rows[0].weeks[0].pct < 0);
+});
+
+t('over 100% is capped AND named, never quietly capped', () => {
+  // The Chateau, 2026-10-15: 30 of 30 occupied, a signed move-in on 11/10 and
+  // no notice behind it. Printing 103.3% leaves the reader to work it out;
+  // clamping to 100% turns a contradiction between two AppFolio reports into
+  // a plausible number nobody ever investigates. Both, or it is wrong.
+  const r = OCC.project({
+    todayCT: TODAY, moveOuts: [],
+    properties: [{ name: 'The Chateau', units: 30, occupied: 30 }],
+    moveIns: [{ property: 'The Chateau', date: '2026-11-10', unit: '113' }],
+  });
+  const over = r.rows[0].weeks.find(w => w.over);
+  assert.ok(over, 'the overflow is detected');
+  assert.strictEqual(over.occupied, 30, 'shown capped at the unit count');
+  assert.strictEqual(over.pct, 1, 'and at 100%');
+  assert.strictEqual(over.rawOccupied, 31, 'while the arithmetic is kept whole');
+
+  assert.strictEqual(r.conflicts.length, 1);
+  assert.deepStrictEqual(
+    { ...r.conflicts[0], week: undefined },
+    { kind: 'move_in_without_vacancy', date: '2026-11-10', unit: '113',
+      property: 'The Chateau', week: undefined });
+
+  const text = B.render(B.build({ properties: [], thresholds: [], occupancy: r }));
+  assert.match(text, /Data conflict: 1 signed move-in on 2026-11-10, unit 113,/);
+  assert.match(text, /no notice or move-out on file — check the unit in AppFolio/);
+  assert.ok(!/103/.test(text), 'and 103.3% is not printed anywhere');
+  // The conflict has to come BEFORE the capped number: a reader who meets
+  // 100.0% first has no reason to read on.
+  assert.ok(text.indexOf('Data conflict') < text.indexOf('100.0%'));
+});
+
+t('the conflict is reported even when the unit cannot be resolved', () => {
+  // leasing_lease_history has no unit column; the unit is looked up from the
+  // rent roll by name and a name in two units resolves to nothing. A missing
+  // unit must not swallow the conflict.
+  const r = OCC.project({
+    todayCT: TODAY, moveOuts: [],
+    properties: [{ name: 'The Chateau', units: 30, occupied: 30 }],
+    moveIns: [{ property: 'The Chateau', date: '2026-11-10' }],
+  });
+  assert.strictEqual(r.conflicts.length, 1);
+  assert.strictEqual(r.conflicts[0].unit, null);
+  const text = B.render(B.build({ properties: [], thresholds: [], occupancy: r }));
+  assert.match(text, /Data conflict: 1 signed move-in on 2026-11-10 with no notice/);
+});
+
+t('an undated signed lease that overfills is named too', () => {
+  const r = OCC.project({
+    todayCT: TODAY, moveOuts: [], moveIns: [],
+    properties: [{ name: 'The Chateau', units: 30, occupied: 30 }],
+    undatedMoveInsBy: { 'The Chateau': 2 },
+  });
+  assert.strictEqual(r.rows[0].weeks[0].pct, 1);
+  assert.strictEqual(r.rows[0].weeks[0].rawOccupied, 32);
+  const text = B.render(B.build({ properties: [], thresholds: [], occupancy: r }));
+  assert.match(text, /Data conflict: 2 signed move-ins with no move-in date/);
+});
+
+t('every property over 100% gets the treatment, not just the first', () => {
+  const r = OCC.project({
+    todayCT: TODAY, moveOuts: [],
+    properties: [
+      { name: 'The Chateau', units: 30, occupied: 30 },
+      { name: 'Sunset Palms', units: 36, occupied: 36 },
+      { name: 'Ascent at Northgate', units: 111, occupied: 50 },
+    ],
+    moveIns: [
+      { property: 'The Chateau', date: '2026-10-20', unit: '113' },
+      { property: 'Sunset Palms', date: '2026-10-21', unit: '7' },
+      { property: 'Ascent at Northgate', date: '2026-10-21', unit: '204' },
+    ],
+  });
+  assert.strictEqual(r.conflicts.length, 2, 'both full properties, not the one under capacity');
+  assert.deepStrictEqual(r.conflicts.map(c => c.property).sort(),
+    ['Sunset Palms', 'The Chateau']);
+  r.rows.forEach(row => row.weeks.forEach(w =>
+    assert.ok(w.pct === null || w.pct <= 1, row.property + ' never shows above 100%')));
+});
+
+t('the Metric total uses the capped figures, so it cannot exceed its own units', () => {
+  const r = OCC.project({
+    todayCT: TODAY, moveOuts: [],
+    properties: [{ name: 'The Chateau', units: 30, occupied: 30 }],
+    moveIns: [{ property: 'The Chateau', date: '2026-10-20' }],
+  });
+  r.total.forEach(w => assert.ok(w.occupied <= w.units,
+    w.label + ': ' + w.occupied + '/' + w.units));
+});
+
+t('the HTML carries the conflict in the red, above the table', () => {
+  const r = OCC.project({
+    todayCT: TODAY, moveOuts: [],
+    properties: [{ name: 'The Chateau', units: 30, occupied: 30 }],
+    moveIns: [{ property: 'The Chateau', date: '2026-11-10', unit: '113' }],
+  });
+  const html = H.renderHtml(B.build({ properties: [], thresholds: [], occupancy: r }));
+  assert.match(html, /Data conflict/);
+  assert.match(html, /unit 113/);
+  assert.ok(!/103/.test(html));
+  assert.ok(html.indexOf('Data conflict') < html.indexOf('100.0%'));
+});
+
+t('the unit lookup refuses an ambiguous name', () => {
+  // A name in two units resolves to nothing rather than to whichever sorts
+  // first. A wrong unit number sends somebody to the wrong door and looks
+  // exactly like a right one — the same rule as the call matching.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'lib', 'kara-brief-gather.js'), 'utf8');
+  const block = src.slice(src.indexOf('const unitByTenant'), src.indexOf('return (rows || [])'));
+  assert.match(block, /null;\s*\/\/ null = seen in more than one unit/,
+    'a second unit for the same name blanks it');
 });
 
 t('the portfolio split is empty and SAYS it is empty', () => {
