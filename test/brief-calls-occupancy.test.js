@@ -614,16 +614,18 @@ t('a future move-in from a stale row is left out and counted', () => {
   assert.match(text, /51 lease rows in all have not been refreshed/);
 });
 
-t('the gatherer trusts only rows the latest sync returned', () => {
-  // Not an age in hours: the question is "was this in the report this
-  // morning", and the answer is whether synced_at matches the newest present.
+t('the gatherer trusts only rows the report still returns', () => {
+  // Not an age in hours: the question is "does the report still return this",
+  // which the sync answers in in_feed (migration 100), with the newest-sync
+  // comparison as the fallback until that column exists everywhere.
+  // test/feed-staleness.test.js owns the detail.
   const src = fs.readFileSync(
     path.join(__dirname, '..', 'lib', 'kara-brief-gather.js'), 'utf8');
-  const block = src.slice(src.indexOf('const newest ='), src.indexOf('return fresh'));
-  assert.match(block, /synced_at/);
-  assert.match(block, /staleLeaseFutureMoveIns/);
-  assert.ok(/fresh = \(rows \|\| \[\]\)\.filter/.test(block), 'it filters to the newest batch');
-  assert.ok(!/hours|Date\.now\(\)/.test(block), 'and not by an age in hours');
+  const block = src.slice(src.indexOf('const hasFlag'), src.indexOf('return fresh'));
+  assert.ok(block.length > 0, 'the block was found');
+  assert.match(block, /in_feed/);
+  assert.match(block, /synced_at/, 'the fallback is still there');
+  assert.ok(!/hours|Date\.now\(\)/.test(block), 'and nothing is judged by an age in hours');
 });
 
 // ---- applications held out --------------------------------------------------

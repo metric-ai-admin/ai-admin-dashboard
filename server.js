@@ -5880,6 +5880,19 @@ app.get('/api/regional/weekly-brief', requireAuth, requireRole(...DECISION_QUEUE
       af.readReportData('unit_vacancy'),
       af.readReportData('rent_roll'),
       af.readReportData('lease_expiration_detail'),
+      // NOT FILTERED ON in_feed, deliberately. This counts move-ins that
+      // ALREADY HAPPENED in a closed week, and the report only returns recent
+      // and active leases — so an old completed move-in leaves the feed as a
+      // matter of course. Filtering here was measured on 2026-10-15: the week
+      // ending 09-05 would have gone from 12 move-ins to 0, 09-12 from 10 to
+      // 0, 09-26 from 12 to 1. Those move-ins happened; the row leaving the
+      // report does not un-happen them, and these weeks have been reported to
+      // owners already.
+      //
+      // in_feed is for readers that describe the PRESENT or the FUTURE, where
+      // a stale date is a claim we cannot stand behind — see
+      // lib/kara-brief-gather.js. Same split as "Unknown — not in feed" on
+      // work orders: not open, not closed, and not silently either.
       db.from('leasing_lease_history').select('property_name,move_in_date,tenant_name,renewal,status').limit(5000),
       db.from('leasing_showings').select('property_name,unit,prospect,showing_date,status,type,synced_at').limit(5000),
     ]);
@@ -7489,6 +7502,7 @@ app.get('/api/leasing/goal-board', requireMetricAccess, async (req, res) => {
       selectAllResult(() => db.from('leasing_occupancy').select('*'), { label: 'goal board occupancy' }),
       selectAllResult(() => db.from('leasing_showings').select('property_name,property_id,showing_date,status').gte('showing_date', weekStart).lte('showing_date', weekEnd), { label: 'goal board showings' }),
       selectAllResult(() => db.from('leasing_applications').select('property_name,property_id,application_date,status').gte('application_date', weekStart).lte('application_date', weekEnd), { label: 'goal board applications' }),
+      // Past weeks: not filtered on in_feed. See the note at the KPI reader.
       selectAllResult(() => db.from('leasing_lease_history').select('property_name,property_id,move_in_date,status').gte('move_in_date', weekStart).lte('move_in_date', weekEnd), { label: 'goal board lease history' }),
     ]);
     if (leadsRes.error) throw new Error(leadsRes.error.message);
@@ -7794,6 +7808,46 @@ async function leasingSyncUpsert(table, rows, onConflict) {
   }
   return synced;
 }
+/**
+ * Flag the rows this sync did NOT see, without deleting them.
+ *
+ * THE SAME FIX AS "Unknown — not in feed" ON WORK ORDERS. A sync that upserts
+ * what the report returns and ignores what it does not leaves every departed
+ * row frozen at its last known values, looking exactly like a current one.
+ *
+ * REFUSES ON AN EMPTY SYNC. If the report came back with nothing — an AppFolio
+ * outage, a bad filter, an auth failure — marking everything out of feed would
+ * empty the present for every reader at once, and it would look like a day on
+ * which nothing exists rather than a day on which the sync failed. An empty
+ * report is a reason to change nothing.
+ */
+async function markMissingFromFeed(table, keyCol, seenKeys, now) {
+  const keys = (seenKeys || []).filter(Boolean);
+  if (!keys.length) {
+    console.warn(`[leasing-sync] ${table}: report returned no rows — nothing marked out of feed`);
+    return 0;
+  }
+  const db = supabaseAdmin || supabasePublic;
+  // Chunked: `not.in` with thousands of ids builds a URL no server will take.
+  // Rows already out of feed are left alone so last_seen_at keeps the date the
+  // report really last mentioned them rather than creeping forward.
+  const { data, error } = await db.from(table)
+    .update({ in_feed: false })
+    .not(keyCol, 'in', '(' + keys.map(k => `"${String(k).replace(/"/g, '')}"`).join(',') + ')')
+    .or('in_feed.is.null,in_feed.is.true')
+    .select(keyCol);
+  if (error) {
+    // Logged, not thrown: the upsert already succeeded and the fresh rows are
+    // worth keeping. A failure here means some rows stay unmarked, which is
+    // the behaviour we had before this existed.
+    console.error(`[leasing-sync] ${table}: could not mark missing rows`, error.message);
+    return 0;
+  }
+  const n = (data || []).length;
+  if (n) console.log(`[leasing-sync] ${table}: ${n} row(s) no longer in the report, marked in_feed=false`);
+  return n;
+}
+
 // Log raw report size + a sample of the mapped row so field-name mismatches and
 // all-skipped mappings are visible in the Render logs.
 const leasingSyncLog = (label, raw, rows) =>
@@ -7983,8 +8037,20 @@ app.post('/api/leasing/sync/lease-history', requireMetricAccess, async (req, res
       });
     }
     leasingSyncLog('lease-history', raw, rows);
+    rows.forEach(r => { r.last_seen_at = now; r.in_feed = true; });
     const synced = await leasingSyncUpsert('leasing_lease_history', rows, 'lease_uuid');
-    res.json({ ok: true, synced, mapped: rows.length, raw: raw.length, serviceRole: !!supabaseAdmin, timestamp: now });
+    // MARK WHAT THE REPORT STOPPED RETURNING. Nothing is deleted: a lease that
+    // left the report is still the best record of what that lease was, it just
+    // cannot be read as what is true now. Without this the row keeps its last
+    // known dates for ever and is indistinguishable from a current one — which
+    // put a phantom future move-in in Kara's brief on 2026-10-15.
+    //
+    // AFTER the upsert and only if the upsert succeeded. Marking first would
+    // mean a failed sync left the whole table flagged out of feed, and every
+    // reader would see an empty present.
+    const dropped = await markMissingFromFeed('leasing_lease_history', 'lease_uuid',
+      rows.map(r => r.lease_uuid), now);
+    res.json({ ok: true, synced, dropped, mapped: rows.length, raw: raw.length, serviceRole: !!supabaseAdmin, timestamp: now });
   } catch (err) {
     res.status(err.code && err.code >= 400 && err.code < 600 ? err.code : 502).json({ ok: false, error: 'Lease-history sync failed: ' + err.message });
   }
@@ -13843,6 +13909,7 @@ async function leasingWeeklyRollup(db) {
     // real event dates, not a stored week bucket.
     db.from('leasing_showings').select('property_name,showing_date,status').gte('showing_date', weekStart).lte('showing_date', weekEnd),
     db.from('leasing_applications').select('property_name,application_date,status').gte('application_date', weekStart).lte('application_date', weekEnd),
+    // Past weeks: not filtered on in_feed. See the note at the KPI reader.
     db.from('leasing_lease_history').select('property_name,move_in_date').gte('move_in_date', weekStart).lte('move_in_date', weekEnd),
   ]);
   const clean = full => { const t = String(full || '').trim(); const i = t.indexOf(' - '); return i > 0 ? t.slice(0, i).trim() : t; };
