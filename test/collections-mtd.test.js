@@ -607,7 +607,20 @@ async function runSync(rows) {
     assert.ok(!/FAILED/.test(text));
   });
 
-  await ta('without a period parameter the sync REFUSES to capture', async () => {
+  await ta('the period follows the calendar instead of being written down', async () => {
+    // A hardcoded month would keep returning October all through November,
+    // with every row dated correctly — the exact failure this file exists to
+    // avoid, and the one that is hardest to see.
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', 'scripts', 'sync-collections-mtd.js'), 'utf8');
+    assert.match(src, /posted_on_from: String\(ymd\)\.slice\(0, 7\)/,
+      'the month comes from the capture date');
+    assert.ok(!/posted_on_from: '20\d\d-\d\d'/.test(src), 'no month is hardcoded');
+    const { text } = await runSync(REPORT_ROWS);
+    assert.match(text, /for period/, 'and the period used is logged');
+  });
+
+  await ta('an empty period parameter REFUSES to capture', async () => {
     // The report answers for a period of its own choosing — 311,166.40 where
     // AppFolio shows October as 278,803.67 — and the row would be stored under
     // today's date. A history of the wrong month under the right dates is
@@ -617,8 +630,9 @@ async function runSync(rows) {
     global.fetch = async () => { throw new Error('the sync must not reach AppFolio at all'); };
     try {
       const { syncCollectionsMtd } = require('../scripts/sync-collections-mtd.js');
-      await assert.rejects(() => syncCollectionsMtd({ dryRun: true, log: () => {} }),
-        /period parameter has not been found/);
+      await assert.rejects(
+        () => syncCollectionsMtd({ dryRun: true, period: {}, log: () => {} }),
+        /no period parameter/);
     } finally { global.fetch = real; }
   });
 
@@ -627,7 +641,7 @@ async function runSync(rows) {
     // every morning is a quota spent on a result thrown away.
     const src = fs.readFileSync(
       path.join(__dirname, '..', 'scripts', 'sync-collections-mtd.js'), 'utf8');
-    assert.ok(src.indexOf('period parameter has not been found') < src.indexOf('await statement('),
+    assert.ok(src.indexOf('no period parameter') < src.indexOf('await statement('),
       'the guard is above the call');
   });
 

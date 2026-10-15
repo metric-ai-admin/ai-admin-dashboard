@@ -26,12 +26,18 @@
 // wrong month under the right date, and every comparison built on it would be
 // nonsense that looks like arithmetic.
 //
-// So PERIOD_PARAMS below is empty and the sync refuses to run. Fill it in with
-// what scripts/probe-income-period.js finds, once it reproduces those two
-// numbers TO THE CENT. Not "close" — a parameter that is accepted and ignored
-// returns a plausible number every time, which is what four probes already
-// bought.
-const PERIOD_PARAMS = null;
+// FOUND, 2026-10-15: posted_on_from / posted_on_to = "2026-10" reproduces the
+// saved report exactly — 278,803.67 total, Ascent 43,055.01. Both ends of the
+// range are the MONTH, not a day.
+//
+// Derived from the capture date rather than written down, so the sync follows
+// the calendar instead of needing an edit every 1st. A hardcoded month would
+// keep returning October through all of November, with each row dated
+// correctly — the failure this whole file is built to avoid.
+const PERIOD_PARAMS = ymd => ({
+  posted_on_from: String(ymd).slice(0, 7),
+  posted_on_to: String(ymd).slice(0, 7),
+});
 require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
@@ -54,9 +60,13 @@ const pad = (s, w) => String(s).padEnd(w);
 const money = n => (n === null || n === undefined ? '—'
   : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }));
 
-const PERIOD_NOTE = 'cash basis, income_statement_comparison; month-to-date as of '
-  + 'the capture date — the report ignores every date parameter, so it can only '
-  + 'ever answer about today';
+// The period is now EXPLICIT and recorded on every row. The stored note used
+// to say the report could only answer about today, which was true of what we
+// knew and false of the report.
+const periodNote = period => 'cash basis, income_statement_comparison, '
+  + 'posted_on_from/to = ' + period.posted_on_from + '; month-to-date as of the '
+  + 'capture date. Verified against the AppFolio saved report on 2026-10-15: '
+  + 'October total 278,803.67, Ascent 43,055.01.';
 
 async function statement(period, attempt) {
   const r = await global.fetch('https://' + HOST + '/api/v2/reports/income_statement_comparison.json', {
@@ -104,19 +114,20 @@ async function syncCollectionsMtd(opts) {
   // AppFolio shows October as 278,803.67 — and the row would be stored under
   // today's date. A history of the wrong month under the right dates is worse
   // than no history: every figure in it is real, so nothing ever looks wrong.
-  // o.period lets a test exercise the fold without the real parameter being
-  // known. The cron passes nothing, so the guard below still stops it.
-  const period = PERIOD_PARAMS || o.period || null;
-  if (!period) {
-    throw new Error('the period parameter has not been found yet, so this would '
-      + 'capture whatever period the report defaults to and date it today. Run '
-      + 'scripts/probe-income-period.js and set PERIOD_PARAMS to what reproduces '
-      + 'AppFolio\'s October figures to the cent.');
+  const today = WEEK.todayYMD();
+  const period = o.period || PERIOD_PARAMS(today);
+  // The guard stays even though the parameter is now known: if PERIOD_PARAMS
+  // is ever emptied or returns nothing, the report falls back to a period of
+  // its own choosing and the row is still stored under today's date. Every
+  // figure in it would be real, so nothing would ever look wrong.
+  if (!period || !Object.keys(period).length) {
+    throw new Error('no period parameter, so this would capture whatever period '
+      + 'the report defaults to and date it today. See PERIOD_PARAMS.');
   }
 
-  const today = WEEK.todayYMD();
   const rows = await statement(period);
-  log('captured ' + today + ' (Central) — one call, ' + rows.length + ' account lines');
+  log('captured ' + today + ' (Central) for period ' + period.posted_on_from
+    + ' — one call, ' + rows.length + ' account lines');
 
   // ---- fold the report into per-property account maps ----------------------
   //
@@ -186,7 +197,7 @@ async function syncCollectionsMtd(opts) {
     total_income: portfolio[Object.keys(portfolio).find(k => TOTAL_LINE.test(k)) || ''] ?? null,
     accounts: portfolio,
     source: 'income_statement_comparison_cash',
-    period_note: PERIOD_NOTE,
+    period_note: periodNote(period),
   }];
 
   [...byProperty.entries()].sort().forEach(([name, { accounts }]) => {
@@ -200,7 +211,7 @@ async function syncCollectionsMtd(opts) {
       total_income: totalKey ? accounts[totalKey] : null,
       accounts,
       source: 'income_statement_comparison_cash',
-      period_note: PERIOD_NOTE,
+      period_note: periodNote(period),
     });
   });
 
