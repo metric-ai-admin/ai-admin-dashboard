@@ -7821,7 +7821,7 @@ async function leasingSyncUpsert(table, rows, onConflict) {
  * which nothing exists rather than a day on which the sync failed. An empty
  * report is a reason to change nothing.
  */
-async function markMissingFromFeed(table, keyCol, seenKeys, now) {
+async function markMissingFromFeed(table, keyCol, seenKeys, now, scope) {
   const keys = (seenKeys || []).filter(Boolean);
   if (!keys.length) {
     console.warn(`[leasing-sync] ${table}: report returned no rows — nothing marked out of feed`);
@@ -7831,11 +7831,19 @@ async function markMissingFromFeed(table, keyCol, seenKeys, now) {
   // Chunked: `not.in` with thousands of ids builds a URL no server will take.
   // Rows already out of feed are left alone so last_seen_at keeps the date the
   // report really last mentioned them rather than creeping forward.
-  const { data, error } = await db.from(table)
+  //
+  // SCOPED TO WHAT THE SYNC ACTUALLY ASKED FOR. The applications report takes
+  // a 90-day window, so every application older than that is absent because
+  // nobody asked about it — not because it is gone. Marking those would flag
+  // most of the table as stale on the first run and would be worse than the
+  // problem it fixes. Lease history takes no window and passes no scope.
+  let q = db.from(table)
     .update({ in_feed: false })
     .not(keyCol, 'in', '(' + keys.map(k => `"${String(k).replace(/"/g, '')}"`).join(',') + ')')
-    .or('in_feed.is.null,in_feed.is.true')
-    .select(keyCol);
+    .or('in_feed.is.null,in_feed.is.true');
+  if (scope && scope.column && scope.from) q = q.gte(scope.column, scope.from);
+  if (scope && scope.column && scope.to) q = q.lte(scope.column, scope.to);
+  const { data, error } = await q.select(keyCol);
   if (error) {
     // Logged, not thrown: the upsert already succeeded and the fresh rows are
     // worth keeping. A failure here means some rows stay unmarked, which is
@@ -7988,6 +7996,7 @@ app.post('/api/leasing/sync/applications', requireMetricAccess, async (req, res)
       });
     }
     leasingSyncLog('applications', raw, rows);
+    rows.forEach(r => { r.last_seen_at = now; r.in_feed = true; });
     // Retried without lease_start_date when 087 has not been run yet, so the
     // sync keeps working and says what it could not store.
     let synced, droppedColumn = null;
@@ -7999,7 +8008,14 @@ app.post('/api/leasing/sync/applications', requireMetricAccess, async (req, res)
       synced = await leasingSyncUpsert('leasing_applications',
         rows.map(({ lease_start_date, ...rest }) => rest), 'rental_application_id');
     }
+    // SCOPED TO THE 90-DAY WINDOW THIS SYNC ASKED ABOUT. Anything older was
+    // never requested, so its absence says nothing — marking it would flag
+    // most of the table on the first run.
+    const dropped = await markMissingFromFeed('leasing_applications',
+      'rental_application_id', rows.map(r => r.rental_application_id), now,
+      { column: 'application_date', from: received_on_from, to: received_on_to });
     res.json({
+      dropped,
       ok: true, synced, mapped: rows.length, raw: raw.length,
       serviceRole: !!supabaseAdmin, received_on_from, received_on_to, droppedColumn, timestamp: now,
       // Said out loud on every run. A sync that returns fewer rows than the
@@ -19519,8 +19535,24 @@ async function captureOccupancySnapshot(asOf) {
   const rowSourceAsOf = sourceAsOf.length ? sourceAsOf[0] : null;
 
   const now = new Date().toISOString();
+  // EXCLUDED PROPERTIES ARE NOT ARCHIVED. Every leasing VIEW filters this list
+  // — the Goal Board says "hidden from all leasing views" — but this writes
+  // history, and it was copying the whole table. So The Sidney, Brazos, Lily
+  // Pad, Wolf Ridge and Live With Metric were entering the weekly occupancy
+  // history, where the portfolio reads 334/478 (69.87%) instead of 279/398
+  // (70.10%): 0.23 points, and a property Metric stopped managing on
+  // 2026-10-07 sitting in the series for every week after it.
+  //
+  // Weeks already captured are LEFT ALONE. 2026-10-03 is a week Metric really
+  // did manage The Sidney, and rewriting a closed week is not a correction,
+  // it is a different number under the same date.
+  const dropped = rows.filter(r => r.property_name && propertyIsExcluded(r.property_name));
+  if (dropped.length) {
+    logLine('[occ-snapshot] not archived (excluded properties): '
+      + dropped.map(r => r.property_name).join(', '));
+  }
   const payload = rows
-    .filter(r => r.property_name)
+    .filter(r => r.property_name && !propertyIsExcluded(r.property_name))
     .map(r => {
       const units = Number(r.total_units) || 0;
       const occ = Number(r.occupied_units) || 0;

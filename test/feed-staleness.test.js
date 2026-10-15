@@ -148,5 +148,81 @@ t('asking for in_feed before the migration does not lose the query', () => {
     'the column is tried first');
 });
 
+// ---- applications: the same marking, scoped to the window -------------------
+
+t('the applications sync marks what it did not see', () => {
+  assert.match(server, /markMissingFromFeed\('leasing_applications'/);
+});
+
+t('and ONLY inside the 90-day window it asked about', () => {
+  // The report is fetched with received_on_from = today - 90 days. An
+  // application older than that is absent because nobody asked — marking it
+  // would flag most of the table on the first run and be worse than the
+  // problem it fixes.
+  const call = server.slice(server.indexOf("markMissingFromFeed('leasing_applications'"));
+  const block = call.slice(0, call.indexOf('res.json'));
+  assert.match(block, /column: 'application_date'/);
+  assert.match(block, /from: received_on_from/);
+  assert.match(block, /to: received_on_to/);
+});
+
+t('lease history passes no scope, because its report takes no window', () => {
+  const call = server.slice(server.indexOf("markMissingFromFeed('leasing_lease_history'"));
+  const block = call.slice(0, call.indexOf(';'));
+  assert.ok(!/column:/.test(block), 'no scope argument');
+});
+
+t('the scope is optional and skipped when absent', () => {
+  const fn = server.slice(server.indexOf('async function markMissingFromFeed'),
+    server.indexOf('// Log raw report size'));
+  assert.match(fn, /if \(scope && scope\.column && scope\.from\)/);
+  assert.match(fn, /if \(scope && scope\.column && scope\.to\)/);
+});
+
+t('the brief drops applications the report stopped returning', () => {
+  assert.match(gather, /a\.in_feed !== false/);
+  // NULL must not drop the row: it means "outside the window, never
+  // assessed", and before migration 101 it means the column is absent.
+  assert.ok(!/a\.in_feed === true/.test(gather),
+    'only an explicit false counts as stale');
+});
+
+t('asking for in_feed on applications also survives the missing column', () => {
+  const block = gather.slice(gather.indexOf('const APP_COLS'),
+    gather.indexOf('const apBy'));
+  assert.ok(block.length > 0);
+  assert.match(block, /\.catch\(/);
+  assert.match(block, /no in_feed/);
+});
+
+// ---- The Sidney -------------------------------------------------------------
+
+t('the weekly occupancy snapshot stops archiving excluded properties', () => {
+  // Every leasing VIEW filters this list — the Goal Board says "hidden from
+  // all leasing views" — but the snapshot writes HISTORY and was copying the
+  // whole table, so a property Metric stopped managing on 2026-10-07 was
+  // entering the series for every week after it.
+  const fn = server.slice(server.indexOf('const dropped = rows.filter'),
+    server.indexOf('let { error: wErr }'));
+  assert.ok(fn.length > 0, 'the snapshot block was found');
+  assert.match(fn, /!propertyIsExcluded\(r\.property_name\)/);
+  assert.match(fn, /not archived \(excluded properties\)/,
+    'and it says which ones it dropped rather than dropping them quietly');
+});
+
+t('The Sidney is on the exclusion list already', () => {
+  assert.match(server, /METRIC_EXCLUDED_PROPERTY_FRAGMENTS = \[[^\]]*'sidney'/);
+});
+
+t('closed weeks are not rewritten', () => {
+  // 2026-10-03 is a week Metric really did manage The Sidney. Rewriting a
+  // closed week is not a correction, it is a different number under the same
+  // date.
+  const fn = server.slice(server.indexOf('EXCLUDED PROPERTIES ARE NOT ARCHIVED'),
+    server.indexOf('let { error: wErr }'));
+  assert.match(fn, /Weeks already captured are LEFT ALONE/);
+  assert.ok(!/delete\(\)/.test(fn), 'and nothing deletes the weeks already written');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
