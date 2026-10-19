@@ -1152,6 +1152,24 @@ function ccRefreshCounts() {
   // The rule comes from the shared module, not from a second opinion here.
   const WOS = window.WorkOrderStatus;
   const ccAwaiting = (!woRep || !WOS) ? [] : woRep.rows.filter(r => WOS.isAwaitingBilling(woStatus(r)));
+
+  // WORK DONE — PENDING REVIEW. Arturo, 2026-10-19: these stay OPEN, as in
+  // Jay's, but Erick needs to see which ones they are: the tech says the job
+  // is finished and nobody has closed it. Mixed into the open pile they look
+  // like jobs still waiting for a visit, which is the thing that put 436 work
+  // orders on this board where 95 were real.
+  const ccWorkDone = (!woRep || !WOS) ? [] : woRep.rows.filter(r => WOS.isWorkDone(woStatus(r)));
+  if (sum && ccWorkDone.length) {
+    const nums = ccWorkDone.map(r => ccVal(r, woRep.map, 'woNum')).filter(Boolean).slice(0, 12);
+    const b = document.createElement('div');
+    b.className = 'banner';
+    b.style.cssText = 'width:100%;margin:0 0 8px';
+    b.innerHTML = `<b>🔎 ${ccWorkDone.length} work done — pending review.</b> `
+      + `Still OPEN and counted as open: the field work is reported finished and `
+      + `nobody has closed them. Not a site visit. `
+      + (nums.length ? `WO ${nums.map(esc).join(', ')}${ccWorkDone.length > nums.length ? ', …' : ''}` : '');
+    sum.appendChild(b);
+  }
   if (sum && ccAwaiting.length) {
     const nums = ccAwaiting.map(r => ccVal(r, woRep.map, 'woNum')).filter(Boolean).slice(0, 12);
     const b = document.createElement('div');

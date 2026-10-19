@@ -163,8 +163,12 @@ t('it is a separate line from the open work', () => {
     'the Command Center tests the status itself instead of using the shared rule');
 });
 t('it says they are finished, and where they belong', () => {
-  const i = ccCode.indexOf('ccAwaiting');
-  const body = ccCode.slice(i, i + 900);
+  // Anchored to the banner, not to a byte offset from the declaration: a
+  // second banner inserted between the two pushed the text out of a fixed
+  // 900-character window and failed this for the wrong reason.
+  const i = ccCode.indexOf('awaiting billing.</b>');
+  assert.ok(i > 0, 'the awaiting-billing banner was not found at all');
+  const body = ccCode.slice(i, ccCode.indexOf('sum.appendChild', i));
   assert.ok(/awaiting billing/i.test(body));
   assert.ok(/Billable Labor Report/.test(body), 'Erick is told what they are but not what to do');
   // Was "Not field work" while they were open. They are closed now, so the
@@ -173,6 +177,22 @@ t('it says they are finished, and where they belong', () => {
   assert.ok(/Not open work/.test(body), 'nothing says these are not open work');
   assert.ok(/CLOSED/.test(body), 'the banner does not say they are closed');
 });
+t('work done is shown apart, inside the open count', () => {
+  // Arturo, 2026-10-19: Work Done stays OPEN as in Jay's, but Erick needs to
+  // see which ones they are — the tech reports the job finished and nobody
+  // has closed it. Mixed into the open pile they read as jobs still waiting
+  // for a visit, which is what put 436 work orders on this board where 95
+  // were real.
+  assert.ok(/ccWorkDone/.test(ccCode), 'nothing separates them');
+  assert.ok(/WOS\.isWorkDone\(woStatus\(r\)\)/.test(ccCode),
+    'the Command Center decides it instead of using the shared rule');
+  const i = ccCode.indexOf('work done — pending review');
+  assert.ok(i > 0, 'the banner is not there');
+  const body = ccCode.slice(i, ccCode.indexOf('sum.appendChild', i));
+  assert.ok(/Still OPEN/.test(body), 'it does not say they still count as open');
+  assert.ok(/Not a site visit/.test(body), 'nothing says nobody has to drive anywhere');
+});
+
 t('Ready to Bill is closed; Work Done is not', () => {
   // The separation stopped being presentational on 2026-10-19. Ready to Bill
   // is closed in both dashboards — the field work is done and only the

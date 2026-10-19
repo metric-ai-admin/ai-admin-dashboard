@@ -112,10 +112,14 @@ const OURS_BEFORE = new Set(['0', '1', '2', '9', '11', '3', '6', '8', '12']);
     console.log('   the two sets — worth finding before trusting either count.');
   }
 
-  console.log('\nAWAITING BILLING — its own number now, not a slice of open');
-  console.log('   ' + pad('completed, not yet invoiced', 38) + readyToBill.length);
-  console.log('   ' + pad('work done, not yet marked complete', 38) + workDone.length
-    + '   (still OPEN)');
+  console.log('\nAWAITING BILLING — its own number, outside open');
+  console.log('   ' + pad('Ready to Bill: closed, not invoiced', 38) + readyToBill.length);
+
+  console.log('\nWORK DONE — PENDING REVIEW, inside open');
+  console.log('   ' + pad('finished in the field, not closed', 38) + workDone.length);
+  console.log('   ' + pad('  the rest of open: field work', 38) + (agreed.length - workDone.length));
+  console.log('   Erick\'s review list. Counted as open — somebody still has to close');
+  console.log('   them — but nobody has to drive anywhere, so they are shown apart.');
 
   console.log('\nURGENT, inside the open set');
   console.log('   ' + pad('both dashboards', 38) + urgent.length);
@@ -123,7 +127,7 @@ const OURS_BEFORE = new Set(['0', '1', '2', '9', '11', '3', '6', '8', '12']);
   // ---- per property ---------------------------------------------------------
   console.log('\nBY PROPERTY');
   console.log('   ' + pad('property', 28) + pad('open', 7) + pad('urgent', 8)
-    + pad('awaiting billing', 18) + 'work done');
+    + pad('awaiting billing', 18) + 'work done (review)');
   const names = [...new Set(rows.map(r => PA.canonical(r.property_name)
     || AFP.resolveProperty(r.property_name) || clean(r.property_name)).filter(Boolean))].sort();
   names.forEach(name => {
