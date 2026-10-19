@@ -770,5 +770,47 @@ t('the unit-level filter that was asked for is not faked', () => {
   assert.strictEqual(t2.applications_excluded, false, 'off by default');
 });
 
+// ---- the portfolio split ----------------------------------------------------
+
+t('the portfolio split comes from kpi-report, not a second list', () => {
+  // Kara's section printed "not split yet — waiting on Kara" while the answer
+  // already existed in lib/kpi-report.js, and Jay's dashboard defines the same
+  // four properties for Greystone independently (cv-live.js, read 2026-10-19).
+  // A membership typed out a second time is one that will drift from the
+  // first — the same reason the exclusion fragments and the leasing goals were
+  // pulled into libs this month.
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'sync-brief-portfolios.js'), 'utf8');
+  assert.match(src, /require\('\.\.\/lib\/kpi-report\.js'\)/);
+  assert.ok(!/'Hyde Park Square'|'Sunset Palms'/.test(src),
+    'no property name is restated in the script');
+  const KPI = require('../lib/kpi-report.js');
+  assert.deepStrictEqual([...KPI.VIRTUAL_GROUPS.Greystone].sort(),
+    ['Hyde Park Square', 'Sunset Palms', 'The Chateau', 'The Highlander']);
+  assert.deepStrictEqual([...KPI.ROUND_ROCK.members].sort(),
+    ['iConic Downtown', 'iConic Round Rock']);
+});
+
+t('a dry run writes nothing and an empty source refuses', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'scripts', 'sync-brief-portfolios.js'), 'utf8');
+  assert.ok(src.indexOf('if (!WRITE)') < src.indexOf('.upsert('),
+    'the dry-run return is above the write');
+  assert.match(src, /refusing to write an empty split/,
+    'an empty kpi-report must not blank the table');
+  assert.match(src, /onConflict: 'property'/, 'rerunning replaces, never doubles');
+});
+
+t('a grouped projection still names what it could not place', () => {
+  const r = OCC.project({
+    todayCT: TODAY, properties: props, moveOuts: [], moveIns: [],
+    portfolioMap: { 'The Chateau': 'Greystone' },
+  });
+  assert.strictEqual(r.groups.configured, true);
+  assert.deepStrictEqual(r.groups.ungrouped, ['Ascent at Northgate']);
+  const text = B.render(B.build({ properties: [], thresholds: [], occupancy: r }));
+  assert.match(text, /Not in any portfolio: Ascent at Northgate/);
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
