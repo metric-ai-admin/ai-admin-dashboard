@@ -250,5 +250,62 @@ t('a missing notes table costs the thread, not the tab', () => {
   assert.match(body, /notesRes\.error \? \[\] :/, 'it degrades to no notes');
 });
 
+// ---- the SharePoint importer ------------------------------------------------
+
+const IMP = fs.readFileSync(path.join(__dirname, '..', 'scripts',
+  'import-code-violations-sharepoint.js'), 'utf8');
+
+t('the workbook is never written to disk', () => {
+  // It carries addresses, unit numbers and the names of city officers.
+  assert.match(IMP, /read into memory and never written to disk/);
+  assert.ok(!/writeFileSync|createWriteStream/.test(IMP));
+  assert.match(IMP, /Buffer\.from\(await r\.arrayBuffer\(\)\)/,
+    'it is parsed from the response, not saved first');
+});
+
+t('excluded properties are listed, not silently dropped', () => {
+  // The rule is the shared fragment list, so Brazos or Lily Pad would be
+  // caught the same way as The Sidney — not a name typed into this script.
+  assert.match(IMP, /EXCLUDED\.propertyIsExcluded\(property\)/);
+  assert.match(IMP, /skippedSidney\.push/);
+  assert.ok(!/'The Sidney'/.test(IMP), 'no property name is hardcoded');
+});
+
+t('the Summary total is reconciled, never assumed', () => {
+  assert.match(IMP, /Grand Total says/);
+  assert.match(IMP, /DOES NOT RECONCILE/);
+  assert.match(IMP, /MISSING, not invented/,
+    'a property counted with no detail is reported, not fabricated');
+});
+
+t('a sheet it cannot read says so', () => {
+  // "Closed Cases" and "Watchlist" have no recognisable header. A sheet
+  // silently ignored is indistinguishable from a sheet that was empty.
+  assert.match(IMP, /SHEETS NOT READ/);
+});
+
+t('the header is found by its columns, not by position', () => {
+  // Taking row 0 on faith is how a title line becomes the column names.
+  assert.match(IMP, /includes\('Case Number'\) && r\.includes\('Property Name'\)/);
+});
+
+t('the sheet tag never reaches the database', () => {
+  // __sheet exists only for the by-sheet report. Writing it would add a
+  // column the table does not have and fail the whole upsert.
+  assert.match(IMP, /const payload = deficiencies\.map\(\(\{ __sheet, \.\.\.d \}\)/);
+});
+
+t('a dry run cannot write', () => {
+  assert.ok(IMP.indexOf("if (!WRITE)") < IMP.indexOf('.upsert('),
+    'the dry-run return is above every write');
+});
+
+t('nothing is deleted and both upserts are keyed', () => {
+  assert.match(IMP, /onConflict: 'deficiency_key'/);
+  assert.match(IMP, /onConflict: 'source_row'/);
+  assert.ok(!/\.delete\(/.test(IMP));
+  assert.match(IMP, /Rows not in this workbook keep their values/);
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
