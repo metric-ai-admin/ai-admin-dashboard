@@ -5955,7 +5955,19 @@ app.get('/api/code-violations', requireAuth, requireRole(...CODE_VIOLATION_ROLES
     if (w.error) throw new Error('code_violation_watchlist: ' + w.error.message);
 
     const todayCT = new Date().toLocaleDateString('en-CA', { timeZone: LYNDSAY_TIMEZONE });
-    const out = codeViolations.buildTracker(v.data || [], {
+
+    // HIDDEN MEANS HIDDEN EVERYWHERE IN THIS RESPONSE. The first version
+    // filtered only `cases`, so the screen kept rendering 129 deficiencies
+    // from `rows` while the case view showed 78 — two counts of the same
+    // thing in one payload, which is worse than either alone. buildTracker
+    // gets the visible set, not the raw one.
+    const includeAbsent = String(req.query.include || '').toLowerCase() === 'absent';
+    const allRows = v.data || [];
+    const absentRows = allRows.filter(r => r.in_current_tracker === false);
+    const visibleRows = includeAbsent
+      ? allRows : allRows.filter(r => r.in_current_tracker !== false);
+
+    const out = codeViolations.buildTracker(visibleRows, {
       today: todayCT,
       // One exclusion list, not two. The Sidney was in this list while the
       // tracker's own property list still named it, so it kept being counted
@@ -5991,22 +6003,32 @@ app.get('/api/code-violations', requireAuth, requireRole(...CODE_VIOLATION_ROLES
     // citations. ?include=absent brings them back, and the count travels
     // either way so the screen can offer the filter rather than pretending
     // they do not exist — which is the thing hiding anything risks becoming.
-    const includeAbsent = String(req.query.include || '').toLowerCase() === 'absent';
-    const all = v.data || [];
-    const absent = all.filter(r => r.in_current_tracker === false);
-    const visible = includeAbsent ? all : all.filter(r => r.in_current_tracker !== false);
-    const picked = CVN.filterByProperty(visible, req.query.property, KPI);
+    // Closed cases, so a case the City signed off reads "Closed 2026-07-16 by
+    // Angel Martinez" instead of looking like one nobody finished. The table
+    // may not exist (migration 105): an absent one costs the label, not the
+    // view.
+    const closedRes = await db.from('code_violation_closed_cases')
+      .select('case_number,property,items,status,resolution,closed_at,closed_by')
+      .limit(1000)
+      .then(r => r, () => ({ error: { message: 'unavailable' }, data: [] }));
+
+    const picked = CVN.filterByProperty(visibleRows, req.query.property, KPI);
 
     res.json({
       ...out,
       watchlist: w.data || [],
-      cases: CVN.byCase(picked.rows, notesRes.error ? [] : (notesRes.data || [])),
+      cases: CVN.attachClosed(
+        CVN.byCase(picked.rows, notesRes.error ? [] : (notesRes.data || [])),
+        closedRes.error ? [] : (closedRes.data || [])),
+      closedCases: (closedRes.error ? [] : (closedRes.data || [])).map(c => ({
+        ...c, label: CVN.closedLabel(c),
+      })),
       notesAvailable: !notesRes.error,
       notInTracker: {
-        count: absent.length,
+        count: absentRows.length,
         showing: includeAbsent,
-        note: absent.length
-          ? absent.length + ' deficienc' + (absent.length === 1 ? 'y is' : 'ies are')
+        note: absentRows.length
+          ? absentRows.length + ' deficienc' + (absentRows.length === 1 ? 'y is' : 'ies are')
             + ' not in the current SharePoint tracker and '
             + (includeAbsent ? 'ARE shown' : 'are hidden')
             + '. Nothing was deleted; add ?include=absent to see them.'

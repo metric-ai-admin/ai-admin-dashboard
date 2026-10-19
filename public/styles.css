@@ -3028,3 +3028,35 @@ tr.ca-sel { background: var(--accent-glow); }
    always tell what the rule produced from what a person decided. */
 .oc-edited { background: #fff6e0; }
 .oc-edited select { background: transparent; }
+
+/* ---- Code Violations: by case, and the note threads ----------------------
+   The City issues a case and works a case, so the case is the box and the
+   deficiencies sit inside it. A completed one is stated rather than coloured:
+   colour alone is not a label anybody can read out in a meeting. */
+.cvx-cases-head { display: flex; align-items: baseline; gap: 10px; margin: 18px 0 8px; }
+.cvx-cases-head h3 { margin: 0; font-size: 15px; }
+.cvx-case { border: 1px solid var(--line, #e3e3e3); border-radius: 8px;
+  padding: 10px 12px; margin: 0 0 10px; }
+.cvx-case-head { font-weight: 600; display: flex; align-items: center;
+  gap: 8px; flex-wrap: wrap; }
+.cvx-chip { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  background: var(--chip-bg, #eee); color: var(--chip-ink, #333); }
+.cvx-chip-ok { background: #e4f4e6; color: #1d6a28; }
+.cvx-closed { font-size: 12px; color: #1d6a28; margin: 4px 0 0; }
+
+.cvx-def { border-top: 1px solid var(--line, #eee); padding: 6px 0 0; margin: 6px 0 0; }
+.cvx-def-head { cursor: pointer; font-size: 13px; }
+.cvx-def-head:hover { text-decoration: underline; }
+.cvx-def-status { font-weight: 600; }
+/* Finished items stay legible. Fading them to near-white is what made people
+   miss that a case still had one open item underneath. */
+.cvx-def-done .cvx-def-status { color: #1d6a28; }
+.cvx-def-body { padding: 6px 0 10px 12px; }
+
+.cvx-note { border-left: 2px solid var(--line, #ddd); padding: 2px 0 2px 10px;
+  margin: 0 0 8px; }
+.cvx-note-meta { font-size: 11px; color: var(--muted-ink, #777); }
+.cvx-note-body { font-size: 13px; white-space: pre-wrap; }
+.cvx-note-form { display: flex; gap: 6px; margin: 8px 0 0; }
+.cvx-note-input { flex: 1; padding: 5px 8px; font-size: 13px;
+  border: 1px solid var(--line, #ddd); border-radius: 6px; }

@@ -479,7 +479,36 @@ t('rows absent from the tracker are hidden but counted', () => {
   assert.match(body, /in_current_tracker !== false/, 'hidden by default');
   assert.match(body, /include=absent/, 'and brought back on request');
   assert.match(body, /notInTracker/);
-  assert.match(body, /count: absent\.length/, 'the count travels either way');
+  assert.match(body, /count: absentRows\.length/, 'the count travels either way');
+});
+
+t('the hide applies to rows, not only to cases', () => {
+  // The first version filtered `cases` and left `rows` whole, so the screen
+  // rendered 129 deficiencies next to a case view built from 78 — two counts
+  // of the same thing in one payload, which is worse than either alone.
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const route = server.slice(server.indexOf("app.get('/api/code-violations'"));
+  const body = route.slice(0, route.indexOf('// POST /api/code-violations/notes'));
+  assert.match(body, /buildTracker\(visibleRows/,
+    'the flat list is built from the visible set');
+  assert.ok(body.indexOf('const visibleRows') < body.indexOf('buildTracker('),
+    'and the set is computed before it is used');
+  assert.ok(!/buildTracker\(v\.data/.test(body), 'never from the raw rows');
+});
+
+t('a closed case is attached only by its case number', () => {
+  // Six of six closed rows carry no case number — the sheet has no such
+  // column — so matching on property would make two cases at one property,
+  // closed a month apart, swap labels. A wrong "Closed by" tells somebody the
+  // work is done.
+  const cases = [{ caseNumber: 'C-1' }, { caseNumber: null }, { caseNumber: 'C-2' }];
+  const out = N.attachClosed(cases, [
+    { case_number: 'C-1', closed_at: '2026-07-16', closed_by: 'Angel Martinez', resolution: 'Cleared.' },
+    { case_number: null, property: 'The Chateau', closed_at: '2026-06-22', closed_by: 'Lyndsay Hanes' },
+  ]);
+  assert.strictEqual(out[0].closed.label, 'Closed 2026-07-16 by Angel Martinez');
+  assert.strictEqual(out[1].closed, undefined, 'a numberless case attaches to nothing');
+  assert.strictEqual(out[2].closed, undefined, 'and an unmatched one is left alone');
 });
 
 t('the review export names no verdict', () => {

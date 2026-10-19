@@ -11592,8 +11592,17 @@ function cvxRenderFilters() {
     + opts.map(o => `<option value="${cvxEsc(o.v)}"${String(o.v) === String(value) ? ' selected' : ''}>${cvxEsc(o.t)}</option>`).join('')
     + '</select></label>';
 
+  // PORTFOLIOS FIRST, then the properties. Jay's Maintenance tab scopes to
+  // "Greystone Properties" and ours could not, which was the one thing his
+  // screen had that this did not. The groups come from the API
+  // (lib/kpi-report.js via propertyFilter.groups) rather than being listed
+  // here — a fourth copy of that membership is how the four drift apart.
+  const groups = (cvxData.propertyFilter && cvxData.propertyFilter.groups) || [];
+  const propertyOptions = groups.map(g => ({ v: g, t: g + ' (portfolio)' }))
+    .concat(f.properties.map(v => ({ v, t: v })));
+
   document.getElementById('cvx-filters').innerHTML = '<div class="cvx-filters">'
-    + sel('cvx-f-property', 'Property', f.properties.map(v => ({ v, t: v })), cvxFilters.property)
+    + sel('cvx-f-property', 'Property', propertyOptions, cvxFilters.property)
     + sel('cvx-f-status', 'Status', f.statuses.map(v => ({ v, t: v })), cvxFilters.status)
     + sel('cvx-f-category', 'Category', f.categories.map(v => ({ v, t: v })), cvxFilters.category)
     + sel('cvx-f-month', 'Month', CVX_MONTHS.slice(1).map((t, i) => ({ v: i + 1, t })), cvxFilters.month)
@@ -11736,6 +11745,97 @@ function cvxRenderWatchlist() {
       : '<p class="mb-empty">Nothing on the watchlist.</p>');
 }
 
+// ---- rows the current tracker does not contain ------------------------------
+//
+// Hidden by default, never silently. 51 of them after the 2026-10-19 import,
+// mostly seed-script rows that would otherwise read as live citations. The
+// banner carries the count and the way back, because hiding something without
+// saying so is how it stops existing.
+function cvxRenderHidden() {
+  const el = document.getElementById('cvx-hidden');
+  if (!el) return;
+  const n = cvxData.notInTracker;
+  if (!n || !n.count) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div class="alert-box ' + (n.showing ? 'warn' : '') + '" style="margin:10px 0">'
+    + '<div class="al">' + (n.showing ? 'SHOWING' : 'HIDDEN') + '</div>'
+    + '<b>' + n.count + '</b> deficienc' + (n.count === 1 ? 'y is' : 'ies are')
+    + ' not in the current SharePoint tracker and '
+    + (n.showing ? 'are being shown' : 'are hidden')
+    + '. Nothing was deleted. '
+    + '<button class="btn btn-ghost btn-sm" id="cvx-toggle-hidden">'
+    + (n.showing ? 'Hide them again' : 'Show them') + '</button></div>';
+}
+
+// ---- by case ----------------------------------------------------------------
+//
+// The City issues a CASE and works a case; nine deficiencies on one number is
+// one conversation with one inspector. The flat list stays underneath, because
+// it is what people already know how to read.
+function cvxCaseCard(c) {
+  const head = cvxEsc(c.caseNumber || 'No case number')
+    + ' <span class="muted">' + cvxEsc(c.property || '') + '</span>';
+  const badge = c.complete
+    ? '<span class="cvx-chip cvx-chip-ok">complete</span>'
+    : '<span class="cvx-chip">' + cvxEsc(c.progress) + '</span>';
+  const closed = c.closed
+    ? '<div class="cvx-closed">' + cvxEsc(c.closed.label)
+      + (c.closed.resolution ? ' &mdash; ' + cvxEsc(c.closed.resolution) : '') + '</div>'
+    : '';
+  const notes = (c.notes || []).length
+    ? '<div class="cvx-notes"><b>Case notes</b>' + c.notes.map(cvxNote).join('') + '</div>'
+    : '';
+  const items = (c.deficiencies || []).map(d =>
+    '<div class="cvx-def' + (d.done ? ' cvx-def-done' : '') + '">'
+    + '<div class="cvx-def-head" data-cvx-def="' + cvxEsc(d.deficiency_key) + '">'
+    + '<span class="cvx-def-status">' + cvxEsc(d.status || '—') + '</span> '
+    + cvxEsc(String(d.deficiency_description || '').slice(0, 140))
+    + (d.work_order ? ' <span class="muted">WO ' + cvxEsc(d.work_order) + '</span>' : '')
+    + ' <span class="muted">(' + ((d.notes || []).length) + ' note'
+    + ((d.notes || []).length === 1 ? '' : 's') + ')</span>'
+    + '</div>'
+    + '<div class="cvx-def-body hidden" id="cvx-def-' + cvxEsc(d.deficiency_key) + '">'
+    + ((d.notes || []).length
+      ? d.notes.map(cvxNote).join('')
+      : '<p class="muted small">No notes yet.</p>')
+    + cvxNoteForm(d.deficiency_key, c.caseNumber)
+    + '</div></div>').join('');
+
+  return '<div class="cvx-case"><div class="cvx-case-head">' + head + ' ' + badge + '</div>'
+    + closed + notes + items + '</div>';
+}
+
+// One note. BOTH UNKNOWNS ARE PRINTED: an imported note has no author and the
+// screen says so rather than leaving a blank that reads as nobody.
+function cvxNote(n) {
+  return '<div class="cvx-note"><div class="cvx-note-meta">'
+    + cvxEsc(n.authorLabel || 'author not recorded')
+    + ' &middot; ' + cvxEsc(n.dateLabel || 'date not recorded')
+    + (n.source === 'excel' ? ' &middot; <span class="muted">imported</span>' : '')
+    + '</div><div class="cvx-note-body">' + cvxEsc(n.body || '') + '</div></div>';
+}
+
+function cvxNoteForm(key, caseNumber) {
+  return '<form class="cvx-note-form" data-cvx-note-form="' + cvxEsc(key) + '"'
+    + ' data-cvx-note-case="' + cvxEsc(caseNumber || '') + '">'
+    + '<input type="text" placeholder="Add a note — it will be signed with your name"'
+    + ' class="cvx-note-input" name="body" autocomplete="off">'
+    + '<button class="btn btn-sm" type="submit">Add</button></form>';
+}
+
+function cvxRenderCases() {
+  const el = document.getElementById('cvx-cases');
+  if (!el) return;
+  const cases = cvxData.cases || [];
+  if (!cases.length) { el.innerHTML = ''; return; }
+  const open = cases.filter(c => !c.complete).length;
+  el.innerHTML = '<div class="cvx-cases-head"><h3>By case</h3>'
+    + '<span class="muted small">' + cases.length + ' case'
+    + (cases.length === 1 ? '' : 's') + ', ' + open + ' with open items'
+    + (cvxData.notesAvailable ? '' : ' &middot; notes unavailable (migration 102)')
+    + '</span></div>'
+    + cases.map(cvxCaseCard).join('');
+}
+
 function renderCodeViolations() {
   if (!cvxData) return;
   document.getElementById('cvx-sub').innerHTML =
@@ -11743,7 +11843,9 @@ function renderCodeViolations() {
   cvxRenderConflicts();
   cvxRenderSummary();
   cvxRenderFilters();
+  cvxRenderHidden();
   cvxRenderProperties();
+  cvxRenderCases();
   cvxRenderRows();
   cvxRenderWatchlist();
 }
@@ -11768,6 +11870,39 @@ async function loadCodeViolations() {
   renderCodeViolations();
 }
 
+// Adding a note. The author is NOT sent: the server takes it from the
+// session, because a note that says who wrote it is only worth something if
+// the writer could not have chosen the name.
+document.getElementById('maint-view-code-violations')?.addEventListener('submit', async e => {
+  const form = e.target.closest('[data-cvx-note-form]');
+  if (!form) return;
+  e.preventDefault();
+  const input = form.querySelector('[name="body"]');
+  const body = (input.value || '').trim();
+  if (!body) return;
+  const btn = form.querySelector('button');
+  btn.disabled = true;
+  try {
+    await api('/api/code-violations/notes', {
+      method: 'POST',
+      body: JSON.stringify({
+        body,
+        deficiency_key: form.dataset.cvxNoteForm,
+        case_number: form.dataset.cvxNoteCase || undefined,
+      }),
+    });
+    input.value = '';
+    // Reloaded rather than appended, so what appears is what the server
+    // stored — including the author it decided on.
+    await loadCodeViolations();
+  } catch (err) {
+    const warn = document.createElement('p');
+    warn.className = 'muted small';
+    warn.textContent = err.message || 'Could not add the note.';
+    form.appendChild(warn);
+  } finally { btn.disabled = false; }
+});
+
 // Delegated — the filter controls are re-rendered on every load.
 document.getElementById('maint-view-code-violations')?.addEventListener('change', e => {
   const map = { 'cvx-f-property': 'property', 'cvx-f-status': 'status',
@@ -11779,6 +11914,21 @@ document.getElementById('maint-view-code-violations')?.addEventListener('change'
 });
 
 document.getElementById('maint-view-code-violations')?.addEventListener('click', e => {
+  // Show / hide the rows the current tracker does not contain.
+  if (e.target.closest('#cvx-toggle-hidden')) {
+    cvxFilters.include = cvxFilters.include === 'absent' ? '' : 'absent';
+    loadCodeViolations();
+    return;
+  }
+  // Open one deficiency's note thread. Toggled rather than navigated: the
+  // case it belongs to is the context, and losing it to read a note is why
+  // people stopped opening rows in the first place.
+  const def = e.target.closest('[data-cvx-def]');
+  if (def) {
+    const body = document.getElementById('cvx-def-' + def.dataset.cvxDef);
+    if (body) body.classList.toggle('hidden');
+    return;
+  }
   const edit = e.target.closest('[data-cvx-edit]');
   if (edit) { cvxOpenEditor(edit.dataset.cvxEdit); return; }
   const chip = e.target.closest('[data-cvx-status]');
