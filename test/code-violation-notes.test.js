@@ -526,5 +526,103 @@ t('the review export names no verdict', () => {
     'and the text to compare against travels with it');
 });
 
+// ---- deficiency -> work orders ----------------------------------------------
+
+t('a bare number is one current work order', () => {
+  const l = N.workOrdersFromCell('14196-1', 'k');
+  assert.strictEqual(l.length, 1);
+  assert.strictEqual(l[0].role, 'current');
+  assert.strictEqual(l[0].work_order_number, '14196-1');
+  assert.strictEqual(l[0].raw_text, '14196-1');
+});
+
+t('a replacement keeps BOTH, in order, and points back', () => {
+  // Jay's report uses this cell as a literal key, so "23240-1 (was 22882-1)"
+  // lands in his "not found in AppFolio" bucket when AppFolio has both.
+  const l = N.workOrdersFromCell('23240-1 (was 22882-1)', 'k');
+  assert.deepStrictEqual(l.map(r => r.role + ':' + r.work_order_number),
+    ['current:23240-1', 'replaced:22882-1']);
+  assert.strictEqual(l[1].replaced_by, '23240-1');
+  assert.strictEqual(l[0].position, 0);
+  assert.strictEqual(l[1].position, 1);
+});
+
+t('the raw cell is kept on every row', () => {
+  // The only way a parse ever gets corrected is if what it read is still
+  // there to compare against.
+  N.workOrdersFromCell('23240-1 (was 22882-1)', 'k')
+    .forEach(r => assert.strictEqual(r.raw_text, '23240-1 (was 22882-1)'));
+});
+
+t('a cell with no number yields nothing, not a row with a blank', () => {
+  ['NO WORK ORDER CREATED', '', '   ', 'pending'].forEach(v =>
+    assert.deepStrictEqual(N.workOrdersFromCell(v, 'k'), [], JSON.stringify(v)));
+});
+
+t('the same number twice in one cell is one fact', () => {
+  const l = N.workOrdersFromCell('22882-1 22882-1', 'k');
+  assert.strictEqual(l.length, 1);
+});
+
+t('several replacement words are understood', () => {
+  ['23240-1 was 22882-1', '23240-1 replaces 22882-1', '23240-1, formerly 22882-1']
+    .forEach(cell => {
+      const l = N.workOrdersFromCell(cell, 'k');
+      assert.strictEqual(l.length, 2, cell);
+      assert.strictEqual(l[1].role, 'replaced', cell);
+    });
+});
+
+t('order decides, not arithmetic on the digits', () => {
+  // A rule that worked out which number is "newer" would be inventing a fact
+  // the cell does not state. The person wrote it front to back.
+  const l = N.workOrdersFromCell('22882-1 (was 23240-1)', 'k');
+  assert.strictEqual(l[0].work_order_number, '22882-1');
+  assert.strictEqual(l[0].role, 'current', 'the lower number is still the current one');
+});
+
+// ---- the two states, side by side -------------------------------------------
+
+t('a closed work order with an open deficiency is stated, not flagged', () => {
+  // Erick's rule is about the DEFICIENCY. WOs 22882 and 22870 were completed
+  // and billed and the City did not clear them on 10/07 — that is the normal
+  // state of a case waiting on the City, not an error.
+  const v = N.caseWorkOrderView(
+    { status: 'Completed by Maintenance' },
+    [{ work_order_number: '23240-1', role: 'current', replaced_by: null }],
+    { '23240-1': 'Completed' }, {});
+  assert.strictEqual(v.city.closed, false);
+  assert.match(v.note, /the City has not cleared the deficiency/);
+});
+
+t('the two states are never merged into one verdict', () => {
+  const v = N.caseWorkOrderView(
+    { status: 'Closed by Code Compliance' },
+    [{ work_order_number: '23240-1', role: 'current' }],
+    { '23240-1': 'Assigned' }, {});
+  assert.strictEqual(v.city.closed, true, 'the City closed it');
+  assert.strictEqual(v.workOrders[0].appfolioStatus, 'Assigned', 'the work order did not');
+  assert.strictEqual(v.note, null, 'and nothing claims a contradiction');
+});
+
+t('a work order AppFolio does not have is unknown, not open', () => {
+  const v = N.caseWorkOrderView({ status: 'Pending' },
+    [{ work_order_number: '99999-1', role: 'current' }], {}, {});
+  assert.strictEqual(v.workOrders[0].known, false);
+  assert.strictEqual(v.workOrders[0].appfolioStatus, null);
+  assert.strictEqual(v.crossCheck.unknown, 1);
+  assert.strictEqual(v.note, null, 'nothing is concluded from a status we do not have');
+});
+
+t('"CODE VIOLATION" is a cross-check, not the count', () => {
+  const v = N.caseWorkOrderView({ status: 'Pending' },
+    [{ work_order_number: 'A', role: 'current' }, { work_order_number: 'B', role: 'current' }],
+    { A: 'Assigned', B: 'Assigned' }, { A: true });
+  assert.deepStrictEqual(v.crossCheck, { labelled: 1, total: 2, unknown: 0 });
+  // It lives under crossCheck and nowhere else — not in a total somebody
+  // could read as "the number of code violations".
+  assert.ok(!('violations' in v) && !('count' in v));
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
