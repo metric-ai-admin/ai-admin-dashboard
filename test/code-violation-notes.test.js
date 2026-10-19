@@ -552,12 +552,36 @@ t('no number means pending, never an invented one', () => {
   assert.ok(!/2026-0813/.test(JSON.stringify(c)));
 });
 
-t('an unfamiliar scheme is NOT folded into the familiar one', () => {
-  // "CE20260917-3645" carries an identifier in a City numbering we have not
-  // been told the shape of. Reading 2026 and 0917 out of it would produce a
-  // key that looks right and points nowhere.
+t('Round Rock has its own scheme and keeps it', () => {
+  // Jay, 2026-10-20: "CE20260917-3645" is a live Round Rock case, not filler.
+  // Normalising it into Austin's year-number would make it collide with an
+  // Austin 2026-0917, and two cities' case numbers are not comparable anyway.
   const c = N.caseKey('CE20260917-3645');
+  assert.strictEqual(c.key, 'RR-CE20260917-3645');
+  assert.strictEqual(c.jurisdiction, 'Round Rock');
+  assert.strictEqual(c.pending, false);
+  assert.strictEqual(N.caseKey('ce 20260917 - 3645').key, c.key, 'spacing is formatting');
+});
+
+t('Austin keys carry their jurisdiction too', () => {
+  assert.strictEqual(N.caseKey('2025-104408 CV').jurisdiction, 'Austin');
+  assert.strictEqual(N.caseKey('CV-2026-128356').jurisdiction, 'Austin');
+  assert.ok(N.JURISDICTIONS.includes('Round Rock'));
+});
+
+t('a Round Rock number is not read as an Austin one', () => {
+  // "CE2026..." contains a run of digits Austin's pattern could bite into.
+  // The more specific scheme has to be tried first.
+  assert.ok(!/^20/.test(N.caseKey('CE20260917-3645').key));
+});
+
+t('an unfamiliar scheme is NOT folded into a familiar one', () => {
+  // CE20260917-3645 WAS this case until Jay identified it as Round Rock. A
+  // third jurisdiction has to land here rather than being bent into Austin's
+  // shape, which would produce a key that looks right and points nowhere.
+  const c = N.caseKey('XX-998877-12');
   assert.strictEqual(c.key, null);
+  assert.strictEqual(c.jurisdiction, null);
   assert.strictEqual(c.reason, 'unrecognised format');
   assert.notStrictEqual(c.reason, 'no number', 'it is a different problem');
 });
@@ -569,9 +593,9 @@ t('grouping reports what it merged, including nothing', () => {
   const g = N.groupByCaseKey([
     { case_number: '2025-104408 CV' }, { case_number: 'CV-2025-104408' },
     { case_number: '2026-072494 CV' }, { case_number: 'case number pending' },
-    { case_number: 'CE20260917-3645' },
+    { case_number: 'CE20260917-3645' }, { case_number: 'XX-998877-12' },
   ]);
-  assert.strictEqual(g.groups.length, 2);
+  assert.strictEqual(g.groups.length, 3, 'two Austin cases and one Round Rock');
   assert.strictEqual(g.merged, 1, 'the two spellings of 2025-104408 collapsed');
   assert.strictEqual(g.pendingNoNumber, 1);
   assert.strictEqual(g.pendingUnrecognised, 1);
@@ -589,6 +613,68 @@ t('a case groups many deficiencies — one to many, as Jay confirmed', () => {
   ]);
   assert.strictEqual(g.groups.length, 1);
   assert.strictEqual(g.groups[0].rows.length, 3);
+});
+
+// ---- a key an edit cannot move ----------------------------------------------
+
+t('the work order is NOT in the stable key', () => {
+  // The whole reason for it: Jay flattened eight "23240-1 (was 22882-1)"
+  // cells and eight deficiencies were handed new identities.
+  const a = { case_number: '2025-035323 CV', property_name: 'Ascent at Northgate',
+    deficiency_description: 'Permitting (§605.1) - Stairwell by Unit 120.', work_order: '23240-1' };
+  const b = { ...a, work_order: '22882-1 (was 18518-1)' };
+  assert.strictEqual(N.stableDeficiencyKey(a), N.stableDeficiencyKey(b));
+});
+
+t('"Sec. 304.7" and "§304.7" are the same citation', () => {
+  // The tracker writes it both ways — the live rows with the symbol, the
+  // orphaned ones with the word — which is exactly the pair the key has to
+  // rejoin. Missing this left 22 pairs unmerged on the first run.
+  const a = { case_number: '2026-073525 CV', property_name: 'Ascent at Northgate',
+    deficiency_description: 'Roofs and Drainage (Sec. 304.7) - right of unit 121.' };
+  const b = { ...a, deficiency_description: 'Roofs and Drainage (§304.7) - right of unit 121.' };
+  assert.strictEqual(N.stableDeficiencyKey(a), N.stableDeficiencyKey(b));
+});
+
+t('the word "section" survives when it is not a reference', () => {
+  assert.match(N.normaliseDescription('the section of fence is broken'), /section of fence/);
+});
+
+t('two citations on one case stay apart', () => {
+  // A case carries many cited deficiencies — one to many — so case alone
+  // would collapse all nine Ascent items into one row.
+  const base = { case_number: '2025-035323 CV', property_name: 'Ascent at Northgate' };
+  const a = { ...base, deficiency_description: 'Permitting - stairwell by unit 120.' };
+  const b = { ...base, deficiency_description: 'Electrical outlet box at building 2.' };
+  assert.notStrictEqual(N.stableDeficiencyKey(a), N.stableDeficiencyKey(b));
+});
+
+t('a pending case does not collide across properties', () => {
+  const a = { case_number: 'case number pending', property_name: 'Sunset Palms',
+    deficiency_description: 'Weatherhead at unit 108.' };
+  const b = { ...a, property_name: 'Ascent at Northgate' };
+  assert.notStrictEqual(N.stableDeficiencyKey(a), N.stableDeficiencyKey(b));
+});
+
+t('the two jurisdictions cannot collide', () => {
+  const atx = { case_number: '2026-091736 CV', property_name: 'X', deficiency_description: 'Y' };
+  const rr = { case_number: 'CE20260917-3645', property_name: 'X', deficiency_description: 'Y' };
+  assert.notStrictEqual(N.stableDeficiencyKey(atx), N.stableDeficiencyKey(rr));
+  assert.match(N.stableDeficiencyKey(rr), /^rr:/);
+  assert.match(N.stableDeficiencyKey(atx), /^atx:/);
+});
+
+t('the re-key refuses to merge a collision a person has to judge', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'scripts',
+    'rekey-code-violations.js'), 'utf8');
+  assert.match(src, /need a decision first — refusing to merge anything/);
+  // Against the first WRITE, not the first mention: the notes table is read
+  // near the top of the script, so matching the table name finds that read.
+  assert.ok(src.indexOf('refusing to merge anything') < src.indexOf('.update({ deficiency_key'),
+    'the refusal comes before any write');
+  assert.ok(!/\.delete\(/.test(src), 'nothing is deleted');
+  assert.match(src, /no deficiency_key was rewritten/,
+    'the stable key stays computed until the import is switched to it');
 });
 
 // ---- deficiency -> work orders ----------------------------------------------
