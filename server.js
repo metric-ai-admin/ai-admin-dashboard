@@ -20133,6 +20133,112 @@ cron.schedule('0 6 * * *', () => {
     .catch(err => logLine(`[wo-sync] FAILED: ${err.message}`));
 }, { timezone: LYNDSAY_TIMEZONE });
 
+// GET /api/maintenance/open-work-orders.xlsx — the open list, to send Jay.
+//
+// A DOWNLOAD AND NOT A FILE ON RENDER'S DISK. The first version wrote the
+// workbook next to the script, which on Render means a disk nobody can reach:
+// the file existed and was useless. This hands it to whoever asked.
+//
+// WHY IT EXISTS. Jay counts 103 open (97 field + 6 work done) and we count 102
+// (96 + 6); urgent agrees at 10 and 10. One row differs and no total will ever
+// say which — two lists will, in a minute.
+//
+// NUMBER, PROPERTY, STATUS, CLASSIFICATION, PRIORITY. Nothing else: the point
+// is a diff, and resident names or descriptions would make that harder as well
+// as putting resident data in a file that travels.
+app.get('/api/maintenance/open-work-orders.xlsx', requireAuth, requireMetricAccess, async (req, res) => {
+  try {
+    const WOS = require('./lib/work-order-status.js');
+    const raw = await appfolioReportsFetch(APPFOLIO_WORK_ORDER_REPORT, {
+      property_visibility: 'active',
+      priority: 'All',
+      work_order_statuses: Array.from({ length: 31 }, (_, i) => String(i)),
+      work_order_types: ['unit_turn', 'tenant_requested', 'internal'],
+      paginate_results: false,
+    });
+    const st = r => String(r.status == null ? '' : r.status).trim();
+    // The same exclusions both dashboards apply, or the diff would be
+    // dominated by rows neither screen has ever shown.
+    const rows = (raw || []).filter(r => !propertyIsExcluded(r.property_name));
+    const open = rows.filter(r => WOS.isOpen(st(r)));
+
+    const out = open.map(r => ({
+      'Work order': String(r.work_order_number == null ? '' : r.work_order_number).trim(),
+      'Property': occCommunityName(r.property_name) || String(r.property_name || '').trim(),
+      'Status': st(r),
+      'We count it as': WOS.isWorkDone(st(r)) ? 'work done — pending review' : 'field work',
+      'Priority': String(r.priority == null ? '' : r.priority).trim(),
+    })).sort((a, b) => a.Property.localeCompare(b.Property)
+      || String(a['Work order']).localeCompare(String(b['Work order'])));
+
+    const workDone = out.filter(r => r['We count it as'].indexOf('work done') === 0).length;
+    const urgent = out.filter(r => /urgent/i.test(r.Priority)).length;
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(out);
+    ws['!cols'] = [{ wch: 14 }, { wch: 26 }, { wch: 24 }, { wch: 26 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'Open work orders');
+
+    const aboutWs = XLSX.utils.aoa_to_sheet([
+      ['What this is'],
+      ['Every work order we count as OPEN right now, from one live AppFolio pull.'],
+      [''],
+      ['Our totals', ''],
+      ['open', out.length],
+      ['  field work', out.length - workDone],
+      ['  work done - pending review', workDone],
+      ['urgent (inside open)', urgent],
+      [''],
+      ['The definition, agreed 2026-10-19'],
+      ['Ready to Bill is CLOSED - the maintenance work is finished and only the'],
+      ['invoice is outstanding - and is reported separately, not here.'],
+      ['Work Done is OPEN: somebody still has to close it.'],
+      ['"Unknown - not in feed" is neither open nor closed and is not here either.'],
+      [''],
+      ['How to use it'],
+      ['Diff the Work order column against your open list. A number on one side'],
+      ['only is a row one of us is missing; a number on both with a different'],
+      ['status is a timing difference between the two pulls.'],
+      [''],
+      ['Generated', new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC'],
+    ]);
+    aboutWs['!cols'] = [{ wch: 72 }, { wch: 14 }];
+    XLSX.utils.book_append_sheet(wb, aboutWs, 'About');
+
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="open-work-orders-'
+      + ctDateStr(0) + '.xlsx"');
+    return res.send(buf);
+  } catch (err) {
+    return res.status(502).json({ error: 'Could not build the list: ' + err.message });
+  }
+});
+
+// AND AGAIN THROUGH THE DAY, every two hours from 07:00 to 19:00 Central.
+//
+// Arturo, 2026-10-20, after the probe settled it: AppFolio really did hold 27
+// Ready to Bill under both filters, and the 2 in our table was simply the
+// figure from 06:00. The sync was not broken and the filters were not wrong —
+// the work moved during the day and nothing asked again until the next
+// morning. Erick's board was reading a figure that aged all afternoon.
+//
+// SEVEN RUNS, ONE APPFOLIO CALL EACH. /api/maintenance/sync makes a single
+// work_order report call, so this adds 7 calls a day against a limiter that
+// allows 7 every 15 seconds.
+//
+// MINUTE 20, NOT 0. The work-order closure loop already runs at minute 0 of
+// every hour from 07:00 to 19:00, and the point of staggering is that one job
+// at a time meets the limiter — putting a second pull on the same minute would
+// undo that for the one hour in three where they coincide anyway.
+const WO_DAYTIME_HOURS = '7,9,11,13,15,17,19';
+cron.schedule(`20 ${WO_DAYTIME_HOURS} * * *`, () => {
+  if (!CRM_CONFIGURED) return;
+  callOwnRoute('/api/maintenance/sync', {})
+    .then(r => logLine(`[wo-sync-day] ${r?.synced ?? '?'} work orders`))
+    .catch(err => logLine(`[wo-sync-day] FAILED: ${err.message}`));
+}, { timezone: LYNDSAY_TIMEZONE });
+
 // The five Command Center support feeds, after the work orders they describe.
 //
 // Erick presses these often enough that they were only three days old when
