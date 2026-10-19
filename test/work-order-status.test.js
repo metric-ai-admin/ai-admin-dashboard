@@ -75,6 +75,46 @@ t('work done is open, and not field work', () => {
   assert.strictEqual(WOS.isFieldWork('Work Done'), false);
   assert.strictEqual(WOS.isFieldWork('Assigned'), true);
 });
+t('(before) minus (agreed) is exactly Ready to Bill', () => {
+  // THE INVARIANT THE RECONCILIATION EXISTS TO MEASURE, pinned here because
+  // the script got it wrong in a way its own output could not reveal: it
+  // carried two sets of numeric status codes and fell back to the shared rule
+  // whenever the status was a NAME — which it always is — so both
+  // "definitions" computed the same number. It printed 102 against 102 with
+  // 27 Ready to Bill beside them, and the difference it exists to measure was
+  // structurally zero.
+  const rows = [
+    { status: 'Ready to Bill' }, { status: 'Ready to Bill' }, { status: 'ready to bill' },
+    { status: 'Work Done' }, { status: 'Assigned' }, { status: 'Scheduled' },
+    { status: 'Completed' }, { status: 'Canceled' }, { status: WOS.UNKNOWN },
+  ];
+  const agreed = rows.filter(r => WOS.isOpenUnder(r.status, 'agreed')).length;
+  const before = rows.filter(r => WOS.isOpenUnder(r.status, 'before-2026-10-19')).length;
+  const t2 = WOS.tally(rows);
+  assert.strictEqual(before - agreed, t2.awaitingBilling,
+    'the two definitions differ by something other than Ready to Bill');
+  assert.strictEqual(t2.awaitingBilling, 3);
+  assert.strictEqual(agreed, 3, 'Work Done, Assigned, Scheduled');
+  assert.strictEqual(before, 6);
+});
+
+t('an unrecognised definition falls back to the agreed one', () => {
+  // A typo must not quietly select the old behaviour and reopen 27 closed
+  // work orders.
+  assert.strictEqual(WOS.isOpenUnder('Ready to Bill', 'whatever'), false);
+  assert.strictEqual(WOS.isOpenUnder('Ready to Bill', undefined), false);
+  assert.strictEqual(WOS.isOpenUnder('Ready to Bill', 'before-2026-10-19'), true);
+});
+
+t('the reconciliation classifies by status text, never by code', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'scripts',
+    'reconcile-work-orders.js'), 'utf8');
+  assert.match(src, /WOS\.isOpenUnder\(statusText\(r\), def\)/);
+  assert.ok(!/codes\.has\(/.test(src),
+    'a numeric status set is back, and the report does not return numbers');
+  assert.ok(!/SUBSET of open/.test(src), 'the footer still describes the old rule');
+});
+
 t('a tally keeps its invariants under the new split', () => {
   const c = WOS.tally([{ status: 'Ready to Bill' }, { status: 'Work Done' },
     { status: 'Assigned' }, { status: 'Completed' }, { status: WOS.UNKNOWN }]);
