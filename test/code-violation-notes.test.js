@@ -334,5 +334,144 @@ t('an unrun migration costs the flag, not the import', () => {
     'and the notes failure names the migration that fixes it');
 });
 
+// ---- closed cases -----------------------------------------------------------
+
+t('a closed case is read as a case, with items as a number', () => {
+  const c = N.closedCaseFromRow({
+    Property: 'The Chateau', Items: '3', Status: 'Closed by Code Compliance',
+    Resolution: 'Cleared after re-inspection.', Closed: '07/16/2026', 'Closed by': 'Angel Martinez',
+  }, { rowNumber: 5 });
+  assert.strictEqual(c.items, 3);
+  assert.strictEqual(c.closed_at, '2026-07-16');
+  assert.strictEqual(c.closed_by, 'Angel Martinez');
+  assert.strictEqual(c.source_row, 'Closed Cases|5');
+});
+
+t('an empty Items is null, not zero', () => {
+  // "We were not told how many" and "none" are different.
+  const c = N.closedCaseFromRow({
+    Property: 'X', Items: '', Status: 'Closed', Closed: '07/16/2026',
+  }, { rowNumber: 2 });
+  assert.strictEqual(c.items, null);
+});
+
+t('the total row and the footnote are not cases', () => {
+  // Recognised by the ABSENCE of the fields a case must have, not by matching
+  // the word "Total" — which would miss "TOTAL", "Grand Total", and whatever
+  // the next editor types.
+  assert.strictEqual(N.closedCaseFromRow(
+    { Property: 'Total', Items: '10', Status: '', Resolution: '', Closed: '', 'Closed by': '' },
+    { rowNumber: 8 }), null);
+  assert.strictEqual(N.closedCaseFromRow(
+    { Property: 'Note: these were verified on the ground.', Items: '' },
+    { rowNumber: 9 }), null);
+  assert.strictEqual(N.closedCaseFromRow({ Property: '' }, { rowNumber: 10 }), null);
+});
+
+t('a case number is lifted only when it is really there', () => {
+  // A CV number is a strict token with one possible reading. A name in a
+  // sentence is an attribution with several, which is why that is refused.
+  const withNum = N.closedCaseFromRow({
+    Property: 'X', Status: 'Closed', Resolution: 'Case 2026-118455 CV cleared.',
+    Closed: '07/16/2026',
+  }, { rowNumber: 2 });
+  assert.strictEqual(withNum.case_number, '2026-118455 CV');
+  const without = N.closedCaseFromRow({
+    Property: 'X', Status: 'Closed by Code Compliance', Resolution: 'Cleared on site.',
+    Closed: '07/16/2026',
+  }, { rowNumber: 3 });
+  assert.strictEqual(without.case_number, null, 'null, never guessed');
+});
+
+t('the closed label states both unknowns separately', () => {
+  assert.strictEqual(N.closedLabel({ closed_at: '2026-07-16', closed_by: 'Erick Frey' }),
+    'Closed 2026-07-16 by Erick Frey');
+  assert.match(N.closedLabel({ closed_at: '2026-07-16' }), /closer not recorded/);
+  assert.match(N.closedLabel({ closed_by: 'Erick Frey' }), /date not recorded/);
+  assert.match(N.closedLabel({}), /date and closer not recorded/);
+});
+
+t('no deficiency is manufactured from a closed case', () => {
+  const imp = fs.readFileSync(path.join(__dirname, '..', 'scripts',
+    'import-cv-closed-and-watchlist.js'), 'utf8');
+  assert.ok(!/code_violations'\)/.test(imp),
+    'the closed-case import never writes to code_violations');
+  assert.match(imp, /code_violation_closed_cases/);
+  assert.match(imp, /No deficiency was manufactured/);
+});
+
+// ---- watchlist --------------------------------------------------------------
+
+t('a work order is separated from the property, with no dash left behind', () => {
+  // "WO 23142-1 - Ascent at Northgate" produced "- Ascent at Northgate",
+  // a property name with a dash welded on that matches nothing downstream.
+  const w = N.watchlistFromRow({
+    'Property / Work Order': 'WO 23142-1 - Ascent at Northgate',
+    Item: 'Owner visit', 'Why it is not in the AppFolio feed': 'No WO raised', Owner: 'Kara',
+  }, { rowNumber: 5 });
+  assert.strictEqual(w.work_order, '23142-1');
+  assert.strictEqual(w.property_name, 'Ascent at Northgate');
+  const w2 = N.watchlistFromRow({
+    'Property / Work Order': 'iConic RR — WO 19105-1', Item: 'Pool gate',
+  }, { rowNumber: 4 });
+  assert.strictEqual(w2.property_name, 'iConic RR');
+});
+
+t('a row with no item is not a watchlist entry', () => {
+  assert.strictEqual(N.watchlistFromRow({ 'Property / Work Order': 'X', Item: '' }, {}), null);
+  assert.strictEqual(N.watchlistFromRow({ 'Property / Work Order': '', Item: 'Y' }, {}), null);
+});
+
+t('an existing watchlist row is matched before anything is written', () => {
+  // The two stored rows were typed by hand; their property spelling need not
+  // match the sheet's, so the item text is what a person would recognise.
+  const existing = [{ id: 1, title: 'Resident washer repair (LG washer)', work_order: null }];
+  const hit = N.watchlistDuplicate({ title: 'resident washer repair (lg washer)' }, existing);
+  assert.ok(hit, 'matched case- and space-insensitively');
+  assert.strictEqual(N.watchlistDuplicate({ title: 'Something else' }, existing), null);
+  const byWo = N.watchlistDuplicate({ title: 'Different words', work_order: '19105-1' },
+    [{ id: 2, title: 'x', work_order: '19105-1' }]);
+  assert.ok(byWo, 'or by work order');
+});
+
+t('an excluded property never enters the watchlist', () => {
+  // The Sidney has a row on that sheet. Importing it would put it back on a
+  // screen through a side door after a week of keeping it off the others.
+  const imp = fs.readFileSync(path.join(__dirname, '..', 'scripts',
+    'import-cv-closed-and-watchlist.js'), 'utf8');
+  assert.match(imp, /EXCLUDED\.propertyIsExcluded\(w\.property_name\)/);
+  assert.match(imp, /is on the exclusion list/);
+  assert.ok(!/'The Sidney'/.test(imp), 'by the shared list, not a name typed here');
+});
+
+// ---- hiding the absent rows -------------------------------------------------
+
+t('rows absent from the tracker are hidden but counted', () => {
+  // Hidden is not deleted, and a screen that cannot say how many it is hiding
+  // is pretending they do not exist.
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const route = server.slice(server.indexOf("app.get('/api/code-violations'"));
+  const body = route.slice(0, route.indexOf('// POST /api/code-violations/notes'));
+  assert.match(body, /in_current_tracker !== false/, 'hidden by default');
+  assert.match(body, /include=absent/, 'and brought back on request');
+  assert.match(body, /notInTracker/);
+  assert.match(body, /count: absent\.length/, 'the count travels either way');
+});
+
+t('the review export names no verdict', () => {
+  const exp = fs.readFileSync(path.join(__dirname, '..', 'scripts',
+    'export-cv-not-in-tracker.js'), 'utf8');
+  assert.match(exp, /Same case \+ WO as a current row\?/);
+  // No COLUMN calls a row a duplicate. The word appears in the prose that
+  // explains why none of them does, which is the opposite of the problem —
+  // so this checks the headers, not the file.
+  const headers = [...exp.matchAll(/^\s*'([^']+)':/gm)].map(m => m[1]);
+  assert.ok(headers.length > 5, 'the headers were found: ' + headers.length);
+  headers.forEach(h => assert.ok(!/duplicate/i.test(h), 'column "' + h + '"'));
+  assert.match(exp, /Erick: same thing\? \(yes \/ no\)/, 'the verdict column is left blank');
+  assert.match(exp, /Description of the current row\(s\)/,
+    'and the text to compare against travels with it');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

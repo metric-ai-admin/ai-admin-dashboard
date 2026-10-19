@@ -5985,13 +5985,33 @@ app.get('/api/code-violations', requireAuth, requireRole(...CODE_VIOLATION_ROLES
     // Filtered BEFORE grouping, so a case's "3 of 9" counts only the
     // deficiencies the reader can see. Grouping first and filtering after
     // would show a progress figure that does not match the rows under it.
-    const picked = CVN.filterByProperty(v.data || [], req.query.property, KPI);
+    // ROWS THE CURRENT TRACKER DOES NOT CONTAIN ARE HIDDEN BY DEFAULT, not
+    // removed. 51 of them after the 2026-10-19 import, mostly seed-script
+    // rows; they would otherwise sit in the case view looking like live
+    // citations. ?include=absent brings them back, and the count travels
+    // either way so the screen can offer the filter rather than pretending
+    // they do not exist — which is the thing hiding anything risks becoming.
+    const includeAbsent = String(req.query.include || '').toLowerCase() === 'absent';
+    const all = v.data || [];
+    const absent = all.filter(r => r.in_current_tracker === false);
+    const visible = includeAbsent ? all : all.filter(r => r.in_current_tracker !== false);
+    const picked = CVN.filterByProperty(visible, req.query.property, KPI);
 
     res.json({
       ...out,
       watchlist: w.data || [],
       cases: CVN.byCase(picked.rows, notesRes.error ? [] : (notesRes.data || [])),
       notesAvailable: !notesRes.error,
+      notInTracker: {
+        count: absent.length,
+        showing: includeAbsent,
+        note: absent.length
+          ? absent.length + ' deficienc' + (absent.length === 1 ? 'y is' : 'ies are')
+            + ' not in the current SharePoint tracker and '
+            + (includeAbsent ? 'ARE shown' : 'are hidden')
+            + '. Nothing was deleted; add ?include=absent to see them.'
+          : null,
+      },
       propertyFilter: {
         selection: picked.selection,
         members: picked.members,
