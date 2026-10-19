@@ -526,6 +526,71 @@ t('the review export names no verdict', () => {
     'and the text to compare against travels with it');
 });
 
+// ---- the case number --------------------------------------------------------
+
+t('both City spellings produce the same shape of key', () => {
+  // 17 of the 21 cases read "2025-104408 CV" and 4 read "CV-2026-128356".
+  // Where the letters sit is formatting; year and number are the case.
+  assert.strictEqual(N.caseKey('2025-104408 CV').key, '2025-104408');
+  assert.strictEqual(N.caseKey('CV-2026-128356').key, '2026-128356');
+  assert.strictEqual(N.caseKey('  cv 2025-036688  ').key, '2025-036688');
+});
+
+t('the original text is kept and never replaced', () => {
+  // It is what the City sent and what somebody will search for. The key is an
+  // index, not a correction.
+  const c = N.caseKey('CV-2026-128356');
+  assert.strictEqual(c.display, 'CV-2026-128356');
+});
+
+t('no number means pending, never an invented one', () => {
+  const c = N.caseKey('08/13/2026 inspection - case number pending');
+  assert.strictEqual(c.key, null);
+  assert.strictEqual(c.pending, true);
+  assert.strictEqual(c.reason, 'no number');
+  // The date in that sentence must not become a case number.
+  assert.ok(!/2026-0813/.test(JSON.stringify(c)));
+});
+
+t('an unfamiliar scheme is NOT folded into the familiar one', () => {
+  // "CE20260917-3645" carries an identifier in a City numbering we have not
+  // been told the shape of. Reading 2026 and 0917 out of it would produce a
+  // key that looks right and points nowhere.
+  const c = N.caseKey('CE20260917-3645');
+  assert.strictEqual(c.key, null);
+  assert.strictEqual(c.reason, 'unrecognised format');
+  assert.notStrictEqual(c.reason, 'no number', 'it is a different problem');
+});
+
+t('grouping reports what it merged, including nothing', () => {
+  // On today's tracker it merges 0: two formats exist but no single case is
+  // written both ways. A grouping that cannot say that would let somebody
+  // assume it had tidied something up.
+  const g = N.groupByCaseKey([
+    { case_number: '2025-104408 CV' }, { case_number: 'CV-2025-104408' },
+    { case_number: '2026-072494 CV' }, { case_number: 'case number pending' },
+    { case_number: 'CE20260917-3645' },
+  ]);
+  assert.strictEqual(g.groups.length, 2);
+  assert.strictEqual(g.merged, 1, 'the two spellings of 2025-104408 collapsed');
+  assert.strictEqual(g.pendingNoNumber, 1);
+  assert.strictEqual(g.pendingUnrecognised, 1);
+  const merged = g.groups.find(x => x.key === '2025-104408');
+  assert.strictEqual(merged.rows.length, 2);
+  assert.deepStrictEqual(merged.displays.sort(),
+    ['2025-104408 CV', 'CV-2025-104408'], 'every spelling is kept');
+});
+
+t('a case groups many deficiencies — one to many, as Jay confirmed', () => {
+  const g = N.groupByCaseKey([
+    { case_number: '2025-035323 CV', deficiency_key: 'a' },
+    { case_number: '2025-035323 CV', deficiency_key: 'b' },
+    { case_number: '2025-035323 CV', deficiency_key: 'c' },
+  ]);
+  assert.strictEqual(g.groups.length, 1);
+  assert.strictEqual(g.groups[0].rows.length, 3);
+});
+
 // ---- deficiency -> work orders ----------------------------------------------
 
 t('a bare number is one current work order', () => {
