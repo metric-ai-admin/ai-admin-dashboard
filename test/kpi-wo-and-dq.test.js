@@ -34,11 +34,13 @@ t('Katie’s definition is reported separately from ours', () => {
     { property_name: P, status: 'Ready to Bill' },
     { property_name: P, status: 'Work Done' },
   ]);
-  assert.strictEqual(r[P].openWos, 3, 'all three are open');
+  // Jay, final, 2026-10-19: Ready to Bill is CLOSED — the maintenance work is
+  // finished and only the invoice is outstanding — and awaiting billing is a
+  // number of its own rather than a slice of open. Work Done stays open:
+  // somebody still has to close it.
+  assert.strictEqual(r[P].openWos, 2, 'Assigned and Work Done');
   assert.strictEqual(r[P].openFieldWos, 1, 'her scope should be the one Assigned');
-  assert.strictEqual(r[P].awaitingBilling, 2);
-  assert.strictEqual(r[P].openFieldWos + r[P].awaitingBilling, r[P].openWos,
-    'the split does not add up to open');
+  assert.strictEqual(r[P].awaitingBilling, 1, 'Ready to Bill, and it is closed');
 });
 t('an Unknown row is neither open nor silently dropped', () => {
   const r = wo([{ property_name: P, status: WOS.UNKNOWN }]);

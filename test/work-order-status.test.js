@@ -24,14 +24,19 @@ t('every closed spelling AppFolio actually returns', () => {
 });
 t('every open status stays open', () => {
   ['New', 'Assigned', 'Assigned by AppFolio', 'Scheduled', 'Waiting',
-   'Estimate Requested', 'Estimated', 'Work Done', 'Ready to Bill', '', null, undefined,
+   'Estimate Requested', 'Estimated', 'Work Done', '', null, undefined,
   ].forEach(s => assert.strictEqual(WOS.isClosed(s), false, JSON.stringify(s)));
 });
-t('"Work Done" and "Ready to Bill" are NOT closed', () => {
-  // They are money not yet billed. Treating them as finished would hide work
-  // that still has to be invoiced — the Billable Labor Report exists for them.
+t('"Ready to Bill" is CLOSED and "Work Done" is not', () => {
+  // Jay, final, 2026-10-19: Ready to Bill means the maintenance work is
+  // finished and only the invoice is outstanding, so it joins Completed. Work
+  // Done is a different thing — finished in the field, not yet marked
+  // complete — and his status codes keep it open. The old regex matched both,
+  // which would have closed 16 work orders on the strength of 2.
+  assert.strictEqual(WOS.isClosed('Ready to Bill'), true);
+  assert.strictEqual(WOS.isOpen('Ready to Bill'), false);
+  assert.strictEqual(WOS.isClosed('Work Done'), false);
   assert.strictEqual(WOS.isOpen('Work Done'), true);
-  assert.strictEqual(WOS.isOpen('Ready to Bill'), true);
 });
 
 console.log('\nunknown is a third state, not a flavour of either');
@@ -47,25 +52,38 @@ t('tally splits all three and loses nothing', () => {
     { status: WOS.UNKNOWN }, { status: WOS.UNKNOWN },
   ];
   const c = WOS.tally(rows);
-  assert.deepStrictEqual(c, { open: 2, closed: 3, unknown: 2, total: 7, awaitingBilling: 0, fieldWork: 2 });
+  assert.deepStrictEqual(c, { open: 2, closed: 3, unknown: 2, total: 7,
+    awaitingBilling: 0, workDone: 0, fieldWork: 2 });
   assert.strictEqual(c.open + c.closed + c.unknown, c.total, 'a row fell through the cracks');
 });
 
 console.log('\nawaiting billing is a split of open, not a fourth bucket');
-t('"Work Done" and "Ready to Bill" are the ones', () => {
-  ['Work Done', 'work done', 'Ready to Bill', '  Ready To Bill  ']
-    .forEach(s => assert.strictEqual(WOS.isAwaitingBilling(s), true, JSON.stringify(s)));
-  ['Assigned', 'Scheduled', 'New', 'Waiting', '', null]
+t('awaiting billing is Ready to Bill only', () => {
+  // It stopped meaning "finished but unbilled, still on the board" and now
+  // means "closed, invoice outstanding" — a number of its own on both
+  // dashboards.
+  ['Ready to Bill', '  Ready To Bill  '].forEach(s =>
+    assert.strictEqual(WOS.isAwaitingBilling(s), true, JSON.stringify(s)));
+  ['Work Done', 'work done', 'Assigned', 'Scheduled', 'New', 'Waiting', '', null]
     .forEach(s => assert.strictEqual(WOS.isAwaitingBilling(s), false, JSON.stringify(s)));
 });
-t('they are still OPEN — the money is not collected', () => {
-  // Counting them as closed would drop them out of the board entirely, and
-  // they are precisely the rows the Billable Labor Report is for.
-  ['Work Done', 'Ready to Bill'].forEach(s => {
-    assert.strictEqual(WOS.isOpen(s), true, s + ' stopped being open');
-    assert.strictEqual(WOS.isClosed(s), false, s + ' counted as closed');
-    assert.strictEqual(WOS.isFieldWork(s), false, s + ' counted as work still to do on site');
-  });
+t('work done is open, and not field work', () => {
+  // Somebody still has to close it; until they do, the board is carrying it.
+  // But nobody has to drive anywhere, so it is not field work either.
+  assert.strictEqual(WOS.isOpen('Work Done'), true);
+  assert.strictEqual(WOS.isWorkDone('Work Done'), true);
+  assert.strictEqual(WOS.isFieldWork('Work Done'), false);
+  assert.strictEqual(WOS.isFieldWork('Assigned'), true);
+});
+t('a tally keeps its invariants under the new split', () => {
+  const c = WOS.tally([{ status: 'Ready to Bill' }, { status: 'Work Done' },
+    { status: 'Assigned' }, { status: 'Completed' }, { status: WOS.UNKNOWN }]);
+  assert.strictEqual(c.open + c.closed + c.unknown, c.total);
+  assert.strictEqual(c.awaitingBilling, 1);
+  assert.ok(c.awaitingBilling <= c.closed, 'awaiting billing is a subset of closed');
+  assert.strictEqual(c.workDone, 1);
+  assert.ok(c.workDone <= c.open, 'work done is a subset of open');
+  assert.strictEqual(c.workDone + c.fieldWork, c.open, 'and the two split open exactly');
 });
 t('a closed or unknown row is never awaiting billing', () => {
   assert.strictEqual(WOS.isAwaitingBilling(WOS.UNKNOWN), false);
@@ -75,10 +93,14 @@ t('the split never double-counts', () => {
   const rows = [{ status: 'Assigned' }, { status: 'Work Done' }, { status: 'Ready to Bill' },
     { status: 'Completed' }, { status: WOS.UNKNOWN }];
   const c = WOS.tally(rows);
-  assert.strictEqual(c.awaitingBilling + c.fieldWork, c.open, 'the split does not add up to open');
+  // open splits into workDone + fieldWork now; awaitingBilling sits inside
+  // closed. Asserting the old split would quietly re-merge the two.
+  assert.strictEqual(c.workDone + c.fieldWork, c.open, 'the split does not add up to open');
   assert.strictEqual(c.open + c.closed + c.unknown, c.total, 'the total stopped being the total');
-  assert.strictEqual(c.awaitingBilling, 2);
+  assert.strictEqual(c.awaitingBilling, 1, 'Ready to Bill only');
+  assert.strictEqual(c.workDone, 1);
   assert.strictEqual(c.fieldWork, 1);
+  assert.strictEqual(c.closed, 2, 'Completed and Ready to Bill');
 });
 
 console.log('\nthe screens use the shared rule');

@@ -167,12 +167,20 @@ t('it says they are finished, and where they belong', () => {
   const body = ccCode.slice(i, i + 900);
   assert.ok(/awaiting billing/i.test(body));
   assert.ok(/Billable Labor Report/.test(body), 'Erick is told what they are but not what to do');
-  assert.ok(/Not field work/.test(body), 'nothing says these are not site visits');
+  // Was "Not field work" while they were open. They are closed now, so the
+  // banner has to say that instead — a closed row described as field work is
+  // the contradiction that would send somebody looking for the unit.
+  assert.ok(/Not open work/.test(body), 'nothing says these are not open work');
+  assert.ok(/CLOSED/.test(body), 'the banner does not say they are closed');
 });
-t('they are still counted as open everywhere else', () => {
-  // The separation is presentational. If it changed isOpen, the work orders
-  // would vanish from the totals and the money would stop being chased.
-  assert.strictEqual(WOS.isOpen('Ready to Bill'), true);
+t('Ready to Bill is closed; Work Done is not', () => {
+  // The separation stopped being presentational on 2026-10-19. Ready to Bill
+  // is closed in both dashboards — the field work is done and only the
+  // invoice is left — and it is reported as its own number so the money is
+  // still chased. Work Done is a different status and stays open.
+  assert.strictEqual(WOS.isOpen('Ready to Bill'), false);
+  assert.strictEqual(WOS.isAwaitingBilling('Ready to Bill'), true,
+    'closed, but still counted where the billing is chased');
   assert.strictEqual(WOS.isOpen('Work Done'), true);
 });
 

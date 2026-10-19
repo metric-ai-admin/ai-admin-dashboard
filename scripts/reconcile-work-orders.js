@@ -14,15 +14,16 @@
 //
 // THE DEFINITIONS, read out of the two codebases rather than remembered:
 //
-//   ours   open  = 0,1,2,9,11,3,6,8,12      (appfolio-reports.js)
-//   Jay's  open  = 0,1,2,9,11,3,6,8         (his server.js, before 2026-10-19)
-//          closed includes 12, "Ready to Bill"
+//   both   open  = 0,1,2,9,11,3,6,8          closed includes 12
+//   ours, before 2026-10-19            = the same plus 12
 //
-// Jay decided on 2026-10-19 that Ready to Bill counts as OPEN, which makes the
-// two the same. THE DIFFERENCE IS STILL REPORTED ON ITS OWN LINE rather than
-// folded away: it is the one number that moved, somebody will ask what it was,
-// and a reconciliation that only prints "0" when it agrees cannot show its
-// work.
+// Jay's final word, 2026-10-19: "Ready to Bill" (12) is CLOSED in both — the
+// maintenance work is finished and only the invoice is outstanding — and
+// "awaiting billing" stops being a slice of open and becomes its own number.
+// OURS was the one that had to move. The old definition is still computed and
+// printed on its own line: it is the number that changed, somebody will ask
+// how much, and a reconciliation that prints "0" when it agrees cannot show
+// its work.
 require('dotenv').config();
 
 const AFP = require('../lib/appfolio-properties.js');
@@ -42,8 +43,8 @@ const ALL_CODES = Array.from({ length: 31 }, (_, i) => String(i));
 // Ready to Bill. The code the two dashboards disagreed about.
 const READY_TO_BILL = '12';
 
-const OURS_OPEN = new Set(['0', '1', '2', '9', '11', '3', '6', '8', '12']);
-const JAYS_OPEN_BEFORE = new Set(['0', '1', '2', '9', '11', '3', '6', '8']);
+const AGREED_OPEN = new Set(['0', '1', '2', '9', '11', '3', '6', '8']);
+const OURS_BEFORE = new Set(['0', '1', '2', '9', '11', '3', '6', '8', '12']);
 
 (async () => {
   const id = process.env.APPFOLIO_REPORTS_CLIENT_ID;
@@ -94,41 +95,47 @@ const JAYS_OPEN_BEFORE = new Set(['0', '1', '2', '9', '11', '3', '6', '8']);
     return WOS.isOpen(statusText(r));
   };
 
-  const ours = rows.filter(r => isOpen(r, OURS_OPEN));
-  const jaysBefore = rows.filter(r => isOpen(r, JAYS_OPEN_BEFORE));
-  const readyToBill = rows.filter(r => codeOf(r) === READY_TO_BILL);
-  const urgent = ours.filter(r => /urgent/i.test(clean(r.priority)));
+  const agreed = rows.filter(r => isOpen(r, AGREED_OPEN));
+  const oursBefore = rows.filter(r => isOpen(r, OURS_BEFORE));
+  const readyToBill = rows.filter(r => codeOf(r) === READY_TO_BILL
+    || WOS.isAwaitingBilling(statusText(r)));
+  const workDone = rows.filter(r => WOS.isWorkDone(statusText(r)));
+  const urgent = agreed.filter(r => /urgent/i.test(clean(r.priority)));
 
   console.log('OPEN WORK ORDERS');
-  console.log('   ' + pad('ours (Ready to Bill = open)', 38) + ours.length);
-  console.log('   ' + pad("Jay's, before 2026-10-19", 38) + jaysBefore.length);
-  console.log('   ' + pad('difference', 38) + (ours.length - jaysBefore.length));
+  console.log('   ' + pad('agreed definition (12 = closed)', 38) + agreed.length);
+  console.log('   ' + pad('ours, before 2026-10-19', 38) + oursBefore.length);
+  console.log('   ' + pad('difference', 38) + (oursBefore.length - agreed.length));
   console.log('   ' + pad('  of which Ready to Bill (code 12)', 38) + readyToBill.length);
-  console.log('\n   Jay decided on 2026-10-19 that Ready to Bill is OPEN, so the two');
-  console.log('   definitions now agree and the difference above is what it was worth.');
-  if (ours.length - jaysBefore.length !== readyToBill.length) {
+  if (oursBefore.length - agreed.length !== readyToBill.length) {
     console.log('\n   THE DIFFERENCE IS NOT ONLY CODE 12. Something else differs between');
     console.log('   the two sets — worth finding before trusting either count.');
   }
 
+  console.log('\nAWAITING BILLING — its own number now, not a slice of open');
+  console.log('   ' + pad('completed, not yet invoiced', 38) + readyToBill.length);
+  console.log('   ' + pad('work done, not yet marked complete', 38) + workDone.length
+    + '   (still OPEN)');
+
   console.log('\nURGENT, inside the open set');
-  console.log('   ' + pad('ours', 38) + urgent.length);
+  console.log('   ' + pad('both dashboards', 38) + urgent.length);
 
   // ---- per property ---------------------------------------------------------
   console.log('\nBY PROPERTY');
   console.log('   ' + pad('property', 28) + pad('open', 7) + pad('urgent', 8)
-    + pad('ready to bill', 15) + 'awaiting billing');
+    + pad('awaiting billing', 18) + 'work done');
   const names = [...new Set(rows.map(r => PA.canonical(r.property_name)
     || AFP.resolveProperty(r.property_name) || clean(r.property_name)).filter(Boolean))].sort();
   names.forEach(name => {
     const mine = rows.filter(r => (PA.canonical(r.property_name)
       || AFP.resolveProperty(r.property_name) || clean(r.property_name)) === name);
-    const o = mine.filter(r => isOpen(r, OURS_OPEN));
+    const o = mine.filter(r => isOpen(r, AGREED_OPEN));
     console.log('   ' + pad(name, 28)
       + pad(o.length, 7)
       + pad(o.filter(r => /urgent/i.test(clean(r.priority))).length, 8)
-      + pad(mine.filter(r => codeOf(r) === READY_TO_BILL).length, 15)
-      + o.filter(r => WOS.isAwaitingBilling(statusText(r))).length);
+      + pad(mine.filter(r => codeOf(r) === READY_TO_BILL
+        || WOS.isAwaitingBilling(statusText(r))).length, 15)
+      + mine.filter(r => WOS.isWorkDone(statusText(r))).length);
   });
 
   console.log('\n   "Awaiting billing" is a SUBSET of open, not a third state: the work');

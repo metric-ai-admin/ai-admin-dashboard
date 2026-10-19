@@ -1157,9 +1157,13 @@ function ccRefreshCounts() {
     const b = document.createElement('div');
     b.className = 'banner';
     b.style.cssText = 'width:100%;margin:0 0 8px';
+    // Jay, final, 2026-10-19: these are CLOSED. The maintenance work is done
+    // and only the invoice is outstanding, so they are out of the open count
+    // and shown here as their own number — otherwise closing them would quietly
+    // stop anybody chasing the money.
     b.innerHTML = `<b>💵 ${ccAwaiting.length} awaiting billing.</b> `
-      + `Work Done / Ready to Bill — the job is finished, the money is not collected. `
-      + `Not field work; they belong to the Billable Labor Report. `
+      + `Ready to Bill — the job is finished and CLOSED; the invoice is not raised. `
+      + `Not open work; they belong to the Billable Labor Report. `
       + (nums.length ? `WO ${nums.map(esc).join(', ')}${ccAwaiting.length > nums.length ? ', …' : ''}` : '');
     sum.appendChild(b);
   }
