@@ -81,7 +81,17 @@ const PROPERTIES = [
   'Hyde Park Square',
 ];
 
-const OPEN_STATUSES = STATUSES.filter(s => !/^Completed|^Closed/.test(s));
+// ONLY THE CITY CLOSES A DEFICIENCY. Erick, 2026-10-19, adopted by Arturo:
+// a citation is finished when Code Compliance says it is, whatever the work
+// order says. Work orders 22882 and 22870 were completed and billed, and the
+// City's re-inspection on 10/07 did not clear them — so "Completed by
+// Maintenance" is a claim about our side of the work, not a resolution.
+//
+// This used to exclude anything starting with "Completed" as well, which
+// meant a billed job left the open count the moment it was invoiced and the
+// City's verdict never entered the arithmetic.
+const CITY_CLOSED = 'Closed by Code Compliance';
+const OPEN_STATUSES = STATUSES.filter(s => s !== CITY_CLOSED);
 
 const clean = s => String(s == null ? '' : s).trim();
 const lower = s => clean(s).toLowerCase();
@@ -205,7 +215,13 @@ function unverifiedClosure(row = {}, { completedAt = null, billedAt = null } = {
   const status = clean(row.status);
   if (!/^Completed/.test(status)) return { flagged: false, reason: '' };
 
-  const reasons = [];
+  // COMPLETED IS NOT CLEARED, and that is now the first reason rather than a
+  // detail. Erick, 2026-10-19: the City is the only thing that closes a
+  // deficiency. A row marked complete on our side and not cleared on theirs is
+  // unverified by definition, before any of the signals below are considered —
+  // WOs 22882 and 22870 were completed and billed, and the 10/07
+  // re-inspection did not clear them.
+  const reasons = ['completed in AppFolio; the City has not cleared it'];
 
   if (completedAt && billedAt) {
     const gap = Math.abs(new Date(billedAt) - new Date(completedAt));
@@ -512,7 +528,7 @@ function resolveConflict(stored, decision, { by = 'Dashboard', now = new Date().
 
 module.exports = {
   resolveImportRow, resolveConflict, IMPORT_PRESERVED_FIELDS,
-  STATUSES, PROPERTIES, OPEN_STATUSES,
+  STATUSES, PROPERTIES, OPEN_STATUSES, CITY_CLOSED,
   isoDate, codeSection, hash32, deficiencyKey,
   mapAppfolioStatus, unverifiedClosure, pastDeadline, validateLink,
   buildTracker, normaliseImportRow,

@@ -13,9 +13,18 @@ t('eight properties — The Sidney came out 2026-09-23', () => {
   assert.strictEqual(cv.PROPERTIES.length, 8);
   assert.ok(!cv.PROPERTIES.includes('The Sidney'));
 });
-t('open excludes everything completed or closed', () => {
+t('open is everything the City has not closed', () => {
+  // Erick, 2026-10-19, adopted by Arturo: only Code Compliance closes a
+  // deficiency. WOs 22882 and 22870 were completed and billed and the City's
+  // 10/07 re-inspection did not clear them — so a billed job used to leave
+  // the open count the moment it was invoiced, and the City's verdict never
+  // entered the arithmetic.
   assert.deepStrictEqual(cv.OPEN_STATUSES,
-    ['Pending', 'Assigned - No Activity', 'Assigned - In Progress', 'Assigned - Reassignment Needed']);
+    ['Pending', 'Assigned - No Activity', 'Assigned - In Progress',
+      'Assigned - Reassignment Needed', 'Completed - No Need to Bill',
+      'Completed by Maintenance']);
+  assert.strictEqual(cv.CITY_CLOSED, 'Closed by Code Compliance');
+  assert.ok(!cv.OPEN_STATUSES.includes(cv.CITY_CLOSED), 'the one that closes it');
 });
 
 console.log('dates');
@@ -101,8 +110,18 @@ const done = { status: 'Completed by Maintenance', completed_items: 'Replaced th
 t('an open row is never flagged', () => {
   assert.strictEqual(cv.unverifiedClosure({ status: 'Pending', completed_items: '' }).flagged, false);
 });
-t('a completed row with a field record is not flagged', () => {
-  assert.strictEqual(cv.unverifiedClosure(done).flagged, false);
+t('a completed row is flagged even with a full field record', () => {
+  // Changed 2026-10-19 with Erick's rule. A good field record says WE did the
+  // work; it says nothing about whether the City accepted it, and 22882 and
+  // 22870 are what that looks like — completed, billed, photographed, and not
+  // cleared on the 10/07 re-inspection.
+  const r = cv.unverifiedClosure(done);
+  assert.strictEqual(r.flagged, true);
+  assert.match(r.reason, /the City has not cleared it/);
+  assert.ok(!/no field record/.test(r.reason), 'and it does not also claim the record is missing');
+});
+t('a city-closed row is never flagged', () => {
+  assert.strictEqual(cv.unverifiedClosure({ ...done, status: cv.CITY_CLOSED }).flagged, false);
 });
 t('completed with nothing recorded is flagged', () => {
   const r = cv.unverifiedClosure({ status: 'Completed by Maintenance', completed_items: '', progress_notes: '' });
@@ -118,9 +137,16 @@ t('billed within a minute of completion is flagged', () => {
   assert.strictEqual(r.flagged, true);
   assert.match(r.reason, /within a minute/);
 });
-t('billed an hour later is ordinary', () => {
-  assert.strictEqual(cv.unverifiedClosure(done,
-    { completedAt: '2026-09-18T14:02:00Z', billedAt: '2026-09-18T15:02:00Z' }).flagged, false);
+t('billed an hour later adds no billing reason', () => {
+  // Still flagged — nothing the City has not cleared is unflagged now — but
+  // the gap is ordinary, so it must not also be accused of being billed on
+  // the spot. The reasons are what a person acts on; `flagged` alone stopped
+  // distinguishing anything the day every completed row became true.
+  const r = cv.unverifiedClosure(done,
+    { completedAt: '2026-09-18T14:02:00Z', billedAt: '2026-09-18T15:02:00Z' });
+  assert.strictEqual(r.flagged, true);
+  assert.ok(!/within a minute/.test(r.reason), r.reason);
+  assert.match(r.reason, /the City has not cleared it/);
 });
 t('notes claiming completion with nothing completed is flagged', () => {
   const r = cv.unverifiedClosure({ status: 'Completed by Maintenance', completed_items: '', progress_notes: 'Work completed by vendor.' });
@@ -128,7 +154,8 @@ t('notes claiming completion with nothing completed is flagged', () => {
 });
 t('a note saying NOT completed does not read as a completion claim', () => {
   const r = cv.unverifiedClosure({ status: 'Completed by Maintenance', completed_items: 'Frame replaced.', progress_notes: 'Second frame not completed yet.' });
-  assert.strictEqual(r.flagged, false);
+  assert.ok(!/notes claim completion/.test(r.reason), r.reason);
+  assert.match(r.reason, /the City has not cleared it/, 'the city reason is the only one');
 });
 t('Completed - No Need to Bill is checked too', () => {
   assert.strictEqual(cv.unverifiedClosure({ status: 'Completed - No Need to Bill', completed_items: '' }).flagged, true);
@@ -159,8 +186,13 @@ t('NO DUE DATE IS NEVER PAST DEADLINE — it is never derived', () => {
   assert.strictEqual(cv.pastDeadline({ status: 'Assigned - No Activity', due_date: null }, TODAY), false);
   assert.strictEqual(cv.pastDeadline({ status: 'Pending', deficiency_date: '2024-01-01' }, TODAY), false);
 });
-t('a completed row is not late', () => {
-  assert.strictEqual(cv.pastDeadline({ ...openRow, status: 'Completed by Maintenance' }, TODAY), false);
+t('a completed but uncleared row IS still late', () => {
+  // Changed 2026-10-19 with Erick's rule. The City's deadline does not stop
+  // mattering because we marked the work done on our side — it stops
+  // mattering when the City closes the case. Three Sunset Palms items past
+  // the 05/03 deadline are exactly this shape.
+  assert.strictEqual(cv.pastDeadline({ ...openRow, status: 'Completed by Maintenance' }, TODAY), true);
+  assert.strictEqual(cv.pastDeadline({ ...openRow, status: 'Completed - No Need to Bill' }, TODAY), true);
 });
 t('a row closed by code compliance is not late', () => {
   assert.strictEqual(cv.pastDeadline({ ...openRow, status: 'Closed by Code Compliance' }, TODAY), false);
@@ -224,8 +256,10 @@ t('counts add up to the total', () => {
   const s = tr().summary;
   assert.strictEqual(Object.values(s.byStatus).reduce((a, b) => a + b, 0), s.total);
 });
-t('past deadline counts only open rows', () => {
-  assert.strictEqual(tr().summary.pastDeadline, 1);   // the completed one does not count
+t('past deadline counts every row the City has not closed', () => {
+  // Was 1 — the completed row was excluded. Under Erick's rule it is still
+  // open until Code Compliance says otherwise, so its passed deadline counts.
+  assert.strictEqual(tr().summary.pastDeadline, 2);
 });
 t('unverified closures are counted', () => assert.strictEqual(tr().summary.unverified, 1));
 t('filter by property', () => assert.strictEqual(tr({ property: 'Sunset Palms' }).summary.total, 2));
