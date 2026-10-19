@@ -304,7 +304,34 @@ t('nothing is deleted and both upserts are keyed', () => {
   assert.match(IMP, /onConflict: 'deficiency_key'/);
   assert.match(IMP, /onConflict: 'source_row'/);
   assert.ok(!/\.delete\(/.test(IMP));
-  assert.match(IMP, /Rows not in this workbook keep their values/);
+  assert.match(IMP, /Nothing was deleted/);
+});
+
+t('a row the workbook no longer holds is flagged, not judged and not removed', () => {
+  // 39 of the 51 pre-existing rows share a case number AND a work order with
+  // something just imported, but not one shares the opening description —
+  // either the same deficiency reworded or a different one under the same
+  // case, which a single work order routinely covers. The flag records the
+  // fact; a person decides what it means.
+  assert.match(IMP, /in_current_tracker: false/);
+  assert.match(IMP, /conclusion to a person/);
+  assert.ok(!/\.delete\(/.test(IMP));
+});
+
+t('an empty read cannot flag the whole table as absent', () => {
+  // The same rule as markMissingFromFeed: a workbook we failed to open must
+  // not mark every stored row as missing from it.
+  assert.match(IMP, /if \(payload\.length && trackerColumns\)/);
+});
+
+t('an unrun migration costs the flag, not the import', () => {
+  // Sending a column that does not exist fails the WHOLE upsert, which would
+  // make an unrun migration cost the 78 deficiencies and 360 notes.
+  assert.match(IMP, /trackerColumns = false/);
+  assert.match(IMP, /strip\(chunk\)/, 'it retries without the optional columns');
+  assert.match(IMP, /NOT MARKED — run supabase\/migrations\/104/);
+  assert.match(IMP, /run supabase\/migrations\/103/,
+    'and the notes failure names the migration that fixes it');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

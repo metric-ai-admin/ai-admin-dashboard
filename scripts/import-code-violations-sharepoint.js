@@ -151,11 +151,60 @@ function summaryTotals(wb) {
   return out;
 }
 
+const DESCRIBE = (() => {
+  const i = process.argv.indexOf('--describe');
+  return i >= 0 ? (process.argv[i + 1] || '') : null;
+})();
+
+/**
+ * Print a sheet's shape and nothing of its contents.
+ *
+ * STRUCTURE ONLY. These sheets carry addresses, unit numbers and the names of
+ * city officers, so this prints headers, counts and per-column fill rates —
+ * never a cell. A probe printed an applicant's email, phone, employer and
+ * salary on 2026-10-13 and that is not happening again.
+ */
+function describeSheet(wb, name) {
+  if (!wb.Sheets[name]) { console.log('no sheet called "' + name + '"'); return; }
+  const grid = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: null, raw: false });
+  console.log('\nSHEET: ' + name + '  — ' + grid.length + ' grid row(s)');
+
+  // The header is the first row with three or more non-empty cells that are
+  // short enough to be labels rather than prose.
+  let h = -1;
+  for (let i = 0; i < Math.min(grid.length, 25); i++) {
+    const cells = (grid[i] || []).map(c => clean(c)).filter(Boolean);
+    if (cells.length >= 3 && cells.every(c => c.length <= 40)) { h = i; break; }
+  }
+  if (h < 0) { console.log('   no header-shaped row in the first 25 — nothing can be mapped'); return; }
+  const header = grid[h].map(c => clean(c));
+  console.log('   header row: #' + (h + 1));
+  header.filter(Boolean).forEach((col, i) => {
+    let filled = 0, total = 0;
+    for (let r = h + 1; r < grid.length; r++) {
+      const row = grid[r] || [];
+      if (!(row || []).some(c => clean(c))) continue;
+      total += 1;
+      if (clean(row[header.indexOf(col)])) filled += 1;
+    }
+    console.log('      ' + pad(col, 30) + filled + ' of ' + total + ' filled');
+    if (i === header.filter(Boolean).length - 1) console.log('   data rows: ' + total);
+  });
+}
+
 (async () => {
   console.log((WRITE ? 'WRITE' : 'DRY RUN') + ' — ' + WORKBOOK_PATH);
   console.log('The workbook is read into memory and never written to disk.\n');
 
   const wb = XLSX.read(await downloadWorkbook(await graphToken()), { type: 'buffer' });
+
+  if (DESCRIBE !== null) {
+    console.log('READ ONLY — describing. Structure only; no cell contents are printed.');
+    console.log('sheets: ' + wb.SheetNames.join(', '));
+    (DESCRIBE ? [DESCRIBE] : wb.SheetNames).forEach(n => describeSheet(wb, n));
+    return;
+  }
+
   const summary = summaryTotals(wb);
 
   const deficiencies = [];
@@ -337,18 +386,73 @@ function summaryTotals(wb) {
   // ---- the write ------------------------------------------------------------
   const now = new Date().toISOString();
   const payload = deficiencies.map(({ __sheet, ...d }) => ({
-    ...d, imported_at: now, updated_at: now, updated_by: 'sharepoint import',
+    ...d,
+    imported_at: now, updated_at: now, updated_by: 'sharepoint import',
+    in_current_tracker: true, tracker_checked_at: now,
   }));
+  // THE TRACKER COLUMNS ARE OPTIONAL. Sending a column migration 104 has not
+  // created yet fails the WHOLE upsert, which would make an unrun migration
+  // cost the import rather than the flag. First attempt includes them; a
+  // schema complaint falls back to the rows without, and says so.
+  let trackerColumns = true;
+  const strip = rows => rows.map(({ in_current_tracker, tracker_checked_at, ...r }) => r);
   for (let i = 0; i < payload.length; i += 200) {
-    const { error } = await db.from('code_violations')
-      .upsert(payload.slice(i, i + 200), { onConflict: 'deficiency_key' });
+    const chunk = payload.slice(i, i + 200);
+    let { error } = await db.from('code_violations')
+      .upsert(trackerColumns ? chunk : strip(chunk), { onConflict: 'deficiency_key' });
+    if (error && /in_current_tracker|tracker_checked_at/.test(error.message || '')) {
+      trackerColumns = false;
+      ({ error } = await db.from('code_violations')
+        .upsert(strip(chunk), { onConflict: 'deficiency_key' }));
+    }
     if (error) throw new Error('code_violations: ' + error.message);
   }
+  if (!trackerColumns) {
+    console.log('\n   NOT MARKED — run supabase/migrations/104_code_violations_in_tracker.sql');
+    console.log('   and re-run. The deficiencies and notes are stored either way; what');
+    console.log('   is missing is the flag on rows the workbook no longer contains.');
+  }
+
+  // ---- mark what the workbook no longer contains ---------------------------
+  //
+  // Not deleted and not judged. A row the tracker does not contain is either
+  // the same deficiency reworded or a different one under the same case — only
+  // somebody reading both can say — so this records the fact and leaves the
+  // conclusion to a person. Same shape as leasing_lease_history.in_feed.
+  //
+  // It runs only after the upsert succeeded, and only when the workbook
+  // actually produced rows: an empty read would otherwise flag the entire
+  // table as absent from a tracker we failed to open.
+  let marked = 0;
+  if (payload.length && trackerColumns) {
+    const seen = payload.map(d => d.deficiency_key);
+    const { data: gone, error: markErr } = await db.from('code_violations')
+      .update({ in_current_tracker: false, tracker_checked_at: now })
+      .not('deficiency_key', 'in',
+        '(' + seen.map(k => '"' + String(k).replace(/"/g, '') + '"').join(',') + ')')
+      .select('deficiency_key');
+    if (markErr) {
+      if (/in_current_tracker/.test(markErr.message || '')) {
+        console.log('\n   (not marked — run supabase/migrations/104_code_violations_in_tracker.sql)');
+      } else throw new Error('marking: ' + markErr.message);
+    } else marked = (gone || []).length;
+  }
+
   for (let i = 0; i < notes.length; i += 200) {
     const { error } = await db.from('code_violation_notes')
       .upsert(notes.slice(i, i + 200), { onConflict: 'source_row' });
-    if (error) throw new Error('code_violation_notes: ' + error.message);
+    if (error) {
+      if (/ON CONFLICT/.test(error.message || '')) {
+        throw new Error('code_violation_notes: ' + error.message
+          + ' — run supabase/migrations/103_code_violation_notes_index_fix.sql');
+      }
+      throw new Error('code_violation_notes: ' + error.message);
+    }
   }
   console.log('\nstored: ' + payload.length + ' deficiencies, ' + notes.length + ' notes.');
-  console.log('Nothing was deleted. Rows not in this workbook keep their values.');
+  if (marked) {
+    console.log(marked + ' stored row(s) are NOT in this workbook — marked '
+      + 'in_current_tracker = false, values untouched.');
+  }
+  console.log('Nothing was deleted.');
 })().catch(e => { console.error('FAILED: ' + e.message); process.exitCode = 1; });
