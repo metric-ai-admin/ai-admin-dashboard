@@ -5966,8 +5966,67 @@ app.get('/api/code-violations', requireAuth, requireRole(...CODE_VIOLATION_ROLES
         category: req.query.category || '', month: req.query.month || '', year: req.query.year || '',
       },
     });
-    res.json({ ...out, watchlist: w.data || [] });
+    // ---- the case view, and the property filter ---------------------------
+    //
+    // The City issues a CASE; a case carries several deficiencies. Nine of
+    // them on one number is one conversation with one inspector, and a flat
+    // list of 78 rows hides which belong together.
+    //
+    // The notes table may not exist yet (migration 102): an absent table costs
+    // the thread, not the tracker, so it degrades to no notes rather than a
+    // 500 on the whole tab.
+    const CVN = require('./lib/code-violation-notes.js');
+    const KPI = require('./lib/kpi-report.js');
+    const notesRes = await db.from('code_violation_notes')
+      .select('deficiency_key,case_number,body,author,authored_at,source,created_at')
+      .limit(5000)
+      .then(r => r, () => ({ error: { message: 'unavailable' }, data: [] }));
+
+    // Filtered BEFORE grouping, so a case's "3 of 9" counts only the
+    // deficiencies the reader can see. Grouping first and filtering after
+    // would show a progress figure that does not match the rows under it.
+    const picked = CVN.filterByProperty(v.data || [], req.query.property, KPI);
+
+    res.json({
+      ...out,
+      watchlist: w.data || [],
+      cases: CVN.byCase(picked.rows, notesRes.error ? [] : (notesRes.data || [])),
+      notesAvailable: !notesRes.error,
+      propertyFilter: {
+        selection: picked.selection,
+        members: picked.members,
+        groups: CVN.propertyOptions(KPI).groups,
+      },
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/code-violations/notes — add one note, signed by whoever is typing.
+//
+// THE AUTHOR COMES FROM THE SESSION, never from the body. A note that says who
+// wrote it is only worth anything if the writer could not have chosen the
+// name, and this is the one path that knows.
+app.post('/api/code-violations/notes', requireAuth, requireRole(...CODE_VIOLATION_ROLES), async (req, res) => {
+  try {
+    const CVN = require('./lib/code-violation-notes.js');
+    const who = (req.user && (req.user.name || req.user.email)) || '';
+    if (!who) return res.status(403).json({ error: 'cannot identify the author' });
+    const row = CVN.dashboardNote({
+      body: req.body && req.body.body,
+      author: who,
+      deficiencyKey: req.body && req.body.deficiency_key,
+      caseNumber: req.body && req.body.case_number,
+    });
+    const db = supabaseAdmin || supabasePublic;
+    const { data, error } = await db.from('code_violation_notes').insert(row).select().single();
+    if (error) {
+      if (/code_violation_notes/.test(error.message || '')) {
+        return res.status(503).json({ error: 'run supabase/migrations/102_code_violation_notes.sql first', needsMigration: true });
+      }
+      throw new Error(error.message);
+    }
+    res.json({ ok: true, note: CVN.describe(data) });
+  } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 // Update one deficiency. Only the fields a person is allowed to change by hand;
