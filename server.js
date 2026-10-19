@@ -17432,6 +17432,40 @@ async function mrAppFolioMentions() {
   return out.slice(0, 10);
 }
 
+/**
+ * A progress counter for the pending-items list, or nothing.
+ *
+ * THE RULE: it appears only while `done < total`. Arturo, 2026-10-19 — the SOP
+ * Review line sat at 89/89 for weeks under the pending-items heading, which is
+ * a finished job filed as outstanding in the one section that exists to say
+ * what is left.
+ *
+ * (The heading's own text is deliberately not repeated in this comment:
+ * test/morning-report-greeting.test.js finds that section by searching for it,
+ * and a second copy above the renderer moves the window it checks.)
+ *
+ * `total === 0` is NOTHING LEFT, not 0% done. An empty table is not a backlog,
+ * and 0/0 under a pending heading would be the same false claim with worse
+ * arithmetic behind it.
+ *
+ * Unknown figures — a failed query, a missing count — return nothing rather
+ * than guessing in either direction: a counter that invents a denominator is
+ * worse than a counter nobody can see.
+ */
+function mrProgressLine(done, total, render) {
+  // null and '' BEFORE Number(), which turns both into a perfectly finite 0.
+  // A failed lookup would otherwise render "0/89 Slab links" — the strongest
+  // possible claim that nothing has been done, built from nothing at all.
+  if (done === null || done === undefined || done === '') return null;
+  if (total === null || total === undefined || total === '') return null;
+  const d = Number(done);
+  const t = Number(total);
+  if (!isFinite(d) || !isFinite(t)) return null;
+  if (t <= 0) return null;
+  if (d >= t) return null;
+  return render(d, t);
+}
+
 function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sopReview, errors }) {
   const L = [];
   L.push(`📋 *Lyndsay's Daily Activity Report — ${date}*`);
@@ -17525,7 +17559,12 @@ function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sop
   L.push('');
 
   L.push(`*ARTURO'S PENDING ITEMS LIST*`);
-  if (sopReview && !errors.sopReview) L.push(`  📖 SOP Review: ${sopReview.linked}/${sopReview.total} Slab links`);
+  // Shown only while the review is unfinished — see mrProgressLine, which
+  // holds the reasoning and applies the same rule to any counter added here.
+  const sopLine = mrProgressLine(sopReview && !errors.sopReview ? sopReview.linked : null,
+    sopReview && !errors.sopReview ? sopReview.total : null,
+    (done, total) => `  📖 SOP Review: ${done}/${total} Slab links`);
+  if (sopLine) L.push(sopLine);
   if (errors.ops) L.push(`  ⚠ ${errors.ops}`);
   else if (!ops.length) L.push('  No 🔴/🟡/🟢 items pending.');
   else {
