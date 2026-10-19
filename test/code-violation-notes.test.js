@@ -434,6 +434,30 @@ t('an existing watchlist row is matched before anything is written', () => {
   assert.ok(byWo, 'or by work order');
 });
 
+t('a longer retelling of a stored item is caught as the same item', () => {
+  // The one that got through on 2026-10-19 and wrote a second row: a
+  // hand-typed "Pool gate" (WO 19105-1) against an imported "Pool gate repair
+  // - Round Rock Fire Department, inspected 09/24" whose work order was in
+  // the item text rather than the property column. Equality on the title and
+  // on the parsed work order both missed it.
+  const existing = [{ id: 1, property_name: 'iConic Round Rock', work_order: '19105-1', title: 'Pool gate' }];
+  assert.ok(N.watchlistDuplicate({
+    title: 'Pool gate repair - Round Rock Fire Department, inspected 09/24',
+    detail: 'WO 19105-1 is not tagged Code Violation',
+  }, existing), 'matched by containment');
+  assert.ok(N.watchlistDuplicate({
+    title: 'Something else entirely', detail: 'raised on WO 19105-1',
+  }, existing), 'or by a work order found in the prose');
+});
+
+t('a short title does not swallow unrelated rows', () => {
+  // Containment needs a floor, or "Roof" matches every roof item ever typed.
+  assert.strictEqual(N.watchlistDuplicate({ title: 'Roof' },
+    [{ id: 2, title: 'Roof and gutter replacement at building 3' }]), null);
+  assert.strictEqual(N.watchlistDuplicate({ title: 'Fire alarm panel fault' },
+    [{ id: 1, title: 'Pool gate', work_order: '19105-1' }]), null);
+});
+
 t('an excluded property never enters the watchlist', () => {
   // The Sidney has a row on that sheet. Importing it would put it back on a
   // screen through a side door after a week of keeping it off the others.
