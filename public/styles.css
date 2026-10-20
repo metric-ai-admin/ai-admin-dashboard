@@ -3106,3 +3106,11 @@ tr.ca-sel { background: var(--accent-glow); }
 /* Not a warning box — a qualification on a date that would otherwise be read
    as the week's own. */
 .kr-flag { color: var(--warn, #d08a2c); }
+/* The workbook upload sits with the report it feeds, not with the comparison
+   panel it is easily confused for. */
+.kr-wb {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 10px 0;
+}

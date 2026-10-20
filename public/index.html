@@ -280,6 +280,31 @@
 
       <div id="kr-notes"></div>
 
+      <!-- KATIE'S WORKBOOK, FOR THE WEEK SHOWN ABOVE.
+           Three sheets — MTD Cash, MTD Accrual, Occupancy Goals — are the only
+           source for five figures the report cannot compute. Until this panel
+           the route had no screen at all: the permission existed and there was
+           nowhere to use it.
+
+           Separate from "Compare with Katie's workbook" lower down, and the
+           difference matters when somebody is following a written guide: this
+           one SAVES the three sheets for the week, the other one saves nothing
+           and only lists differences. Same file, two jobs. -->
+      <div class="kr-wb" id="kr-wb" hidden>
+        <div class="dq-head" style="margin:0">
+          <div>
+            <h3 style="margin:0">Workbook for this week</h3>
+            <p class="muted small" id="kr-wb-state" style="margin:2px 0 0">—</p>
+          </div>
+          <label class="btn-sm">
+            Upload Data Source
+            <input type="file" accept=".xlsx,.xls" id="kr-wb-file" hidden>
+          </label>
+        </div>
+        <div id="kr-wb-msg"></div>
+      </div>
+
+
       <div class="kr-exports" id="kr-exports" hidden>
         <span class="muted small">Download:</span>
         <select id="kr-col" class="crm-select" title="Everything, or one owner's column"></select>

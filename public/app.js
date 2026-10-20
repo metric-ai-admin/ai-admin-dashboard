@@ -167,6 +167,12 @@ const NO_OPS_LINK_ROLES = ['social_agent'];
 // nothing: the file is parsed and dropped. The server list is the real gate.
 const KPI_COMPARE_ROLES = ['admin', 'leasing_bd'];
 
+// Who may SAVE the week's workbook. A write: three sheets that are the only
+// source for five figures. Katie is on it because she builds that Excel.
+// The server list is the real gate; this keeps a dead panel out of view.
+const KPI_WORKBOOK_ROLES = ['admin', 'regional_director', 'resident_success',
+  'operations', 'leasing_bd'];
+
 // Maintenance is read-only for these two: they consult the board, they do not
 // work it. Erick and Arturo keep every control.
 //
@@ -13006,6 +13012,77 @@ function krRenderNotes() {
   el.innerHTML = bits.join('');
 }
 
+/* Katie's workbook, for the week on screen.
+ *
+ * The route existed with no screen: POST /api/kpi/workbook could be reached by
+ * a request somebody typed and by nothing else, so "upload the workbook" was
+ * not a step anybody could be shown how to do.
+ *
+ * NOT THE COMPARISON PANEL. Same file, two jobs: this one SAVES the three
+ * sheets for the week and changes what the report says; the comparison saves
+ * nothing and only lists differences. Anyone following a written guide needs
+ * to be able to tell them apart, so they say which they are.
+ */
+function krRenderWorkbook() {
+  const wrap = $('#kr-wb');
+  if (!wrap || !krReport) return;
+  // The upload is a write. The report route allows a wider list than this one.
+  if (!KPI_WORKBOOK_ROLES.includes(currentUser && currentUser.role)) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  const st = krReport.workbook || {};
+  const el = $('#kr-wb-state');
+  if (!el) return;
+  if (st.loaded) {
+    el.innerHTML = 'Loaded: <b>' + kcEsc(st.filename || 'workbook') + '</b>'
+      + (st.uploaded_by ? ' by ' + kcEsc(st.uploaded_by) : '')
+      + (st.uploaded_at ? ' on ' + kcEsc(String(st.uploaded_at).slice(0, 10)) : '')
+      + '. Uploading again replaces it for this week.';
+  } else {
+    // NOT AN ERROR, and not a quiet blank either. Five figures have no other
+    // source, so saying nothing here is how an owner gets five empty rows that
+    // nobody meant.
+    el.innerHTML = '<span class="kr-flag">No workbook for this week</span> — '
+      + kcEsc(st.note || 'the MTD figures and Occupancy Goals come from it.');
+  }
+}
+
+async function krUploadWorkbook(file) {
+  const msg = $('#kr-wb-msg');
+  const say = (kind, html) => {
+    if (msg) msg.innerHTML = html ? '<div class="alert-box ' + kind + '" style="margin:10px 0">' + html + '</div>' : '';
+  };
+  if (!file) return;
+  say('', '<div class="al">WORKING</div>Reading ' + kcEsc(file.name) + '…');
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    // The week on screen, so a workbook cannot land on a week nobody chose.
+    if (krReport && krReport.week_ending) fd.append('week_ending', krReport.week_ending);
+    const r = await fetch('/api/kpi/workbook', { method: 'POST', body: fd, credentials: 'same-origin' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      // The route names WHICH tab and why. Passed through unchanged: "upload
+      // failed" on a 19-tab workbook is not something anyone can act on.
+      say('warn', '<div class="al">NOT SAVED</div>' + kcEsc(d.error || 'Could not read that workbook.')
+        + '<br>Nothing changed for week ' + kcEsc(d.week_ending || (krReport && krReport.week_ending) || '') + '.');
+      return;
+    }
+    const p = d.parsed || {};
+    // COUNTS, not a bare success. A workbook that parsed into two properties
+    // instead of nine is a failure that looks exactly like a success.
+    say('', '<div class="al">SAVED — week ' + kcEsc(d.week_ending) + '</div>'
+      + kcEsc(d.filename) + ' · MTD Cash ' + p.mtd_cash + ' properties · MTD Accrual '
+      + p.mtd_accrual + ' · Occupancy Goals ' + p.occupancy_goals
+      + '<br><span class="muted small">' + kcEsc((d.properties || []).join(', ')) + '</span>');
+    await loadKpiReport();
+  } catch (err) {
+    say('warn', '<div class="al">ERROR</div>' + kcEsc(err.message));
+  }
+}
+
 function krRenderTable() {
   const el = $('#kr-table');
   if (!el || !krReport) return;
@@ -13079,6 +13156,7 @@ async function loadKpiReport() {
       note.textContent = 'Excel carries a Backup sheet saying where each number came from.';
     }
     krRenderNotes();
+    krRenderWorkbook();
     krRenderTable();
   } catch (err) {
     if (sub) sub.textContent = '';
@@ -13094,6 +13172,12 @@ function krInit() {
     $('#kr-refresh').addEventListener('click', loadKpiReport);
     $('#kr-week')?.addEventListener('change', loadKpiReport);
     $('#kr-xlsx')?.addEventListener('click', () => krDownload('xlsx'));
+    $('#kr-wb-file')?.addEventListener('change', e => {
+      krUploadWorkbook(e.target.files[0]);
+      // Cleared, so choosing the SAME file again still fires a change event —
+      // otherwise a re-upload after a failed parse does nothing at all.
+      e.target.value = '';
+    });
     $('#kr-pdf')?.addEventListener('click', () => krDownload('pdf'));
   }
   loadKpiReport();

@@ -148,14 +148,92 @@ t('reading and exporting is a wider list than writing', () => {
   });
 });
 
-t('the workbook upload is NOT on the read list', () => {
+t('Katie can save the workbook for the week', () => {
+  // She builds that Excel. While the five figures have no AppFolio source she
+  // IS the source, and routing her own file through somebody else adds a day.
+  const at = server.indexOf('const KPI_WORKBOOK_ROLES');
+  assert.ok(at > 0, 'the workbook list does not exist');
+  assert.match(server.slice(at, server.indexOf(';', at)), /leasing_bd/);
+  const i = server.indexOf("app.post('/api/kpi/workbook'");
+  assert.match(server.slice(i, i + 160), /KPI_WORKBOOK_ROLES/);
+});
+
+t('saving the workbook and overriding one figure are different powers', () => {
+  // Replacing the week's three sheets is not the same as changing a single
+  // number, and the second stays with Bekah and Kara BY NAME.
+  const wb = server.indexOf('const KPI_WORKBOOK_ROLES');
+  assert.ok(!/KPI_EDITORS/.test(server.slice(wb, server.indexOf(';', wb))));
+  const i = server.indexOf("app.patch('/api/kpi/report/:week_ending'");
+  assert.ok(!/KPI_WORKBOOK_ROLES/.test(server.slice(i, i + 400)),
+    'the workbook list reaches the manual override');
+});
+
+t('the upload has a screen, beside the report it feeds', () => {
+  // The route had none: the permission existed and there was nowhere to use
+  // it, so "upload the workbook" was not a step anyone could be shown.
+  const at = html.indexOf('id="kr-wb"');
+  assert.ok(at > 0, 'there is no upload panel');
+  const kr = html.indexOf('id="kr-wrap"');
+  assert.ok(at > kr && at < html.indexOf('id="kc-wrap"'), 'it is not in the KPI panel');
+  assert.match(html.slice(at, at + 400), /id="kr-wb-file"/);
+  assert.match(app, /fetch\('\/api\/kpi\/workbook'/);
+});
+
+t('it says it is not the comparison panel', () => {
+  // Same file, two jobs: this one SAVES and changes the report, the other
+  // saves nothing. Anybody following a written guide has to tell them apart.
+  const at = html.indexOf('id="kr-wb"');
+  const near = html.slice(Math.max(0, at - 900), at);
+  assert.match(near, /Compare with Katie/);
+  assert.match(near, /saves nothing/i);
+});
+
+t('the upload sends the week on screen, never an unstated one', () => {
+  const up = app.slice(app.indexOf('async function krUploadWorkbook'),
+    app.indexOf('function krRenderTable'));
+  assert.match(up, /fd\.append\('week_ending', krReport\.week_ending\)/);
+});
+
+t('a refusal names the tab and says nothing changed', () => {
+  const up = app.slice(app.indexOf('async function krUploadWorkbook'),
+    app.indexOf('function krRenderTable'));
+  assert.match(up, /NOT SAVED/);
+  assert.match(up, /Nothing changed for week/);
+  assert.match(up, /d\.error/, 'the reason from the route is not passed through');
+});
+
+t('a success reports counts, not a bare OK', () => {
+  // A workbook that parsed into two properties instead of nine is a failure
+  // that looks exactly like a success.
+  const up = app.slice(app.indexOf('async function krUploadWorkbook'),
+    app.indexOf('function krRenderTable'));
+  assert.match(up, /p\.mtd_cash/);
+  assert.match(up, /p\.occupancy_goals/);
+});
+
+t('a week with no workbook says so, rather than going blank', () => {
+  const r = app.slice(app.indexOf('function krRenderWorkbook'),
+    app.indexOf('async function krUploadWorkbook'));
+  assert.match(r, /No workbook for this week/);
+  assert.match(r, /st\.loaded/);
+});
+
+t('re-choosing the same file still fires', () => {
+  // After a refusal, picking the corrected file with the same NAME used to do
+  // nothing at all: the input's value had not changed.
+  assert.match(app, /krUploadWorkbook\(e\.target\.files\[0\]\);[\s\S]{0,200}e\.target\.value = '';/);
+});
+
+t('the upload keeps a list of its own, separate from reading', () => {
   // It decides five figures the report cannot compute — a write that changes
-  // what an owner reads.
+  // what an owner reads. It happens to hold the same people as the read list
+  // today; sharing the constant would make that an accident rather than a
+  // decision, and the next role added for reading would inherit the write.
   const i = server.indexOf("app.post('/api/kpi/workbook'");
   assert.ok(i > 0);
   const head = server.slice(i, i + 160);
-  assert.match(head, /KPI_REPORT_ROLES/);
-  assert.ok(!/KPI_REPORT_READ_ROLES/.test(head), 'Katie can overwrite the workbook figures');
+  assert.match(head, /KPI_WORKBOOK_ROLES/);
+  assert.ok(!/KPI_REPORT_READ_ROLES/.test(head), 'the read list now carries a write');
 });
 
 t('adjusting a figure by hand is still Bekah and Kara, by name', () => {

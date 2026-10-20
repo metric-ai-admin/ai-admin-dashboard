@@ -11156,15 +11156,22 @@ const KPI_REPORT_ROLES = ['admin', 'regional_director', 'resident_success', 'ope
 // the page and the two exports — the combined file and the one an owner
 // receives — and nothing else.
 //
-// Deliberately NOT the same list as KPI_REPORT_ROLES, which also guards
-// POST /api/kpi/workbook: that upload decides five figures the report cannot
-// compute, and it is a write that changes what an owner reads. Katie is the
-// person who builds that workbook, so giving it to her is defensible — but it
-// was not what was asked for, so it is not in here. One word changes it.
-//
 // Adjusting a single figure by hand is gated separately and BY NAME
 // (KPI_EDITORS, Bekah and Kara), so nothing in this list can reach it.
 const KPI_REPORT_READ_ROLES = KPI_REPORT_ROLES.concat(['leasing_bd']);
+
+// Who may upload the workbook. It is a WRITE — these three sheets are the only
+// source for five figures the report cannot compute, so an upload changes what
+// an owner reads.
+//
+// Katie is on it (Arturo, 2026-10-20) because she is the person who builds
+// that Excel: while those five have no AppFolio source, she IS the source, and
+// routing her own file through somebody else adds a step and a day.
+//
+// Still not the same list as adjusting a figure, which stays with Bekah and
+// Kara by name. Replacing the week's workbook and overriding one number are
+// different powers and this is the line between them.
+const KPI_WORKBOOK_ROLES = KPI_REPORT_ROLES.concat(['leasing_bd']);
 
 // Who may upload a workbook to COMPARE against the report. Katie is here for
 // the parallel week: she holds the workbook, and comparing it is the point of
@@ -11288,7 +11295,7 @@ app.get('/api/kpi/compare/:week_ending', requireAuth, requireRole(...KPI_REPORT_
 // quiet success.
 const kpiWorkbook = require('./lib/kpi-workbook.js');
 
-app.post('/api/kpi/workbook', requireAuth, requireRole(...KPI_REPORT_ROLES),
+app.post('/api/kpi/workbook', requireAuth, requireRole(...KPI_WORKBOOK_ROLES),
   billableUpload.single('file'), async (req, res) => {
     const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
     const week_ending = isDay(req.body && req.body.week_ending)
