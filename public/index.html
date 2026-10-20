@@ -257,6 +257,40 @@
          on the SERVER because delinquency_kpi and unit_turn_detail live on the
          Render disk; run anywhere else those metrics read zero and every
          difference involving them is an artefact of where it ran. -->
+    <!-- THE KPI REPORT. Until now this existed only as an API: /api/kpi/report
+         and its two exports were reachable by typing a URL and by nothing
+         else, so the report that replaces Lyndsay's HTML had no screen.
+
+         The table is metrics down, columns across, in the same order the
+         exports use — real properties, then Round Rock, Greystone, Portfolio.
+         One builder feeds the page and both exports, so what Katie reads and
+         what an owner receives cannot drift apart. -->
+    <div id="kr-wrap" class="kr-wrap">
+      <div class="dq-head">
+        <div>
+          <h2 class="dq-title">Weekly KPI</h2>
+          <p class="muted small" id="kr-sub">Loading…</p>
+        </div>
+        <div class="view-actions">
+          <label class="muted small" for="kr-week">Week ending</label>
+          <input type="date" id="kr-week" class="crm-input">
+          <button class="btn-sm" id="kr-refresh">&#8635; Refresh</button>
+        </div>
+      </div>
+
+      <div id="kr-notes"></div>
+
+      <div class="kr-exports" id="kr-exports" hidden>
+        <span class="muted small">Download:</span>
+        <select id="kr-col" class="crm-select" title="Everything, or one owner's column"></select>
+        <button class="btn-sm" id="kr-xlsx">Excel</button>
+        <button class="btn-sm" id="kr-pdf">PDF</button>
+        <span class="muted small" id="kr-dl-note"></span>
+      </div>
+
+      <div id="kr-table"><p class="muted">Loading…</p></div>
+    </div>
+
     <div id="kc-wrap" class="kc-wrap hidden">
       <div class="dq-head">
         <div>

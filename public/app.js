@@ -139,7 +139,11 @@ const TAB_ACCESS = {
   // 'socialposts' added 2026-10-20. Katie keeps the weekly workbook, so she
   // sees EVERY post and the whole daily check — she is not in
   // SOCIAL_OWN_ONLY_ROLES on the server.
-  leasing_bd:  ['leasing', 'crm', 'socialposts'],
+  // 'kpi' added 2026-10-20: Katie moves off Lyndsay's KPI HTML onto the
+  // dashboard, in parallel with her Excel for a week. Reading and exporting
+  // only — adjusting a figure by hand stays with Bekah and Kara, gated by
+  // NAME on the server, so this role cannot inherit it.
+  leasing_bd:  ['leasing', 'crm', 'socialposts', 'kpi'],
   // Collections agent — Evictions + Collections Review tabs.
   evictions_agent: ['evictions', 'collections'],
   // Leasing agents who publish on their own Facebook, TikTok and Nextdoor
@@ -158,6 +162,10 @@ const TAB_ACCESS = {
 
 // Roles that do not get the Ops Dashboard link. See applyTabAccess.
 const NO_OPS_LINK_ROLES = ['social_agent'];
+
+// Who may upload a workbook to compare against the report. Comparing keeps
+// nothing: the file is parsed and dropped. The server list is the real gate.
+const KPI_COMPARE_ROLES = ['admin', 'leasing_bd'];
 
 // Maintenance is read-only for these two: they consult the board, they do not
 // work it. Erick and Arturo keep every control.
@@ -473,7 +481,7 @@ function loadTab(tab) {
   if (tab === 'evictions') loadEvictions();
   if (tab === 'vacancy') loadVacancy();
   if (tab === 'collections') { loadCollections(); loadDecisionQueue(); loadMoveOutAlerts(); }
-  if (tab === 'kpi') { loadRegional(); loadBrief(); kcInit(); }
+  if (tab === 'kpi') { krInit(); loadRegional(); loadBrief(); kcInit(); }
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
   if (tab === 'leasing') { loadVerbalNotices(); loadLossReasons(); }
@@ -12909,7 +12917,189 @@ document.addEventListener('click', e => {
 });
 $('#krc-refresh')?.addEventListener('click', loadKpiRecaps);
 
-/* ── Compare with Katie's workbook (admin only) ────────────────────────────
+/* ── The weekly KPI report ─────────────────────────────────────────────────
+ *
+ * It had no screen. /api/kpi/report and its two exports were reachable by
+ * typing a URL and by nothing else, which is why Katie was still working from
+ * Lyndsay's KPI HTML: the report that replaces it could not be opened.
+ *
+ * The page renders what the builder returns and formats nothing it was not
+ * told about — the same builder feeds both exports, so the table Katie reads
+ * and the Excel an owner receives cannot drift apart.
+ */
+let krReport = null;
+
+// A number's kind is a property of the metric, not of the value it happens to
+// hold this week. Same rule as the comparison panel below: 1.0 is 100%
+// occupancy, not "1", and 0.01 move-ins is not "1.0%".
+const KR_PERCENT = ['occPct', 'prePct'];
+
+function krCell(card) {
+  // EMPTY, NOT ZERO. A metric that could not be worked out must not arrive on
+  // an owner's screen as a measured zero — the exports already refuse to, and
+  // the page it is checked against has to agree.
+  if (!card || card.value === null || card.value === undefined) return '—';
+  const v = card.value;
+  if (typeof v !== 'number') return kcEsc(v);
+  if (KR_PERCENT.includes(card.metric)) return (v * 100).toFixed(1) + '%';
+  if (card.money) {
+    return '$' + (Math.round(v * 100) / 100).toLocaleString('en-US',
+      { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  }
+  return (Math.round(v * 100) / 100).toLocaleString('en-US');
+}
+
+// Where the number came from, as a mark on the cell rather than a legend
+// nobody reads. 'appfolio' is unmarked because it is the normal case.
+const KR_MARK = {
+  workbook: { s: '·w', t: 'From Katie’s workbook — the report cannot compute this one' },
+  manual: { s: '·m', t: 'Adjusted by hand' },
+  unavailable: { s: '', t: 'Could not be computed' },
+};
+
+function krRenderNotes() {
+  const el = $('#kr-notes');
+  if (!el || !krReport) return;
+  const bits = [];
+  if (krReport.defaulted) {
+    bits.push('<p class="muted small">No week was chosen, so this is the last '
+      + 'complete leasing week: <b>' + kcEsc(krReport.range.from) + '</b> to <b>'
+      + kcEsc(krReport.range.to) + '</b>.</p>');
+  }
+  // A SOURCE THAT COULD NOT BE READ IS NAMED. Without this, every metric that
+  // depends on it reads empty and looks like a quiet week.
+  const gaps = krReport.gaps || [];
+  if (gaps.length) {
+    bits.push('<div class="alert-box warn" style="margin:10px 0"><div class="al">SOURCES MISSING</div>'
+      + 'These could not be read, so the metrics that depend on them are blank — '
+      + 'blank because they are unknown, not because they are zero:<br>'
+      + '<ul class="kr-list">'
+      + gaps.map(g => '<li>' + kcEsc(typeof g === 'string' ? g : (g.source || g.label || JSON.stringify(g)))
+        + '</li>').join('') + '</ul></div>');
+  }
+  // What day occupancy is actually from. A date is not a disclaimer: it is the
+  // first thing to check when two numbers differ.
+  const f = krReport.freshness;
+  if (f && f.as_of) {
+    // AND WHETHER THAT IS THE WEEK. leasing_occupancy is a snapshot the sync
+    // overwrites, so its date is whenever the sync last ran — which can be
+    // days after the week closed. Printing the date without saying it does not
+    // match leaves the reader to notice, and against Katie's workbook a
+    // different day reads as a disagreement rather than as a different day.
+    const off = f.matchesWeek === false && f.as_of !== krReport.week_ending;
+    bits.push('<p class="' + (off ? 'kr-flag' : 'muted') + ' small">Occupancy figures are as of <b>'
+      + kcEsc(f.as_of) + '</b>'
+      + (off ? ', which is not the week ending ' + kcEsc(krReport.week_ending)
+             + ' — they are the latest snapshot, not a reading taken that day.' : '.')
+      + '</p>');
+  }
+  if ((krReport.unconfirmed || []).length) {
+    // OBJECTS, NOT NAMES. Each carries the question that has to be answered,
+    // and kcEsc on the object printed "[object Object]" — a property held out
+    // of the report, named as nothing.
+    bits.push('<p class="muted small">Held out until somebody confirms what they are: '
+      + krReport.unconfirmed.map(u => (typeof u === 'string'
+          ? kcEsc(u)
+          : kcEsc(u.property) + (u.question ? ' (' + kcEsc(u.question) + ')' : ''))).join(', ')
+      + '.</p>');
+  }
+  el.innerHTML = bits.join('');
+}
+
+function krRenderTable() {
+  const el = $('#kr-table');
+  if (!el || !krReport) return;
+  const cols = krReport.columns || [];
+  const colOf = name => (name === 'Portfolio' ? krReport.portfolio : krReport.properties[name]);
+
+  let h = '<div class="kr-scroll"><table class="data-table kr-table">';
+  h += '<thead><tr><th class="kr-metric">Metric</th>'
+    + cols.map(c => '<th>' + kcEsc(c) + '</th>').join('') + '</tr></thead><tbody>';
+
+  (krReport.portfolio || []).forEach((sec, si) => {
+    h += '<tr class="kr-sec"><td class="kr-metric">' + kcEsc(sec.title) + '</td>'
+      + cols.map(() => '<td></td>').join('') + '</tr>';
+    const cards = (sec.cards || []).concat(sec.funnel || []);
+    cards.forEach(card => {
+      h += '<tr><td class="kr-metric">' + kcEsc(card.label) + '</td>';
+      cols.forEach(c => {
+        const col = colOf(c);
+        const found = col && col[si]
+          ? (col[si].cards || []).concat(col[si].funnel || []).find(x => x.metric === card.metric)
+          : null;
+        const mark = found && KR_MARK[found.source] ? KR_MARK[found.source] : null;
+        h += '<td' + (mark && mark.t ? ' title="' + kcEsc(mark.t) + '"' : '')
+          + (found && found.source === 'unavailable' ? ' class="kr-na"' : '') + '>'
+          + krCell(found) + (mark && mark.s ? '<span class="kr-mark">' + mark.s + '</span>' : '')
+          + '</td>';
+      });
+      h += '</tr>';
+    });
+  });
+  h += '</tbody></table></div>';
+  h += '<p class="muted small">·w from Katie’s workbook · ·m adjusted by hand · '
+    + '&mdash; not available. Everything else is computed from AppFolio.</p>';
+  el.innerHTML = h;
+}
+
+function krDownload(format) {
+  const col = $('#kr-col')?.value || '';
+  const qs = new URLSearchParams();
+  if (krReport && krReport.week_ending) qs.set('week_ending', krReport.week_ending);
+  if (col) qs.set('property', col);
+  // A plain navigation, so the browser saves it the way it saves anything
+  // else. The route sets the filename.
+  window.location.href = '/api/kpi/report/export/' + format + '?' + qs.toString();
+}
+
+async function loadKpiReport() {
+  const wrap = $('#kr-wrap');
+  if (!wrap) return;
+  const sub = $('#kr-sub');
+  try {
+    const week = $('#kr-week')?.value || '';
+    krReport = await api('/api/kpi/report' + (week ? '?week_ending=' + encodeURIComponent(week) : ''));
+    if (sub) {
+      sub.textContent = 'Leasing week ' + krReport.range.from + ' to ' + krReport.range.to
+        + ' · ' + (krReport.columns || []).length + ' columns';
+    }
+    // Echo the week back into the picker, so the field agrees with the table
+    // even when the server chose the week.
+    const wk = $('#kr-week');
+    if (wk && !wk.value) wk.value = krReport.week_ending;
+
+    const sel = $('#kr-col');
+    if (sel) {
+      sel.innerHTML = '<option value="">Everything (all columns)</option>'
+        + (krReport.columns || []).map(c => '<option value="' + kcEsc(c) + '">' + kcEsc(c) + '</option>').join('');
+    }
+    $('#kr-exports').hidden = false;
+    const note = $('#kr-dl-note');
+    if (note) {
+      note.textContent = 'Excel carries a Backup sheet saying where each number came from.';
+    }
+    krRenderNotes();
+    krRenderTable();
+  } catch (err) {
+    if (sub) sub.textContent = '';
+    $('#kr-table').innerHTML = '<div class="alert-box warn"><div class="al">COULD NOT LOAD</div>'
+      + kcEsc(err.message) + '</div>';
+  }
+}
+
+function krInit() {
+  if (!$('#kr-wrap')) return;
+  if (!$('#kr-refresh')?.dataset.wired) {
+    $('#kr-refresh').dataset.wired = '1';
+    $('#kr-refresh').addEventListener('click', loadKpiReport);
+    $('#kr-week')?.addEventListener('change', loadKpiReport);
+    $('#kr-xlsx')?.addEventListener('click', () => krDownload('xlsx'));
+    $('#kr-pdf')?.addEventListener('click', () => krDownload('pdf'));
+  }
+  loadKpiReport();
+}
+
+/* ── Compare with Katie's workbook ─────────────────────────────────────────
    The comparison runs on the server, where delinquency_kpi and
    unit_turn_detail actually are. The file is sent, parsed and dropped; the
    browser keeps nothing either. */
@@ -12941,9 +13131,12 @@ const kcNum = (v, metric) => {
 function kcInit() {
   const wrap = document.getElementById('kc-wrap');
   if (!wrap) return;
-  // Admin only. The route refuses anyone else, so this just keeps a dead
-  // panel out of view.
-  if (!currentUser || currentUser.role !== 'admin') return;
+  // The route refuses anyone else, so this just keeps a dead panel out of
+  // view. Katie is here for the parallel week: she is the one with the
+  // workbook, and comparing it is the whole point of running both for a week.
+  // Comparing stores NOTHING — the file is parsed out of the upload buffer and
+  // dropped — so this grants a reading, not a write.
+  if (!currentUser || !KPI_COMPARE_ROLES.includes(currentUser.role)) return;
   wrap.classList.remove('hidden');
   const input = document.getElementById('kc-file');
   if (input && !input.dataset.wired) {

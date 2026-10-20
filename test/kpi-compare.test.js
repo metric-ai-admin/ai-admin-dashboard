@@ -210,8 +210,19 @@ t('the portfolio percentage is recomputed, never summed', () => {
 });
 
 // ---- the route --------------------------------------------------------------
-t('it is admin only', () => {
-  assert.ok(/requireAuth, requireRole\('admin'\)/.test(ROUTE));
+t('it is admin and Katie, and nobody else', () => {
+  // Was admin only until 2026-10-20. Katie moves off Lyndsay's KPI HTML and
+  // runs her workbook against the report for a week — she is the one who
+  // holds the workbook, and comparing it is the point of running both.
+  // Comparing stores nothing (the test below), so this grants a reading.
+  assert.ok(/requireAuth, requireRole\(\.\.\.KPI_COMPARE_ROLES\)/.test(ROUTE),
+    'the route is no longer on the compare list');
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'server.js'), 'utf8');
+  const at = src.indexOf('const KPI_COMPARE_ROLES');
+  const roles = [...src.slice(at, src.indexOf(';', at)).matchAll(/'([a-z_]+)'/g)].map(m => m[1]);
+  assert.deepStrictEqual(roles.sort(), ['admin', 'leasing_bd'],
+    'the comparison opened up further than it was meant to');
 });
 
 t('the workbook is never stored', () => {
@@ -248,8 +259,11 @@ t('the panel is on the KPI tab and starts hidden', () => {
   assert.ok(/nothing is stored/.test(html), 'and it says so where it is used');
 });
 
-t('it is shown to admin only', () => {
-  assert.ok(/currentUser\.role !== 'admin'/.test(appjs));
+t('the panel is shown to exactly the roles the route allows', () => {
+  // One list, read by both sides. Two copies drift, and the half that drifts
+  // is the screen — which shows a panel every upload then refuses.
+  assert.ok(/KPI_COMPARE_ROLES\.includes\(currentUser\.role\)/.test(appjs));
+  assert.ok(/KPI_COMPARE_ROLES = \['admin', 'leasing_bd'\]/.test(appjs));
 });
 
 t('a gap is rendered differently from a disagreement', () => {

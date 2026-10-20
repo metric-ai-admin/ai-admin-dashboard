@@ -11150,6 +11150,28 @@ const KPI = require('./lib/kpi-lyndsay.js');
 
 const KPI_REPORT_ROLES = ['admin', 'regional_director', 'resident_success', 'operations'];
 
+// READING AND EXPORTING IS A WIDER LIST THAN WRITING.
+//
+// Katie (leasing_bd) moves off Lyndsay's KPI HTML onto this report. She needs
+// the page and the two exports — the combined file and the one an owner
+// receives — and nothing else.
+//
+// Deliberately NOT the same list as KPI_REPORT_ROLES, which also guards
+// POST /api/kpi/workbook: that upload decides five figures the report cannot
+// compute, and it is a write that changes what an owner reads. Katie is the
+// person who builds that workbook, so giving it to her is defensible — but it
+// was not what was asked for, so it is not in here. One word changes it.
+//
+// Adjusting a single figure by hand is gated separately and BY NAME
+// (KPI_EDITORS, Bekah and Kara), so nothing in this list can reach it.
+const KPI_REPORT_READ_ROLES = KPI_REPORT_ROLES.concat(['leasing_bd']);
+
+// Who may upload a workbook to COMPARE against the report. Katie is here for
+// the parallel week: she holds the workbook, and comparing it is the point of
+// running both for a week. The comparison stores nothing — the file is parsed
+// out of the upload buffer and dropped — so this is a reading, not a write.
+const KPI_COMPARE_ROLES = ['admin', 'leasing_bd'];
+
 // Who may adjust a number by hand — people, not roles.
 //
 // Jay decided on 2026-10-02 that this is Bekah's and Kara's. By name for the
@@ -11208,7 +11230,7 @@ async function kpiCaptureSnapshot(report, who) {
   }
 }
 
-app.get('/api/kpi/report', requireAuth, requireRole(...KPI_REPORT_ROLES), async (req, res) => {
+app.get('/api/kpi/report', requireAuth, requireRole(...KPI_REPORT_READ_ROLES), async (req, res) => {
   try {
     const report = await kpiBuildReport(req);
     // Only a FINISHED week is captured. The current week is still moving, and
@@ -11222,7 +11244,7 @@ app.get('/api/kpi/report', requireAuth, requireRole(...KPI_REPORT_ROLES), async 
 });
 
 // Last report → current, per property and for the portfolio.
-app.get('/api/kpi/compare/:week_ending', requireAuth, requireRole(...KPI_REPORT_ROLES), async (req, res) => {
+app.get('/api/kpi/compare/:week_ending', requireAuth, requireRole(...KPI_REPORT_READ_ROLES), async (req, res) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(req.params.week_ending))) {
     return res.status(400).json({ error: 'week_ending must be a YYYY-MM-DD date.' });
   }
@@ -11359,7 +11381,7 @@ app.post('/api/kpi/workbook', requireAuth, requireRole(...KPI_REPORT_ROLES),
 // response is written.
 const kpiCompare = require('./lib/kpi-compare.js');
 
-app.post('/api/kpi/compare', requireAuth, requireRole('admin'),
+app.post('/api/kpi/compare', requireAuth, requireRole(...KPI_COMPARE_ROLES),
   billableUpload.single('file'), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: 'No file received.' });
@@ -11444,7 +11466,7 @@ app.post('/api/kpi/compare', requireAuth, requireRole('admin'),
 // property's owner, and a combined one with every column for the portfolio
 // view. Excel is the primary — it is what they already open, and the Summary's
 // column-per-property layout does not fit on a page.
-app.get('/api/kpi/report/export/:format', requireAuth, requireRole(...KPI_REPORT_ROLES), async (req, res) => {
+app.get('/api/kpi/report/export/:format', requireAuth, requireRole(...KPI_REPORT_READ_ROLES), async (req, res) => {
   const format = String(req.params.format || 'xlsx').toLowerCase();
   if (!['xlsx', 'pdf'].includes(format)) {
     return res.status(400).json({ error: 'format must be xlsx or pdf' });

@@ -851,7 +851,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .crm-stats { display: flex; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
 .crm-stat {
   display: flex; flex-direction: column; align-items: center;
-  background: var(--bg-card); border: 1px solid var(--crm-border);
+  background: var(--bg-surface); border: 1px solid var(--crm-border);
   border-radius: 8px; padding: 14px 24px; min-width: 120px;
 }
 .crm-stat-val { font-size: 1.6em; font-weight: 700; color: var(--crm-gold); font-family: 'JetBrains Mono', monospace; }
@@ -882,7 +882,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .crm-page-info { font-size: .85em; color: var(--muted); }
 .crm-drawer {
   position: fixed; right: 0; top: 0; height: 100vh; width: 560px; max-width: 96vw;
-  background: var(--bg-card); border-left: 2px solid var(--crm-border);
+  background: var(--bg-surface); border-left: 2px solid var(--crm-border);
   box-shadow: -4px 0 24px rgba(0,0,0,.4); z-index: 300; display: flex; flex-direction: column; overflow: hidden;
 }
 .crm-drawer-header {
@@ -3070,3 +3070,39 @@ tr.ca-sel { background: var(--accent-glow); }
   border: 1px solid var(--line, #ddd); border-radius: 6px; }
 .sp-grow { flex: 1 1 320px; }
 .sp-grow input { width: 100%; }
+
+/* The weekly KPI report table. Metrics down, columns across, in the export's
+   order. The first column is sticky because a 15-column week scrolls and a
+   number with no metric beside it is unreadable. */
+.kr-wrap { margin-bottom: 18px; }
+.kr-exports { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+/* The scroller must be bound to the column it sits in, not to the table it
+   holds. Without max-width it shrink-wraps the table, the PAGE scrolls
+   instead, and the sticky metric column slides off the left edge —
+   leaving a screen of numbers with nothing saying which metric they are. */
+.kr-scroll { overflow-x: auto; width: 100%; max-width: 100%; }
+.kr-table { min-width: 620px; }
+.kr-table th { white-space: nowrap; }
+.kr-table td { text-align: right; white-space: nowrap; }
+.kr-table th.kr-metric, .kr-table td.kr-metric {
+  text-align: left;
+  position: sticky;
+  left: 0;
+  background: var(--bg-surface);
+  z-index: 1;
+}
+.kr-table tr.kr-sec td {
+  font-weight: 600;
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--border);
+}
+.kr-table tr.kr-sec td.kr-metric { background: var(--bg-elevated); }
+/* A provenance mark, not a legend nobody reads. Quiet on purpose: it qualifies
+   the number, it is not a warning about it. */
+.kr-mark { color: var(--text-muted); font-size: 10px; margin-left: 3px; }
+.kr-table td.kr-na { color: var(--text-muted); }
+.kr-list { margin: 6px 0 0; padding-left: 18px; }
+.kr-list li { margin: 2px 0; }
+/* Not a warning box — a qualification on a date that would otherwise be read
+   as the week's own. */
+.kr-flag { color: var(--warn, #d08a2c); }
