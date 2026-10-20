@@ -1012,6 +1012,113 @@ app.post('/api/auth/admin/temp-password', requireMetricAdmin, async (req, res) =
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// POST /api/auth/admin/create-user  { username, name, role }
+//
+// The twelve accounts that existed before this were all made by hand in the
+// Supabase panel and then given a role with a second hand-written insert.
+// Nothing in the app created a user, so the temp-password route above could
+// only ever RESET one — it answers 404 for somebody who does not exist yet,
+// which is exactly the case when a new agent starts.
+//
+// TWO HALVES, AND BOTH ARE REQUIRED. A Supabase Auth user with no
+// dashboard_users row signs in and is turned away at step 2 of login ("User
+// not found in dashboard"); a dashboard_users row with no Auth user cannot
+// sign in at all. Done by hand, forgetting the second half is the normal
+// outcome and the error does not say which half is missing.
+//
+// THE PASSWORD IS GENERATED HERE AND RETURNED ONCE, to the admin's browser —
+// the same flow as a reset, because these @metric.internal addresses receive
+// no mail and there is nowhere to send an invitation. It is read aloud or sent
+// privately, never logged and never written to the activity log.
+//
+// must_change_password is set, so the first thing the new account can do is
+// replace it, and nothing else works until it has.
+app.post('/api/auth/admin/create-user', requireMetricAdmin, async (req, res) => {
+  const body = req.body || {};
+  const username = String(body.username || '').toLowerCase().trim();
+  const name = String(body.name || '').trim();
+  const role = String(body.role || '').trim();
+  if (!username || !name || !role) {
+    return res.status(400).json({ error: 'username, name and role are all required' });
+  }
+  // The username becomes an email local-part and a login. Anything else is a
+  // typo that would produce an account nobody can sign in to.
+  if (!/^[a-z0-9]+(?:[._-][a-z0-9]+)*$/.test(username)) {
+    return res.status(400).json({ error: 'username may hold letters, digits, dots, dashes and underscores only' });
+  }
+  if (!supabaseAdmin) return res.status(503).json({ error: 'Service role key not configured' });
+
+  const email = `${username}@metric.internal`;
+  try {
+    // REFUSE A NAME THAT IS TAKEN, in either half. Creating over an existing
+    // account would reset a working password; writing a second dashboard_users
+    // row would make the login's .single() lookup fail for both.
+    const { data: list, error: listErr } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+    if (listErr) throw new Error(listErr.message);
+    if ((list.users || []).some(u => String(u.email || '').toLowerCase() === email)) {
+      return res.status(409).json({
+        error: 'That login already exists in Supabase Auth. Use the temporary-password '
+          + 'button to reset it instead — creating it again would overwrite a password '
+          + 'somebody is using.',
+      });
+    }
+    const db = supabaseAdmin;
+    const { data: already, error: rowErr } = await db.from('dashboard_users')
+      .select('username,role').eq('username', username);
+    if (rowErr) throw new Error(rowErr.message);
+    if ((already || []).length) {
+      return res.status(409).json({
+        error: 'dashboard_users already holds ' + username + ' (role ' + already[0].role
+          + ') with no Auth login. Half an account — tell Arturo rather than adding a second row.',
+      });
+    }
+
+    const password = tempPassword();
+    const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+      email,
+      password,
+      // There is no inbox to confirm from. Without this the account exists and
+      // cannot sign in, which looks exactly like a wrong password.
+      email_confirm: true,
+      user_metadata: { must_change_password: true },
+    });
+    if (createErr) throw new Error(createErr.message);
+
+    const { error: insErr } = await db.from('dashboard_users').insert({
+      email, username, name, role, active: true,
+    });
+    if (insErr) {
+      // THE AUTH USER IS REMOVED AGAIN. Leaving it behind is the half-account
+      // above, and the next attempt would hit the 409 and be stuck. A failing
+      // role is the likely cause: dashboard_users_role_check refuses a role
+      // the migrations have not added yet.
+      await supabaseAdmin.auth.admin.deleteUser(created.user.id).catch(() => {});
+      return res.status(400).json({
+        error: insErr.message + (/role_check/i.test(insErr.message || '')
+          ? ' — the role is not in dashboard_users_role_check yet; run the migration that adds it.'
+          : ''),
+        rolledBack: true,
+      });
+    }
+
+    // The ACT is logged; the password is not.
+    activityLog.log({
+      user_email: req.user?.email || 'api-key', user_name: req.user?.name || 'API key',
+      user_role: 'admin', event: 'user_created', status_code: 200,
+      detail: username + ' as ' + role,
+    });
+    return res.json({
+      ok: true, username, email, name, role,
+      password,
+      note: 'Shown once. Read it to them or send it privately — do not paste it into '
+        + 'a group chat or email. They must change it at their next sign-in before '
+        + 'anything else works.',
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/auth/change-password  { currentPassword, newPassword }
 //
 // The one route a must-change session may call. The current password is
@@ -20186,6 +20293,30 @@ async function socialUploadScreenshot(file, dayCT) {
   }
 }
 
+// WHO SEES THE WHOLE BOARD, AND WHO SEES ONLY THEIR OWN ROW.
+//
+// social_agent is Sammy, Oscar, Yeni and Daria: they upload their links and
+// see their own history, not the team's. Hiding the tabs in TAB_ACCESS hides
+// buttons; it does not stop anyone typing the URL, so the scoping is HERE,
+// where the rows are chosen.
+//
+// By author_email and not by author: the display name is a spelling and two
+// people could share one. The email is the login, so it cannot collide.
+//
+// A role this does not recognise sees everything, which is the existing
+// behaviour for Jay, Kara, Katrina and the rest — the narrow rule is opt-in by
+// role, so a role added later cannot silently lose its own view.
+const SOCIAL_OWN_ONLY_ROLES = ['social_agent'];
+function socialOwnOnly(req) {
+  const role = String((req.user && req.user.role) || '').toLowerCase();
+  if (SOCIAL_OWN_ONLY_ROLES.indexOf(role) < 0) return null;
+  const email = String((req.user && req.user.email) || '').toLowerCase().trim();
+  // NO EMAIL, NO ROWS. A scoped session whose identity we cannot pin must see
+  // nothing rather than everything — the failure that opens the board to the
+  // one person it was closed to.
+  return { email: email || null };
+}
+
 // POST /api/social-posts — one post.
 app.post('/api/social-posts', requireAuth, socialUpload.single('screenshot'), async (req, res) => {
   try {
@@ -20252,9 +20383,14 @@ app.get('/api/social-posts', requireAuth, async (req, res) => {
     const db = supabaseAdmin || supabasePublic;
     const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.day || ''))
       ? String(req.query.day) : ctDateStr(0);
-    const posts = await db.from('social_posts')
-      .select('id,url,platform,property,author,posted_on,screenshot_url,created_at,note')
+    const own = socialOwnOnly(req);
+    let pq = db.from('social_posts')
+      .select('id,url,platform,property,author,author_email,posted_on,screenshot_url,created_at,note')
       .order('created_at', { ascending: false }).limit(2000);
+    // An id that cannot match anything, rather than no filter at all: an empty
+    // email must narrow the query to nothing, never widen it to everyone.
+    if (own) pq = pq.eq('author_email', own.email || '\u0000no-such-login');
+    const posts = await pq;
     if (posts.error) {
       if (/social_posts/.test(posts.error.message || '')) {
         return res.status(503).json({ error: 'run supabase/migrations/108_social_posts.sql first', needsMigration: true });
@@ -20269,10 +20405,21 @@ app.get('/api/social-posts', requireAuth, async (req, res) => {
       // silent — she posts and the check still calls her missing.
       .map(r => ({ name: r.person, email: r.email, expected: r.expected }));
 
+    // A scoped agent is checked against her own roster line only. Running the
+    // whole roster over her own posts alone would report the other four as
+    // missing on every screen she opens — four colleagues' accountability
+    // shown to somebody who cannot see a single one of their posts.
+    const roster4 = own
+      ? active.filter(r => String(r.email || '').toLowerCase() === (own.email || ''))
+      : active;
+
     return res.json({
       day,
+      // Said out loud so the screen can say "your posts" instead of letting a
+      // short list read as a quiet day for the whole team.
+      scope: own ? 'own' : 'all',
       posts: posts.data || [],
-      check: SOCIAL.dailyCheck(posts.data || [], active, day),
+      check: SOCIAL.dailyCheck(posts.data || [], roster4, day),
       platforms: SOCIAL.PLATFORMS,
       // Said out loud so the screen can say it: the near-duplicate half of
       // what was asked for is not built.
@@ -20304,6 +20451,11 @@ app.get('/api/social-posts/feed', requireAuth, async (req, res) => {
     let q = db.from('social_posts')
       .select('url,platform,property,author,posted_on,screenshot_url,created_at')
       .order('created_at', { ascending: true }).limit(5000);
+    // The same scoping as the screen. This endpoint is Jay's tracker, but it
+    // is reachable by anyone signed in, and leaving it open would hand back
+    // through the feed exactly what the screen withholds.
+    const ownFeed = socialOwnOnly(req);
+    if (ownFeed) q = q.eq('author_email', ownFeed.email || '\u0000no-such-login');
     if (from) q = q.gte('created_at', from);
     if (to) q = q.lte('created_at', to + 'T23:59:59');
     const { data, error } = await q;

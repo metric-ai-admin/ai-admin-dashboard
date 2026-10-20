@@ -81,8 +81,8 @@ const TAB_ACCESS = {
   // sign-off row. Deliberately not given to maintenance or bd_agent.
   // Bekah, Kara and Rocío are named on the report but have no account yet, so
   // there is no role to grant — revisit when Jay confirms theirs.
-  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy', 'marketing', 'kpirecaps', 'activity', 'rebrand'],
-  ceo:         ['crm', 'platform', 'eod', 'reports', 'marketing', 'kpirecaps', 'activity', 'rebrand'],
+  admin:       ['morning', 'tasks', 'sops', 'platform', 'email', 'eod', 'maintenance', 'crm', 'reports', 'sixpm', 'kpi', 'calls', 'evictions', 'collections', 'accounting', 'leasing', 'vacancy', 'marketing', 'socialposts', 'kpirecaps', 'activity', 'rebrand'],
+  ceo:         ['crm', 'platform', 'eod', 'reports', 'marketing', 'socialposts', 'kpirecaps', 'activity', 'rebrand'],
   // 'calls' (Call Analyzer) is NOT governed by role. Call transcripts, grades,
   // red flags and coaching notes are employee performance data about named
   // staff sitting alongside resident PII, so the lock is a list of people —
@@ -99,7 +99,7 @@ const TAB_ACCESS = {
   // Katrina owns the marketing directory as well as her BD CRM work. A new role
   // rather than widening bd_agent: Katie and Rhoxie are bd_agent too and the
   // directory is not theirs to edit.
-  marketing_bd_agent: ['crm', 'marketing'],
+  marketing_bd_agent: ['crm', 'marketing', 'socialposts'],
   // Confirmed by Jay 2026-08-27. None of these three exist in dashboard_users
   // yet — Arturo creates the accounts once passwords are agreed — so the entries
   // sit here inert until then rather than needing a deploy on the day.
@@ -135,7 +135,22 @@ const TAB_ACCESS = {
   leasing_bd:  ['leasing', 'crm'],
   // Collections agent — Evictions + Collections Review tabs.
   evictions_agent: ['evictions', 'collections'],
+  // Leasing agents who publish on their own Facebook, TikTok and Nextdoor
+  // pages: Sammy, Oscar, Yeni, Daria. ONE tab — the link form and their own
+  // history — and nothing else. Deliberately NOT 'marketing', which is
+  // Katrina's property directory, and not 'leasing', which is Katie's tab.
+  //
+  // Rocío is on the roster too and keeps collections_leasing: the form is
+  // open to every signed-in user, so she needs no role change to upload, and
+  // giving her this role would TAKE the Collections tab away.
+  //
+  // This hides every other tab. It does not defend the endpoints — the
+  // history is scoped to her own posts on the SERVER, in /api/social-posts.
+  social_agent: ['socialposts'],
 };
+
+// Roles that do not get the Ops Dashboard link. See applyTabAccess.
+const NO_OPS_LINK_ROLES = ['social_agent'];
 
 // Maintenance is read-only for these two: they consult the board, they do not
 // work it. Erick and Arturo keep every control.
@@ -210,6 +225,21 @@ async function initAuth() {
   const allowed = (TAB_ACCESS[currentUser.role] || [])
     .filter(tab => tab !== 'calls' || currentUser.callAnalyzer)
     .filter(tab => tab !== 'vacancy' || currentUser.vacancy);
+  // THE OPS DASHBOARD LINK IS NOT FOR EVERYONE AFTER ALL.
+  //
+  // It is deliberately outside the tab gate and kept for every role, so that a
+  // role whose Operations tabs are all hidden still reaches Jay's dashboard.
+  // "Every role" was written when every role was staff with a dashboard of
+  // their own. social_agent is a leasing agent whose entire access is the link
+  // form; handing her a link into Jay's ops dashboard is not access she was
+  // given, it is an invitation to ask for it.
+  //
+  // Hiding it also leaves the Operations group empty for her, so the group
+  // disappears below and the sidebar shows exactly one thing.
+  if (NO_OPS_LINK_ROLES.includes(currentUser.role)) {
+    const link = document.getElementById('ops-dashboard-link');
+    if (link) link.style.display = 'none';
+  }
   const allTabBtns = $$('#tabs button[data-tab]');
   allTabBtns.forEach(btn => {
     if (!allowed.includes(btn.dataset.tab)) btn.style.display = 'none';
@@ -440,12 +470,8 @@ function loadTab(tab) {
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
   if (tab === 'leasing') { loadVerbalNotices(); loadLossReasons(); }
-  if (tab === 'marketing') {
-    loadMarketing();
-    // Social posts lives in the same tab but loads on its own: a failure in
-    // one must not leave the other blank.
-    if (window.loadSocialPosts) window.loadSocialPosts();
-  }
+  if (tab === 'marketing') loadMarketing();
+  if (tab === 'socialposts' && window.loadSocialPosts) window.loadSocialPosts();
   if (tab === 'kpirecaps') loadKpiRecaps();
   if (tab === 'activity') loadActivity();
   if (tab === 'rebrand') loadRebrand();

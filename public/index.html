@@ -159,6 +159,15 @@
         <div class="nav-group-label">Marketing</div>
         <button data-tab="marketing"><span class="nav-ico">📣</span>Marketing</button>
       </div>
+      <!-- Its own group, not a second button under Marketing. The leasing
+           agents see this group and nothing else, and a lone button under a
+           label reading "Marketing" would tell them they are somewhere they
+           cannot go. applyTabAccess hides a group whose tabs are all hidden,
+           so it disappears for roles without it. -->
+      <div class="nav-group">
+        <div class="nav-group-label">Social</div>
+        <button data-tab="socialposts"><span class="nav-ico">🔗</span>Social posts</button>
+      </div>
     </nav>
     <div class="sidebar-foot">
       <div class="sync-status">
@@ -2302,15 +2311,19 @@
     </div>
   </section>
 
-  <!-- ============ ACCOUNTING / BILLING (Claudia) ============ -->
-  <section id="tab-marketing" class="tab">
+  <!-- Social media post links. Its own tab, not a card inside Marketing:
+       the leasing agents who upload links have no business in the property
+       marketing directory, and a role that opened Marketing would hand them
+       Katrina's directory along with the form. -->
+  <section id="tab-socialposts" class="tab">
     <div class="view-head">
-      <h2>Marketing</h2>
-      <p class="muted small">Social directory by property · links open in a new tab</p>
+      <h2>Social posts</h2>
+      <p class="muted small">Paste the link to a post you published. Duplicates are refused with who posted it and when.</p>
     </div>
 
-    <!-- Social media post links. Replaces sending the link to the WhatsApp
-         group: the duplicate check Katrina does by eye is the unique index. -->
+    <!-- The form, the daily check, and the day's uploads. Replaces sending
+         the link to the WhatsApp group: the duplicate check Katrina does by
+         eye is the unique index. -->
     <div class="card" id="sp-card">
       <div class="view-head" style="margin:0 0 8px">
         <div>
@@ -2343,6 +2356,15 @@
       <div id="sp-check"></div>
       <div id="sp-list"></div>
     </div>
+  </section>
+
+  <!-- ============ ACCOUNTING / BILLING (Claudia) ============ -->
+  <section id="tab-marketing" class="tab">
+    <div class="view-head">
+      <h2>Marketing</h2>
+      <p class="muted small">Social directory by property · links open in a new tab</p>
+    </div>
+
     <div class="card">
       <div class="view-head" style="margin:0 0 8px">
         <h3 style="margin:0">Property social accounts</h3>

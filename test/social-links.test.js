@@ -337,6 +337,123 @@ t('the feed says whether a date is the post or the upload', () => {
   assert.match(body, /dateIs: p\.posted_on \? 'posted' : 'uploaded'/);
 });
 
+// ---- the leasing agents' access ---------------------------------------------------
+//
+// social_agent is Sammy, Oscar, Yeni and Daria: the form and their own
+// history. Hiding tabs hides buttons, so these guard the server side.
+
+t('a scoped role is filtered on the server, not just in the tab list', () => {
+  const at = server.indexOf("app.get('/api/social-posts'");
+  const body = server.slice(at, server.indexOf("app.get('/api/social-posts/feed'", at));
+  assert.match(body, /socialOwnOnly\(req\)/, 'the day view is not scoped');
+  assert.match(body, /\.eq\('author_email'/, 'scoped by something other than the login');
+});
+
+t('the feed is scoped too', () => {
+  // It is Jay's tracker, but anyone signed in can call it — an unscoped feed
+  // hands back exactly what the screen withholds.
+  const at = server.indexOf("app.get('/api/social-posts/feed'");
+  const body = server.slice(at, at + 2600);
+  assert.match(body, /socialOwnOnly\(req\)/);
+  assert.match(body, /\.eq\('author_email'/);
+});
+
+t('a scoped session with no email sees nothing, not everything', () => {
+  const at = server.indexOf('function socialOwnOnly');
+  const body = server.slice(at, server.indexOf("app.post('/api/social-posts'", at));
+  assert.match(body, /email: email \|\| null/);
+  const view = server.slice(server.indexOf("app.get('/api/social-posts'"));
+  assert.match(view.slice(0, 2000), /no-such-login/,
+    'an empty email must narrow the query to nothing, never drop the filter');
+});
+
+t('scoping is opt-in by role, so a new role cannot silently lose its view', () => {
+  const at = server.indexOf('const SOCIAL_OWN_ONLY_ROLES');
+  assert.ok(at > 0);
+  assert.match(server.slice(at, at + 200), /\['social_agent'\]/);
+});
+
+t('a scoped agent is not shown her four colleagues as missing', () => {
+  // Her own posts filtered against the whole roster would report the other
+  // four short on every screen she opens.
+  const at = server.indexOf("app.get('/api/social-posts'");
+  const body = server.slice(at, server.indexOf("app.get('/api/social-posts/feed'", at));
+  assert.match(body, /roster4/);
+  assert.match(body, /dailyCheck\(posts\.data \|\| \[\], roster4, day\)/);
+});
+
+t('social_agent gets exactly one tab, and it is not Marketing', () => {
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const m = app.match(/social_agent:\s*\[([^\]]*)\]/);
+  assert.ok(m, 'the role is not in TAB_ACCESS');
+  const tabs = m[1].split(',').map(s => s.trim().replace(/'/g, '')).filter(Boolean);
+  assert.deepStrictEqual(tabs, ['socialposts']);
+});
+
+t('the form has its own tab, so no role has to open Marketing to reach it', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  const at = html.indexOf('id="tab-socialposts"');
+  assert.ok(at > 0, 'the section does not exist');
+  const section = html.slice(at, html.indexOf('</section>', at));
+  assert.match(section, /id="sp-form"/, 'the form is not in it');
+  assert.ok(html.indexOf('data-tab="socialposts"') > 0, 'no nav button');
+  // And it is NOT still sitting inside Marketing.
+  const mk = html.indexOf('id="tab-marketing"');
+  assert.ok(html.slice(mk, html.indexOf('</section>', mk)).indexOf('id="sp-form"') < 0,
+    'the form is still inside the Marketing tab');
+});
+
+t('a scoped agent does not get the link into Jay\'s ops dashboard', () => {
+  // The link sits outside the tab gate and is kept for every role, which was
+  // written when every role was staff with a dashboard of their own. The
+  // leasing agents are not.
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.match(app, /NO_OPS_LINK_ROLES\s*=\s*\['social_agent'\]/);
+  assert.match(app, /NO_OPS_LINK_ROLES\.includes\(currentUser\.role\)/);
+  assert.match(app, /getElementById\('ops-dashboard-link'\)/);
+});
+
+t('the screen says whose posts it is showing', () => {
+  const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'social-posts.js'), 'utf8');
+  assert.match(js, /scope === 'own'/);
+  assert.match(js, /your posts only/);
+});
+
+// ---- creating an account ------------------------------------------------------------
+
+t('creating a user writes both halves, or neither', () => {
+  // A Supabase Auth user with no dashboard_users row is turned away at login;
+  // a row with no Auth user cannot sign in at all. Done by hand, forgetting
+  // the second half is the normal outcome.
+  const at = server.indexOf("app.post('/api/auth/admin/create-user'");
+  assert.ok(at > 0, 'the route is not there');
+  const body = server.slice(at, server.indexOf("app.post('/api/auth/change-password'", at));
+  assert.match(body, /auth\.admin\.createUser/);
+  assert.match(body, /from\('dashboard_users'\)\.insert/);
+  assert.match(body, /auth\.admin\.deleteUser/, 'a failed insert leaves half an account');
+  assert.match(body, /email_confirm: true/, 'no inbox to confirm from');
+  assert.match(body, /must_change_password: true/);
+});
+
+t('creating a user never overwrites an existing login', () => {
+  const at = server.indexOf("app.post('/api/auth/admin/create-user'");
+  const body = server.slice(at, server.indexOf("app.post('/api/auth/change-password'", at));
+  assert.match(body, /status\(409\)/);
+  assert.match(body, /requireMetricAdmin/);
+});
+
+t('the new password is returned once and never logged', () => {
+  const at = server.indexOf("app.post('/api/auth/admin/create-user'");
+  const body = server.slice(at, server.indexOf("app.post('/api/auth/change-password'", at));
+  // The log CALL only — a wider window reaches the response below it, which
+  // does carry the password, once, on purpose.
+  const from = body.indexOf('activityLog.log');
+  assert.ok(from > 0, 'the act is not logged at all');
+  const log = body.slice(from, body.indexOf('});', from));
+  assert.ok(!/password/i.test(log), 'the activity log carries the password');
+  assert.match(body, /detail: username \+ ' as ' \+ role/);
+});
+
 t('Katie\'s workbook is not touched by any of this', () => {
   const at = server.indexOf('SOCIAL MEDIA POST LINKS');
   const block = server.slice(at, server.indexOf('// GET /api/maintenance/open-work-orders', at));

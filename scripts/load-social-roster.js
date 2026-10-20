@@ -27,18 +27,20 @@ const db = createClient(process.env.SUPABASE_URL,
 
 // Bekah, 2026-10-20. Spelled as she gave them.
 //
-// ROCIO'S EMAIL IS DELIBERATELY NOT SET. dashboard_users holds a "Rocío
-// Hunsberger" (rocio@metric.internal, collections_leasing), and she is
-// Collections & Leasing, so she is probably the same person — but "probably"
-// is not a key. Tying the row to that login when it is somebody else would
-// credit her with another agent's posts, which is worse than matching on the
-// name until Bekah confirms. Set it in one line once she does.
+// Rocio is Rocío Hunsberger — confirmed by Arturo 2026-10-20, so the row
+// carries her login and the check matches on that rather than on which of the
+// two spellings of her name happens to be in the session.
+//
+// The other four have no account yet and their emails are the ones Arturo
+// chose for the accounts he has not created. They are written here now so the
+// roster matches them the moment the accounts exist; until then the match
+// falls back to the name, which is all there is.
 const ROSTER = [
-  { person: 'Rocio', email: null, expected: null, active: true },
-  { person: 'Sammy', email: null, expected: null, active: true },
-  { person: 'Oscar', email: null, expected: null, active: true },
-  { person: 'Yeni',  email: null, expected: null, active: true },
-  { person: 'Daria', email: null, expected: null, active: true },
+  { person: 'Rocio', email: 'rocio@metric.internal', expected: null, active: true },
+  { person: 'Sammy', email: 'sammy.ramos@metric.internal', expected: null, active: true },
+  { person: 'Oscar', email: 'oscar.moreno@metric.internal', expected: null, active: true },
+  { person: 'Yeni',  email: 'yeni.aleman@metric.internal', expected: null, active: true },
+  { person: 'Daria', email: 'daria.rodriguez@metric.internal', expected: null, active: true },
 ];
 
 const pad = (s, w) => String(s == null ? '—' : s).padEnd(w);
@@ -57,14 +59,14 @@ const pad = (s, w) => String(s == null ? '—' : s).padEnd(w);
 
   const existing = probe.data || [];
   console.log((WRITE ? 'WRITE' : 'DRY RUN') + ' — social_post_roster\n');
-  console.log('   ' + pad('person', 10) + pad('email', 26) + pad('expected', 10) + 'status');
+  console.log('   ' + pad('person', 10) + pad('email', 34) + pad('expected', 10) + 'status');
   ROSTER.forEach(r => {
     const was = existing.find(e => e.person === r.person);
     // AN EXISTING ROW IS NOT OVERWRITTEN BLIND. If somebody has already set a
     // number, this script is not the place it gets reset to null.
     const status = !was ? 'new'
       : (was.expected == null ? 'already here' : 'already here — KEEPS expected=' + was.expected);
-    console.log('   ' + pad(r.person, 10) + pad(r.email, 26) + pad(r.expected, 10) + status);
+    console.log('   ' + pad(r.person, 10) + pad(r.email, 34) + pad(r.expected, 10) + status);
   });
 
   const strangers = existing.filter(e => !ROSTER.some(r => r.person === e.person));
@@ -75,8 +77,8 @@ const pad = (s, w) => String(s == null ? '—' : s).padEnd(w);
 
   console.log('\n   expected = NULL for all five: Lyndsay has not set a number.');
   console.log('   The daily check will count their posts and call nobody missing.');
-  console.log('   Rocio: email left unset — "Rocío Hunsberger" in dashboard_users may or');
-  console.log('   may not be her. Matching on the name until Bekah confirms.');
+  console.log('   Rocio matches on the login. The other four have no account yet, so');
+  console.log('   they match on the name until the accounts exist.');
 
   if (!WRITE) {
     console.log('\nDRY RUN — nothing written.');
@@ -97,6 +99,6 @@ const pad = (s, w) => String(s == null ? '—' : s).padEnd(w);
   const after = await db.from('social_post_roster').select('person,email,expected,active').order('person');
   if (after.error) throw new Error(after.error.message);
   console.log('\nsocial_post_roster now holds ' + after.data.length + ' row(s):');
-  after.data.forEach(r => console.log('   ' + pad(r.person, 10) + pad(r.email, 26)
+  after.data.forEach(r => console.log('   ' + pad(r.person, 10) + pad(r.email, 34)
     + pad(r.expected, 10) + (r.active === false ? 'inactive' : 'active')));
 })().catch(e => { console.error('FAILED: ' + e.message); process.exitCode = 1; });

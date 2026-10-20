@@ -123,8 +123,15 @@
       return;
     }
     if (sub) {
+      // SAY WHOSE POSTS THESE ARE. A leasing agent sees only her own rows, and
+      // an unlabelled list of three would read as a quiet day for the whole
+      // team. The duplicate check still runs against everybody's posts — she
+      // gets the message naming who posted it, not their list.
       sub.textContent = (spData.posts || []).length + ' post(s) · '
-        + 'duplicate links are refused · screenshots go to SharePoint by week';
+        + (spData.scope === 'own'
+            ? 'your posts only — duplicates are still checked against everyone’s'
+            : 'duplicate links are refused')
+        + ' · screenshots go to SharePoint by week';
     }
     const dl = $('#sp-properties');
     if (dl && window.METRIC_PROPERTIES) {
