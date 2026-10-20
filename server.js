@@ -11646,9 +11646,18 @@ function kpiPdf(doc, report, only) {
         if (!col) return '';
         const f = (col[si].cards.concat(col[si].funnel || [])).find(x => x.metric === card.metric);
         if (!f || f.value === null || f.value === undefined) return '—';
+        // FORMATTED BY THE METRIC, NOT BY THE MAGNITUDE.
+        //
+        // This read "is it between 0 and 1? then it is a percentage", which is
+        // wrong at exactly 1: The Chateau is at 100% occupancy and its owner's
+        // PDF printed "1". It is wrong the other way too — a goal of 1.0 would
+        // have done the same. The card already says which it is, and the page
+        // and the comparison panel were both fixed to use that; the printed
+        // file an owner keeps was still guessing.
         const v = typeof f.value === 'number'
           ? (f.money ? '$' + Math.round(f.value).toLocaleString('en-US')
-            : (Math.abs(f.value) < 1 && f.value !== 0 ? (f.value * 100).toFixed(1) + '%' : String(f.value)))
+            : (card.percent ? (f.value * 100).toFixed(1) + '%'
+              : String(Math.round(f.value * 100) / 100)))
           : String(f.value);
         // A hand-adjusted figure is marked wherever it is shown.
         return f.source === 'manual' ? v + ' *' : v;

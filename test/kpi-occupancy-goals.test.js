@@ -178,5 +178,93 @@ t('a goal is never summed into the portfolio', () => {
   assert.ok(!/occupancyGoal/.test(list), 'goals are being summed across a portfolio');
 });
 
+// ---- the Occupancy Goal row ---------------------------------------------------
+
+t('Occupancy Goal is a row in the Occupancy section, from the workbook', () => {
+  const R = require('../lib/kpi-report.js');
+  const occ = R.SECTIONS.find(s => s.key === 'occupancy');
+  const card = occ.cards.find(c => c.metric === 'occupancyGoal');
+  assert.ok(card, 'there is no Occupancy Goal row');
+  assert.strictEqual(card.source, 'workbook');
+  assert.strictEqual(card.percent, true, 'it would print as 0.9 instead of 90%');
+  // Beside the occupancy it qualifies, not in some other section.
+  const i = occ.cards.findIndex(c => c.metric === 'occupancyGoal');
+  const j = occ.cards.findIndex(c => c.metric === 'occPct');
+  assert.strictEqual(i, j + 1, 'it is not next to Occupancy %');
+});
+
+t('a property shows its goal; the portfolio shows none', () => {
+  const R = require('../lib/kpi-report.js');
+  const prop = R.sectionsFor({ units: 48, occupied: 45 },
+    { workbook: { occupancyGoal: 0.9 }, overrides: {} });
+  assert.strictEqual(prop[0].cards.find(c => c.metric === 'occupancyGoal').value, 0.9);
+
+  // A portfolio goal would be a number nobody set: seven ratios summed is 6.1,
+  // and a weighted one is an invention.
+  const rolled = R.rollUp([{ units: 48, occupied: 45 }, { units: 30, occupied: 30 }],
+    R.CARD_METRICS.concat(['units']));
+  const port = R.sectionsFor(rolled, { workbook: {}, overrides: {} });
+  assert.strictEqual(port[0].cards.find(c => c.metric === 'occupancyGoal').value, null,
+    'the portfolio invented a goal');
+});
+
+t('the roll-up does not produce a workbook metric at all', () => {
+  // Not merely unread: a 0 sitting in the portfolio's metrics under a real
+  // metric name is one changed card away from being displayed.
+  const R = require('../lib/kpi-report.js');
+  const rolled = R.rollUp([{ units: 48 }], R.CARD_METRICS.concat(['units']));
+  assert.ok(!Object.prototype.hasOwnProperty.call(rolled, 'occupancyGoal'));
+  assert.ok(!Object.prototype.hasOwnProperty.call(rolled, 'mtdIncome'));
+  assert.ok(Object.prototype.hasOwnProperty.call(rolled, 'units'), 'it dropped a real one');
+});
+
+// ---- two goal tables -------------------------------------------------------------
+
+t('every disagreement with the Goal Board is listed, not just Windy Hill', () => {
+  // Windy Hill is the one somebody noticed. Five of the seven differ, and a
+  // note that mentioned one would make the other four look settled.
+  const B = require('../lib/kpi-build.js');
+  const d = B.occupancyGoalDiffs({
+    'Hyde Park Square': { occupancyGoal: 0.9 },
+    'Sunset Palms': { occupancyGoal: 0.9 },
+    'The Chateau': { occupancyGoal: 0.95 },
+    'The Highlander': { occupancyGoal: 0.9 },
+    'iConic Round Rock': { occupancyGoal: 0.92 },
+    'iConic Downtown': { occupancyGoal: 0.92 },
+    'Windy Hill Apartment': { occupancyGoal: 0.576 },
+    'Ascent at Northgate': {},
+  });
+  assert.deepStrictEqual(d.map(x => x.property),
+    ['Hyde Park Square', 'Sunset Palms', 'The Chateau', 'The Highlander', 'Windy Hill Apartment']);
+  const wh = d.find(x => x.property === 'Windy Hill Apartment');
+  assert.strictEqual(wh.workbook, 57.6);
+  assert.strictEqual(wh.dashboard, 90);
+});
+
+t('a goal that agrees is not reported as a difference', () => {
+  const B = require('../lib/kpi-build.js');
+  assert.deepStrictEqual(B.occupancyGoalDiffs({ 'iConic Downtown': { occupancyGoal: 0.92 } }), []);
+  // And a property with no goal is not a disagreement either.
+  assert.deepStrictEqual(B.occupancyGoalDiffs({ 'Ascent at Northgate': {} }), []);
+});
+
+t('the page says which table is which, and settles neither', () => {
+  const appjs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.match(appjs, /TWO OCCUPANCY GOALS/);
+  assert.match(appjs, /goalDiffs/);
+  assert.match(appjs, /which table is right is Kara/);
+});
+
+t('the printed file stops guessing a percentage from its size', () => {
+  // The Chateau is at 100% occupancy and its owner's PDF printed "1". The page
+  // and the comparison panel were both fixed to read the card's own flag; the
+  // file an owner keeps was still guessing.
+  const at = server.indexOf('FORMATTED BY THE METRIC, NOT BY THE MAGNITUDE');
+  assert.ok(at > 0, 'the PDF still guesses');
+  const block = server.slice(at, at + 800);
+  assert.match(block, /card\.percent \? \(f\.value \* 100\)/);
+  assert.ok(!/Math\.abs\(f\.value\) < 1/.test(block), 'the magnitude guess is still there');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -86,7 +86,7 @@ t('a missing value is empty, never zero', () => {
 
 t('a percentage is formatted by its metric, not by its size', () => {
   // 100% occupancy is 1.0 and used to print as "1".
-  assert.match(app, /KR_PERCENT = \['occPct', 'prePct'\]/);
+  assert.match(app, /KR_PERCENT = \['occPct', 'prePct', 'occupancyGoal'\]/);
   const cell = app.slice(app.indexOf('function krCell'), app.indexOf('const KR_MARK'));
   assert.match(cell, /KR_PERCENT\.includes\(card\.metric\)/);
   assert.ok(!/v > 0 && v < 1|v <= 1/.test(cell), 'it is guessing from the value');

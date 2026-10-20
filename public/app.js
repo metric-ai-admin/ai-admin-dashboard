@@ -12938,7 +12938,7 @@ let krReport = null;
 // A number's kind is a property of the metric, not of the value it happens to
 // hold this week. Same rule as the comparison panel below: 1.0 is 100%
 // occupancy, not "1", and 0.01 move-ins is not "1.0%".
-const KR_PERCENT = ['occPct', 'prePct'];
+const KR_PERCENT = ['occPct', 'prePct', 'occupancyGoal'];
 
 function krCell(card) {
   // EMPTY, NOT ZERO. A metric that could not be worked out must not arrive on
@@ -12998,6 +12998,23 @@ function krRenderNotes() {
       + (off ? ', which is not the week ending ' + kcEsc(krReport.week_ending)
              + ' — they are the latest snapshot, not a reading taken that day.' : '.')
       + '</p>');
+  }
+  // THE TWO GOAL TABLES, WHERE THEY DISAGREE. The row above shows the
+  // workbook's goal because that is the number on the report Katie sends; the
+  // dashboard keeps its own, and that is what decides whether a property shows
+  // red in Kara's brief. Two screens quietly disagreeing about whether a
+  // property is hitting its target is worse than either number being wrong.
+  const diffs = krReport.goalDiffs || [];
+  if (diffs.length) {
+    bits.push('<div class="alert-box warn" style="margin:10px 0">'
+      + '<div class="al">TWO OCCUPANCY GOALS</div>'
+      + 'The row above is the workbook’s. The dashboard uses its own table '
+      + '(the Goal Board’s), and that is the one Kara’s brief marks a property '
+      + 'red against. They disagree on ' + diffs.length
+      + (diffs.length === 1 ? ' property' : ' properties') + ':<ul class="kr-list">'
+      + diffs.map(d => '<li>' + kcEsc(d.property) + ' — workbook <b>' + d.workbook
+        + '%</b>, dashboard <b>' + d.dashboard + '%</b></li>').join('')
+      + '</ul>Nothing is reconciled here: which table is right is Kara’s to say.</div>');
   }
   if ((krReport.unconfirmed || []).length) {
     // OBJECTS, NOT NAMES. Each carries the question that has to be answered,
