@@ -13073,10 +13073,19 @@ async function krUploadWorkbook(file) {
     const p = d.parsed || {};
     // COUNTS, not a bare success. A workbook that parsed into two properties
     // instead of nine is a failure that looks exactly like a success.
+    // ROWS THAT WERE LEFT OUT of a sheet that otherwise read fine. Ascent has
+    // no occupancy goal: that is a blank cell for Ascent, not a reason to
+    // reject the other six — but it is still something the person who uploaded
+    // it should see now rather than find missing from an owner's file later.
+    const skipped = (d.skipped || []).map(r =>
+      'row ' + r.row + ' (' + kcEsc(r.property) + '): ' + kcEsc(r.reason));
     say('', '<div class="al">SAVED — week ' + kcEsc(d.week_ending) + '</div>'
       + kcEsc(d.filename) + ' · MTD Cash ' + p.mtd_cash + ' properties · MTD Accrual '
       + p.mtd_accrual + ' · Occupancy Goals ' + p.occupancy_goals
-      + '<br><span class="muted small">' + kcEsc((d.properties || []).join(', ')) + '</span>');
+      + '<br><span class="muted small">' + kcEsc((d.properties || []).join(', ')) + '</span>'
+      + (skipped.length
+        ? '<br><span class="muted small">Rows left out: ' + skipped.join(' · ') + '</span>'
+        : ''));
     await loadKpiReport();
   } catch (err) {
     say('warn', '<div class="al">ERROR</div>' + kcEsc(err.message));

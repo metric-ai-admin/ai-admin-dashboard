@@ -11340,8 +11340,16 @@ app.post('/api/kpi/workbook', requireAuth, requireRole(...KPI_WORKBOOK_ROLES),
       if (!Object.keys(parsed.mtd_accrual.total).length) empty.push('MTD Accrual (none of the seven expense categories found)');
       if (!Object.keys(parsed.occupancy_goals).length) empty.push('Occupancy Goals (no Property / Goal columns, or every goal is 0)');
       if (empty.length) {
+        // WHICH ROW, AND WHY. "nothing could be read from them" sent somebody
+        // to open a tab that looked perfectly fine — the goals were formatted
+        // as percentages and the reader could not see them. A refusal that
+        // does not name the row is a refusal nobody can act on.
+        const skipped = (parsed.occupancy_goals.__skipped || [])
+          .map(r => 'row ' + r.row + ' (' + r.property + '): ' + r.reason);
         return res.status(400).json({
-          error: 'These tabs are there but nothing could be read from them: ' + empty.join('; '),
+          error: 'These tabs are there but nothing could be read from them: ' + empty.join('; ')
+            + (skipped.length ? ' — ' + skipped.join('; ') : ''),
+          skipped,
           week_ending,
         });
       }
@@ -11371,6 +11379,11 @@ app.post('/api/kpi/workbook', requireAuth, requireRole(...KPI_WORKBOOK_ROLES),
           occupancy_goals: Object.keys(parsed.occupancy_goals).length,
         },
         properties: Object.keys(parsed.mtd_cash).sort(),
+        // Rows that were LEFT OUT of a sheet that otherwise read fine. Ascent
+        // has no occupancy goal, which is a blank cell for Ascent and not a
+        // reason to reject the other six — but it is still something the
+        // person who uploaded it should see rather than discover later.
+        skipped: parsed.occupancy_goals.__skipped || [],
       });
     } catch (err) { res.status(500).json({ error: err.message, week_ending }); }
   });
