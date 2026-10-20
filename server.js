@@ -20133,6 +20133,200 @@ cron.schedule('0 6 * * *', () => {
     .catch(err => logLine(`[wo-sync] FAILED: ${err.message}`));
 }, { timezone: LYNDSAY_TIMEZONE });
 
+// =====================================================================
+// SOCIAL MEDIA POST LINKS — upload, de-duplicate, keep the screenshot
+// =====================================================================
+//
+// Lyndsay asked for three things: no duplicate links or posts, screenshots
+// kept for the weekly report, and a daily accountability check. The agent's
+// link goes here instead of into a WhatsApp group, and the duplicate check
+// Katrina does by eye is the index on normalised_url.
+//
+// KATIE'S WORKBOOK IS NOT TOUCHED. Jay's tracker reads
+// /api/social-posts/feed instead of parsing it.
+const SOCIAL = require('./lib/social-links.js');
+// The same alias table every other screen uses, so a property typed as "Hyde
+// Park" files under "Hyde Park Square" and the weekly report adds up.
+const SOCIAL_PA = require('./lib/property-aliases.js');
+const socialUpload = multer({
+  storage: multer.memoryStorage(),
+  // A phone screenshot. Bigger than this is a video or a mistake, and the
+  // limit says so before Graph does.
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+});
+
+const SOCIAL_FOLDER = process.env.SOCIAL_SCREENSHOT_FOLDER
+  || 'Ops Dashboard Files/Marketing/Social Screenshots';
+
+// Screenshot -> SharePoint, under a per-week folder. Returns the link, or
+// null with a reason: a failed upload must not lose the post.
+async function socialUploadScreenshot(file, dayCT) {
+  if (!file || !file.buffer || !file.buffer.length) return { url: null, name: null, error: null };
+  const folder = SOCIAL.weekFolder(dayCT) || 'Unfiled';
+  const safe = String(file.originalname || 'screenshot.png').replace(/[^\w.\- ]+/g, '_').slice(-80);
+  const name = Date.now() + '-' + safe;
+  const target = SOCIAL_FOLDER + '/' + folder + '/' + name;
+  try {
+    const token = await graphMailToken();
+    const owner = process.env.CV_WORKBOOK_OWNER || 'admin@metricpropertymanagement.com';
+    const url = 'https://graph.microsoft.com/v1.0/users/' + encodeURIComponent(owner)
+      + '/drive/root:/' + target.split('/').map(encodeURIComponent).join('/') + ':/content';
+    const r = await fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': file.mimetype || 'image/png' },
+      body: file.buffer,
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error((j.error && j.error.message) || ('Graph ' + r.status));
+    return { url: j.webUrl || null, name, error: null };
+  } catch (e) {
+    // REPORTED, NOT FATAL. The link is the thing Lyndsay asked for; losing it
+    // because SharePoint was slow would be the wrong trade.
+    return { url: null, name, error: e.message };
+  }
+}
+
+// POST /api/social-posts — one post.
+app.post('/api/social-posts', requireAuth, socialUpload.single('screenshot'), async (req, res) => {
+  try {
+    const who = (req.user && (req.user.name || req.user.email)) || '';
+    if (!who) return res.status(403).json({ error: 'cannot identify who is uploading' });
+
+    const link = SOCIAL.normaliseUrl(req.body && req.body.url);
+    if (!link.ok) return res.status(400).json({ error: link.error });
+
+    const platform = SOCIAL.clean(req.body && req.body.platform);
+    const check = SOCIAL.platformCheck(platform, link.platform);
+    if (!check.ok) return res.status(400).json({ error: check.error });
+
+    const db = supabaseAdmin || supabasePublic;
+    const imageHash = SOCIAL.imageHash(req.file && req.file.buffer);
+
+    // READ BEFORE WRITE, so the rejection can say who and when. The unique
+    // index would stop the duplicate either way, but with a message nobody
+    // can act on.
+    let filter = 'normalised_url.eq.' + link.normalised;
+    if (imageHash) filter += ',image_hash.eq.' + imageHash;
+    const existing = await db.from('social_posts')
+      .select('normalised_url,image_hash,author,created_at,url').or(filter);
+    if (existing.error && /social_posts/.test(existing.error.message || '')) {
+      return res.status(503).json({ error: 'run supabase/migrations/108_social_posts.sql first', needsMigration: true });
+    }
+    const dup = SOCIAL.findDuplicate({ normalised: link.normalised, imageHash },
+      existing.data || []);
+    if (dup.duplicate) return res.status(409).json({ error: dup.message, duplicate: dup });
+
+    const todayCT = ctDateStr(0);
+    const shot = await socialUploadScreenshot(req.file, todayCT);
+
+    const postedOn = SOCIAL.clean(req.body && req.body.posted_on);
+    const row = {
+      url: link.url,
+      normalised_url: link.normalised,
+      platform,
+      property: SOCIAL_PA.canonical(SOCIAL.clean(req.body && req.body.property)) || null,
+      author: who,
+      author_email: (req.user && req.user.email) || null,
+      posted_on: /^\d{4}-\d{2}-\d{2}$/.test(postedOn) ? postedOn : null,
+      screenshot_url: shot.url,
+      screenshot_name: shot.name,
+      image_hash: imageHash,
+      note: SOCIAL.clean(req.body && req.body.note) || null,
+    };
+    const { data, error } = await db.from('social_posts').insert(row).select().single();
+    if (error) {
+      if (/duplicate key|social_posts_normalised_idx/i.test(error.message || '')) {
+        return res.status(409).json({ error: 'Already here — the same link was uploaded a moment ago.' });
+      }
+      throw new Error(error.message);
+    }
+    return res.json({ ok: true, post: data, warning: check.warning, screenshotError: shot.error });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+});
+
+// GET /api/social-posts — the day's uploads and the accountability check.
+app.get('/api/social-posts', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.day || ''))
+      ? String(req.query.day) : ctDateStr(0);
+    const posts = await db.from('social_posts')
+      .select('id,url,platform,property,author,posted_on,screenshot_url,created_at,note')
+      .order('created_at', { ascending: false }).limit(2000);
+    if (posts.error) {
+      if (/social_posts/.test(posts.error.message || '')) {
+        return res.status(503).json({ error: 'run supabase/migrations/108_social_posts.sql first', needsMigration: true });
+      }
+      throw new Error(posts.error.message);
+    }
+    const roster = await db.from('social_post_roster')
+      .select('person,expected,active').then(r => r, () => ({ data: [] }));
+    const active = ((roster && roster.data) || []).filter(r => r.active !== false)
+      .map(r => ({ name: r.person, expected: r.expected }));
+
+    return res.json({
+      day,
+      posts: posts.data || [],
+      check: SOCIAL.dailyCheck(posts.data || [], active, day),
+      platforms: SOCIAL.PLATFORMS,
+      // Said out loud so the screen can say it: the near-duplicate half of
+      // what was asked for is not built.
+      perceptualAvailable: SOCIAL.PERCEPTUAL_AVAILABLE,
+      // Off until Lyndsay answers. The screen shows that rather than implying
+      // a summary is going out.
+      emailEnabled: false,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/social-posts/feed — for Jay's tracker.
+//
+// DOCUMENTED SHAPE, flat and boring: one object per post with the fields his
+// weekly grid needs. It replaces downloading and parsing Katie's workbook,
+// which is where his reader takes the agent from column A — a column that
+// stopped being the agent when the sheet changed.
+//
+//   GET /api/social-posts/feed?from=2026-10-19&to=2026-10-25
+//   -> { from, to, count, posts: [ { date, dateIs, author, property,
+//                                    platform, url, screenshot } ] }
+app.get('/api/social-posts/feed', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from || '')) ? String(req.query.from) : null;
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to || '')) ? String(req.query.to) : null;
+    let q = db.from('social_posts')
+      .select('url,platform,property,author,posted_on,screenshot_url,created_at')
+      .order('created_at', { ascending: true }).limit(5000);
+    if (from) q = q.gte('created_at', from);
+    if (to) q = q.lte('created_at', to + 'T23:59:59');
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    return res.json({
+      from,
+      to,
+      count: (data || []).length,
+      posts: (data || []).map(p => ({
+        // posted_on when we were told, the upload day otherwise, and dateIs
+        // says which — so a weekly grid cannot silently file an upload as a
+        // post on the wrong day.
+        date: p.posted_on || String(p.created_at || '').slice(0, 10),
+        dateIs: p.posted_on ? 'posted' : 'uploaded',
+        author: p.author,
+        property: p.property,
+        platform: p.platform,
+        url: p.url,
+        screenshot: p.screenshot_url,
+      })),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/maintenance/open-work-orders.xlsx — the open list, to send Jay.
 //
 // A DOWNLOAD AND NOT A FILE ON RENDER'S DISK. The first version wrote the

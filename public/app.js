@@ -440,7 +440,12 @@ function loadTab(tab) {
   if (tab === 'accounting') loadAccounting();
   if (tab === 'leasing') loadLeasing();
   if (tab === 'leasing') { loadVerbalNotices(); loadLossReasons(); }
-  if (tab === 'marketing') loadMarketing();
+  if (tab === 'marketing') {
+    loadMarketing();
+    // Social posts lives in the same tab but loads on its own: a failure in
+    // one must not leave the other blank.
+    if (window.loadSocialPosts) window.loadSocialPosts();
+  }
   if (tab === 'kpirecaps') loadKpiRecaps();
   if (tab === 'activity') loadActivity();
   if (tab === 'rebrand') loadRebrand();

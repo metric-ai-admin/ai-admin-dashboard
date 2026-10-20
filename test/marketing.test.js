@@ -43,7 +43,21 @@ t('Katrina keeps everything she had — the new role is a superset', () => {
 t('the tab exists in the sidebar and has a section to open', () => {
   assert.ok(/data-tab="marketing"/.test(html), 'no sidebar button');
   assert.ok(/id="tab-marketing"/.test(html), 'no section — the button would open nothing');
-  assert.ok(/if \(tab === 'marketing'\) loadMarketing\(\);/.test(app), 'nothing loads it');
+  // Matched on the call, not the whole one-line statement: social posts now
+  // load in the same tab and the line became a block.
+  assert.ok(/tab === 'marketing'/.test(app) && /loadMarketing\(\)/.test(app),
+    'nothing loads it');
+});
+
+t('social posts load beside the directory, not instead of it', () => {
+  // Two independent loads in one tab: a failure in either must not leave the
+  // other blank.
+  const at = app.indexOf("tab === 'marketing'");
+  const block = app.slice(at, at + 400);
+  assert.ok(/loadMarketing\(\)/.test(block));
+  assert.ok(/loadSocialPosts/.test(block), 'the social section never loads');
+  assert.ok(/window\.loadSocialPosts/.test(block),
+    'it would throw on a page where social-posts.js did not load');
 });
 
 console.log('\nwhere the tab sits in the sidebar');

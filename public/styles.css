@@ -3060,3 +3060,13 @@ tr.ca-sel { background: var(--accent-glow); }
 .cvx-note-form { display: flex; gap: 6px; margin: 8px 0 0; }
 .cvx-note-input { flex: 1; padding: 5px 8px; font-size: 13px;
   border: 1px solid var(--line, #ddd); border-radius: 6px; }
+
+/* ---- Social media post links -------------------------------------------- */
+.sp-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  margin: 0 0 8px; }
+.sp-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.sp-field > span { color: var(--muted-ink, #666); font-weight: 600; }
+.sp-field input, .sp-field select { padding: 6px 8px; font-size: 13px;
+  border: 1px solid var(--line, #ddd); border-radius: 6px; }
+.sp-grow { flex: 1 1 320px; }
+.sp-grow input { width: 100%; }

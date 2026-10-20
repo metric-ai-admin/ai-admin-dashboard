@@ -2308,6 +2308,41 @@
       <h2>Marketing</h2>
       <p class="muted small">Social directory by property · links open in a new tab</p>
     </div>
+
+    <!-- Social media post links. Replaces sending the link to the WhatsApp
+         group: the duplicate check Katrina does by eye is the unique index. -->
+    <div class="card" id="sp-card">
+      <div class="view-head" style="margin:0 0 8px">
+        <div>
+          <h3 style="margin:0">Social media posts</h3>
+          <p class="muted small" id="sp-sub" style="margin:2px 0 0">Loading…</p>
+        </div>
+        <button class="btn btn-ghost" id="sp-refresh">&#8635; Refresh</button>
+      </div>
+
+      <form id="sp-form" class="sp-form" autocomplete="off">
+        <label class="sp-field sp-grow"><span>Link</span>
+          <input type="url" name="url" required
+                 placeholder="https://www.facebook.com/share/p/…"></label>
+        <label class="sp-field"><span>Platform</span>
+          <select name="platform" required>
+            <option value="">Pick one</option>
+            <option>Facebook</option><option>TikTok</option><option>Nextdoor</option>
+          </select></label>
+        <label class="sp-field"><span>Property</span>
+          <input type="text" name="property" list="sp-properties" placeholder="optional"></label>
+        <label class="sp-field"><span>Posted on</span>
+          <input type="date" name="posted_on"></label>
+        <label class="sp-field"><span>Screenshot</span>
+          <input type="file" name="screenshot" accept="image/*"></label>
+        <button class="btn" type="submit">Add post</button>
+      </form>
+      <datalist id="sp-properties"></datalist>
+      <div id="sp-message"></div>
+
+      <div id="sp-check"></div>
+      <div id="sp-list"></div>
+    </div>
     <div class="card">
       <div class="view-head" style="margin:0 0 8px">
         <h3 style="margin:0">Property social accounts</h3>
@@ -2598,6 +2633,7 @@
 <script src="reports-sync.js"></script>
 <script src="appfolio-views.js"></script>
 <script src="command-center.js"></script>
+<script src="social-posts.js"></script>
 <script src="wo-scheduling.js"></script>
 <script src="wo-schedule-calendar.js"></script>
 </body>
