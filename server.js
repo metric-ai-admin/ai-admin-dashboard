@@ -11330,6 +11330,11 @@ app.post('/api/kpi/workbook', requireAuth, requireRole(...KPI_WORKBOOK_ROLES),
         mtd_cash: kpiWorkbook.parseMtdCash(aoa(sheets.mtd_cash)),
         mtd_accrual: kpiWorkbook.parseMtdAccrual(aoa(sheets.mtd_accrual)),
         occupancy_goals: kpiWorkbook.parseOccupancyGoals(aoa(sheets.occupancy_goals)),
+        // Optional: a workbook without the tab still uploads and Follow Ups
+        // reports that it has no source, rather than taking the file down.
+        guest_card_inquiries: sheets.guest_card_inquiries
+          ? kpiWorkbook.parseGuestCardInquiries(aoa(sheets.guest_card_inquiries))
+          : null,
       };
 
       // A tab that parsed to NOTHING is a refusal, not a warning. These three
@@ -11363,7 +11368,8 @@ app.post('/api/kpi/workbook', requireAuth, requireRole(...KPI_WORKBOOK_ROLES),
         // shows the expense boxes as well as the headline.
         { sheet: 'mtd_accrual', data: { total: parsed.mtd_accrual.total, categories: parsed.mtd_accrual.categories } },
         { sheet: 'occupancy_goals', data: parsed.occupancy_goals },
-      ].map(r => ({ ...r, week_ending, filename: req.file.originalname, uploaded_by: who, uploaded_at: now }));
+      ].concat(parsed.guest_card_inquiries
+        ? [{ sheet: 'guest_card_inquiries', data: parsed.guest_card_inquiries }] : []).map(r => ({ ...r, week_ending, filename: req.file.originalname, uploaded_by: who, uploaded_at: now }));
 
       const { error } = await db.from('kpi_workbook_data')
         .upsert(rows, { onConflict: 'week_ending,sheet' });
@@ -11377,7 +11383,17 @@ app.post('/api/kpi/workbook', requireAuth, requireRole(...KPI_WORKBOOK_ROLES),
           mtd_cash: Object.keys(parsed.mtd_cash).length,
           mtd_accrual: Object.keys(parsed.mtd_accrual.total).length,
           occupancy_goals: Object.keys(parsed.occupancy_goals).length,
+          guest_card_inquiries: parsed.guest_card_inquiries
+            ? Object.keys(parsed.guest_card_inquiries).length : null,
         },
+        // Totals, so the upload can be checked against Lyndsay's card without
+        // opening anything: 377 follow ups and 10 overdue for week 10/17.
+        followUps: parsed.guest_card_inquiries ? (() => {
+          const g = parsed.guest_card_inquiries;
+          const sum = k => Object.keys(g).reduce((n, p) => n + (g[p][k] || 0), 0);
+          return { total: sum('followUps'), overdue: sum('overdue'),
+            rowsWithNoProperty: (g.__stats || {}).noProperty || 0 };
+        })() : null,
         properties: Object.keys(parsed.mtd_cash).sort(),
         // Rows that were LEFT OUT of a sheet that otherwise read fine. Ascent
         // has no occupancy goal, which is a blank cell for Ascent and not a

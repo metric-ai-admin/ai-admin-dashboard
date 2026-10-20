@@ -13094,12 +13094,22 @@ async function krUploadWorkbook(file) {
     // no occupancy goal: that is a blank cell for Ascent, not a reason to
     // reject the other six — but it is still something the person who uploaded
     // it should see now rather than find missing from an owner's file later.
+    // Rows the guest card sheet could not file under any property. Not an
+    // error — a blank column in an export — but 23 of them is worth seeing.
+    const orphan = d.followUps && d.followUps.rowsWithNoProperty
+      ? '<br><span class="muted small">' + d.followUps.rowsWithNoProperty
+        + ' guest card row(s) had no property and were not counted.</span>'
+      : '';
     const skipped = (d.skipped || []).map(r =>
       'row ' + r.row + ' (' + kcEsc(r.property) + '): ' + kcEsc(r.reason));
     say('', '<div class="al">SAVED — week ' + kcEsc(d.week_ending) + '</div>'
       + kcEsc(d.filename) + ' · MTD Cash ' + p.mtd_cash + ' properties · MTD Accrual '
       + p.mtd_accrual + ' · Occupancy Goals ' + p.occupancy_goals
+      + (d.followUps
+        ? ' · Follow Ups ' + d.followUps.total + ' (' + d.followUps.overdue + ' overdue)'
+        : ' · no Guest Card Inquiries tab, so Follow Ups has no source')
       + '<br><span class="muted small">' + kcEsc((d.properties || []).join(', ')) + '</span>'
+      + orphan
       + (skipped.length
         ? '<br><span class="muted small">Rows left out: ' + skipped.join(' · ') + '</span>'
         : ''));
