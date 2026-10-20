@@ -11524,8 +11524,39 @@ app.get('/api/kpi/report/export/:format', requireAuth, requireRole(...KPI_REPORT
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// WHOSE ROWS BELONG IN THIS FILE.
+//
+// An export for one owner carries that owner's columns and nothing else. The
+// rentable notes were pushed from report.rentableAlerts unfiltered, so
+// Greystone's workbook — a file that goes to Greystone — arrived carrying two
+// notes about Windy Hill Apartment, naming a building and a unit number at a
+// property they have nothing to do with. The columns were right; the prose
+// underneath them was not.
+//
+// Portfolio stands for every property, so a combined file keeps everything.
+function kpiRowsForColumns(report, columns) {
+  const cols = columns || [];
+  const all = cols.includes('Portfolio') || cols.length === (report.columns || []).length;
+  const members = new Set();
+  cols.forEach(c => {
+    members.add(c);
+    // A group column speaks for its members, so their notes belong with it.
+    kpiReport.groupMembers(c, Object.keys(report.properties || {}))
+      .forEach(m => members.add(m));
+  });
+  return {
+    mine: name => all || members.has(name),
+    // The two rentable rows are about a building one property may not lease.
+    // In a file with no such property they are not "0" and not "blank", they
+    // are a question that does not arise — so the rows do not appear at all.
+    anyRentable: Object.keys(report.rentable || {}).some(p => all || members.has(p)),
+  };
+}
+
 // Summary: a row per card, a column per property, in her column order.
 function kpiSummarySheet(report, columns) {
+  const scope = kpiRowsForColumns(report, columns);
+  const pctRows = [];
   const aoa = [
     ['Metric Property Management — Executive KPI Dashboard'],
     ['Leasing Week:', report.range.from + ' .. ' + report.range.to],
@@ -11538,6 +11569,10 @@ function kpiSummarySheet(report, columns) {
     aoa.push(['Metric'].concat(columns));
     const cards = (sec.cards || []).concat(sec.funnel || []);
     cards.forEach(card => {
+      // A percentage is a ratio in the cell and a percentage on the screen.
+      // Excel showed 0.846625767 because nothing ever told it otherwise, and
+      // an owner opening the file had to know to multiply by a hundred.
+      if (card.percent) pctRows.push(aoa.length);
       aoa.push([card.label].concat(columns.map(c => {
         const col = colOf(c);
         if (!col) return '';
@@ -11555,13 +11590,14 @@ function kpiSummarySheet(report, columns) {
     //
     // The rows sit BELOW Occupancy %, never in place of it: the figures above
     // are the ones Lyndsay's report carries and the ones owners already know.
-    if (sec.key === 'occupancy' && Object.keys(report.rentable || {}).length) {
+    if (sec.key === 'occupancy' && scope.anyRentable) {
       const cell = (c, f) => {
         const r = (report.rentable || {})[c];
         return r ? f(r) : '';
       };
       aoa.push(['Rentable Units (excludes unlettable buildings)']
         .concat(columns.map(c => cell(c, r => r.rentableUnits))));
+      pctRows.push(aoa.length);
       aoa.push(['Rentable Occupancy %']
         .concat(columns.map(c => cell(c, r => (r.rentablePct === null ? '' : r.rentablePct)))));
       // Why the two numbers differ, in the sheet rather than in somebody's
@@ -11572,7 +11608,9 @@ function kpiSummarySheet(report, columns) {
         aoa.push(['   ' + c + ': ' + r.excludedUnits + ' units excluded — '
           + r.rules.map(x => x.label + ', ' + x.reason).join('; ')]);
       });
-      (report.rentableAlerts || []).forEach(a => {
+      // FILTERED BY COLUMN. Unfiltered, Greystone's file carried two notes
+      // about Windy Hill Apartment — another owner's building and unit number.
+      (report.rentableAlerts || []).filter(a => scope.mine(a.property)).forEach(a => {
         aoa.push([(a.severity === 'alarm' ? '   *** ' : '   ') + a.property + ': ' + a.text]);
       });
     }
@@ -11580,11 +11618,21 @@ function kpiSummarySheet(report, columns) {
   });
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols'] = [{ wch: 36 }].concat(columns.map(() => ({ wch: 16 })));
+  // One decimal, matching the page: 84.7%, not 85% and not 0.846625767.
+  // Applied only where a number landed — an empty cell has no format to wear.
+  pctRows.forEach(r => {
+    for (let c = 1; c <= columns.length; c++) {
+      const ref = XLSX.utils.encode_cell({ r, c });
+      const cel = ws[ref];
+      if (cel && cel.t === 'n') cel.z = '0.0%';
+    }
+  });
   return ws;
 }
 
 // Backup: one row per property per card, with the provenance beside it.
 function kpiBackupSheet(report, columns) {
+  const pctRows = [];
   const aoa = [['Property', 'Section', 'Metric', 'Label', 'Value', 'Source', 'Computed', 'Adjusted by', 'Note']];
   const colOf = name => (name === 'Portfolio' ? report.portfolio : report.properties[name]);
   columns.forEach(c => {
@@ -11592,6 +11640,9 @@ function kpiBackupSheet(report, columns) {
     if (!col) return;
     col.forEach(sec => {
       (sec.cards || []).concat(sec.funnel || []).forEach(card => {
+        // The Backup is what a disagreement gets checked against, so its
+        // Value column has to read the same way the Summary's does.
+        if (card.percent) pctRows.push(aoa.length);
         aoa.push([c, sec.title, card.metric, card.label,
           card.value === null || card.value === undefined ? '' : card.value,
           card.source,
@@ -11603,10 +11654,15 @@ function kpiBackupSheet(report, columns) {
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols'] = [{ wch: 22 }, { wch: 22 }, { wch: 20 }, { wch: 34 }, { wch: 14 },
     { wch: 13 }, { wch: 12 }, { wch: 16 }, { wch: 46 }];
+  pctRows.forEach(r => {
+    const cel = ws[XLSX.utils.encode_cell({ r, c: 4 })];   // the Value column
+    if (cel && cel.t === 'n') cel.z = '0.0%';
+  });
   return ws;
 }
 
 function kpiPdf(doc, report, only) {
+  const scope = kpiRowsForColumns(report, only ? [only] : report.columns);
   const L = doc.page.margins.left;
   const W = doc.page.width - L - doc.page.margins.right;
   const columns = only ? [only] : report.columns;
@@ -11667,7 +11723,7 @@ function kpiPdf(doc, report, only) {
     // then the alerts in red — an owner reading the printed page gets the
     // same warning as somebody opening the workbook, or the printed page
     // becomes the quieter of the two and that is the one people keep.
-    if (sec.key === 'occupancy' && Object.keys(report.rentable || {}).length) {
+    if (sec.key === 'occupancy' && scope.anyRentable) {
       const cell = (c, f) => {
         const r = (report.rentable || {})[c];
         return r ? f(r) : '';
@@ -11682,7 +11738,8 @@ function kpiPdf(doc, report, only) {
         doc.fontSize(7).fillColor('#555').text(c + ': ' + r.excludedUnits + ' units excluded — '
           + r.rules.map(x => x.label + ', ' + x.reason).join('; '), L, doc.y + 2, { width: W });
       });
-      (report.rentableAlerts || []).forEach(a => {
+      // The same filter as the Excel. The printed page is the one people keep.
+      (report.rentableAlerts || []).filter(a => scope.mine(a.property)).forEach(a => {
         doc.fontSize(7).fillColor(a.severity === 'alarm' ? '#b00020' : '#555')
           .text((a.severity === 'alarm' ? '▲ ' : '') + a.property + ': ' + a.text,
             L, doc.y + 2, { width: W });
