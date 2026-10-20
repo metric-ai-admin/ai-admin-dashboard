@@ -251,6 +251,76 @@ t('a property with no occupancy goal shows blank, not 0', () => {
   assert.strictEqual(card.value, null);
 });
 
+const NO_GOAL = 'No occupancy goal in the workbook — Follow Ups Goal not calculated';
+
+t('the blank cell says WHY, in its own words', () => {
+  // The generic reason — "needs Katie's workbook for this week" — is wrong
+  // here and actively misleading: the workbook is loaded, it simply has no
+  // goal for this property, and re-uploading it changes nothing.
+  const cards = R.sectionsFor({ units: 111, preleased: 59 },
+    { workbook: {}, overrides: {}, reasons: { followUpsGoal: NO_GOAL } })
+    .flatMap(s => (s.cards || []).concat(s.funnel || []));
+  const card = cards.find(c => c.metric === 'followUpsGoal');
+  assert.strictEqual(card.reason, NO_GOAL);
+  // And the generic one still applies to the metrics that do need the file.
+  const fu = cards.find(c => c.metric === 'followUps');
+  assert.match(fu.reason, /needs Katie/);
+});
+
+t('the note is only raised when a workbook is actually loaded', () => {
+  // With no workbook at all every property is missing a goal, and naming
+  // eight of them is noise rather than information.
+  const build = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-build.js'), 'utf8');
+  assert.match(build, /const wbLoaded = [\s\S]{0,180}r\.sheet === 'occupancy_goals'/);
+  assert.match(build, /if \(wbLoaded\) \{/);
+  assert.match(build, /goalNotes\.push\(\{ property: p, text: NO_GOAL \}\)/);
+});
+
+t('the note reaches the page, the Excel and the PDF', () => {
+  // A caveat that lives only on the screen is the one that gets lost: the
+  // file is what an owner keeps.
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.match(app, /NOT IN THE FOLLOW UPS GOAL/);
+  assert.match(app, /krReport\.goalNotes/);
+
+  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  // Once for the Excel and once for the PDF, both filtered by column.
+  const hits = server.match(/report\.goalNotes \|\| \[\]\)\.filter\(n => scope\.mine\(n\.property\)\)/g) || [];
+  assert.strictEqual(hits.length, 2, 'the note is in ' + hits.length + ' of the two exports');
+});
+
+t('the note follows the same scoping as every other row', () => {
+  // Ascent's note belongs in Ascent's file and in the combined one, and
+  // nowhere else — the same rule that keeps Windy Hill out of Greystone's.
+  const XL = require('xlsx');
+  const WEEK = require('../lib/week.js');
+  const mk = (units, prel, wbk, reasons) => R.sectionsFor(
+    { units, preleased: prel, occupied: prel },
+    { workbook: wbk || {}, overrides: {}, reasons: reasons || null });
+  const report = {
+    week_ending: '2026-10-17', range: { from: '2026-10-11', to: '2026-10-17' },
+    columns: ['Ascent at Northgate', 'The Highlander', 'Portfolio'],
+    properties: {
+      'Ascent at Northgate': mk(111, 59, { followUps: 91 }, { followUpsGoal: NO_GOAL }),
+      'The Highlander': mk(49, 30, { followUps: 24, followUpsGoal: 534 }),
+    },
+    portfolio: mk(160, 89, { followUps: 115, followUpsGoal: 534 }),
+    rentable: {}, rentableAlerts: [],
+    goalNotes: [{ property: 'Ascent at Northgate', text: NO_GOAL }],
+  };
+  const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const code = src.slice(src.indexOf('// WHOSE ROWS BELONG IN THIS FILE.'),
+    src.indexOf('function kpiPdf(')) + '\nreturn { kpiSummarySheet };';
+  const M = new Function('XLSX', 'kpiReport', 'WEEK', 'report', code)(XL, R, WEEK, report);
+  const text = cols => XL.utils.sheet_to_json(M.kpiSummarySheet(report, cols),
+    { header: 1, raw: true, defval: '' }).map(r => r.join(' ')).join('\n');
+
+  assert.match(text(['Ascent at Northgate']), /No occupancy goal in the workbook/);
+  assert.match(text(report.columns), /No occupancy goal in the workbook/);
+  assert.ok(!/No occupancy goal/.test(text(['The Highlander'])),
+    'another property’s note is in The Highlander’s file');
+});
+
 t('the goal is a row beside the two it is read against', () => {
   const sec = R.SECTIONS.find(s => (s.cards || []).some(c => c.metric === 'followUps'));
   const order = sec.cards.map(c => c.metric);

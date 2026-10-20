@@ -11606,6 +11606,15 @@ function kpiSummarySheet(report, columns) {
     //
     // The rows sit BELOW Occupancy %, never in place of it: the figures above
     // are the ones Lyndsay's report carries and the ones owners already know.
+    //
+    // A property with no occupancy goal is named under the section that holds
+    // the goal it is missing from — scoped like everything else, so an owner
+    // reads it only when it is about their own property.
+    if ((sec.cards || []).some(c => c.metric === 'followUpsGoal')) {
+      (report.goalNotes || []).filter(n => scope.mine(n.property)).forEach(n => {
+        aoa.push(['   ' + n.property + ': ' + n.text]);
+      });
+    }
     if (sec.key === 'occupancy' && scope.anyRentable) {
       const cell = (c, f) => {
         const r = (report.rentable || {})[c];
@@ -11735,6 +11744,15 @@ function kpiPdf(doc, report, only) {
         return f.source === 'manual' ? v + ' *' : v;
       })));
     });
+    // The same note as the Excel. The printed page is the one people keep, so
+    // a caveat that lives only in the workbook is the one that gets lost.
+    if ((sec.cards || []).some(c => c.metric === 'followUpsGoal')) {
+      (report.goalNotes || []).filter(n => scope.mine(n.property)).forEach(n => {
+        doc.fontSize(7).fillColor('#555')
+          .text(n.property + ': ' + n.text, L, doc.y + 2, { width: W });
+      });
+      doc.fillColor('#000').fontSize(7.5);
+    }
     // The rentable lines, under Occupancy only. Same two rows as the Excel,
     // then the alerts in red — an owner reading the printed page gets the
     // same warning as somebody opening the workbook, or the printed page

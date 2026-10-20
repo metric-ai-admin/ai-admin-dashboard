@@ -13004,6 +13004,18 @@ function krRenderNotes() {
   // dashboard keeps its own, and that is what decides whether a property shows
   // red in Kara's brief. Two screens quietly disagreeing about whether a
   // property is hitting its target is worse than either number being wrong.
+  // A PROPERTY LEFT OUT OF THE FOLLOW-UPS GOAL. Ascent is 111 units and the
+  // furthest from any target; without this line the portfolio total reads as
+  // if it covered every property.
+  const gn = krReport.goalNotes || [];
+  if (gn.length) {
+    bits.push('<div class="alert-box warn" style="margin:10px 0">'
+      + '<div class="al">NOT IN THE FOLLOW UPS GOAL</div>'
+      + gn.map(n => '<b>' + kcEsc(n.property) + '</b> — ' + kcEsc(n.text)).join('<br>')
+      + '<br>The Follow Ups Goal total does not cover '
+      + (gn.length === 1 ? 'it.' : 'them.') + '</div>');
+  }
+
   const diffs = krReport.goalDiffs || [];
   if (diffs.length) {
     bits.push('<div class="alert-box warn" style="margin:10px 0">'
@@ -13141,7 +13153,10 @@ function krRenderTable() {
           ? (col[si].cards || []).concat(col[si].funnel || []).find(x => x.metric === card.metric)
           : null;
         const mark = found && KR_MARK[found.source] ? KR_MARK[found.source] : null;
-        h += '<td' + (mark && mark.t ? ' title="' + kcEsc(mark.t) + '"' : '')
+        // The card's own reason wins over the generic mark: an em dash that
+        // explains itself is worth more than one that says "unavailable".
+        const tip = (found && found.reason) || (mark && mark.t) || '';
+        h += '<td' + (tip ? ' title="' + kcEsc(tip) + '"' : '')
           + (found && found.source === 'unavailable' ? ' class="kr-na"' : '') + '>'
           + krCell(found) + (mark && mark.s ? '<span class="kr-mark">' + mark.s + '</span>' : '')
           + '</td>';
