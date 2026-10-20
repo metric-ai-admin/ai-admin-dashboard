@@ -118,7 +118,11 @@ const TAB_ACCESS = {
   regional_director:   ['maintenance', 'reports', 'leasing', 'collections', 'kpi', 'calls'],   // Rebekah Tuckner
   // Kara oversees maintenance, leasing and collections as of 2026-09-21.
   resident_success:    ['maintenance', 'reports', 'evictions', 'leasing', 'collections', 'calls'],   // Kara Garst
-  collections_leasing: ['reports', 'collections'],   // Rocío Hunsberger
+  // 'socialposts' added 2026-10-20: she is on the social roster and posts
+  // like the other leasing agents. Added to what she already had rather
+  // than moving her to social_agent, which would have TAKEN Collections
+  // away from her.
+  collections_leasing: ['reports', 'collections', 'socialposts'],   // Rocío Hunsberger
   // Rocío's collections role — Collections Review tab.
   collections_agent:   ['collections'],
   // Claudia Villalobos (Accounting/QC). No account in dashboard_users yet, so
@@ -132,7 +136,10 @@ const TAB_ACCESS = {
   // key is 'crm' (not 'bd_crm'): the nav button is data-tab="crm" and every other
   // role uses 'crm'. She gets normal BD CRM access minus the internal staff
   // roster (admin/operations only — see CRM_ROSTER_ROLES).
-  leasing_bd:  ['leasing', 'crm'],
+  // 'socialposts' added 2026-10-20. Katie keeps the weekly workbook, so she
+  // sees EVERY post and the whole daily check — she is not in
+  // SOCIAL_OWN_ONLY_ROLES on the server.
+  leasing_bd:  ['leasing', 'crm', 'socialposts'],
   // Collections agent — Evictions + Collections Review tabs.
   evictions_agent: ['evictions', 'collections'],
   // Leasing agents who publish on their own Facebook, TikTok and Nextdoor

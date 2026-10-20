@@ -368,9 +368,59 @@ t('a scoped session with no email sees nothing, not everything', () => {
 });
 
 t('scoping is opt-in by role, so a new role cannot silently lose its view', () => {
-  const at = server.indexOf('const SOCIAL_OWN_ONLY_ROLES');
+  const at = server.indexOf('const SOCIAL_OWN_ONLY_ROLES =');
   assert.ok(at > 0);
-  assert.match(server.slice(at, at + 200), /\['social_agent'\]/);
+  const list = server.slice(at, server.indexOf(';', at));
+  // Exactly the two roles that post. Anybody else keeps the whole board.
+  const roles = [...list.matchAll(/'([a-z_]+)'/g)].map(m => m[1]).sort();
+  assert.deepStrictEqual(roles, ['collections_leasing', 'social_agent']);
+});
+
+// ---- who sees the board, and who sees their own row -------------------------------
+
+const appSrc = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const tabsFor = role => {
+  const m = appSrc.match(new RegExp(role + ":\\s*\\[([^\\]]*)\\]"));
+  assert.ok(m, role + ' is not in TAB_ACCESS');
+  return m[1].split(',').map(s => s.trim().replace(/'/g, '')).filter(Boolean);
+};
+
+t('Rocío reaches the tab WITHOUT losing what she already had', () => {
+  // Moving her to social_agent would have taken Collections Review away.
+  const tabs = tabsFor('collections_leasing');
+  assert.ok(tabs.includes('socialposts'), 'she cannot reach the form');
+  assert.ok(tabs.includes('collections'), 'Collections Review was taken away');
+  assert.ok(tabs.includes('reports'), 'the report tab was taken away');
+});
+
+t('Rocío sees her own posts, like the other agents on the roster', () => {
+  const at = server.indexOf('const SOCIAL_OWN_ONLY_ROLES =');
+  assert.match(server.slice(at, server.indexOf(';', at)), /collections_leasing/);
+});
+
+t('Rocío keeps the Ops Dashboard link', () => {
+  // Only the role whose entire access is the form loses it.
+  const m = appSrc.match(/NO_OPS_LINK_ROLES\s*=\s*\[([^\]]*)\]/);
+  assert.ok(m);
+  const roles = m[1].split(',').map(s => s.trim().replace(/'/g, '')).filter(Boolean);
+  assert.deepStrictEqual(roles, ['social_agent']);
+});
+
+t('Katie reaches the tab and keeps Leasing and the BD CRM', () => {
+  const tabs = tabsFor('leasing_bd');
+  assert.ok(tabs.includes('socialposts'));
+  assert.ok(tabs.includes('leasing') && tabs.includes('crm'));
+});
+
+t('Katie and Katrina see EVERY post and the whole daily check', () => {
+  // Katie keeps the weekly workbook; Katrina did the duplicate checking by
+  // eye. Either one scoped to her own posts would be reading a board with
+  // most of it missing and no sign that anything was.
+  assert.ok(tabsFor('marketing_bd_agent').includes('socialposts'));
+  const at = server.indexOf('const SOCIAL_OWN_ONLY_ROLES =');
+  const list = server.slice(at, server.indexOf(';', at));
+  assert.ok(!/leasing_bd/.test(list), 'Katie is scoped to her own posts');
+  assert.ok(!/marketing_bd_agent/.test(list), 'Katrina is scoped to her own posts');
 });
 
 t('a scoped agent is not shown her four colleagues as missing', () => {

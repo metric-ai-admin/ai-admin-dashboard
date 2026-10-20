@@ -20306,7 +20306,21 @@ async function socialUploadScreenshot(file, dayCT) {
 // A role this does not recognise sees everything, which is the existing
 // behaviour for Jay, Kara, Katrina and the rest — the narrow rule is opt-in by
 // role, so a role added later cannot silently lose its own view.
-const SOCIAL_OWN_ONLY_ROLES = ['social_agent'];
+//
+// collections_leasing is Rocío. She is on the social roster and posts like the
+// other leasing agents, so her social history is her own — but the role keeps
+// Collections Review, which social_agent would have taken away, so she is
+// scoped here rather than moved.
+//
+// THE ROLE IS ONE PERSON TODAY. If a second ever holds collections_leasing
+// they inherit this scoping with it, which is the right default — it withholds
+// rather than reveals — but it is a decision made here and not by whoever
+// assigns the role, so it is written down.
+//
+// Katie (leasing_bd) and Katrina (marketing_bd_agent) are deliberately absent:
+// Katie keeps the weekly workbook and Katrina did the duplicate checking, so
+// both need every post and the whole daily check.
+const SOCIAL_OWN_ONLY_ROLES = ['social_agent', 'collections_leasing'];
 function socialOwnOnly(req) {
   const role = String((req.user && req.user.role) || '').toLowerCase();
   if (SOCIAL_OWN_ONLY_ROLES.indexOf(role) < 0) return null;
