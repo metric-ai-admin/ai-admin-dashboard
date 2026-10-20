@@ -454,6 +454,48 @@ t('the new password is returned once and never logged', () => {
   assert.match(body, /detail: username \+ ' as ' \+ role/);
 });
 
+// ---- the Create user form -----------------------------------------------------------
+//
+// It exists so the temporary password has somewhere to go that is not a chat
+// window. These guard the two ways that intent is lost.
+
+const appjs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+const acct = appjs.slice(appjs.indexOf('function acctInit()'),
+  appjs.indexOf('async function loadActivity()'));
+
+t('the form exists, admin only, and starts hidden', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  const at = html.indexOf('id="acct-card"');
+  assert.ok(at > 0, 'the card is not there');
+  assert.match(html.slice(at, at + 120), /hidden/, 'the card is visible before the role is known');
+  assert.ok(acct.length > 200, 'acctInit is not there');
+  assert.match(acct, /currentUser\?\.role !== 'admin'/);
+  // Inside the Activity tab, which is where "who has access" belongs.
+  const sec = html.indexOf('id="tab-activity"');
+  assert.ok(at > sec && at < html.indexOf('</section>', sec), 'the card is not in the Activity tab');
+});
+
+t('the password is shown once and kept nowhere', () => {
+  assert.match(acct, /data\.password/, 'the password is never shown');
+  // Not stashed anywhere it could outlive the screen.
+  assert.ok(!/localStorage|sessionStorage/.test(acct), 'the password touches storage');
+  assert.ok(!/console\.(log|info|warn)/.test(acct), 'the password could reach the console');
+  // A second create must clear the first one off the screen first.
+  assert.match(acct, /out\.innerHTML = '';/);
+  assert.match(acct, /Shown once/);
+});
+
+t('the copy button says when it could not copy', () => {
+  // A button that looks like it worked is worse than no button.
+  assert.match(acct, /clipboard\.writeText/);
+  assert.match(acct, /could not copy/);
+});
+
+t('the role picker offers only roles the app knows', () => {
+  // A role typed by hand produces an account that signs in and sees nothing.
+  assert.match(acct, /Object\.keys\(TAB_ACCESS\)/);
+});
+
 t('Katie\'s workbook is not touched by any of this', () => {
   const at = server.indexOf('SOCIAL MEDIA POST LINKS');
   const block = server.slice(at, server.indexOf('// GET /api/maintenance/open-work-orders', at));

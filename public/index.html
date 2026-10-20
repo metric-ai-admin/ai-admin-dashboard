@@ -2400,6 +2400,39 @@
       <b>Measures dashboard use only</b> — not performance or work done outside the dashboard.
     </div>
 
+    <!-- Creating an account. ADMIN ONLY and hidden until app.js says so — the
+         endpoint refuses everyone else, this keeps the form out of sight.
+
+         IT EXISTS SO THE PASSWORD HAS SOMEWHERE TO GO. These @metric.internal
+         addresses receive no mail, so a new account's first password has to be
+         read off a screen. Shown once, here, with a copy button; it is not
+         stored, not logged, and not in any message. -->
+    <div class="card" id="acct-card" style="margin-bottom:16px" hidden>
+      <div class="view-head" style="margin-bottom:8px">
+        <div>
+          <h3 style="margin:0">Create a dashboard account</h3>
+          <p class="muted small" style="margin:2px 0 0">The temporary password is
+            shown once, on this screen. Read it to them or send it privately —
+            they must change it at first sign-in.</p>
+        </div>
+      </div>
+      <form id="acct-form" class="sp-form" autocomplete="off">
+        <label class="sp-field sp-grow"><span>Full name</span>
+          <input type="text" name="name" required placeholder="Sammy Ramos"></label>
+        <label class="sp-field"><span>Username</span>
+          <input type="text" name="username" required placeholder="sammy.ramos"
+                 pattern="[a-z0-9]+([._-][a-z0-9]+)*"
+                 title="lower case letters, digits, dots, dashes and underscores"></label>
+        <label class="sp-field"><span>Role</span>
+          <select name="role" required id="acct-role">
+            <option value="">Pick one</option>
+          </select></label>
+        <button class="btn" type="submit">Create account</button>
+      </form>
+      <p class="muted small" id="acct-email" style="margin:6px 0 0"></p>
+      <div id="acct-result"></div>
+    </div>
+
     <div class="card" style="margin-bottom:16px">
       <div class="view-head" style="margin-bottom:8px">
         <h3 style="margin:0">Last seen</h3>

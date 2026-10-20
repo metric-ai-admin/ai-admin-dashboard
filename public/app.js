@@ -12344,7 +12344,106 @@ function actDaysCell(p, workingDays) {
   return `${days.length} <span class="muted small">(${weekend} weekend)</span>`;
 }
 
+/* Creating a dashboard account.
+ *
+ * WHY IT IS A FORM AND NOT A CURL. The twelve accounts before this were made
+ * by hand in the Supabase panel plus a second hand-written insert, and the
+ * temporary password had to travel from whoever ran it to whoever needed it —
+ * through a chat window, which is the one place it must not be.
+ *
+ * THE PASSWORD IS SHOWN ONCE AND HELD NOWHERE. It goes from the response
+ * straight into a DOM node with a copy button, and the next submit clears it.
+ * It is never put in a variable that outlives the handler, never in
+ * localStorage, and never logged — not here and not on the server.
+ */
+function acctInit() {
+  const card = document.getElementById('acct-card');
+  // The endpoint refuses anyone but an admin. This only keeps the form out of
+  // sight of the people it would refuse.
+  if (!card || currentUser?.role !== 'admin') return;
+  card.hidden = false;
+
+  const sel = document.getElementById('acct-role');
+  if (sel && sel.options.length <= 1) {
+    // THE ROLES THE APP KNOWS, out of the one table that defines them. A role
+    // typed by hand produces an account that signs in and sees nothing.
+    Object.keys(TAB_ACCESS).sort().forEach(r => {
+      const o = document.createElement('option');
+      o.value = r;
+      o.textContent = r + ' — ' + TAB_ACCESS[r].join(', ');
+      sel.appendChild(o);
+    });
+  }
+
+  const form = document.getElementById('acct-form');
+  const hint = document.getElementById('acct-email');
+  const out = document.getElementById('acct-result');
+  if (!form || form.dataset.wired) return;
+  form.dataset.wired = '1';
+
+  const user = () => form.querySelector('[name=username]').value.trim().toLowerCase();
+  form.querySelector('[name=username]')?.addEventListener('input', () => {
+    // So the login is read before it is created, not discovered afterwards.
+    hint.textContent = user() ? 'Signs in as ' + user() + ' · ' + user() + '@metric.internal' : '';
+  });
+
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = form.querySelector('button[type=submit]');
+    btn.disabled = true;
+    // The previous password leaves the screen before another is asked for.
+    out.innerHTML = '';
+    try {
+      const body = {
+        name: form.querySelector('[name=name]').value.trim(),
+        username: user(),
+        role: form.querySelector('[name=role]').value,
+      };
+      const r = await fetch('/api/auth/admin/create-user', apiBody({
+        method: 'POST', body, credentials: 'same-origin',
+      }));
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        out.innerHTML = '<div class="alert-box warn" style="margin:10px 0">'
+          + '<div class="al">NOT CREATED</div>' + esc(data.error || 'Could not create it.')
+          + (data.rolledBack ? '<br>Nothing was left behind — try again once it is fixed.' : '')
+          + '</div>';
+        return;
+      }
+      out.innerHTML = '<div class="alert-box" style="margin:10px 0">'
+        + '<div class="al">CREATED — ' + esc(data.name) + ' as ' + esc(data.role) + '</div>'
+        + 'Signs in as <b>' + esc(data.username) + '</b> with this password:'
+        + '<div style="display:flex;gap:8px;align-items:center;margin:8px 0">'
+        + '<code id="acct-pw" style="font-size:16px;letter-spacing:.5px">'
+        + esc(data.password) + '</code>'
+        + '<button type="button" class="btn-sm" id="acct-copy">Copy</button>'
+        + '<span class="muted small" id="acct-copied"></span></div>'
+        + '<span class="muted small">Shown once — leaving this tab loses it, and it '
+        + 'cannot be read back. If that happens, issue a new temporary password rather '
+        + 'than creating the account again. Read it to them or send it privately; never '
+        + 'paste it into a group chat or email.</span></div>';
+      document.getElementById('acct-copy')?.addEventListener('click', async () => {
+        const pw = document.getElementById('acct-pw')?.textContent || '';
+        const said = document.getElementById('acct-copied');
+        try {
+          await navigator.clipboard.writeText(pw);
+          said.textContent = 'copied';
+        } catch {
+          // SAY SO rather than leaving a button that looks like it worked.
+          said.textContent = 'could not copy — select it and copy by hand';
+        }
+      });
+      form.reset();
+      hint.textContent = '';
+    } catch (err) {
+      out.innerHTML = '<div class="alert-box warn" style="margin:10px 0">'
+        + '<div class="al">ERROR</div>' + esc(err.message) + '</div>';
+    } finally { btn.disabled = false; }
+  });
+}
+
 async function loadActivity() {
+  acctInit();
   const ls = $('#act-lastseen'), wk = $('#act-weekly');
 
   try {
