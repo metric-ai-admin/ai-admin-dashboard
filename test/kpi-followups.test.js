@@ -188,14 +188,92 @@ t('a week with no guest card tab reports nothing, not zero', () => {
 
 // ---- the goal is deliberately absent ------------------------------------------------
 
-t('no goal is shown for follow ups', () => {
-  // The formula is known and reproduces her 641 — but only with a preleased
-  // count this week's workbook does not carry, so it is left out until that
-  // is settled rather than shown as a target somebody is measured against.
-  const labels = R.SECTIONS.flatMap(s => (s.cards || []).concat(s.funnel || []))
-    .map(c => c.label);
-  assert.ok(!labels.some(l => /follow ups goal|goal.*follow/i.test(l)),
-    'a follow-ups goal is being displayed');
+// ---- the goal -----------------------------------------------------------------------
+//
+// kpi_dashboard_17.html lines 1977-1991:
+//   target = ceil(units x occupancy goal); needed = max(0, target - preleased);
+//   leads  = needed / (0.25 x 0.75 x 0.75); goal = ceil(leads x 5)
+//
+// Week 2026-10-17 gives 677: The Highlander 534 and iConic Downtown 143, every
+// other property already at its target. Her card reads 641 because it was
+// produced from a snapshot with The Highlander one unit further ahead —
+// 31 preleased, not 30 — which is a different reading of the week, not a
+// different formula.
+
+const CONV = 0.25 * 0.75 * 0.75;
+const goalFor = (units, goalFrac, preleased) =>
+  Math.ceil((Math.max(0, Math.ceil(units * goalFrac) - preleased) / CONV) * 5);
+
+t('the formula reproduces her card to the unit', () => {
+  // 31 preleased is the number her card was built on.
+  assert.strictEqual(goalFor(49, 0.90, 31) + goalFor(19, 0.92, 14), 641);
+  // 30 is what this week's workbook says.
+  assert.strictEqual(goalFor(49, 0.90, 30) + goalFor(19, 0.92, 14), 677);
+});
+
+t('week 10/17 totals 677', () => {
+  const week = [
+    ['Hyde Park Square', 48, 0.90, 45], ['Sunset Palms', 36, 0.90, 33],
+    ['The Chateau', 30, 0.95, 30], ['The Highlander', 49, 0.90, 30],
+    ['Windy Hill Apartment', 72, 0.576, 43], ['iConic Downtown', 19, 0.92, 14],
+    ['iConic Round Rock', 32, 0.92, 30],
+  ];
+  const total = week.reduce((n, [, u, g, p]) => n + goalFor(u, g, p), 0);
+  assert.strictEqual(total, 677);
+  // Only two properties are short of their target this week.
+  const contributing = week.filter(([, u, g, p]) => goalFor(u, g, p) > 0).map(w => w[0]);
+  assert.deepStrictEqual(contributing, ['The Highlander', 'iConic Downtown']);
+});
+
+t('a property already at its goal needs nothing, not a negative', () => {
+  // The Chateau is at 100% against a 95% goal. Without the max(0, …) the
+  // target would come out below zero and the portfolio would be reduced by a
+  // property that is doing well.
+  assert.strictEqual(goalFor(30, 0.95, 30), 0);
+  assert.strictEqual(goalFor(72, 0.576, 43), 0);
+});
+
+t('the server computes it the same way, from one named constant', () => {
+  const build = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-build.js'), 'utf8');
+  assert.match(build, /FOLLOW_UP_CONVERSION = 0\.25 \* 0\.75 \* 0\.75/);
+  assert.match(build, /Math\.ceil\(m\.units \* goalFrac\) - \(m\.preleased \|\| 0\)/);
+  assert.match(build, /Math\.ceil\(\(needed \/ FOLLOW_UP_CONVERSION\) \* 5\)/);
+  assert.match(build, /Math\.max\(0,/);
+});
+
+t('a property with no occupancy goal shows blank, not 0', () => {
+  // Ascent is that property: 111 units, the furthest from any target, and no
+  // goal on file. A 0 there would read as "nothing needed".
+  const cards = R.sectionsFor({ units: 111, preleased: 59 }, { workbook: {}, overrides: {} })
+    .flatMap(s => (s.cards || []).concat(s.funnel || []));
+  const card = cards.find(c => c.metric === 'followUpsGoal');
+  assert.ok(card, 'there is no Follow Ups Goal row');
+  assert.strictEqual(card.value, null);
+});
+
+t('the goal is a row beside the two it is read against', () => {
+  const sec = R.SECTIONS.find(s => (s.cards || []).some(c => c.metric === 'followUps'));
+  const order = sec.cards.map(c => c.metric);
+  const i = order.indexOf('followUps');
+  assert.deepStrictEqual(order.slice(i, i + 3),
+    ['followUps', 'overdueFollowUps', 'followUpsGoal']);
+});
+
+t('the portfolio sums the per-property goals, never recomputes from totals', () => {
+  // A goal computed from portfolio units and portfolio preleased is a
+  // different number: 397 units at a blended goal is not the sum of eight
+  // properties each measured against its own.
+  assert.ok(R.WORKBOOK_ROLLUP_METRICS.includes('followUpsGoal'));
+  const rolled = R.rollUp(
+    [{ followUpsGoal: 534 }, { followUpsGoal: 143 }, { followUpsGoal: 0 }],
+    R.WORKBOOK_ROLLUP_METRICS);
+  assert.strictEqual(rolled.followUpsGoal, 677);
+});
+
+t('a week with no occupancy goals at all gives no goal, not 0', () => {
+  const rolled = R.rollUp([{ followUps: 10 }, { followUps: 5 }], R.WORKBOOK_ROLLUP_METRICS);
+  assert.strictEqual(rolled.followUps, 15);
+  assert.strictEqual(rolled.followUpsGoal, null);
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
