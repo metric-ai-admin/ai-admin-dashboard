@@ -20262,9 +20262,12 @@ app.get('/api/social-posts', requireAuth, async (req, res) => {
       throw new Error(posts.error.message);
     }
     const roster = await db.from('social_post_roster')
-      .select('person,expected,active').then(r => r, () => ({ data: [] }));
+      .select('person,email,expected,active').then(r => r, () => ({ data: [] }));
     const active = ((roster && roster.data) || []).filter(r => r.active !== false)
-      .map(r => ({ name: r.person, expected: r.expected }));
+      // email carried through: the daily check matches on the login where it
+      // has one, because a display name is a spelling and the mismatch is
+      // silent — she posts and the check still calls her missing.
+      .map(r => ({ name: r.person, email: r.email, expected: r.expected }));
 
     return res.json({
       day,

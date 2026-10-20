@@ -46,9 +46,23 @@
           + esc(c.day) + ': '
           + c.missing.map(m => esc(m.name) + ' (' + m.posts + '/' + m.expected + ')').join(' · ')
           + '</div>');
-      } else {
+      } else if (c.targetsSet) {
         bits.push('<div class="alert-box" style="margin:10px 0"><div class="al">ALL IN</div>'
           + 'Everyone on the roster posted on ' + esc(c.day) + '.</div>');
+      }
+
+      // NO TARGET IS NOT ALL CLEAR. With the five agents loaded and no daily
+      // number from Lyndsay, `missing` is empty on a day nobody posted — and
+      // the old branch above would have called that "everyone posted". This is
+      // the honest reading: here is what they did, and the number they are
+      // being measured against does not exist yet.
+      if (c.noTarget && c.noTarget.length) {
+        bits.push('<div class="alert-box warn" style="margin:10px 0">'
+          + '<div class="al">NO DAILY TARGET</div>'
+          + esc(c.note || '') + '<br>'
+          + c.noTarget.map(p => esc(p.name) + ' — ' + p.posts
+              + (p.posts === 1 ? ' post' : ' posts')).join(' · ')
+          + '</div>');
       }
       if (c.notOnRoster && c.notOnRoster.length) {
         bits.push('<p class="muted small">Posted but not on the roster: '

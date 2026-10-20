@@ -195,6 +195,107 @@ t('posted_on wins over the upload day', () => {
   assert.strictEqual(r.total, 1, 'a post made yesterday counts for yesterday');
 });
 
+// ---- a roster with no target yet -----------------------------------------------
+//
+// Bekah confirmed WHO posts; Lyndsay has not said HOW MANY. The table's old
+// default of 1 would have answered that question on her behalf.
+
+t('a person with no target is never reported missing', () => {
+  const r = S.dailyCheck([], [{ name: 'Oscar', expected: null }], '2026-10-20');
+  assert.deepStrictEqual(r.missing, [], 'short of a number nobody chose');
+  assert.deepStrictEqual(r.noTarget.map(p => p.name), ['Oscar']);
+  assert.strictEqual(r.noTarget[0].posts, 0);
+  assert.strictEqual(r.targetsSet, false);
+  assert.match(r.note, /has not been chosen/);
+});
+
+t('no target is not success either', () => {
+  // Landing in `posted` would read as "Oscar is up to date" on a day he
+  // posted nothing. Neither bucket is the answer; noTarget is.
+  const r = S.dailyCheck([], [{ name: 'Oscar', expected: null }], '2026-10-20');
+  assert.deepStrictEqual(r.posted.map(p => p.name), []);
+});
+
+t('expected 0 and expected "" are also "not set", not "nothing expected"', () => {
+  ['', 0, undefined].forEach(v => {
+    const r = S.dailyCheck([], [{ name: 'Yeni', expected: v }], '2026-10-20');
+    assert.deepStrictEqual(r.missing, [], JSON.stringify(v));
+    assert.deepStrictEqual(r.noTarget.map(p => p.name), ['Yeni'], JSON.stringify(v));
+  });
+});
+
+t('one person with a target and one without are reported apart', () => {
+  const r = S.dailyCheck([], [
+    { name: 'Sammy', expected: 2 }, { name: 'Daria', expected: null },
+  ], '2026-10-20');
+  assert.deepStrictEqual(r.missing.map(p => p.name), ['Sammy']);
+  assert.deepStrictEqual(r.noTarget.map(p => p.name), ['Daria']);
+  assert.strictEqual(r.targetsSet, false);
+});
+
+t('targetsSet is true only when every target is a number', () => {
+  const r = S.dailyCheck([], [{ name: 'Sammy', expected: 1 }], '2026-10-20');
+  assert.strictEqual(r.targetsSet, true);
+  assert.strictEqual(r.note, null);
+  assert.deepStrictEqual(r.noTarget, []);
+});
+
+// ---- matching the person, not the spelling ---------------------------------------
+
+t('the login matches even when the name is spelled differently', () => {
+  // "Rocío" in dashboard_users, "Rocio" in the roster. On the name alone she
+  // posts and the check still calls her missing — silently.
+  const r = S.dailyCheck(
+    [{ author: 'Rocío Hunsberger', author_email: 'rocio@metric.internal',
+       created_at: '2026-10-20T10:00:00Z' }],
+    [{ name: 'Rocio', email: 'rocio@metric.internal', expected: 1 }],
+    '2026-10-20');
+  assert.deepStrictEqual(r.missing, []);
+  assert.deepStrictEqual(r.posted.map(p => p.name), ['Rocio']);
+  assert.strictEqual(r.posted[0].matchedBy, 'login');
+});
+
+t('a matched login does not also appear as somebody not on the roster', () => {
+  // The display name differs, so the "extra" sweep must not file the same
+  // post a second time under the spelling from the session.
+  const r = S.dailyCheck(
+    [{ author: 'Rocío Hunsberger', author_email: 'rocio@metric.internal',
+       created_at: '2026-10-20T10:00:00Z' }],
+    [{ name: 'Rocio', email: 'rocio@metric.internal', expected: 1 }],
+    '2026-10-20');
+  assert.deepStrictEqual(r.notOnRoster, []);
+  assert.strictEqual(r.posted.length, 1, 'counted once, not twice');
+});
+
+t('without an email it still matches on the name, and says so', () => {
+  // Four of the five have no account. Name matching is all there is for them.
+  const r = S.dailyCheck(
+    [{ author: 'Oscar', created_at: '2026-10-20T10:00:00Z' }],
+    [{ name: 'Oscar', email: null, expected: 1 }], '2026-10-20');
+  assert.deepStrictEqual(r.posted.map(p => p.name), ['Oscar']);
+  assert.strictEqual(r.posted[0].matchedBy, 'name');
+});
+
+t('a roster email nobody posted under falls back to the name, not to zero', () => {
+  const r = S.dailyCheck(
+    [{ author: 'Sammy', created_at: '2026-10-20T10:00:00Z' }],
+    [{ name: 'Sammy', email: 'sammy@metric.internal', expected: 1 }], '2026-10-20');
+  assert.deepStrictEqual(r.missing, [], 'posted under a name, email not on the post');
+  assert.strictEqual(r.posted[0].matchedBy, 'name');
+});
+
+t('the screen cannot print ALL IN off a roster with no targets', () => {
+  // The failure this guards: five agents loaded, no daily number from Lyndsay,
+  // nobody posts, `missing` is empty — and the old branch read that as
+  // "everyone on the roster posted".
+  const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'social-posts.js'), 'utf8');
+  const at = js.indexOf('ALL IN');
+  assert.ok(at > 0, 'the branch is gone');
+  assert.match(js.slice(Math.max(0, at - 260), at), /c\.targetsSet/,
+    'ALL IN is not gated on the targets being set');
+  assert.match(js, /NO DAILY TARGET/, 'the no-target case is not shown at all');
+});
+
 // ---- the week folder -----------------------------------------------------------
 
 t('the week folder matches the tracker Katie keeps', () => {
