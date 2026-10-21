@@ -17827,6 +17827,19 @@ function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sop
   const allDayEvents = meetings.filter(m => m.allDay);
   const timed = meetings.filter(m => !m.allDay);
   if (allDayEvents.length) {
+    // ONE LINE PER DISTINCT LINE, not per event.
+    //
+    // Two personal all-day events both redact to the same sentence — the
+    // redaction is the point: the room is told she is unreachable and not
+    // where she is — so the report printed "ALL DAY — Lyndsay out of office"
+    // twice and looked like a rendering fault.
+    //
+    // Collapsing identical text loses nothing a reader could have used: two
+    // lines that say the same words in the same order are not two facts. It
+    // is the rendered line that is compared, after redaction, because that is
+    // what somebody reads.
+    const seen = new Set();
+    const pushLine = line => { if (!seen.has(line)) { seen.add(line); L.push(line); } };
     allDayEvents.forEach(m => {
       // Everything reaching here is already HERS — mrOwnsAllDay dropped
       // anyone else's. What is left to decide is whether it is personal.
@@ -17835,8 +17848,8 @@ function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sop
       // The room needs to know she is unreachable, not where. An all-day event
       // WITH attendees is a commitment the room may share — a conference, an
       // offsite — and is shown as it always was.
-      if (RED.isPersonalAllDay(m)) { L.push(`  📅 ALL DAY — ${RED.OUT_OF_OFFICE}`); return; }
-      L.push(`  📅 ALL DAY — ${m.subject}${m.organizer && m.organizer !== '—' ? `  (${m.organizer})` : ''}`);
+      if (RED.isPersonalAllDay(m)) { pushLine(`  📅 ALL DAY — ${RED.OUT_OF_OFFICE}`); return; }
+      pushLine(`  📅 ALL DAY — ${m.subject}${m.organizer && m.organizer !== '—' ? `  (${m.organizer})` : ''}`);
     });
     L.push('');
   }

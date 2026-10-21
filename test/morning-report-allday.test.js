@@ -182,4 +182,79 @@ t('the filter actually calls it', () => {
   assert.ok(/responseStatus/.test(src), 'responseStatus is not requested from Graph, so the check is blind');
 });
 
+// ---- the same line twice ------------------------------------------------------
+//
+// 2026-10-21: the report showed
+//
+//   📅 ALL DAY — Lyndsay out of office — limited availability
+//   📅 ALL DAY — Lyndsay out of office — limited availability
+//
+// Two personal all-day events, both redacted to the same sentence — the
+// redaction is the point, the room is told she is unreachable and not where —
+// so the duplication was in the rendering, not in her calendar.
+//
+// The shipped block is run, not a copy of it, for the same reason as the rest
+// of this file.
+const RED = require('../lib/redact.js');
+const render = events => {
+  const L = [];
+  const allDayEvents = events;
+  // eslint-disable-next-line no-new-func
+  new Function('L', 'allDayEvents', 'RED', block('  if (allDayEvents.length) {'))(L, allDayEvents, RED);
+  return L.filter(Boolean);
+};
+
+t('two events redacted to the same sentence print once', () => {
+  const lines = render([
+    { allDay: true, subject: 'Dentist', attendeeCount: 0 },
+    { allDay: true, subject: 'Flight to Dallas', attendeeCount: 0 },
+  ]);
+  assert.strictEqual(lines.length, 1, 'got:\n' + lines.join('\n'));
+  assert.ok(lines[0].includes(RED.OUT_OF_OFFICE));
+});
+
+t('two DIFFERENT all-day events still print twice', () => {
+  // The fix must collapse identical text, not events. A conference and an
+  // offsite are two things to know about.
+  const lines = render([
+    { allDay: true, subject: 'AppFolio Future Conference', organizer: 'Lyndsay', attendeeCount: 4 },
+    { allDay: true, subject: 'Regional offsite', organizer: 'Bekah', attendeeCount: 6 },
+  ]);
+  assert.strictEqual(lines.length, 2, 'got:\n' + lines.join('\n'));
+});
+
+t('one personal and one shared event are both shown', () => {
+  const lines = render([
+    { allDay: true, subject: 'Dentist', attendeeCount: 0 },
+    { allDay: true, subject: 'AppFolio Future Conference', organizer: 'Lyndsay', attendeeCount: 4 },
+  ]);
+  assert.strictEqual(lines.length, 2, 'got:\n' + lines.join('\n'));
+  assert.ok(lines.some(l => l.includes(RED.OUT_OF_OFFICE)));
+  assert.ok(lines.some(l => l.includes('AppFolio Future Conference')));
+});
+
+t('a repeated title with a different organizer is not collapsed', () => {
+  // Same words, different line — the organizer is part of what is read.
+  const lines = render([
+    { allDay: true, subject: 'Property walk', organizer: 'Erick', attendeeCount: 3 },
+    { allDay: true, subject: 'Property walk', organizer: 'Bekah', attendeeCount: 3 },
+  ]);
+  assert.strictEqual(lines.length, 2, 'got:\n' + lines.join('\n'));
+});
+
+t('the same title AND organizer twice is one line', () => {
+  // Nothing on the second line that the first did not already say.
+  const lines = render([
+    { allDay: true, subject: 'Property walk', organizer: 'Erick', attendeeCount: 3 },
+    { allDay: true, subject: 'Property walk', organizer: 'Erick', attendeeCount: 3 },
+  ]);
+  assert.strictEqual(lines.length, 1, 'got:\n' + lines.join('\n'));
+});
+
+t('one event is unchanged', () => {
+  const lines = render([{ allDay: true, subject: 'Dentist', attendeeCount: 0 }]);
+  assert.strictEqual(lines.length, 1);
+  assert.ok(lines[0].startsWith('  📅 ALL DAY — '));
+});
+
 console.log(`\n${pass} passing`);
