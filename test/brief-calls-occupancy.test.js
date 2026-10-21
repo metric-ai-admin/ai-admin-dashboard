@@ -393,8 +393,19 @@ t('FAS says it cannot be measured rather than being absent', () => {
   const text = B.render(brief);
   assert.match(text, /FINAL ACCOUNT STATEMENTS/);
   assert.match(text, /NOT MEASURABLE/);
-  assert.match(text, /should be read as "no FAS is overdue"/);
-  assert.match(text, /deposit settled/, 'and what it is waiting on');
+  // AGAINST THE UNWRAPPED TEXT. The section is wrapped to the rules above it,
+  // so a phrase can be split across two lines by nothing more than a reworded
+  // sentence earlier in the paragraph — which is what happened when the note
+  // was updated, and it fails here as a missing sentence rather than as a line
+  // break. The sentence is what matters; where it wraps is not.
+  const flat = String(text).replace(/\s+/g, ' ');
+  assert.match(flat, /should be read as "no FAS is overdue"/);
+  // What it is waiting on — a person and an action, not a question already
+  // answered. Kara confirmed "deposit settled" on 2026-10-20 and the note went
+  // on asking her for it every morning until 2026-10-21.
+  assert.match(flat, /Waiting on: Arturo/);
+  assert.ok(!/Kara to confirm whether/.test(flat),
+    'the note still asks Kara for something she has already given');
 });
 
 // ---- both renderers agree ---------------------------------------------------
