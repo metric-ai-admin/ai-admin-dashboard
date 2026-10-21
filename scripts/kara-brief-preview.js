@@ -5,7 +5,7 @@
 //   node scripts/kara-brief-preview.js
 //   node scripts/kara-brief-preview.js --today 2026-10-15
 //   node scripts/kara-brief-preview.js --html out.html
-//   node scripts/kara-brief-preview.js --deadline 15 --basis business
+//   node scripts/kara-brief-preview.js --deadline 5 --basis business
 //
 // WHY A SCRIPT RATHER THAN THE TEST ROUTE. /api/brief/kara/test renders the
 // brief AND SENDS IT to Arturo. That is the right tool for checking what lands
@@ -22,6 +22,7 @@ const WEEK = require('../lib/week.js');
 const B = require('../lib/kara-brief.js');
 const H = require('../lib/kara-brief-html.js');
 const G = require('../lib/kara-brief-gather.js');
+const FAS = require('../lib/fas-deposits.js');
 
 const arg = (n, d) => {
   const i = process.argv.indexOf('--' + n);
@@ -71,7 +72,15 @@ async function selectAll(build, opts) {
     // might mean and was not asked about, so it is a parameter rather than a
     // constant: --deadline 15 --basis business renders the other reading
     // without anybody editing code to find out what it looks like.
-    fasDeadline: { days: Number(arg('deadline', 15)), basis: arg('basis', 'calendar') },
+    // --deadline / --basis, then the environment, then 15 calendar. The
+    // environment matters because the answer is one message from Kara away:
+    // FAS_DEADLINE_DAYS=5 FAS_DEADLINE_BASIS=business changes it in Render
+    // without a deploy, and without anybody editing a number in code.
+    fasDeadline: FAS.readDeadline(
+      arg('deadline', process.env.FAS_DEADLINE_DAYS),
+      arg('basis', process.env.FAS_DEADLINE_BASIS)),
+    // Until she answers, the section prints both candidates and which it used.
+    fasDeadlineUnconfirmed: process.env.FAS_DEADLINE_CONFIRMED !== 'yes',
     buildKpiReport: kpiBuild.buildKpiReport,
     readReportData: id => af.readReportData(id),
     // THE REAL GOALS, from the same table server.js uses. Passing () => null

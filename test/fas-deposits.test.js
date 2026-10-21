@@ -55,6 +55,72 @@ t('exactly on the deadline is still in time', () => {
   assert.strictEqual(d.bucket, 'overdue');
 });
 
+// ---- which deadline Kara means --------------------------------------------------
+//
+// Five business days (2026-10-09, for the statement) or fifteen calendar
+// (2026-10-14, for the refund). Arturo is confirming. They are not close
+// enough to shrug at.
+
+t('the two candidates sort the same move-out differently', () => {
+  // A move-out on Friday 10/09, read on 10/20: inside one window, nine days
+  // past the other. "OVERDUE: 2" means nothing without the clock beside it.
+  const r = row({ move_out: '2026-10-09', unit: '108' });
+  assert.strictEqual(F.classify(r, '2026-10-20', { days: 15, basis: 'calendar' }).bucket,
+    'withinWindow');
+  assert.strictEqual(F.classify(r, '2026-10-20', { days: 5, basis: 'business' }).bucket,
+    'overdue');
+});
+
+t('both candidates are written down, with where each came from', () => {
+  assert.strictEqual(F.DEADLINE_CANDIDATES.length, 2);
+  const five = F.DEADLINE_CANDIDATES.find(c => c.days === 5);
+  assert.strictEqual(five.basis, 'business');
+  assert.match(five.source, /2026-10-09/);
+  const fifteen = F.DEADLINE_CANDIDATES.find(c => c.days === 15);
+  assert.strictEqual(fifteen.basis, 'calendar');
+  assert.match(fifteen.source, /2026-10-14/);
+});
+
+t('the caveat names the clock it USED, not a position in a list', () => {
+  // "the first of those two" was wrong the moment the default was the second
+  // one. A caveat that misreports which clock it used is worse than none.
+  const five = F.caveats({ deadline: { days: 5, basis: 'business' }, deadlineUnconfirmed: true });
+  assert.ok(five.some(l => /These counts use 5 business/.test(l)));
+  assert.ok(five.some(l => /under 15 calendar/.test(l)));
+  const fifteen = F.caveats({ deadline: { days: 15, basis: 'calendar' }, deadlineUnconfirmed: true });
+  assert.ok(fifteen.some(l => /These counts use 15 calendar/.test(l)));
+  assert.ok(fifteen.some(l => /under 5 business/.test(l)));
+});
+
+t('the deadline is always stated, confirmed or not', () => {
+  const c = F.caveats({ deadline: { days: 5, basis: 'business' } });
+  assert.ok(c.some(l => /Deadline used: 5 business days/.test(l)));
+  assert.ok(!c.some(l => /NOT CONFIRMED/.test(l)), 'it nags after she has answered');
+});
+
+t('a deadline read from a flag or the environment is normalised', () => {
+  // A typo must become the default, never NaN days — which would make every
+  // comparison false and every move-out look fine.
+  assert.deepStrictEqual(F.readDeadline('5', 'business'), { days: 5, basis: 'business' });
+  assert.deepStrictEqual(F.readDeadline(5, 'BUSINESS'), { days: 5, basis: 'business' });
+  assert.deepStrictEqual(F.readDeadline(undefined, undefined), F.DEFAULT_DEADLINE);
+  assert.deepStrictEqual(F.readDeadline('abc', 'weekdays'), F.DEFAULT_DEADLINE);
+  assert.deepStrictEqual(F.readDeadline('0', ''), F.DEFAULT_DEADLINE, 'zero days is not a deadline');
+  assert.deepStrictEqual(F.readDeadline('-3', ''), F.DEFAULT_DEADLINE);
+});
+
+t('it can be changed without a deploy', () => {
+  // The answer is one message from Kara away; editing a number in code and
+  // redeploying to apply it is how it waits a week instead.
+  // Required locally: the file's own `fs` const is declared further down, and
+  // a const is in its temporal dead zone until then.
+  const preview = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'scripts', 'kara-brief-preview.js'), 'utf8');
+  assert.match(preview, /FAS_DEADLINE_DAYS/);
+  assert.match(preview, /FAS_DEADLINE_BASIS/);
+  assert.match(preview, /FAS\.readDeadline\(/);
+});
+
 t('the deadline is configurable', () => {
   const c = F.classify(row({ move_out: '2026-10-01' }), '2026-10-09',
     { days: 5, basis: 'calendar' });
