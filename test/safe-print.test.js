@@ -117,6 +117,35 @@ t('the probes that print columns go through safe-print', () => {
   });
 });
 
+t('the deposit probe prints no row value, and no occupancy id', () => {
+  // It reads reports that carry residents, units and amounts, and it now
+  // finds an occupancy id by itself. An occupancy id identifies one person's
+  // tenancy — the whole point of --auto-occupancy is that nobody has to read
+  // it off a screen, so it must not be printed either.
+  const src = fs.readFileSync(path.join(SCRIPTS, 'probe-deposit-reports.js'), 'utf8');
+  // codeOf blanks every string literal, so anything that IS a literal — a
+  // require path, a printed word — has to be checked against the raw source.
+  const code = codeOf(src);
+
+  // Descriptions go through the mask, never straight to the terminal.
+  assert.match(src, /require\('\.\.\/lib\/ledger-mask\.js'\)/,
+    'ledger descriptions are printed unmasked');
+  // Columns are printed by NAME. A row, or a value out of one, is not.
+  assert.match(src, /cols\.join\(/, 'it no longer prints the column list');
+  assert.ok(!/JSON\.stringify\(rows\[0\]\)|console\.log\(rows\[0\]\)/.test(code),
+    'it prints a sample row');
+
+  // The id it picks must never reach the terminal — that is the whole point
+  // of --auto-occupancy, which exists so nobody reads one off a screen.
+  const at = src.indexOf('async function pickOccupancy');
+  assert.ok(at > 0, 'pickOccupancy is gone');
+  const picker = codeOf(src.slice(at, src.indexOf('(async () => {', at)));
+  assert.ok(!/console\.log\([^)]*\bhit\[/.test(picker),
+    'the picker prints a value out of the row it chose');
+  assert.ok(!/console\.log\([^;]*OCCUPANCY/.test(code), 'the occupancy id is printed');
+  assert.match(src, /not printed/, 'the picker does not say that it withholds the id');
+});
+
 t('the applications probe asks through the door the sync uses', () => {
   // The first version called appfolio-client (APPFOLIO_CLIENT_ID) while the
   // sync calls the Reports API (APPFOLIO_REPORTS_CLIENT_ID). Five of six

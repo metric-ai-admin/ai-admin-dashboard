@@ -35,7 +35,66 @@ const SECRET = process.env.APPFOLIO_REPORTS_CLIENT_SECRET;
 const HOST = process.env.APPFOLIO_REPORTS_HOST || 'metricpropertymanagement.appfolio.com';
 
 const arg = (n, d) => { const i = process.argv.indexOf('--' + n); return i > -1 ? process.argv[i + 1] : d; };
-const OCCUPANCY = arg('occupancy', null);
+let OCCUPANCY = arg('occupancy', null);
+// --auto-occupancy: find one ourselves from the most recent move-out and
+// NEVER print it. Passing an id on the command line means reading it off a
+// screen first, and an occupancy id identifies one resident's tenancy.
+const AUTO = process.argv.includes('--auto-occupancy');
+
+// One occupancy id for a recent move-out, taken from the synced stores.
+//
+// Returns the id and prints only HOW it was found and how old the move-out is
+// — never the id, the unit, the property or the resident. If the id itself
+// reached the terminal, the point of this function would be lost: whoever ran
+// it would be looking at the thing it exists to avoid showing.
+async function pickOccupancy() {
+  const AR = require('../appfolio-reports.js');
+  const occKey = r => Object.keys(r).find(k => /^occupancy[_ ]?id$/i.test(k.replace(/\s+/g, '_')));
+
+  let turns = [];
+  try { turns = ((await AR.readReportData('unit_turn_detail')) || {}).rows || []; }
+  catch (e) { console.log('   unit_turn_detail is not readable here: ' + e.message); }
+  const moved = turns
+    .filter(t => t && String(t.move_out_date || '').trim())
+    .sort((a, b) => String(b.move_out_date).localeCompare(String(a.move_out_date)));
+  if (!moved.length) {
+    console.log('   unit_turn_detail has no row with a move_out_date on this machine.');
+    return null;
+  }
+  const days = Math.round(
+    (Date.now() - Date.parse(String(moved[0].move_out_date).slice(0, 10))) / 86400000);
+  console.log('   most recent move-out in unit_turn_detail: ' + days + ' days ago'
+    + '   (' + moved.length + ' move-outs on file)');
+
+  // 1. the turn row itself, if it carries one
+  const direct = occKey(moved[0]);
+  if (direct && String(moved[0][direct]).trim()) {
+    console.log('   occupancy id taken from unit_turn_detail.' + direct + ' — not printed');
+    return String(moved[0][direct]).trim();
+  }
+  console.log('   unit_turn_detail carries no occupancy id column'
+    + ' (has: ' + Object.keys(moved[0]).length + ' columns)');
+
+  // 2. occupancy_custom_fields, matched on unit — one row per OCCUPANCY, and
+  //    the only store that carries the id at all.
+  let occ = [];
+  try { occ = ((await AR.readReportData('occupancy_custom_fields')) || {}).rows || []; }
+  catch (e) { console.log('   occupancy_custom_fields is not readable here: ' + e.message); }
+  if (!occ.length) { console.log('   occupancy_custom_fields is empty on this machine.'); return null; }
+
+  const unitOf = r => String(r.unit_id || r.unit || r.unit_name || '').trim();
+  const want = unitOf(moved[0]);
+  const key = occKey(occ[0]);
+  if (!key) { console.log('   occupancy_custom_fields carries no occupancy id column either.'); return null; }
+  const hit = want ? occ.find(r => unitOf(r) && unitOf(r) === want) : null;
+  if (!hit) {
+    console.log('   no occupancy row matches that move-out’s unit — '
+      + 'the two reports key units differently, which is its own finding.');
+    return null;
+  }
+  console.log('   occupancy id taken from occupancy_custom_fields, matched on unit — not printed');
+  return String(hit[key]).trim();
+}
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const pad = (s, w) => String(s).padEnd(w);
@@ -60,7 +119,18 @@ const rowsOf = j => (Array.isArray(j) ? j : ((j && (j.results || j.data)) || [])
 // AppFolio's own naming habits: lower_snake_case, usually the report's screen
 // name. These are CANDIDATES, not knowledge — each is reported as it answers,
 // and a rejection is as useful as a hit.
-const CANDIDATES = [
+// READ OFF THE ADMIN UI, not guessed. Arturo took these from the report
+// URLs on 2026-10-21 (buffered_reports/<name>), after the catalogue returned
+// 404 and all 22 guesses were rejected — which is exactly the lesson the
+// header above describes: a name nobody confirmed fails like a report that
+// does not exist. These three are confirmed names; they go first.
+const CONFIRMED = [
+  'security_deposit_funds_detail',   // "Security Deposit Funds Detail"
+  'deposit_register',                // "Deposit Register"
+  'customer_ledger',                 // "Customer Ledger"
+];
+
+const CANDIDATES = CONFIRMED.concat([
   'tenant_security_deposit', 'security_deposit', 'security_deposits',
   'deposit_disposition', 'tenant_deposit', 'tenant_deposits',
   'move_out_detail', 'move_outs', 'moveout_detail',
@@ -68,7 +138,13 @@ const CANDIDATES = [
   'tenant_refund', 'refunds', 'check_register', 'payable_check_register',
   'tenant_transactions', 'tenant_payments', 'receivable_transactions',
   'tenant_charges', 'prepaid_and_deposits', 'liability_balances',
-];
+]);
+
+// Does a column answer "WHEN was it settled?" — the whole question for the FAS
+// clock. A report that lists deposits held but carries no date cannot measure
+// days between a move-out and a settlement, however useful it is otherwise.
+const DATEISH = /date|on$|_at$|posted|cleared|settled|refund|disposed|disposition|issued|paid|check/i;
+const DEPOSITISH = /deposit|refund|disposition|settle|final|statement|forward/i;
 
 (async () => {
   if (!ID || !SECRET) {
@@ -107,7 +183,22 @@ const CANDIDATES = [
       + (bad ? '' : '   ' + rows.length + ' rows, ' + cols.length + ' columns'));
     if (!bad) {
       exists.push({ name, cols, rows: rows.length });
+      // COLUMN NAMES AND COUNTS ONLY. No value from any row is printed: these
+      // reports carry residents, units and amounts, and the question here is
+      // what the report HAS, not what it says about anybody.
       console.log('      columns: ' + cols.join(', '));
+      const dates = cols.filter(c => DATEISH.test(c));
+      const deps = cols.filter(c => DEPOSITISH.test(c));
+      console.log('      date-ish columns   : ' + (dates.length ? dates.join(', ') : 'NONE'));
+      console.log('      deposit-ish columns: ' + (deps.length ? deps.join(', ') : 'NONE'));
+      // The verdict the FAS clock actually needs.
+      const canDate = dates.some(c => DEPOSITISH.test(c))
+        || (dates.length > 0 && deps.length > 0);
+      console.log('      -> ' + (canDate
+        ? 'CAN date a settlement (a date column and a deposit column are both here)'
+        : dates.length
+          ? 'has dates but nothing deposit-shaped — check the column list by eye'
+          : 'NO DATE COLUMN: cannot measure days to settlement from this report'));
     }
     await sleep(500);
   }
@@ -118,8 +209,43 @@ const CANDIDATES = [
     console.log('   report list — not another round of guesses.');
   }
 
+  // ---- 2b. the memorized report -------------------------------------------
+  //
+  // "FINANCIAL REVIEW - Security Deposits" is memorized_reports/15 in the
+  // admin UI. The tenant_tickler note in appfolio-reports.js says saved-report
+  // UUIDs are unreachable from the public API; this one is a small integer
+  // under a different path, which is a different question, so it is asked
+  // rather than assumed. A rejection is an answer and costs one request.
+  console.log('\nTHE MEMORIZED REPORT (FINANCIAL REVIEW - Security Deposits)');
+  //
+  // ONLY PATHS INSIDE THE REPORTS NAMESPACE. A third shape — memorized_reports
+  // hanging directly off the API root, outside /reports — was the obvious one
+  // to try and is deliberately not here: this file POSTs, and the rail that
+  // keeps every probe inside that namespace is worth more than one more guess
+  // at a URL. If both shapes below are rejected, the next step is asking
+  // AppFolio what the path is, not POSTing at endpoints to find out.
+  for (const p of ['/api/v2/reports/memorized_reports/15.json',
+    '/api/v2/reports/15.json']) {
+    const r = await call(p, 'POST', { paginate_results: false });
+    const rows = rowsOf(r.json);
+    const cols = rows.length ? Object.keys(rows[0]) : [];
+    console.log('   ' + pad(p, 44) + (r.status >= 400 ? 'REJECTED ' + r.status
+      : r.status + '   ' + rows.length + ' rows, ' + cols.length + ' columns'));
+    if (r.status < 400 && cols.length) {
+      console.log('      columns: ' + cols.join(', '));
+      console.log('      date-ish: ' + (cols.filter(c => DATEISH.test(c)).join(', ') || 'NONE'));
+    }
+    await sleep(400);
+  }
+
   // ---- 3. tenant_ledger, filtered ------------------------------------------
   console.log('\nTENANT LEDGER, FILTERED');
+  if (AUTO && !OCCUPANCY) {
+    OCCUPANCY = await pickOccupancy();
+    if (!OCCUPANCY) {
+      console.log('   Could not find an occupancy id for a recent move-out — see above.');
+    }
+  }
   if (!OCCUPANCY) {
     console.log('   Pass --occupancy <id> to try it for ONE move-out. Get an id from');
     console.log('   the occupancy_custom_fields store or from unit_turn_detail.');
@@ -150,5 +276,6 @@ const CANDIDATES = [
     }
   }
 
-  console.log('\nNothing was written. No amount, payer, name, unit or date was printed.');
+  console.log('\nNothing was written. No amount, payer, name, unit, occupancy id or');
+  console.log('date was printed — only column names, row counts and masked patterns.');
 })().catch(e => { console.error('FAILED: ' + e.message); process.exitCode = 1; });
