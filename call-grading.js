@@ -199,6 +199,39 @@ function parseModelJson(text) {
 // grading, and marking them Not Scoreable loses it permanently.
 const MAX_TOKENS_CEILING = 16000;
 
+// WHAT KIND OF FAILURE, not just that there was one.
+//
+// The grader died on 2026-10-17 and the log said "Anthropic API error (400)"
+// for four nights. Credit exhausted, a revoked key and a rate limit need three
+// different answers — top up, replace the key, wait — and the API already
+// distinguishes them by status code. Collapsing all three into one sentence is
+// what made the outage take four days to name.
+//
+// The status code decides first because it is unambiguous; the message is only
+// read when the code is not enough (400 covers several things).
+function classifyAnthropicError(status, message) {
+  const m = String(message || '').toLowerCase();
+  if (status === 401 || status === 403 || /invalid x-api-key|authentication|unauthorized/.test(m)) {
+    return 'auth';
+  }
+  if (status === 429 || /rate.?limit|too many requests/.test(m)) return 'rate';
+  if (/credit|billing|balance|quota|insufficient funds|payment/.test(m)) return 'credit';
+  // A 400 that mentions none of those is a request we built wrong, which is
+  // ours to fix and not a thing to wait out.
+  return 'other';
+}
+
+// The sentence somebody acts on, per kind.
+const FAILURE_ACTION = {
+  credit: 'The Anthropic balance is spent. Top it up, then press Backfill in the '
+    + 'Call Analyzer — nothing is lost, the transcripts are kept.',
+  auth: 'ANTHROPIC_API_KEY is rejected. Replace it in Render; grading stays dead until then.',
+  rate: 'Anthropic rate-limited the run. It usually passes on the next attempt; '
+    + 'if it repeats two nights running, it is not the rate limit.',
+  other: 'The grader failed for a reason that is not credit, the key or a rate limit. '
+    + 'The message is below.',
+};
+
 async function anthropicRequest({ system, user, maxTokens, model, key }) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -219,7 +252,12 @@ async function anthropicRequest({ system, user, maxTokens, model, key }) {
     const errText = await r.text();
     let msg = 'Anthropic API error (' + r.status + ').';
     try { const j = JSON.parse(errText); if (j.error && j.error.message) msg = j.error.message; } catch (e) {}
-    throw new Error(msg);
+    // Carried ON the error, so every caller gets the classification without
+    // re-parsing a string that was already parsed once here.
+    const err = new Error(msg);
+    err.anthropicStatus = r.status;
+    err.failureKind = classifyAnthropicError(r.status, msg);
+    throw err;
   }
   return r.json();
 }
@@ -347,7 +385,13 @@ async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs 
     const errText = await r.text();
     let msg = 'Anthropic API error (' + r.status + ').';
     try { const j = JSON.parse(errText); if (j.error && j.error.message) msg = j.error.message; } catch (e) {}
-    throw new Error(msg);
+    // The SECOND outbound path. Classifying only the first one would have
+    // meant the kind depended on which function happened to be called — and
+    // this is the one the 6PM extraction uses.
+    const err = new Error(msg);
+    err.anthropicStatus = r.status;
+    err.failureKind = classifyAnthropicError(r.status, msg);
+    throw err;
   }
   const data = await r.json();
   const textBlock = (data.content || []).find(b => b.type === 'text');
@@ -355,4 +399,4 @@ async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs 
   return textBlock.text;
 }
 
-module.exports = { SYSTEM_PROMPT, gradeTranscript, normaliseScoreability, parseModelJson, extractJsonObject, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };
+module.exports = { SYSTEM_PROMPT, classifyAnthropicError, FAILURE_ACTION, gradeTranscript, normaliseScoreability, parseModelJson, extractJsonObject, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };

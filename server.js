@@ -10441,10 +10441,157 @@ async function autoGradeDay(date, { delayMs = 500 } = {}) {
       agg.errors++;
       console.error('[auto-grade]', row.recording_id, err.message);
       if (agg.error_samples.length < 5 && !agg.error_samples.includes(err.message)) agg.error_samples.push(err.message);
+      // THE KIND OF THE FIRST FAILURE, kept. Credit, key and rate limit need
+      // three different answers, and the first one is the one that explains
+      // the rest — once the balance is spent every subsequent call fails the
+      // same way, so the hundredth message says nothing the first did not.
+      if (!agg.failure_kind && err.failureKind) {
+        agg.failure_kind = err.failureKind;
+        agg.failure_note = err.message;
+      }
     }
   }
   agg.users_processed = Object.keys(agg.per_user).length; // distinct attributed agents
   return agg;
+}
+
+// Where the grading alert goes, and the one plain-text sender it uses.
+//
+// support@ by default: the alert is operational, not a person's to-do, and a
+// mailbox outlives whoever is on shift.
+const AUTOGRADE_ALERT_TO = process.env.AUTOGRADE_ALERT_TO
+  || process.env.EOD_SENDER || 'support@livewithmetric.com';
+
+// Plain text through the same Graph path the billable report uses. No HTML:
+// this is an alert read on a phone at 2am, and the shortest form that cannot
+// render wrong is the right one.
+async function sendPlainMail(to, subject, text) {
+  const token = await graphMailToken();
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(EOD_SENDER)}/sendMail`;
+  const r = await fetchFn(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message: {
+        subject,
+        body: { contentType: 'Text', content: text },
+        toRecipients: String(to).split(',').map(a => ({ emailAddress: { address: a.trim() } })),
+      },
+      saveToSentItems: true,
+    }),
+  });
+  if (!r.ok) {
+    const body = await r.text();
+    throw new Error(`Graph sendMail ${r.status}: ${body.slice(0, 300) || r.statusText}`);
+  }
+}
+
+// A ROW PER ATTEMPT, so a night that produced nothing still leaves something
+// behind. Before this, "the cron did not run" and "the cron ran and every call
+// failed" looked identical, and working out which took reading the timestamps
+// of grades that happened to be written before it broke.
+//
+// NEVER FAILS THE RUN. A record that cannot be written costs the record; it
+// must not cost the grading, which is the thing it exists to watch.
+async function recordAutogradeRun(agg, source) {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const row = {
+      for_day: agg.date,
+      eligible: agg.total || 0,
+      graded: agg.newly_graded || 0,
+      already: agg.already_graded || 0,
+      skipped: agg.skipped || 0,
+      errors: agg.errors || 0,
+      failure_kind: agg.failure_kind || null,
+      failure_note: agg.failure_note ? String(agg.failure_note).slice(0, 500) : null,
+      alerted: false,
+      source: source || 'cron',
+    };
+    const { data, error } = await db.from('autograde_runs').insert(row).select('id').single();
+    if (error) throw new Error(error.message);
+    return data && data.id;
+  } catch (e) {
+    logLine('[auto-grade] run not recorded: ' + e.message);
+    return null;
+  }
+}
+
+// WHEN IS A NIGHT WORTH WAKING SOMEBODY FOR.
+//
+// Two conditions, because either alone is wrong. "Errors happened" fires on a
+// single thin transcript; "nothing was graded" fires every Sunday, when there
+// are no calls — and an alert that cries wolf on Sundays is an alert nobody
+// reads on the Monday it matters.
+//
+// So: there was work to do AND none of it got done, or errors passed a floor.
+const AUTOGRADE_ERROR_FLOOR = Number(process.env.AUTOGRADE_ERROR_FLOOR || 5);
+function autogradeShouldAlert(agg) {
+  const eligible = agg.total || 0;
+  const graded = agg.newly_graded || 0;
+  const already = agg.already_graded || 0;
+  const errors = agg.errors || 0;
+  // Nothing was waiting: a quiet night, not a broken one.
+  if (eligible === 0) return null;
+  // Everything was already done — a re-run, not a failure.
+  if (graded === 0 && already >= eligible) return null;
+  if (graded === 0) {
+    return { reason: eligible + ' call(s) were waiting and none were graded.' };
+  }
+  if (errors >= AUTOGRADE_ERROR_FLOOR) {
+    return { reason: errors + ' of ' + eligible + ' call(s) failed to grade.' };
+  }
+  return null;
+}
+
+// The mail, and the line the Morning Report reads.
+//
+// ONE ALERT PER OUTAGE, not one per night. The balance stays empty until
+// somebody tops it up, so a nightly mail saying the same thing is how the
+// third one gets deleted unread. A run is alerted only if the previous run
+// was not already alerted for the same kind of failure.
+async function alertAutogradeFailure(agg, runId) {
+  const should = autogradeShouldAlert(agg);
+  if (!should) return { alerted: false };
+  const kind = agg.failure_kind || 'other';
+  const CG = require('./call-grading.js');
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const prev = await db.from('autograde_runs')
+      .select('failure_kind,alerted').neq('id', runId || -1)
+      .order('ran_at', { ascending: false }).limit(1);
+    const last = prev.data && prev.data[0];
+    if (last && last.alerted && last.failure_kind === agg.failure_kind) {
+      logLine('[auto-grade] still failing (' + kind + ') — already alerted, not mailing again');
+      return { alerted: false, repeat: true };
+    }
+
+    const subject = 'Call grading stopped — ' + kind + ' (' + agg.date + ')';
+    const body = [
+      'The nightly call grading did not complete for ' + agg.date + '.',
+      '',
+      should.reason,
+      '',
+      CG.FAILURE_ACTION[kind] || CG.FAILURE_ACTION.other,
+      agg.failure_note ? '' : null,
+      agg.failure_note ? 'Message: ' + agg.failure_note : null,
+      '',
+      'The recordings and transcripts are unaffected — nothing is lost, and a '
+        + 'Backfill in the Call Analyzer grades everything that was missed.',
+    ].filter(l => l !== null).join('\n');
+
+    await sendPlainMail(AUTOGRADE_ALERT_TO, subject, body);
+    if (runId) {
+      await db.from('autograde_runs').update({ alerted: true }).eq('id', runId);
+    }
+    logLine('[auto-grade] ALERT sent to ' + AUTOGRADE_ALERT_TO + ': ' + kind);
+    return { alerted: true, kind };
+  } catch (e) {
+    // An alert that could not be sent is itself worth a line, or the silence
+    // means both "nothing broke" and "the alarm is broken".
+    logLine('[auto-grade] ALERT NOT SENT (' + kind + '): ' + e.message);
+    return { alerted: false, error: e.message };
+  }
 }
 
 // POST /api/sv/grade/backfill?days=N — grade all ungraded transcribed calls over
@@ -10505,8 +10652,25 @@ cron.schedule('0 2 * * *', () => {
   if (!CRM_CONFIGURED || !simplevoip.isConfigured()) return;
   const yesterday = ctDateStr(-1);
   autoGradeDay(yesterday, { delayMs: 500 })
-    .then(r => console.log(`Auto-grade: ${r.newly_graded} calls graded, ${r.already_graded + r.skipped} skipped, ${r.errors} errors across ${r.users_processed} agents (${r.date})`))
-    .catch(err => console.error('[auto-grade] nightly failed:', err.message));
+    .then(async r => {
+      console.log(`Auto-grade: ${r.newly_graded} calls graded, ${r.already_graded + r.skipped} skipped, ${r.errors} errors across ${r.users_processed} agents (${r.date})`);
+      // Recorded first, alerted second: the row is the thing that makes a
+      // blank night visible even if the mail never goes out.
+      const id = await recordAutogradeRun(r, 'cron');
+      await alertAutogradeFailure(r, id);
+    })
+    .catch(async err => {
+      console.error('[auto-grade] nightly failed:', err.message);
+      // A RUN THAT THREW IS STILL A RUN. Without this the worst night — the
+      // one where it died before grading anything — is the one that leaves no
+      // row, which is exactly backwards.
+      const agg = {
+        date: yesterday, total: 0, newly_graded: 0, already_graded: 0, skipped: 0,
+        errors: 1, failure_kind: err.failureKind || 'other', failure_note: err.message,
+      };
+      const id = await recordAutogradeRun(agg, 'cron');
+      await alertAutogradeFailure({ ...agg, total: 1 }, id);
+    });
 }, { timezone: LYNDSAY_TIMEZONE });
 
 // =====================================================================
@@ -17848,6 +18012,35 @@ async function mrAppFolioMentions() {
  * than guessing in either direction: a counter that invents a denominator is
  * worse than a counter nobody can see.
  */
+// Is call grading down right now?
+//
+// READ FROM THE RUN LOG, not guessed from the absence of grades. "No grades
+// yesterday" is also what a Sunday looks like, and a line that fires on
+// Sundays is a line that gets ignored on the Monday it is true.
+//
+// The newest run decides. A run that graded something is not failing, however
+// many errors it logged along the way.
+async function mrAutogradeState() {
+  if (!CRM_CONFIGURED) return null;
+  const db = supabaseAdmin || supabasePublic;
+  const r = await db.from('autograde_runs')
+    .select('for_day,ran_at,eligible,graded,errors,failure_kind,failure_note')
+    .order('ran_at', { ascending: false }).limit(1);
+  if (r.error) throw new Error(r.error.message);
+  const last = r.data && r.data[0];
+  if (!last) return null;
+  const failing = (last.eligible > 0 && last.graded === 0) || !!last.failure_kind;
+  if (!failing) return { failing: false };
+  const CG = require('./call-grading.js');
+  const kind = last.failure_kind || 'other';
+  return {
+    failing: true,
+    kind,
+    line: last.eligible + ' call(s) waiting for ' + last.for_day + ', none graded ('
+      + kind + '). ' + (CG.FAILURE_ACTION[kind] || CG.FAILURE_ACTION.other),
+  };
+}
+
 function mrProgressLine(done, total, render) {
   // null and '' BEFORE Number(), which turns both into a perfectly finite 0.
   // A failed lookup would otherwise render "0/89 Slab links" — the strongest
@@ -17862,7 +18055,7 @@ function mrProgressLine(done, total, render) {
   return render(d, t);
 }
 
-function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sopReview, errors }) {
+function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sopReview, autograde, errors }) {
   const L = [];
   L.push(`📋 *Lyndsay's Daily Activity Report — ${date}*`);
   L.push('');
@@ -17967,6 +18160,18 @@ function mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sop
   } else appfolio.forEach(a => L.push(`  ${a.date} | ${a.assignedBy} | ${a.where} | ${a.summary}`));
   L.push('');
 
+  // GRADING IS DOWN, in the report Arturo reads first.
+  //
+  // The mail to support@ can be missed; this is the second place, and it is a
+  // line rather than a section because on a normal morning it is absent. The
+  // outage on 2026-10-17 was invisible for four days and surfaced as a
+  // sentence in Kara's brief pointing at the wrong component.
+  if (autograde && autograde.failing) {
+    L.push(`*CALL GRADING IS DOWN*`);
+    L.push(`  ${autograde.line}`);
+    L.push('');
+  }
+
   L.push(`*ARTURO'S PENDING ITEMS LIST*`);
   // Shown only while the review is unfinished — see mrProgressLine, which
   // holds the reasoning and applies the same rule to any counter added here.
@@ -18042,7 +18247,13 @@ app.get('/api/morning-report', requireMetricAdmin, async (req, res) => {
   const sopReview = srR.status === 'fulfilled' ? srR.value : (errors.sopReview = mrReason(srR.reason), null);
   if (!GRAPH_CONFIGURED) { errors.meetings = errors.emails = 'Microsoft Graph is not configured.'; }
 
-  const report = mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sopReview, errors });
+  // Whether grading is currently down, read from the run log rather than
+  // inferred. Its own try/catch: a table that is not there yet, or a query
+  // that fails, costs this line and not the report.
+  let autograde = null;
+  try { autograde = await mrAutogradeState(); } catch (e) { autograde = null; }
+
+  const report = mrFormat({ date, meetings, emails, ops, appfolio, appfolioMentions, sopReview, autograde, errors });
 
   // Calendar invites to follow — a SIBLING FIELD, deliberately not inside
   // `report`.
