@@ -906,6 +906,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .crm-select {
   padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border);
   background: var(--bg-elevated); color: var(--text); font-size: .85em;
+  /* Never wider than what holds it. A select sizes to its longest option, and
+     an option is written by whoever filled the list, not by this file. */
+  max-width: 100%; box-sizing: border-box;
 }
 .crm-search-input {
   padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border);
@@ -3064,10 +3067,18 @@ tr.ca-sel { background: var(--accent-glow); }
 /* ---- Social media post links -------------------------------------------- */
 .sp-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
   margin: 0 0 8px; }
-.sp-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+/* min-width: 0 IS THE WHOLE FIX, not a tidy-up. A flex item will not shrink
+   below its content, so a <select> as wide as its longest option pushed the
+   Role field out through the right edge of the card — and the longest option
+   was admin's, which listed all twenty-two of its tabs. */
+.sp-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px;
+  min-width: 0; }
 .sp-field > span { color: var(--muted-ink, #666); font-weight: 600; }
 .sp-field input, .sp-field select { padding: 6px 8px; font-size: 13px;
-  border: 1px solid var(--line, #ddd); border-radius: 6px; }
+  border: 1px solid var(--line, #ddd); border-radius: 6px;
+  /* box-sizing so the padding and border count INSIDE the 100%; without it the
+     control is a dozen pixels wider than the space it was given. */
+  width: 100%; max-width: 100%; box-sizing: border-box; }
 .sp-grow { flex: 1 1 320px; }
 .sp-grow input { width: 100%; }
 

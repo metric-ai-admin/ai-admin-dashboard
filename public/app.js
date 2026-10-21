@@ -115,9 +115,12 @@ const TAB_ACCESS = {
   // is also true, and that is a list of NAMED people on the server — so adding
   // it here widens nothing by itself. A second regional_director would see the
   // tab key allowed and still get nothing, because they would not be named.
-  regional_director:   ['maintenance', 'reports', 'leasing', 'collections', 'kpi', 'calls'],   // Rebekah Tuckner
+  // 'socialposts' added 2026-10-21: Bekah and Kara watch the agents' posting,
+  // so they see EVERY post and the whole daily check — neither is in
+  // SOCIAL_OWN_ONLY_ROLES, which is what scopes an agent to her own.
+  regional_director:   ['maintenance', 'reports', 'leasing', 'collections', 'kpi', 'calls', 'socialposts'],   // Rebekah Tuckner
   // Kara oversees maintenance, leasing and collections as of 2026-09-21.
-  resident_success:    ['maintenance', 'reports', 'evictions', 'leasing', 'collections', 'calls'],   // Kara Garst
+  resident_success:    ['maintenance', 'reports', 'evictions', 'leasing', 'collections', 'calls', 'socialposts'],   // Kara Garst
   // 'socialposts' added 2026-10-20: she is on the social roster and posts
   // like the other leasing agents. Added to what she already had rather
   // than moving her to social_agent, which would have TAKEN Collections
@@ -12388,12 +12391,27 @@ function acctInit() {
   if (sel && sel.options.length <= 1) {
     // THE ROLES THE APP KNOWS, out of the one table that defines them. A role
     // typed by hand produces an account that signs in and sees nothing.
+    // THE ROLE NAME ONLY. The option used to carry the tab list, and a <select>
+    // is as wide as its longest option — admin's twenty-two tabs pushed the
+    // control out through the right edge of the card. The tabs are not
+    // dropped: they appear under the select once a role is chosen, which is
+    // where they are actually read, just before somebody creates the account.
     Object.keys(TAB_ACCESS).sort().forEach(r => {
       const o = document.createElement('option');
       o.value = r;
-      o.textContent = r + ' — ' + TAB_ACCESS[r].join(', ');
+      o.textContent = r;
       sel.appendChild(o);
     });
+    const tabsNote = document.getElementById('acct-tabs');
+    const showTabs = () => {
+      const r = sel.value;
+      if (!tabsNote) return;
+      tabsNote.innerHTML = r && TAB_ACCESS[r]
+        ? 'Opens: <b>' + TAB_ACCESS[r].map(esc).join('</b>, <b>') + '</b>'
+        : '';
+    };
+    sel.addEventListener('change', showTabs);
+    showTabs();
   }
 
   const form = document.getElementById('acct-form');
@@ -12463,6 +12481,91 @@ function acctInit() {
   });
 }
 
+/* What Supabase Auth says about an account, which is not what the log says.
+ *
+ * The log showed "no activity" for five people who had all signed in — in
+ * August and September, before the login event was recorded. Read as "never
+ * signed in", that is somebody about to have a working password reset out
+ * from under them.
+ */
+function acctAuthCell(u) {
+  if (!u.auth_known) return '<span class="muted">not known</span>';
+  const bits = [];
+  bits.push(u.auth_last_sign_in
+    ? esc(new Date(u.auth_last_sign_in).toLocaleDateString('en-US',
+      { year: 'numeric', month: 'short', day: 'numeric' }))
+    : '<b>never</b>');
+  // The state nobody could see. A second temporary password does not fix it —
+  // it is the first one, never changed, and she is stuck on that screen.
+  if (u.must_change_password) {
+    bits.push('<span class="kr-flag">must change password</span>');
+  }
+  return bits.join('<div class="muted small"></div>');
+}
+
+/* Reset a temporary password.
+ *
+ * THE ROUTE ALREADY EXISTED — /api/auth/admin/temp-password generates one,
+ * returns it once, sets must_change_password and logs the act without the
+ * password. It had no button, so the only way to use it was a request
+ * somebody typed.
+ *
+ * IT INVALIDATES THE PASSWORD THEY HAVE. Four of the five people this looked
+ * useful for turned out to have working credentials and simply had not been
+ * back — so the confirmation says what it destroys, by name, before it runs.
+ */
+function wireResetButtons(root) {
+  root.querySelectorAll('[data-reset-pw]').forEach(btn => {
+    if (btn.dataset.wired) return;
+    btn.dataset.wired = '1';
+    btn.addEventListener('click', async () => {
+      const email = btn.getAttribute('data-reset-pw') || '';
+      const username = email.split('@')[0];
+      if (!window.confirm('Reset the password for ' + username + '?\n\n'
+        + 'This INVALIDATES the password they have now — if they can still sign '
+        + 'in, this is what stops them. They will have to change the new one at '
+        + 'their next sign-in.\n\nThe new password is shown once, here, and '
+        + 'cannot be read back.')) return;
+      btn.disabled = true;
+      const row = btn.closest('tr');
+      try {
+        const r = await fetch('/api/auth/admin/temp-password', apiBody({
+          method: 'POST', body: { username }, credentials: 'same-origin',
+        }));
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          row.insertAdjacentHTML('afterend', `<tr><td colspan="7">`
+            + `<div class="alert-box warn"><div class="al">NOT RESET</div>`
+            + esc(data.error || 'Could not reset it.') + `</div></td></tr>`);
+          return;
+        }
+        // Shown once, with the same copy control as the create form. Held in
+        // the DOM and nowhere else: no variable that outlives this handler, no
+        // storage, and never logged.
+        row.insertAdjacentHTML('afterend', `<tr><td colspan="7">`
+          + `<div class="alert-box"><div class="al">NEW TEMPORARY PASSWORD — ${esc(username)}</div>`
+          + `<div style="display:flex;gap:8px;align-items:center;margin:8px 0">`
+          + `<code id="rpw-${esc(username)}" style="font-size:16px;letter-spacing:.5px">${esc(data.password)}</code>`
+          + `<button type="button" class="btn-sm" data-copy-pw="${esc(username)}">Copy</button>`
+          + `<span class="muted small" data-copied="${esc(username)}"></span></div>`
+          + `<span class="muted small">Shown once — leaving this tab loses it, and it cannot `
+          + `be read back. Read it to them or send it privately; never paste it into a group `
+          + `chat or email. They must change it at their next sign-in.</span></div></td></tr>`);
+        row.nextElementSibling.querySelector('[data-copy-pw]')
+          ?.addEventListener('click', async () => {
+            const pw = document.getElementById('rpw-' + username)?.textContent || '';
+            const said = row.nextElementSibling.querySelector('[data-copied]');
+            try { await navigator.clipboard.writeText(pw); said.textContent = 'copied'; }
+            catch { said.textContent = 'could not copy — select it and copy by hand'; }
+          });
+      } catch (err) {
+        row.insertAdjacentHTML('afterend', `<tr><td colspan="7">`
+          + `<div class="alert-box warn"><div class="al">ERROR</div>${esc(err.message)}</div></td></tr>`);
+      } finally { btn.disabled = false; }
+    });
+  });
+}
+
 async function loadActivity() {
   acctInit();
   const ls = $('#act-lastseen'), wk = $('#act-weekly');
@@ -12475,8 +12578,12 @@ async function loadActivity() {
         + (d.oldestRow ? ` (back to ${new Date(d.oldestRow).toLocaleDateString()})` : '');
     }
     if (ls) {
+      // The reset button is admin only. The route refuses anyone else, so this
+      // keeps a dead control out of the CEO's view rather than being the lock.
+      const mayReset = currentUser && currentUser.role === 'admin';
       ls.innerHTML = `<table class="data-table"><thead><tr>
         <th>Person</th><th>Role</th><th>Last activity</th><th>Last section</th><th>Days since login</th>
+        <th>Signed in (account)</th>${mayReset ? '<th></th>' : ''}
       </tr></thead><tbody>${d.users.map(u => {
         // NOT "never". The log starts when phase 1 shipped, so "never" claims
         // something about years the table cannot see — the honest statement is
@@ -12492,6 +12599,8 @@ async function loadActivity() {
           <td>${never ? `<b>${esc(since)}</b>` : esc(actWhen(u.last_at))}</td>
           <td>${esc(actSection(u.last_section) || '—')}</td>
           <td>${never ? `<span class="muted">${esc(since)}</span>` : (u.days_since_login === null ? '—' : u.days_since_login)}</td>
+          <td>${acctAuthCell(u)}</td>
+          ${mayReset ? `<td><button class="btn-sm" data-reset-pw="${esc(u.email)}">Reset temp password</button></td>` : ''}
         </tr>`;
       }).join('')}</tbody></table>`;
       // The person filter is built from the data already on screen, so it
@@ -12506,6 +12615,13 @@ async function loadActivity() {
         });
       }
     }
+    if (ls && d.authError) {
+      ls.insertAdjacentHTML('afterbegin',
+        `<div class="alert-box warn" style="margin:0 0 10px"><div class="al">ACCOUNT STATE UNAVAILABLE</div>`
+        + `The sign-in column could not be read (${esc(d.authError)}). It is blank for everybody — `
+        + `do not read that as "nobody has signed in".</div>`);
+    }
+    if (ls) wireResetButtons(ls);
   } catch (e) {
     if (ls) ls.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`;
   }

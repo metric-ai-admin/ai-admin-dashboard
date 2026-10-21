@@ -14518,6 +14518,39 @@ app.get('/api/activity/last-seen', requireAuth, requireRole(...ACTIVITY_ROLES), 
       byUser.set(key, b);
     }
 
+    // WHAT SUPABASE AUTH KNOWS, which is not what the log knows.
+    //
+    // The log said "no activity" for Rocío, Kara, Karla, Claudia and Bekah,
+    // and all five HAD signed in — between 2026-08-27 and 2026-09-24, before
+    // the login event was ever recorded. Read as "never signed in" that is a
+    // person about to have a working password reset out from under them.
+    //
+    // auth.last_sign_in_at is the fact; the log is a record that started late.
+    // Both are shown, because they answer different questions: one is "do they
+    // have working credentials", the other "are they using the dashboard".
+    //
+    // must_change_password is the state nobody could see. Bekah has carried it
+    // since a temporary password was issued and never changed — she is stuck
+    // on the change screen, and without this column the next person to look
+    // would issue her a second one.
+    const authBy = new Map();
+    let authError = null;
+    if (supabaseAdmin) {
+      try {
+        const { data: list, error } = await supabaseAdmin.auth.admin
+          .listUsers({ page: 1, perPage: 1000 });
+        if (error) throw new Error(error.message);
+        (list.users || []).forEach(a => {
+          authBy.set(String(a.email || '').toLowerCase(), {
+            lastSignIn: a.last_sign_in_at || null,
+            mustChange: !!(a.user_metadata && a.user_metadata.must_change_password),
+          });
+        });
+      } catch (e) { authError = e.message; }
+    } else {
+      authError = 'service role key not configured';
+    }
+
     const now = Date.now();
     const days = iso => {
       if (!iso) return null;
@@ -14526,7 +14559,9 @@ app.get('/api/activity/last-seen', requireAuth, requireRole(...ACTIVITY_ROLES), 
     };
 
     const out = (users || []).map(u => {
-      const b = byUser.get(String(u.email || '').toLowerCase()) || {};
+      const key = String(u.email || '').toLowerCase();
+      const b = byUser.get(key) || {};
+      const a = authBy.get(key) || null;
       return {
         email: u.email, name: u.name || null, role: u.role || null,
         last_at: b.lastAt || null,
@@ -14536,6 +14571,13 @@ app.get('/api/activity/last-seen', requireAuth, requireRole(...ACTIVITY_ROLES), 
         // Stated rather than implied by a null, so the UI cannot render an
         // absent login as "0 days ago".
         never_signed_in: !b.lastAt,
+        // NULL MEANS WE COULD NOT ASK, not "no account". The difference
+        // matters: one is a person with no login, the other is a lookup that
+        // failed, and resetting a password is the wrong answer to the second.
+        auth_known: !!a,
+        auth_last_sign_in: a ? a.lastSignIn : null,
+        auth_never_signed_in: a ? !a.lastSignIn : null,
+        must_change_password: a ? a.mustChange : null,
       };
     }).sort((a, b) => {
       if (a.never_signed_in !== b.never_signed_in) return a.never_signed_in ? 1 : -1;
@@ -14546,7 +14588,11 @@ app.get('/api/activity/last-seen', requireAuth, requireRole(...ACTIVITY_ROLES), 
     // signed in for 200 days is indistinguishable from one whose rows aged out
     // of the 90-day retention.
     const oldest = (rows || []).length ? rows[rows.length - 1].at : null;
-    res.json({ users: out, rowsScanned: (rows || []).length, oldestRow: oldest, retentionDays: 90 });
+    res.json({ users: out, rowsScanned: (rows || []).length, oldestRow: oldest,
+      retentionDays: 90,
+      // Said out loud: without it an unreachable Auth looks like a roster
+      // where nobody has ever signed in.
+      authError });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
