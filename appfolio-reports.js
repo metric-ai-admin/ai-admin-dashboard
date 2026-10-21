@@ -385,6 +385,36 @@ const REPORTS = [
   // NOTE THE GRAIN: one row per OCCUPANCY, not per property. It carries
   // Occupancy ID, Unit ID and Property ID and no property NAME, which is what
   // lib/appfolio-properties.js translates.
+  // ---- Security deposits held, for Kara's FAS alert ----------------------
+  //
+  // Registered 2026-10-21. The name was READ OFF THE ADMIN UI's report URL
+  // (buffered_reports/security_deposit_funds_detail) after the catalogue
+  // endpoint 404'd and 22 guessed names were rejected — the same lesson as
+  // tenant_tickler: a name nobody confirmed fails exactly like a report that
+  // does not exist.
+  //
+  // IT IS A LIST OF WHAT IS HELD TODAY. No settlement date, no history: a
+  // deposit that has been returned or applied is simply not in it. The
+  // settlement date is derived by deposit_held noticing a row stop coming
+  // back, which is why this one is synced on its own schedule rather than
+  // whenever somebody presses a button.
+  //
+  // NO PROPERTY COLUMN — 215 rows of occupancy_id and unit. The brief groups
+  // by property, so it is resolved through occupancy_custom_fields, and a
+  // deposit that will not resolve is COUNTED rather than dropped.
+  {
+    id: 'security_deposit_funds_detail',
+    resource: 'security_deposit_funds_detail',
+    label: 'Security Deposit Funds Detail',
+    group: 'Collections',
+    priority: 8,
+    feeds: 'Kara brief — Final Account Statements (deposit settled as the signal)',
+    params: { property_visibility: 'active' },
+    // Names, emails, phones and addresses never reach the disk. The amount
+    // DOES: it is the measurement here, unlike on the tenant directory where
+    // a copied balance is a stale second answer.
+    project: r => require('./lib/fas-deposits.js').projectFeedRow(r),
+  },
   {
     id: 'occupancy_custom_fields',
     resource: 'occupancy_custom_fields',

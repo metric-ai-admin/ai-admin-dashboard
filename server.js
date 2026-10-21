@@ -20297,6 +20297,36 @@ cron.schedule('30 3 * * *', () => {
 // is an env var rather than a commented-out block so that turning it on is not
 // a deploy, and so nothing silently starts capturing on a redeploy.
 const COLLECTIONS_MTD_ON = String(process.env.COLLECTIONS_MTD_SYNC || '').toLowerCase() === 'on';
+// Security deposits held, for Kara's FAS alert.
+//
+// 04:00, and the reason is the whole morning's shape. The 05:00 hour is full
+// five minutes apart from 05:00 to 05:55 — occupancy, the leasing feeds, the
+// Sunday snapshots, occupancy_custom_fields at 05:50 — and the comment on
+// delinquency_kpi says 05:55 is the last slot before the 06:00 brief:
+// "anything else needing a morning pull has to displace something, not
+// squeeze between". So this does not squeeze between. 04:00 is thirty minutes
+// clear of the call-property fill at 03:30 and of collections at 04:30.
+//
+// THE COST OF 04:00 is that the property index comes from YESTERDAY's
+// occupancy_custom_fields, synced at 05:50. An occupancy that first appeared
+// overnight resolves to no property for one day and is counted as unresolved
+// — visible, named in the brief, and right again tomorrow. The mapping of
+// occupancy to property does not churn; squeezing a pull into a full hour to
+// avoid a one-day lag in a lookup table would be the worse trade.
+//
+// NOTHING IS SETTLED FROM A SHORT FEED. See the guard in lib/fas-deposits.js:
+// a run that comes back empty would otherwise settle every deposit at once
+// and report a perfect week on the morning the sync broke.
+cron.schedule('0 4 * * *', () => {
+  if (!CRM_CONFIGURED) return;
+  require('./scripts/sync-deposit-snapshot.js').syncDepositSnapshot({
+    write: true,
+    log: m => { if (/FAILED|nothing settled|guard\s+: (suspect|failed)/.test(String(m))) logLine('[deposits] ' + String(m).trim()); },
+  })
+    .then(r => logLine(`[deposits] ${r?.rows ?? 0} held, ${r?.settled ?? 0} settled, ${r?.status}`))
+    .catch(err => logLine(`[deposits] FAILED: ${err.message}`));
+}, { timezone: LYNDSAY_TIMEZONE });
+
 cron.schedule('30 4 * * *', () => {
   if (!CRM_CONFIGURED) return;
   if (!COLLECTIONS_MTD_ON) return;

@@ -5,6 +5,7 @@
 //   node scripts/kara-brief-preview.js
 //   node scripts/kara-brief-preview.js --today 2026-10-15
 //   node scripts/kara-brief-preview.js --html out.html
+//   node scripts/kara-brief-preview.js --deadline 15 --basis business
 //
 // WHY A SCRIPT RATHER THAN THE TEST ROUTE. /api/brief/kara/test renders the
 // brief AND SENDS IT to Arturo. That is the right tool for checking what lands
@@ -60,6 +61,17 @@ async function selectAll(build, opts) {
   const input = await G.gather({
     db,
     selectAll,
+    // THE FAS SECTION IS PREVIEW-ONLY. server.js does not pass this, so the
+    // 06:00 email keeps the NOT MEASURABLE note until Arturo has read a
+    // preview and said otherwise. The flag lives here and not in a default so
+    // that turning it on for the real email is a deliberate edit somebody
+    // makes, not a line nobody noticed.
+    fas: true,
+    // 15 calendar days, Kara's figure. Business days is the other basis she
+    // might mean and was not asked about, so it is a parameter rather than a
+    // constant: --deadline 15 --basis business renders the other reading
+    // without anybody editing code to find out what it looks like.
+    fasDeadline: { days: Number(arg('deadline', 15)), basis: arg('basis', 'calendar') },
     buildKpiReport: kpiBuild.buildKpiReport,
     readReportData: id => af.readReportData(id),
     // THE REAL GOALS, from the same table server.js uses. Passing () => null
