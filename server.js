@@ -19319,13 +19319,27 @@ const MOVEOUT = require('./lib/moveout-alerts.js');
 async function moveOutAlertData(db, todayCT) {
   const af = require('./appfolio-reports.js');
   const turns = ((await af.readReportData('unit_turn_detail')) || {}).rows || [];
+  // THE PROJECTION WAS DROPPING THE TWO BEST FIELDS. unit_turn_id is the
+  // structural link — AppFolio saying "this inspection belongs to that
+  // move-out", which beats any name or date — and it was not selected, so the
+  // turn pass in matchWalk could never fire from this route. inspected_on is
+  // the real date; without it the match fell back to marked_done_on, which is
+  // when somebody clicked rather than when the walk happened.
+  //
+  // Both have been in the table since migration 095. A column left out of a
+  // select is invisible in exactly the same way as a column nobody syncs.
   const insp = await selectAll(() => db.from('maintenance_inspections')
-    .select('inspection_id,inspection_name,property_name,unit,status,marked_done_on,created_on'),
+    .select('inspection_id,inspection_name,property_name,unit,status,marked_done_on,marked_done_by,created_on,inspected_on,unit_turn_id'),
   { label: 'inspections', order: 'inspection_id' });
   return {
     today: todayCT,
     movingOutToday: MOVEOUT.moveOutsOn(turns, todayCT),
     walkOverdue: MOVEOUT.walkOverdue({ turns, inspections: insp }, todayCT, { businessDays: 2 }),
+    // Collections: every move-out in 90 days with its inspection state and a
+    // link that opens the right record. Karla's problem is not knowing which
+    // inspection holds the photos, and AppFolio's Inspections tab does not
+    // open on a unit.
+    collections: MOVEOUT.collectionsView({ turns, inspections: insp }, todayCT, { days: 90 }),
     // Stated on the screen, not just in the code: the alert can only speak
     // about what was RECORDED, and 388 of 635 inspections carry a name nobody
     // can classify.

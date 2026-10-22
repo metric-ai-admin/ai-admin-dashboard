@@ -13857,6 +13857,79 @@ function ocViolations(weeks) {
 
 // ---- move-out alerts (Collections) ----------------------------------------
 
+/* The inspection behind each move-out, for Collections.
+ *
+ * Karla opens the official move-out inspection, finds it empty, and cannot
+ * find the photos she needs to charge a deposit — AppFolio's Inspections tab
+ * does not open on a unit, so finding the real walk is a manual search. In
+ * the last 90 days exactly one official move-out inspection was completed,
+ * against 41 walks recorded under a technician's name or "Untitled".
+ *
+ * So every move-out gets a state and, where there is one, a link straight to
+ * the record that holds the photos.
+ */
+const MO_STATE_STYLE = {
+  complete: { colour: 'var(--ok, #1a7f37)', weight: 400 },
+  done_elsewhere: { colour: 'var(--warn, #b26a00)', weight: 600 },
+  empty: { colour: 'var(--warn, #b26a00)', weight: 600 },
+  none: { colour: 'var(--bad, #b00020)', weight: 600 },
+};
+
+function moInspectionLink(ins) {
+  if (!ins) return '<span class="muted">—</span>';
+  const label = esc(ins.name) + (ins.date ? ' <span class="muted small">' + esc(ins.date) + '</span>' : '');
+  // NO LINK IS NOT NO INFORMATION. Without a usable id the name and date are
+  // still what somebody searches by, so they are shown as plain text rather
+  // than dropped or turned into a URL that opens the wrong record.
+  return ins.url
+    ? '<a href="' + esc(ins.url) + '" target="_blank" rel="noopener">' + label + '</a>'
+    : label;
+}
+
+function moCollectionsTable(c) {
+  if (!c || !(c.rows || []).length) {
+    return '<p class="small muted">No move-outs in the last ' + (c && c.days ? c.days : 90) + ' days.</p>';
+  }
+  const n = c.counts || {};
+  const head = '<p class="small" style="margin:0 0 6px">'
+    + '<b>' + (n.complete || 0) + '</b> complete &nbsp;·&nbsp; '
+    + '<b>' + (n.done_elsewhere || 0) + '</b> done under another name &nbsp;·&nbsp; '
+    + '<b>' + (n.empty || 0) + '</b> empty &nbsp;·&nbsp; '
+    + '<b>' + (n.none || 0) + '</b> none'
+    + '</p>';
+  // A MOVE-OUT NOBODY COULD LOOK UP IS NOT A MOVE-OUT WITH NO INSPECTION.
+  // 83 of 110 recent inspections carry no unit_turn_id and 10 no unit at all.
+  const caveat = c.unmatchable
+    ? '<p class="small" style="color:var(--warn, #b26a00);margin:0 0 8px">'
+      + c.unmatchable + ' move-out(s) have no unit and no turn id, so no inspection '
+      + 'could be looked up for them. They read as "No inspection" and may have been walked.</p>'
+    : '';
+  const rows = c.rows.map(r => {
+    const st = MO_STATE_STYLE[r.status] || MO_STATE_STYLE.none;
+    const extra = [];
+    // The walk is here AND the official record still needs closing: two
+    // different jobs, and collapsing them loses one of them.
+    if (r.status === 'done_elsewhere' && r.officialEmpty) {
+      extra.push('official inspection still empty: ' + moInspectionLink(r.officialEmpty));
+    }
+    if ((r.alsoOnUnit || []).length) {
+      extra.push('also on this unit: ' + r.alsoOnUnit.map(moInspectionLink).join(', ')
+        + (r.alsoOnUnitMore ? ' <span class="muted">and ' + r.alsoOnUnitMore + ' more</span>' : ''));
+    }
+    if (r.unmatchable) extra.push('<i>no unit or turn id — nothing to look up</i>');
+    return '<tr>'
+      + '<td>' + esc(r.property) + ' <b>' + esc(r.unit || '(no unit)') + '</b></td>'
+      + '<td>' + esc(r.moveOut) + '</td>'
+      + '<td style="color:' + st.colour + ';font-weight:' + st.weight + '">' + esc(r.label) + '</td>'
+      + '<td>' + moInspectionLink(r.inspection)
+      + (extra.length ? '<div class="muted small">' + extra.join('<br>') + '</div>' : '')
+      + '</td></tr>';
+  }).join('');
+  return head + caveat
+    + '<div style="overflow-x:auto"><table class="data-table"><thead><tr>'
+    + '<th>Property / unit</th><th>Moved out</th><th>Inspection</th><th>Open in AppFolio</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
 async function loadMoveOutAlerts() {
   const body = document.getElementById('mo-body');
   if (!body) return;
@@ -13877,6 +13950,10 @@ async function loadMoveOutAlerts() {
     // is a technician going back to the unit. One heading for both sends people
     // to re-walk units that have already been walked, which is how an alert
     // gets switched off.
+    // Collections' own table, every move-out in 90 days. Built before the
+    // two alert tables below so the state is the first thing read.
+    const collections = moCollectionsTable(d.collections);
+
     const rowFor = a => {
       const maybe = (a.unnamedInspections || []).length
         ? `<div class="small muted" style="margin-top:3px">`
@@ -13910,6 +13987,8 @@ async function loadMoveOutAlerts() {
 
     body.innerHTML = `
       <h4 style="margin:10px 0 2px 0">Today</h4>${today}
+      <h4 style="margin:14px 0 4px 0">Move-out inspections — last 90 days</h4>
+      ${collections}
       <h4 style="margin:12px 0 2px 0;color:#8a6d00">Inspection exists but is not marked done in AppFolio</h4>
       ${openOnes.length
         ? '<p class="small" style="color:#8a6d00">Erick checked the open ones on 2026-10-14 and '
