@@ -35,15 +35,21 @@ const db = createClient(process.env.SUPABASE_URL,
 // chose for the accounts he has not created. They are written here now so the
 // roster matches them the moment the accounts exist; until then the match
 // falls back to the name, which is all there is.
+// THE SHORT FORM IS THE ACCOUNT. These were written as first.last before the
+// accounts existed; the four created on 2026-10-21 are sammy@, oscar@, yeni@
+// and daria@. The daily check matches a post to a person by LOGIN, so the long
+// form would have let all four post and be reported missing — the roster names
+// them, so they would have shown as absent rather than simply not counted.
 const ROSTER = [
   { person: 'Rocio', email: 'rocio@metric.internal', expected: null, active: true },
-  { person: 'Sammy', email: 'sammy.ramos@metric.internal', expected: null, active: true },
-  { person: 'Oscar', email: 'oscar.moreno@metric.internal', expected: null, active: true },
-  { person: 'Yeni',  email: 'yeni.aleman@metric.internal', expected: null, active: true },
-  { person: 'Daria', email: 'daria.rodriguez@metric.internal', expected: null, active: true },
+  { person: 'Sammy', email: 'sammy@metric.internal', expected: null, active: true },
+  { person: 'Oscar', email: 'oscar@metric.internal', expected: null, active: true },
+  { person: 'Yeni',  email: 'yeni@metric.internal', expected: null, active: true },
+  { person: 'Daria', email: 'daria@metric.internal', expected: null, active: true },
 ];
 
 const pad = (s, w) => String(s == null ? '—' : s).padEnd(w);
+const clean = s => String(s == null ? '' : s).trim().toLowerCase();
 
 (async () => {
   const probe = await db.from('social_post_roster').select('person,email,expected,active');
@@ -77,8 +83,24 @@ const pad = (s, w) => String(s == null ? '—' : s).padEnd(w);
 
   console.log('\n   expected = NULL for all five: Lyndsay has not set a number.');
   console.log('   The daily check will count their posts and call nobody missing.');
-  console.log('   Rocio matches on the login. The other four have no account yet, so');
-  console.log('   they match on the name until the accounts exist.');
+  console.log('   All five match on the login: the four accounts were created 2026-10-21.');
+
+  // THE EMAIL IS CORRECTED ON A ROW THAT EXISTS. Insert-only was right while
+  // the emails were a guess at accounts nobody had created; now they are wrong
+  // on file and an insert-only script would leave them wrong forever. Only the
+  // email moves — `expected` and `active` are somebody's settings and are read
+  // from the row and written back unchanged.
+  const fixes = ROSTER.filter(r => {
+    const was = existing.find(e => e.person === r.person);
+    return was && clean(was.email) !== clean(r.email);
+  });
+  if (fixes.length) {
+    console.log('\n   EMAIL CORRECTIONS (the account is the short form):');
+    fixes.forEach(r => {
+      const was = existing.find(e => e.person === r.person);
+      console.log('      ' + pad(r.person, 10) + pad(was.email || '(none)', 34) + '-> ' + r.email);
+    });
+  }
 
   if (!WRITE) {
     console.log('\nDRY RUN — nothing written.');
@@ -94,6 +116,16 @@ const pad = (s, w) => String(s == null ? '—' : s).padEnd(w);
     if (error) throw new Error(error.message);
     console.log('\nadded ' + (data || []).length + ' row(s): '
       + (data || []).map(d => d.person).join(', '));
+  }
+
+  for (const r of fixes) {
+    const was = existing.find(e => e.person === r.person);
+    const { error } = await db.from('social_post_roster')
+      .update({ email: r.email, updated_at: new Date().toISOString() })
+      .eq('person', r.person);
+    if (error) throw new Error(error.message);
+    console.log('   ' + r.person + ': ' + was.email + ' -> ' + r.email
+      + '   (expected ' + (was.expected === null ? 'NULL' : was.expected) + ' kept)');
   }
 
   const after = await db.from('social_post_roster').select('person,email,expected,active').order('person');

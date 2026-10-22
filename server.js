@@ -808,17 +808,66 @@ console.log(`[call-analyzer] access: ${CALL_ANALYZER_USERS.join(', ')}`
 app.use('/api', activityReadLogger);
 app.use('/api', activityWriteLogger);
 
+const LOGIN = require('./lib/login-username.js');
+
+// A FAILED SIGN-IN LEAVES A TRACE. It did not, and that is why the question
+// "did Sammy, Oscar and Yeni even try?" had no answer on 2026-10-22: four
+// agents reported they could not get in, and the only record of anything was
+// the four people who HAD got in. The absence of a failure is not evidence
+// that nobody tried.
+//
+// USERNAME, TIME AND REASON. Never the password, and never the typed string
+// beyond the username part — somebody who puts their password in the username
+// box by mistake must not have it written to a table.
+function logLoginFailure(req, username, reason) {
+  try {
+    activityLog.log({
+      user_email: username ? username + '@metric.internal' : null,
+      user_name: username || '(blank)',
+      user_role: null,
+      event: 'login_failed',
+      status_code: 401,
+      // THE REASON GOES IN `action`. There is no `detail` column on
+      // activity_log — the allowlist in lib/activity-log.js drops any key the
+      // table does not have, so every `detail:` passed by the two password
+      // routes has been silently discarded since they were written. `action`
+      // exists, is free text, and is the first thing the Activity tab reads.
+      action: 'Sign-in FAILED — ' + reason,
+    });
+  } catch (e) { /* a log that cannot be written must not block a sign-in page */ }
+}
+
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Auth not configured' });
 
-  const fictionalEmail = `${username.toLowerCase().trim()}@metric.internal`;
+  // THE BOX SAYS "USERNAME" AND PEOPLE TYPE THEIR EMAIL. Pasting the domain
+  // on top of what they typed built sammy@metric.internal@metric.internal,
+  // and the answer came back as "Invalid username or password" — which reads
+  // as a wrong password and sends somebody looking in the wrong place.
+  const parsed = LOGIN.parseLogin(username);
+  if (parsed.typedOtherDomain) {
+    logLoginFailure(req, parsed.username, 'typed an address on ' + parsed.typedOtherDomain);
+    return res.status(401).json({ error: LOGIN.loginHint(username) });
+  }
+  if (!parsed.username) {
+    logLoginFailure(req, '', 'blank username');
+    return res.status(400).json({ error: 'Username and password required' });
+  }
+  const fictionalEmail = `${parsed.username}@metric.internal`;
 
   try {
     // 1. Verify credentials with Supabase Auth using fictional email
     const { data: authData, error: authErr } = await supabasePublic.auth.signInWithPassword({ email: fictionalEmail, password });
-    if (authErr || !authData?.user) return res.status(401).json({ error: 'Invalid username or password' });
+    if (authErr || !authData?.user) {
+      // The full email now WORKS, so reaching here with one means the
+      // credentials really are wrong — but the hint still helps somebody who
+      // typed a username with a typo in the domain.
+      logLoginFailure(req, parsed.username,
+        parsed.typedFullEmail ? 'wrong credentials (typed the full email)' : 'wrong credentials');
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
 
     // 2. Look up role in dashboard_users by username
     const db = supabaseAdmin || supabasePublic;
@@ -828,8 +877,17 @@ app.post('/api/auth/login', async (req, res) => {
       .eq('username', username.toLowerCase().trim())
       .single();
 
-    if (dbErr || !dbUser) return res.status(403).json({ error: 'User not found in dashboard — contact Arturo' });
-    if (!dbUser.active) return res.status(403).json({ error: 'Account inactive — contact Arturo' });
+    if (dbErr || !dbUser) {
+      // HALF AN ACCOUNT. The password was right and there is no dashboard_users
+      // row — a different problem from a wrong password, and one that needs an
+      // admin rather than another attempt.
+      logLoginFailure(req, parsed.username, 'no dashboard_users row');
+      return res.status(403).json({ error: 'User not found in dashboard — contact Arturo' });
+    }
+    if (!dbUser.active) {
+      logLoginFailure(req, parsed.username, 'account inactive');
+      return res.status(403).json({ error: 'Account inactive — contact Arturo' });
+    }
 
     // 3. Issue JWT in HttpOnly cookie (7 days)
     // callAnalyzer travels with the session so the client can hide the tab without

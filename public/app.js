@@ -12457,10 +12457,12 @@ function acctInit() {
         + esc(data.password) + '</code>'
         + '<button type="button" class="btn-sm" id="acct-copy">Copy</button>'
         + '<span class="muted small" id="acct-copied"></span></div>'
-        + '<span class="muted small">Shown once — leaving this tab loses it, and it '
-        + 'cannot be read back. If that happens, issue a new temporary password rather '
-        + 'than creating the account again. Read it to them or send it privately; never '
-        + 'paste it into a group chat or email.</span></div>';
+        + '<span class="muted small">SHOWN ONCE. Leaving this tab loses it and it '
+        + 'cannot be read back. If that happens, do not create the account again — '
+        + 'issue a new temporary password from <b>Last seen</b> below '
+        + '(<a href="#act-lastseen">Reset temp password</a> on their row). '
+        + 'Read it to them or send it privately; never paste it into a group chat '
+        + 'or email.</span></div>';
       document.getElementById('acct-copy')?.addEventListener('click', async () => {
         const pw = document.getElementById('acct-pw')?.textContent || '';
         const said = document.getElementById('acct-copied');
@@ -12805,6 +12807,14 @@ function actLabel(r) {
   // server so the tab and the API cannot drift on what a section is called.
   if (r.event === 'view') return 'Opened ' + (actSection(r.section) || 'a section');
   if (r.event === 'login') return 'Signed in';
+  // A FAILED SIGN-IN IS THE INTERESTING ONE. Four agents reported they could
+  // not get in and the log held only the people who HAD got in, so there was
+  // no way to tell "they tried and failed" from "they never tried". The reason
+  // travels with it; the password never does.
+  // `action` already carries the reason (there is no detail column), and
+  // actLabel returns r.action before reaching here — this is the fallback for
+  // a row written without one.
+  if (r.event === 'login_failed') return 'Sign-in FAILED';
   if (r.event === 'logout') return 'Signed out';
   if (r.event === 'open') return 'Opened a record';
   return r.event || '—';
