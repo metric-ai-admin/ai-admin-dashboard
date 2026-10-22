@@ -433,5 +433,93 @@ t('the cron runs at 04:00 Central, clear of the full 05:00 hour', () => {
   assert.match(call, /timezone: LYNDSAY_TIMEZONE/, 'it would run in UTC');
 });
 
+// ---- the two renderers say the same thing -------------------------------------------
+//
+// The measurable branch was written into the text renderer and not the HTML
+// one, so the moment the section became measurable the HTML dropped it
+// entirely — and the HTML is the version Kara receives. An absent section
+// reads as "no FAS is overdue", which is the one thing this alert exists to
+// prevent. The preview's own text-vs-HTML check caught it; this pins it.
+
+const H = require('../lib/kara-brief-html.js');
+const BR = require('../lib/kara-brief.js');
+const baseBrief = {
+  properties: [], portfolio: {}, thresholds: [], collections: null, calls: null,
+  occupancy: null, moveOuts: null, freshness: { asOf: 'x', lines: [] },
+};
+const bothFor = fas => {
+  const built = BR.build({ ...baseBrief, fas });
+  return {
+    text: String(BR.render(built)),
+    html: String(H.renderHtml(BR.build({ ...baseBrief, fas }))),
+  };
+};
+
+t('measurable: the section is in BOTH renderers', () => {
+  const fas = {
+    measurable: true, deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+    statusCounts: { Current: 210, Notice: 5 },
+    ...F.byProperty([row({ unit: '108', move_out: '2026-09-29' })], '2026-10-22'),
+    caveats: F.caveats({ snapshotsStart: '2026-10-22', deadline: F.DEFAULT_DEADLINE }),
+  };
+  const r = bothFor(fas);
+  assert.match(r.text, /FINAL ACCOUNT STATEMENTS/);
+  assert.match(r.html, /Final account statements/,
+    'the HTML dropped the section — this is the version Kara receives');
+});
+
+t('measurable: the numbers appear in both, not only the heading', () => {
+  // A heading with an empty body is the other way this goes wrong.
+  const fas = {
+    measurable: true, deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+    ...F.byProperty([row({ unit: '108', move_out: '2026-09-29' })], '2026-10-22'),
+    caveats: [],
+  };
+  const r = bothFor(fas);
+  assert.match(r.text, /OVERDUE/);
+  assert.match(r.html, /OVERDUE/);
+  assert.match(r.text, /108/);
+  assert.match(r.html, /108/);
+  assert.match(r.text, /Ascent at Northgate/);
+  assert.match(r.html, /Ascent at Northgate/);
+});
+
+t('not measurable: a reason-shaped object renders in both', () => {
+  // gatherFas returns {measurable:false, reason:…}; the HTML read only `note`
+  // and printed the heading with nothing under it.
+  const r = bothFor({ measurable: false, reason: 'No deposit snapshot has been taken yet.' });
+  assert.match(r.text, /No deposit snapshot has been taken yet/);
+  assert.match(r.html, /No deposit snapshot has been taken yet/,
+    'the HTML shows an empty section');
+});
+
+t('not measurable: an error-shaped object renders in both', () => {
+  const r = bothFor({ measurable: false, error: 'relation deposit_held does not exist' });
+  assert.match(r.text, /deposit_held does not exist/);
+  assert.match(r.html, /deposit_held does not exist/);
+});
+
+t('the preview would no longer report a disagreement', () => {
+  // The exact check the preview runs, over every shape the section takes.
+  const shapes = [
+    { measurable: false, reason: 'not yet' },
+    { measurable: false, error: 'boom' },
+    {
+      measurable: true, deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+      ...F.byProperty([row({ move_out: '2026-09-29' })], '2026-10-22'), caveats: [],
+    },
+    // Measurable with nothing to report: still a section, because silence is
+    // what it must never be.
+    { measurable: true, deadline: F.DEFAULT_DEADLINE, properties: {}, unresolvedCount: 0, caveats: [] },
+  ];
+  shapes.forEach((fas, i) => {
+    const r = bothFor(fas);
+    const inText = /^FINAL ACCOUNT STATEMENTS/m.test(r.text);
+    const inHtml = />Final account statements</.test(r.html);
+    assert.strictEqual(inText, inHtml,
+      'shape ' + i + ': text ' + inText + ' html ' + inHtml + ' — THEY DISAGREE');
+  });
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

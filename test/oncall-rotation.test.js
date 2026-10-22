@@ -123,14 +123,41 @@ t('the pool is the four Bekah named', () => {
 });
 
 t('the groups are the two sets, and nothing is in neither', () => {
+  // The Highlander moved Red on 2026-10-22 (Bekah) to even the unit counts.
   assert.deepStrictEqual(G.GROUPS.RED.properties,
-    ['Sunset Palms', 'The Chateau', 'Windy Hill Apartment']);
+    ['Sunset Palms', 'The Chateau', 'Windy Hill Apartment', 'The Highlander']);
   assert.deepStrictEqual(G.GROUPS.BLUE.properties,
-    ['Hyde Park Square', 'The Highlander', 'Ascent at Northgate',
+    ['Hyde Park Square', 'Ascent at Northgate',
       'iConic Downtown', 'iConic Round Rock']);
   PROPS.forEach(p => assert.ok(G.groupOf(p.name), p.name + ' is in no group'));
   assert.strictEqual(G.GROUPS.RED.properties.length + G.GROUPS.BLUE.properties.length,
     PROPS.length, 'a property is in both groups or missing from both');
+});
+
+t('moving The Highlander breaks neither hard constraint', () => {
+  // The two rules and the move are independent, and that is checked rather
+  // than assumed: Windy Hill stays Red, so Raúl and Emerson still never have
+  // it, and both iConics stay in one group, so they still go to one
+  // technician. A move that quietly broke either would be worse than the
+  // imbalance it was meant to fix.
+  G.PAIR_CYCLE.forEach(pair => {
+    const s = G.assignGroups(pair, PROPS);
+    assert.deepStrictEqual(G.violations(s.assign || s.assignments || {}), [],
+      'pair ' + pair.join(' + ') + ' violates a rule');
+  });
+});
+
+t('the unit counts are the ones Bekah balanced', () => {
+  // Red 187 against Blue 210 — the reason for the move. Before it, Red carried
+  // 138 against Blue's 259.
+  const units = Object.fromEntries(PROPS.map(p => [p.name, p.units || 0]));
+  const sum = names => names.reduce((n, x) => n + (units[x] || 0), 0);
+  const red = sum(G.GROUPS.RED.properties);
+  const blue = sum(G.GROUPS.BLUE.properties);
+  // Only meaningful if the fixture carries unit counts at all.
+  if (red + blue === 0) return;
+  assert.ok(Math.abs(red - blue) < Math.abs((red - 49) - (blue + 49)),
+    'the move made the split worse: Red ' + red + ' Blue ' + blue);
 });
 
 t('red goes to José or Angel, blue to Raúl or Emerson', () => {
