@@ -394,8 +394,15 @@ t('a temporary password is admin-only and never logged', () => {
     'server.js binds no `crypto`, and Math.random is not a password source');
   // The ACT is logged; the credential is not.
   const log = block.slice(block.indexOf('activityLog.log'), block.indexOf('res.json'));
-  assert.ok(!/password/.test(log.replace(/temp_password_issued/g, '')),
-    'the activity log carries the password');
+  // THE WORD IS IN THE LABEL NOW. The action reads "Temp password issued for
+  // sammy" - who the row never named before, because it was passed as
+  // `detail:` and activity_log has no such column.
+  //
+  // So the check drops every quoted string first and then looks for the word.
+  // What survives is code, and the only way the word survives is the variable.
+  const logCode = log.replace(/'[^']*'/g, "''");
+  assert.ok(!/password/.test(logCode), 'the activity log carries the password');
+  assert.ok(/Temp password issued for/.test(log), 'the row does not say who it was for');
 });
 
 t('a must-change session can do exactly one thing', () => {

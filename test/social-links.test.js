@@ -501,7 +501,9 @@ t('the new password is returned once and never logged', () => {
   assert.ok(from > 0, 'the act is not logged at all');
   const log = body.slice(from, body.indexOf('});', from));
   assert.ok(!/password/i.test(log), 'the activity log carries the password');
-  assert.match(body, /detail: username \+ ' as ' \+ role/);
+  // Moved from `detail:` to `action:` on 2026-10-22: activity_log has no
+  // detail column, so who was created and as what was being discarded.
+  assert.match(body, /action: 'Created account ' \+ username \+ ' as ' \+ role/);
 });
 
 // ---- the Create user form -----------------------------------------------------------

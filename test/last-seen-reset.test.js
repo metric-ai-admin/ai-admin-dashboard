@@ -149,10 +149,11 @@ t('the act is logged and the password is not', () => {
   const from = body.indexOf('activityLog.log');
   assert.ok(from > 0, 'the reset is not logged');
   const call = body.slice(from, body.indexOf('});', from));
-  // The VALUE, not the word. The event is called temp_password_issued, so a
-  // bare /password/ matches the name of the act and reports a leak that is not
-  // there — a test that cries wolf gets switched off.
-  assert.ok(!/(^|[^_a-z])password([^_a-z]|$)/.test(call),
+  // THE WORD IS IN THE LABEL NOW: "Temp password issued for sammy". Every
+  // quoted string is dropped first, so what is left is code and the only way
+  // the word survives is the variable itself.
+  const callCode = call.replace(/'[^']*'/g, "''");
+  assert.ok(!/password/.test(callCode),
     'the activity log carries the password itself');
   assert.match(call, /event: 'temp_password_issued'/, 'the act is not named');
 });

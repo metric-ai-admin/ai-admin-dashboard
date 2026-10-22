@@ -1056,10 +1056,17 @@ app.post('/api/auth/admin/temp-password', requireMetricAdmin, async (req, res) =
 
     // The ACT is logged; the password is not. An activity log that carries a
     // live credential is a credential store nobody meant to build.
+    //
+    // WHO IT WAS FOR, in `action`. It was in `detail`, and activity_log has no
+    // such column — the allowlist in lib/activity-log.js drops any key the
+    // table lacks, so every one of these rows has said "a temporary password
+    // was issued" and never to whom, since the route was written. The
+    // automatic write-logger cannot fill that gap either: the username is in
+    // the body and the catalogue only knows the path.
     activityLog.log({
       user_email: req.user?.email || 'api-key', user_name: req.user?.name || 'API key',
       user_role: 'admin', event: 'temp_password_issued', status_code: 200,
-      detail: 'for ' + username,
+      action: 'Temp password issued for ' + username,
     });
     res.json({
       ok: true, username,
@@ -1159,11 +1166,13 @@ app.post('/api/auth/admin/create-user', requireMetricAdmin, async (req, res) => 
       });
     }
 
-    // The ACT is logged; the password is not.
+    // The ACT is logged; the password is not. Who was created and as what goes
+    // in `action` for the same reason as the route above: `detail` is not a
+    // column, so it was being discarded.
     activityLog.log({
       user_email: req.user?.email || 'api-key', user_name: req.user?.name || 'API key',
       user_role: 'admin', event: 'user_created', status_code: 200,
-      detail: username + ' as ' + role,
+      action: 'Created account ' + username + ' as ' + role,
     });
     return res.json({
       ok: true, username, email, name, role,

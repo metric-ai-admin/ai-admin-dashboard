@@ -125,14 +125,73 @@ t('a log that cannot be written does not block the sign-in page', () => {
 });
 
 t('detail is not an activity_log column, anywhere', () => {
-  // Found while writing this: the two password routes have passed `detail:`
-  // since they were written and it has been discarded every time. They are not
-  // changed here — the finding is recorded so it is not re-discovered.
   const allowed = read('lib/activity-log.js');
   const list = allowed.slice(allowed.indexOf('var ALLOWED = ['),
     allowed.indexOf('];', allowed.indexOf('var ALLOWED = [')));
   assert.ok(!/'detail'/.test(list), 'detail IS allowed now — this test is stale');
   assert.ok(/'action'/.test(list), 'action is not allowed either');
+});
+
+// Does this log call reference the password VARIABLE? Comments and string
+// literals are removed first: both legitimately contain the word. The action
+// string itself reads "Temp password issued for sammy", and matching the word
+// flagged the very line that fixes this.
+//
+// \bpassword\b cannot match inside temp_password_issued — an underscore is a
+// word character, so there is no boundary there.
+const logsThePassword = call => {
+  const code = call
+    .split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n')
+    .replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`/g, "''");
+  return /\bpassword\b/.test(code);
+};
+
+t('no activityLog.log call writes to detail', () => {
+  // The two password routes passed `detail:` from the day they were written
+  // and it was discarded every time, so the rows said a temporary password had
+  // been issued and never to whom. A key the table does not have is silently
+  // dropped, which is why only reading the allowlist finds it.
+  const offenders = [];
+  let i = server.indexOf('activityLog.log({');
+  while (i >= 0) {
+    const call = server.slice(i, server.indexOf('});', i));
+    const code = call.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
+    if (/\bdetail:/.test(code)) {
+      offenders.push(server.slice(0, i).split('\n').length);
+    }
+    i = server.indexOf('activityLog.log({', i + 1);
+  }
+  assert.deepStrictEqual(offenders, [],
+    'these log to a column that does not exist, at lines: ' + offenders.join(', '));
+});
+
+t('a temporary password records WHO it was for', () => {
+  const at = server.indexOf("app.post('/api/auth/admin/temp-password'");
+  const body = server.slice(at, server.indexOf("app.post('/api/auth/admin/create-user'", at));
+  const from = body.indexOf('activityLog.log');
+  const call = body.slice(from, body.indexOf('});', from));
+  assert.match(call, /action: 'Temp password issued for ' \+ username/);
+  assert.match(call, /event: 'temp_password_issued'/);
+  // And still not the password itself.
+  assert.ok(!logsThePassword(call), 'the activity log carries the password');
+});
+
+t('a created account records who and as what', () => {
+  const at = server.indexOf("app.post('/api/auth/admin/create-user'");
+  const body = server.slice(at, server.indexOf("app.post('/api/auth/change-password'", at));
+  const from = body.indexOf('activityLog.log');
+  const call = body.slice(from, body.indexOf('});', from));
+  assert.match(call, /action: 'Created account ' \+ username \+ ' as ' \+ role/);
+  assert.match(call, /event: 'user_created'/);
+  assert.ok(!logsThePassword(call), 'the activity log carries the password');
+});
+
+t('the username is what reaches the log, not the raw input', () => {
+  // temp-password lowercases and trims its own input; create-user validates
+  // the shape. Neither should log a string somebody pasted unchecked.
+  const at = server.indexOf("app.post('/api/auth/admin/temp-password'");
+  const head = server.slice(at, at + 400);
+  assert.match(head, /String\(\(req\.body \|\| \{\}\)\.username \|\| ''\)\.toLowerCase\(\)\.trim\(\)/);
 });
 
 // ---- 4. the roster matches the accounts ----------------------------------------------
