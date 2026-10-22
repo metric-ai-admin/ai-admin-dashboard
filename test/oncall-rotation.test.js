@@ -369,7 +369,10 @@ t('a broken constraint is on the face of the calendar, not in a log', () => {
 });
 
 t('the PDF colours the group rows and resets afterwards', () => {
-  const s = src('server.js');
+  // The drawing moved out of the route into lib/oncall-export.js on
+  // 2026-10-22, so a test could render November and measure it. Reading
+  // server.js here would now pass by finding nothing.
+  const s = src('lib/oncall-export.js');
   assert.ok(/G\.GROUPS\[gkey\]\.color/.test(s), 'the PDF ignores the group colour');
   assert.ok(/pdf\.fillColor\('#000000'\);\n\s*pdf\.y = y \+ maxH/.test(s),
     'the colour leaks into the next row');

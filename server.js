@@ -11704,6 +11704,13 @@ app.get('/api/kpi/report/export/:format', requireAuth, requireRole(...KPI_REPORT
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// EVERY STRING THROUGH pdfSafe. Helvetica is WinAnsi, and the alarm marker
+// here was a black triangle (U+25B2) — outside it, so an owner's PDF carried a
+// mangled glyph on the one line that was trying to raise an alarm. The alert
+// TEXT comes from data as well, so sanitising only the marker would fix the
+// character somebody noticed and leave the ones nobody has hit yet.
+const { pdfSafe: kpiPdfSafe } = require('./lib/pdf-text.js');
+
 // WHOSE ROWS BELONG IN THIS FILE.
 //
 // An export for one owner carries that owner's columns and nothing else. The
@@ -11913,7 +11920,7 @@ function kpiPdf(doc, report, only) {
     if ((sec.cards || []).some(c => c.metric === 'followUpsGoal')) {
       (report.goalNotes || []).filter(n => scope.mine(n.property)).forEach(n => {
         doc.fontSize(7).fillColor('#555')
-          .text(n.property + ': ' + n.text, L, doc.y + 2, { width: W });
+          .text(kpiPdfSafe(n.property + ': ' + n.text), L, doc.y + 2, { width: W });
       });
       doc.fillColor('#000').fontSize(7.5);
     }
@@ -11933,13 +11940,14 @@ function kpiPdf(doc, report, only) {
       columns.forEach(c => {
         const r = (report.rentable || {})[c];
         if (!r || !r.rules.length) return;
-        doc.fontSize(7).fillColor('#555').text(c + ': ' + r.excludedUnits + ' units excluded — '
-          + r.rules.map(x => x.label + ', ' + x.reason).join('; '), L, doc.y + 2, { width: W });
+        doc.fontSize(7).fillColor('#555').text(kpiPdfSafe(c + ': ' + r.excludedUnits
+          + ' units excluded — ' + r.rules.map(x => x.label + ', ' + x.reason).join('; ')),
+        L, doc.y + 2, { width: W });
       });
       // The same filter as the Excel. The printed page is the one people keep.
       (report.rentableAlerts || []).filter(a => scope.mine(a.property)).forEach(a => {
         doc.fontSize(7).fillColor(a.severity === 'alarm' ? '#b00020' : '#555')
-          .text((a.severity === 'alarm' ? '▲ ' : '') + a.property + ': ' + a.text,
+          .text(kpiPdfSafe((a.severity === 'alarm' ? 'WARNING: ' : '') + a.property + ': ' + a.text),
             L, doc.y + 2, { width: W });
       });
       doc.fillColor('#000').fontSize(7.5);
@@ -19796,36 +19804,12 @@ app.get('/api/maintenance/oncall/export.:format', requireAuth, async (req, res) 
       res.setHeader('Content-Disposition', 'attachment; filename="' + name + '.pdf"');
       res.send(Buffer.concat(chunks));
     });
-    const width = pdf.page.width - 64;
-    const cols = (doc.weeks || []).length + 1;
-    const colW = width / cols;
-    rows.forEach((r, i) => {
-      if (i === 0) { pdf.font('Helvetica-Bold').fontSize(13).text(String(r[0] || ''), { width }); pdf.moveDown(0.3); return; }
-      if (i === 1) { pdf.font('Helvetica').fontSize(7.5).fillColor('#555').text(String(r[0] || ''), { width }); pdf.fillColor('#000').moveDown(0.5); return; }
-      if (!r.length) { pdf.moveDown(0.4); return; }
-      if (r.length === 1) { pdf.font('Helvetica').fontSize(7.5).text(String(r[0] || ''), { width }); return; }
-      const bold = i === 3 || i === 4 || /^(Technician|ROTATION|GROUPS)/.test(String(r[0]));
-      pdf.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(7.5);
-      // The group colour, on the property rows. SheetJS cannot write cell fills
-      // in the community build, so the Excel carries the group as TEXT in the
-      // row label — here the colour is real. Either way the name is there: a
-      // calendar photocopied in black and white still has to be readable.
-      const G = require('./lib/oncall-groups.js');
-      const gm = String(r[0]).match(/\((Red|Blue)\)\s*$/i);
-      const gkey = gm ? gm[1].toUpperCase() : null;
-      pdf.fillColor(gkey && G.GROUPS[gkey] ? G.GROUPS[gkey].color : '#000000');
-      const y = pdf.y;
-      let maxH = 0;
-      r.forEach((cell, c) => {
-        const text = String(cell == null ? '' : cell);
-        const h = pdf.heightOfString(text, { width: colW - 6 });
-        if (h > maxH) maxH = h;
-        pdf.text(text, 32 + c * colW, y, { width: colW - 6 });
-      });
-      pdf.fillColor('#000000');
-      pdf.y = y + maxH + 3;
-      if (pdf.y > pdf.page.height - 50) pdf.addPage();
-    });
+    // DRAWN BY lib/oncall-export.js, not here. It was inline, and both of the
+    // faults it had could only be seen by opening the finished page: full-width
+    // blocks starting under the Week 4 column and running off the edge, and
+    // emoji that Helvetica cannot encode arriving as "Ø=ÜÌ". A test renders
+    // November into a buffer and measures it now.
+    ONCALL_EXPORT.drawPdf(pdf, doc, properties, require('./lib/oncall-groups.js'));
     pdf.end();
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
