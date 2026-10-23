@@ -271,7 +271,12 @@ t('the board shows it as its own row, under the property', () => {
   assert.ok(/rentablePct/.test(fn) && /rentableUnits/.test(fn));
   assert.ok(/esc\(a\.text\)/.test(fn), 'alert text reaches the page unescaped');
   assert.ok(/esc\(why\)/.test(fn), 'the reason reaches the page unescaped');
-  assert.ok(/#b91c1c/.test(fn), 'an alarm must be visible on the board');
+  // This pinned the literal #b91c1c. That hex is a light-theme red and measured
+  // 2.91 on the dark card — the alarm was the hardest line on the board to read,
+  // and the test was holding it there. What it means to assert is that the alarm
+  // branch is coloured differently from the quiet one, so that is what it asks.
+  assert.ok(fn.includes('color:var(--critical)'), 'an alarm must be visible on the board');
+  assert.ok(fn.includes('color:var(--muted)'), 'a non-alarm note must stay quiet');
   assert.ok(/\+ rentableRow\(p\)/.test(appjs), 'the row is built but never appended');
 });
 

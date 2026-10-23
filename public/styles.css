@@ -2447,7 +2447,10 @@ tr.ca-sel { background: var(--accent-glow); }
   --link-hover: #1e40af;
 
   --critical: #c0392b;  --critical-bg: rgba(192, 57, 43, 0.10);
-  --warning:  #b26a00;  --warning-bg:  rgba(178, 106, 0, 0.10);
+  /* #b26a00 measured 4.24 on white — under AA's 4.50 for body text, and it
+     is the colour every "needs attention" line in the light theme uses.
+     #a86200 is the nearest shade of the same hue that passes, at 4.76. */
+  --warning:  #a86200;  --warning-bg:  rgba(168, 98, 0, 0.10);
   --success:  #0f7a53;  --success-bg:  rgba(15, 122, 83, 0.10);
   --info:     #0369a1;  --info-bg:     rgba(3, 105, 161, 0.10);
 

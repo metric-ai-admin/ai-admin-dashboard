@@ -856,9 +856,9 @@ async function leasingLoadGoalBoard(week, range) {
       const pctOf = v => (v == null ? '—' : (v * 100).toFixed(1) + '%');
       const why = r.rules.map(x => x.label + ' — ' + x.reason).join('; ');
       const alerts = (p.rentable_alerts || []).map(a =>
-        `<div style="${a.severity === 'alarm' ? 'color:#b91c1c;font-weight:600' : 'color:var(--muted)'}">
+        `<div style="${a.severity === 'alarm' ? 'color:var(--critical);font-weight:600' : 'color:var(--muted)'}">
            ${a.severity === 'alarm' ? '&#9650; ' : ''}${esc(a.text)}</div>`).join('');
-      return `<tr style="background:var(--surface-2,rgba(0,0,0,.03))">
+      return `<tr style="background:var(--bg-elevated)">
         <td style="padding-left:1.6em;font-style:italic">rentable, excluding ${esc(why)}</td>
         <td style="text-align:right">${r.rentableUnits}</td>
         <td style="text-align:right">${r.rentableOccupied}</td>
@@ -13868,11 +13868,23 @@ function ocViolations(weeks) {
  * So every move-out gets a state and, where there is one, a link straight to
  * the record that holds the photos.
  */
+// THE TOKENS, NOT A HEX I PICKED.
+//
+// The first version wrote var(--ok, #1a7f37), var(--warn, #b26a00) and
+// var(--bad, #b00020). None of --ok, --warn or --bad is defined anywhere in
+// styles.css, so every one of them fell through to the fallback — and those
+// are light-theme colours being drawn on a dark card. Measured against
+// #111118: the green 3.70, the red 2.57, the amber 4.43, against AA's 4.50.
+// The status column, which is the first thing read on the row, was the least
+// readable thing on the screen.
+//
+// --critical, --warning and --success are redefined per theme and pass in
+// both: 5.12 / 8.75 / 7.41 on dark, 5.44 / 4.76 / 5.34 on light.
 const MO_STATE_STYLE = {
-  complete: { colour: 'var(--ok, #1a7f37)', weight: 400 },
-  done_elsewhere: { colour: 'var(--warn, #b26a00)', weight: 600 },
-  empty: { colour: 'var(--warn, #b26a00)', weight: 600 },
-  none: { colour: 'var(--bad, #b00020)', weight: 600 },
+  complete: { colour: 'var(--success)', weight: 400 },
+  done_elsewhere: { colour: 'var(--warning)', weight: 600 },
+  empty: { colour: 'var(--warning)', weight: 600 },
+  none: { colour: 'var(--critical)', weight: 600 },
 };
 
 function moInspectionLink(ins) {
@@ -13891,7 +13903,9 @@ function moCollectionsTable(c) {
     return '<p class="small muted">No move-outs in the last ' + (c && c.days ? c.days : 90) + ' days.</p>';
   }
   const n = c.counts || {};
-  const head = '<p class="small" style="margin:0 0 6px">'
+  // Explicit colour: inheriting left it at whatever the card decided, and in
+  // dark mode that is a grey chosen for secondary text.
+  const head = '<p class="small" style="color:var(--text);margin:0 0 6px">'
     + '<b>' + (n.complete || 0) + '</b> complete &nbsp;·&nbsp; '
     + '<b>' + (n.done_elsewhere || 0) + '</b> done under another name &nbsp;·&nbsp; '
     + '<b>' + (n.empty || 0) + '</b> empty &nbsp;·&nbsp; '
@@ -13900,7 +13914,7 @@ function moCollectionsTable(c) {
   // A MOVE-OUT NOBODY COULD LOOK UP IS NOT A MOVE-OUT WITH NO INSPECTION.
   // 83 of 110 recent inspections carry no unit_turn_id and 10 no unit at all.
   const caveat = c.unmatchable
-    ? '<p class="small" style="color:var(--warn, #b26a00);margin:0 0 8px">'
+    ? '<p class="small" style="color:var(--warning);margin:0 0 8px">'
       + c.unmatchable + ' move-out(s) have no unit and no turn id, so no inspection '
       + 'could be looked up for them. They read as "No inspection" and may have been walked.</p>'
     : '';
@@ -13986,17 +14000,17 @@ async function loadMoveOutAlerts() {
         <tbody>${rows.map(rowFor).join('')}</tbody></table>`;
 
     body.innerHTML = `
-      <h4 style="margin:10px 0 2px 0">Today</h4>${today}
-      <h4 style="margin:14px 0 4px 0">Move-out inspections — last 90 days</h4>
+      <h4 style="margin:10px 0 2px 0;color:var(--text)">Today</h4>${today}
+      <h4 style="margin:14px 0 4px 0;color:var(--text)">Move-out inspections — last 90 days</h4>
       ${collections}
-      <h4 style="margin:12px 0 2px 0;color:#8a6d00">Inspection exists but is not marked done in AppFolio</h4>
+      <h4 style="margin:12px 0 2px 0;color:var(--warning)">Inspection exists but is not marked done in AppFolio</h4>
       ${openOnes.length
         ? '<p class="small" style="color:#8a6d00">Erick checked the open ones on 2026-10-14 and '
           + '<b>all were empty</b> — check before closing. Where a unit shows an unrecognised '
           + 'inspection below, that is probably where the real walk was recorded.</p>'
           + table(openOnes)
         : '<p class="small muted">None.</p>'}
-      <h4 style="margin:12px 0 2px 0;color:#b00020">No move-out inspection recorded after 2 business days</h4>
+      <h4 style="margin:12px 0 2px 0;color:var(--critical)">No move-out inspection recorded after 2 business days</h4>
       ${missing.length ? table(missing) : '<p class="small muted">None overdue.</p>'}
       <p class="small muted" style="margin-top:8px">${esc2(d.caveat || '')}</p>`;
   } catch (e) {
