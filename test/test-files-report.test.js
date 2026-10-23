@@ -68,8 +68,18 @@ t('a counting suite acts on its count', () => {
     const src = fs.readFileSync(path.join(DIR, f), 'utf8');
     const counts = /fail\+\+|fail \+= 1/.test(src);
     if (!counts) return;
+    // A THIRD SPELLING, and it is not optional everywhere:
+    //   process.exitCode = fail ? 1 : 0
+    // server-boot.test.js spawns a real server, and calling process.exit()
+    // while libuv is still tearing down the child's pipes aborts on Windows
+    // with UV_HANDLE_CLOSING and exits 127 — every assertion green, the build
+    // red, and nothing saying why. Setting exitCode and letting node close its
+    // own handles is the fix, and it decides the build exactly as the other
+    // two spellings do. The rule is "the tally decides the exit status", not
+    // "the tally is passed to process.exit".
     const acts = [...src.matchAll(EXIT_CALL)].some(m => /fail/.test(m[0]))
-      || /if \(fail\)[\s\S]{0,60}process\.exit\(/.test(src);
+      || /if \(fail\)[\s\S]{0,60}process\.exit\(/.test(src)
+      || /process\.exitCode\s*=[^;\n]*fail/.test(src);
     if (!acts) offenders.push(f);
   });
   assert.deepStrictEqual(offenders, [],

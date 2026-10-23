@@ -778,9 +778,19 @@ function deactivatedRefresh(force) {
     .finally(() => { deactivatedLoading = false; });
 }
 
-// Load once at boot rather than on the first request, so a restart does not
-// hand one request window to an account that was deactivated before it.
-deactivatedRefresh(true);
+// THE FIRST LOAD HAPPENS AT LISTEN, NOT HERE.
+//
+// It was called at module level, three thousand lines above the
+// `const CRM_CONFIGURED = ...` it reads. A `const` is in the temporal dead
+// zone until its own line executes, so the call threw
+// `ReferenceError: Cannot access 'CRM_CONFIGURED' before initialization` and
+// the process exited 1 on every Render boot. The function declaration hoists;
+// the constant it depends on does not.
+//
+// The intent stands — prime the list at startup so a restart does not hand one
+// request window to an account deactivated before it — so the call moved to
+// the listen block, after everything it reads is defined. See bootDeactivated()
+// at the bottom of this file.
 
 function isDeactivated(userId) {
   return !!userId && deactivatedIds.has(String(userId));
@@ -21476,9 +21486,30 @@ registerMetricRoutes(app, supabaseAdmin || supabasePublic);
 // itself. Render sets RENDER=true itself, so production keeps listening on all
 // interfaces, which is how its proxy reaches the process.
 const HOST = process.env.RENDER ? '0.0.0.0' : '127.0.0.1';
+// Prime the deactivated-account deny-list before the first request.
+//
+// HERE, not where the function is defined: that is three thousand lines above
+// `const CRM_CONFIGURED`, and calling it there threw a temporal-dead-zone
+// ReferenceError that exited the process on every boot. By the time listen
+// fires, every constant it reads has been evaluated.
+//
+// A FAILURE HERE IS NOT FATAL AND NOT SILENT. deactivatedRefresh keeps the
+// last known set on error — an empty one at boot — so the worst case is that
+// requireAuth lets a deactivated session through until the first successful
+// 60-second refresh. That is worth a line in the log and not worth refusing to
+// start the server over.
+function bootDeactivated() {
+  try {
+    deactivatedRefresh(true);
+  } catch (e) {
+    logLine(`[auth] could not prime the deactivated list at boot: ${e.message}`);
+  }
+}
+
 app.listen(PORT, HOST, () => {
   logLine(`AI Admin Dashboard listening on http://${HOST}:${PORT}`);
   console.log(`AI Admin Dashboard running at http://${HOST}:${PORT}`);
+  bootDeactivated();
 });
 
 // Keep-alive self-ping every 10 minutes. Only in production against the public
