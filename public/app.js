@@ -12516,6 +12516,70 @@ function acctAuthCell(u) {
  * useful for turned out to have working credentials and simply had not been
  * back — so the confirmation says what it destroys, by name, before it runs.
  */
+/* Deactivate an account, or bring one back.
+ *
+ * THE REASON THIS EXISTS. When Claudia left on 10/21 the only control on this
+ * screen was "Reset temp password", so that is what was used. It changes the
+ * password and nothing else: her row stayed active = true, she was never
+ * banned in Auth, and the account was open the whole time — shut only by her
+ * not knowing a string. This is the control that was missing.
+ *
+ * THE CONFIRMATION SAYS WHAT IT DOES *NOT* DO, because the fear that stops
+ * somebody using it is losing the record. Nothing is deleted.
+ */
+function wireActiveButtons(root) {
+  root.querySelectorAll('[data-set-active]').forEach(btn => {
+    if (btn.dataset.wired) return;
+    btn.dataset.wired = '1';
+    btn.addEventListener('click', async () => {
+      const username = btn.getAttribute('data-set-active') || '';
+      const active = btn.getAttribute('data-to') === '1';
+      if (!username) {
+        window.alert('This row has no username on it, so there is nothing to act on.');
+        return;
+      }
+      const ask = active
+        ? 'Reactivate ' + username + '?\n\nThey will be able to sign in again.'
+        : 'Deactivate ' + username + '?\n\nThey will not be able to sign in, and any '
+          + 'session they already have open stops working within 60 seconds.\n\n'
+          + 'Their history and everything they authored stays exactly as it is — '
+          + 'nothing is deleted, and this is reversible.';
+      if (!window.confirm(ask)) return;
+      btn.disabled = true;
+      const row = btn.closest('tr');
+      try {
+        const r = await fetch('/api/auth/admin/set-active', apiBody({
+          method: 'POST', body: { username, active }, credentials: 'same-origin',
+        }));
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          row.insertAdjacentHTML('afterend', `<tr><td colspan="7">`
+            + `<div class="alert-box warn"><div class="al">NOT CHANGED</div>`
+            + esc(data.error || 'Could not change it.') + `</div></td></tr>`);
+          btn.disabled = false;
+          return;
+        }
+        // HALF-DONE IS SAID OUT LOUD. The dashboard flag is what locks the
+        // door; if the Auth ban did not apply, the account is still shut here
+        // and still reachable by a password reset, and that is worth knowing
+        // now rather than on the day somebody uses it.
+        if (data.banNote) {
+          row.insertAdjacentHTML('afterend', `<tr><td colspan="7">`
+            + `<div class="alert-box warn"><div class="al">PARTLY APPLIED</div>`
+            + esc(data.banNote) + `</div></td></tr>`);
+        }
+        // Re-read rather than patch the row by hand: the label, the buttons
+        // and the sign-in column all move together, and a hand-patched row is
+        // how a screen starts disagreeing with the database.
+        await loadActivity();
+      } catch (e) {
+        btn.disabled = false;
+        window.alert('Could not reach the server: ' + e.message);
+      }
+    });
+  });
+}
+
 function wireResetButtons(root) {
   root.querySelectorAll('[data-reset-pw]').forEach(btn => {
     if (btn.dataset.wired) return;
@@ -12595,14 +12659,24 @@ async function loadActivity() {
         const since = d.oldestRow
           ? 'not since ' + new Date(d.oldestRow).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
           : 'no activity logged';
-        return `<tr${never ? ' style="opacity:.75"' : ''}>
-          <td>${esc(u.name || u.email)}<div class="muted small">${esc(u.email)}</div></td>
+        // DEACTIVATED IS NOT "HAS NOT BEEN BACK". Both show an idle account,
+        // and only one of them means somebody decided. Said on the row, in
+        // the critical colour, so the table cannot be read as a roster of
+        // people who are all still here.
+        const off = u.active === false;
+        return `<tr${never && !off ? ' style="opacity:.75"' : ''}>
+          <td>${esc(u.name || u.email)}<div class="muted small">${esc(u.email)}</div>
+            ${off ? '<div class="small" style="color:var(--critical);font-weight:600">Deactivated</div>' : ''}</td>
           <td>${esc(u.role || '—')}</td>
           <td>${never ? `<b>${esc(since)}</b>` : esc(actWhen(u.last_at))}</td>
           <td>${esc(actSection(u.last_section) || '—')}</td>
           <td>${never ? `<span class="muted">${esc(since)}</span>` : (u.days_since_login === null ? '—' : u.days_since_login)}</td>
           <td>${acctAuthCell(u)}</td>
-          ${mayReset ? `<td><button class="btn-sm" data-reset-pw="${esc(u.email)}">Reset temp password</button></td>` : ''}
+          ${mayReset ? `<td>${off
+            ? `<button class="btn-sm" data-set-active="${esc(u.username || '')}" data-to="1">Reactivate</button>`
+            : `<button class="btn-sm" data-reset-pw="${esc(u.email)}">Reset temp password</button>`
+              + ` <button class="btn-sm" data-set-active="${esc(u.username || '')}" data-to="0">Deactivate</button>`
+          }</td>` : ''}
         </tr>`;
       }).join('')}</tbody></table>`;
       // The person filter is built from the data already on screen, so it
@@ -12623,7 +12697,7 @@ async function loadActivity() {
         + `The sign-in column could not be read (${esc(d.authError)}). It is blank for everybody — `
         + `do not read that as "nobody has signed in".</div>`);
     }
-    if (ls) wireResetButtons(ls);
+    if (ls) { wireResetButtons(ls); wireActiveButtons(ls); }
   } catch (e) {
     if (ls) ls.innerHTML = `<p class="muted">Could not load: ${esc(e.message)}</p>`;
   }

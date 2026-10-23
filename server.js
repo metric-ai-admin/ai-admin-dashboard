@@ -730,12 +730,75 @@ app.post('/api/activity/view', requireAuth, (req, res) => {
   } catch { /* a beacon never reaches the caller */ }
 });
 
+// ---- Deactivated accounts --------------------------------------------------
+//
+// SETTING active = false IS NOT ENOUGH ON ITS OWN. Login already checks it —
+// has done since the column existed — so a deactivated person cannot sign in
+// again. But requireAuth below verifies a JWT we signed ourselves and asks
+// nothing else: not Supabase Auth, not this database. The token is issued with
+// expiresIn: '7d'.
+//
+// So without this, somebody already signed in keeps full access for up to a
+// WEEK after being deactivated. The same was true of resetting their password,
+// which is how Claudia's departure was handled on 10/21 — that changes the
+// password, and changes nothing about a session already open.
+//
+// Banning the user in Supabase Auth does not close it either: nothing on the
+// request path consults Auth. The check has to be here.
+//
+// A SET IN MEMORY, NOT A QUERY PER REQUEST. The list is the people who are
+// deactivated — empty today, sixteen rows in the table — so it costs nothing
+// to hold and nothing to consult. Refreshed on a TTL like actPropRefresh(),
+// and forced immediately when an admin deactivates somebody so their own
+// action is instant rather than up to a minute late.
+const DEACTIVATED_TTL_MS = 60 * 1000;
+let deactivatedIds = new Set();
+let deactivatedAt = 0;
+let deactivatedLoading = false;
+
+function deactivatedRefresh(force) {
+  if (deactivatedLoading) return;
+  if (!force && Date.now() - deactivatedAt < DEACTIVATED_TTL_MS) return;
+  if (!CRM_CONFIGURED) return;
+  deactivatedLoading = true;
+  (supabaseAdmin || supabasePublic).from('dashboard_users')
+    .select('id').eq('active', false)
+    .then(({ data, error }) => {
+      // ON FAILURE THE OLD SET STAYS. Emptying it on a failed read would let
+      // every deactivated account back in for as long as Supabase is unwell —
+      // a database problem becoming an access-control problem. The cost of
+      // the other direction is that somebody deactivated DURING an outage
+      // keeps their session a little longer, which is the safer miss.
+      if (!error && data) {
+        deactivatedIds = new Set(data.map(r => String(r.id)));
+        deactivatedAt = Date.now();
+      }
+    })
+    .catch(() => {})
+    .finally(() => { deactivatedLoading = false; });
+}
+
+// Load once at boot rather than on the first request, so a restart does not
+// hand one request window to an account that was deactivated before it.
+deactivatedRefresh(true);
+
+function isDeactivated(userId) {
+  return !!userId && deactivatedIds.has(String(userId));
+}
+
 // ---- Auth helpers ----------------------------------------------------------
 function requireAuth(req, res, next) {
   const token = req.cookies?.dashboardToken;
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
+    // The session outlives the decision to end it unless something asks. A
+    // valid signature only proves the token was ours when it was issued.
+    deactivatedRefresh();
+    if (isDeactivated(req.user.userId)) {
+      res.clearCookie('dashboardToken', { httpOnly: true, sameSite: 'strict' });
+      return res.status(401).json({ error: 'Account deactivated' });
+    }
     // A session issued after a temporary password can do exactly one thing:
     // set a real one. Enforced HERE rather than in the client, because a
     // must-change screen the browser draws is a suggestion — anybody who
@@ -1073,6 +1136,115 @@ app.post('/api/auth/admin/temp-password', requireMetricAdmin, async (req, res) =
       password,
       note: 'Shown once. Read it to them — do not paste it into chat or email. '
         + 'They must change it at their next sign-in before anything else works.',
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/auth/admin/set-active  { username, active }
+//
+// Deactivate an account, or bring one back. THE HISTORY STAYS: nothing is
+// deleted, no activity_log row is touched, authorship on every past record is
+// unchanged. This flips a flag and bans the Auth user, and both are reversible.
+//
+// TWO MECHANISMS, DELIBERATELY.
+//   active = false   is what the code actually reads — login refuses it, and
+//                    requireAuth drops a session that is already open.
+//   the Auth ban     closes the paths our flag does not cover: a password
+//                    reset, or anything that ever talks to Supabase Auth
+//                    directly. Defence in depth, not the primary.
+//
+// A ban failure does NOT fail the request. The flag is the thing that locks
+// the dashboard, so refusing the whole operation because the second mechanism
+// did not apply would leave the account open rather than half-closed — the
+// response says which half happened.
+app.post('/api/auth/admin/set-active', requireMetricAdmin, async (req, res) => {
+  const body = req.body || {};
+  const username = String(body.username || '').toLowerCase().trim();
+  const active = body.active === true;
+  if (!username) return res.status(400).json({ error: 'Username required' });
+  if (typeof body.active !== 'boolean') {
+    // Never guess this one. A missing flag defaulting either way is an account
+    // silently opened or closed by a malformed request.
+    return res.status(400).json({ error: 'active must be true or false' });
+  }
+  if (!supabaseAdmin) return res.status(503).json({ error: 'Service role key not configured' });
+
+  try {
+    const db = supabaseAdmin;
+    const { data: row, error: rowErr } = await db.from('dashboard_users')
+      .select('id,email,username,name,role,active')
+      .eq('username', username).maybeSingle();
+    if (rowErr) throw new Error(rowErr.message);
+    if (!row) return res.status(404).json({ error: 'No such dashboard user: ' + username });
+
+    // LOCKING YOURSELF OUT IS NOT AN ADMIN ACTION. The deny-list takes effect
+    // on the deactivating admin's very next request, so this would end the
+    // session doing the deactivating.
+    if (!active && req.user && String(req.user.userId) === String(row.id)) {
+      return res.status(400).json({ error: 'You cannot deactivate your own account' });
+    }
+    // And the last admin standing cannot be removed, or nobody can undo it:
+    // Reactivate is itself admin-only.
+    if (!active && row.role === 'admin') {
+      const { data: admins, error: aErr } = await db.from('dashboard_users')
+        .select('id').eq('role', 'admin').eq('active', true);
+      if (aErr) throw new Error(aErr.message);
+      if ((admins || []).length <= 1) {
+        return res.status(400).json({
+          error: 'This is the last active admin — reactivating anybody afterwards '
+            + 'would need an admin, and there would not be one.',
+        });
+      }
+    }
+
+    const { error: upErr } = await db.from('dashboard_users')
+      .update({ active }).eq('id', row.id);
+    if (upErr) throw new Error(upErr.message);
+
+    // The flag is live from here. Force the refresh so the admin's own click
+    // takes effect now rather than within the TTL.
+    deactivatedRefresh(true);
+
+    // Supabase Auth, second. 100 years is Supabase's idiom for an indefinite
+    // ban; 'none' lifts it.
+    let banNote = null;
+    try {
+      const { data: list, error: listErr } = await supabaseAdmin.auth.admin
+        .listUsers({ page: 1, perPage: 1000 });
+      if (listErr) throw new Error(listErr.message);
+      const email = String(row.email || `${username}@metric.internal`).toLowerCase();
+      const authUser = (list.users || []).find(u => String(u.email || '').toLowerCase() === email);
+      if (!authUser) banNote = 'No Supabase Auth user matched this row; the dashboard flag is set.';
+      else {
+        const { error: banErr } = await supabaseAdmin.auth.admin
+          .updateUserById(authUser.id, { ban_duration: active ? 'none' : '876000h' });
+        if (banErr) throw new Error(banErr.message);
+      }
+    } catch (e) {
+      banNote = 'The dashboard flag is set, but Supabase Auth was NOT changed: ' + e.message;
+    }
+
+    // WHO DID IT AND TO WHOM, in `action`. activity_log has no `detail`
+    // column — the allowlist in lib/activity-log.js drops any key the table
+    // lacks — so anything not in `action` is not recorded at all.
+    activityLog.log({
+      user_email: req.user?.email || 'api-key',
+      user_name: req.user?.name || 'API key',
+      user_role: 'admin',
+      event: active ? 'account_reactivated' : 'account_deactivated',
+      status_code: 200,
+      action: (active ? 'Reactivated account ' : 'Deactivated account ')
+        + username + ' by ' + (req.user?.name || req.user?.email || 'API key'),
+    });
+
+    res.json({
+      ok: true, username, active,
+      wasActive: row.active !== false,
+      banNote,
+      note: active
+        ? 'They can sign in again. Their history and authorship were never touched.'
+        : 'They cannot sign in, and any session already open stops working within 60 seconds. '
+          + 'Their history and authorship are unchanged.',
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -14735,8 +14907,11 @@ app.get('/api/activity/last-seen', requireAuth, requireRole(...ACTIVITY_ROLES), 
   if (!CRM_CONFIGURED) return res.status(503).json({ error: 'Supabase not configured' });
   try {
     const db = supabaseAdmin || supabasePublic;
+    // username and active ride along: the Deactivate control acts on the
+    // username, and a deactivated account has to read as deactivated rather
+    // than as somebody who simply has not been back.
     const { data: users, error: uErr } = await db.from('dashboard_users')
-      .select('email,name,role').limit(500);
+      .select('email,name,role,username,active').limit(500);
     if (uErr) throw new Error(uErr.message);
 
     const { data: rows, error: aErr } = await db.from('activity_log')
@@ -14803,6 +14978,10 @@ app.get('/api/activity/last-seen', requireAuth, requireRole(...ACTIVITY_ROLES), 
       const a = authBy.get(key) || null;
       return {
         email: u.email, name: u.name || null, role: u.role || null,
+        username: u.username || null,
+        // The flag login already enforces. `active !== false` rather than
+        // `!!active` so a null reads as live, which is what the table means.
+        active: u.active !== false,
         last_at: b.lastAt || null,
         last_section: b.lastSection || null,
         last_login_at: b.lastLoginAt || null,

@@ -131,7 +131,14 @@ t('the confirmation says what it destroys', () => {
 
 t('the button is admin only', () => {
   assert.match(app, /const mayReset = currentUser && currentUser\.role === 'admin'/);
-  assert.match(app, /mayReset \? `<td><button class="btn-sm" data-reset-pw=/);
+  // The admin gate, not the cell layout. This pinned the exact markup
+  // `mayReset ? \`<td><button ... data-reset-pw=` and broke when Deactivate
+  // was added to the same cell — the gate was never touched. What it means to
+  // assert is that the control is inside the mayReset branch.
+  const at = app.indexOf('data-reset-pw="${esc(u.email)}"');
+  assert.ok(at > 0, 'the reset button is gone from the table');
+  assert.match(app.slice(Math.max(0, at - 300), at), /mayReset \?/,
+    'the reset button is rendered outside the admin branch');
 });
 
 t('the password is shown once and kept nowhere', () => {
