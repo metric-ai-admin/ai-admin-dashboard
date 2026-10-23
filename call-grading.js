@@ -232,7 +232,38 @@ const FAILURE_ACTION = {
     + 'The message is below.',
 };
 
-async function anthropicRequest({ system, user, maxTokens, model, key }) {
+// THE RUBRIC IS THE SAME 10,500 TOKENS ON EVERY CALL — so pay for it once.
+//
+// SYSTEM_PROMPT is a constant require of call-grade-prompt.json: byte-identical
+// on every grade, and about 39,873 characters of it. At 1,039 calls in the last
+// thirty days that is the great majority of what grading costs.
+//
+// `cache_control` makes the system block a cached prefix: the first call of a
+// batch writes it at 1.25x, every later call inside the TTL reads it at 0.1x.
+// The nightly run grades with a 500ms gap, so a 43-call night is one write and
+// 42 reads well inside the default five minutes.
+//
+// IT IS NOT PART OF THE PREFIX THE MODEL READS. cache_control is cache
+// metadata; the system text, the user message and the model are unchanged, so
+// the grade is produced from exactly the same input as before. test/call-cache
+// asserts that byte-for-byte rather than leaving it as a claim.
+//
+// WHY IT IS OPT-IN. A prompt that is cached and never read again costs 1.25x
+// for nothing. Grading reuses one system prompt thousands of times; the 6PM
+// action-item extraction and the Collections Review each run once a day with
+// their own prompt and would only ever pay the write.
+//
+// THE MINIMUM MATTERS AND IS SILENT. Below a model-dependent floor (1024 tokens
+// on Sonnet 4.6, 4096 at the highest) the marker is accepted and simply does
+// not cache — no error, just cache_creation_input_tokens: 0. The rubric is far
+// above every floor, which is why this is safe against a CALL_GRADE_MODEL
+// override, but it is the reason the usage numbers get asserted and not assumed.
+function systemBlocks(system, cache) {
+  if (!cache || !system) return system;
+  return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
+}
+
+async function anthropicRequest({ system, user, maxTokens, model, key, cache }) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -243,7 +274,7 @@ async function anthropicRequest({ system, user, maxTokens, model, key }) {
     body: JSON.stringify({
       model: model || GRADE_MODEL,
       max_tokens: maxTokens,
-      system,
+      system: systemBlocks(system, cache),
       messages: [{ role: 'user', content: user }],
     }),
   });
@@ -266,11 +297,52 @@ async function anthropicRequest({ system, user, maxTokens, model, key }) {
 // reused by call grading and the 6PM action-item extraction. Throws on a missing
 // key (message says "not configured" so callers can tell it apart), an API
 // error, or unparseable output.
-async function anthropicJson({ system, user, maxTokens = 2000, model }) {
+// What the call actually cost, in the only terms that say whether the cache is
+// working. A cache that silently does nothing looks exactly like a cache that
+// works — same grades, same latency, a bill 1.25x larger. The only difference
+// visible anywhere is cache_read_input_tokens, and until now this function
+// threw the usage block away.
+//
+// `cached` is the question somebody is really asking, answered once here rather
+// than re-derived by every caller from two fields that can both be absent.
+function readUsage(data) {
+  const u = (data && data.usage) || {};
+  const num = v => (typeof v === 'number' ? v : 0);
+  const read = num(u.cache_read_input_tokens);
+  const write = num(u.cache_creation_input_tokens);
+  return {
+    inputTokens: num(u.input_tokens),
+    outputTokens: num(u.output_tokens),
+    cacheReadTokens: read,
+    cacheWriteTokens: write,
+    // Three outcomes, not two. `false` must not be able to mean "no cache was
+    // asked for" AND "a cache was asked for and did not work".
+    cached: read > 0 ? 'read' : (write > 0 ? 'write' : 'miss'),
+  };
+}
+
+// The last grade's usage, so a measuring script can read it without the
+// grading path having to return a second value to every existing caller.
+let lastUsage = null;
+function lastGradeUsage() { return lastUsage; }
+
+// One line per grade in the Render log. The cheap thing that makes a silent
+// cache failure visible without anybody running a script: if a night's worth of
+// these all say `miss`, the breakpoint stopped working.
+function logUsage(u) {
+  console.log('[anthropic] grade ' + u.cached
+    + '  in=' + u.inputTokens
+    + ' cache_read=' + u.cacheReadTokens
+    + ' cache_write=' + u.cacheWriteTokens
+    + ' out=' + u.outputTokens);
+}
+
+async function anthropicJson({ system, user, maxTokens = 2000, model, cache, onUsage }) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('Anthropic is not configured: set ANTHROPIC_API_KEY on the server.');
 
-  let data = await anthropicRequest({ system, user, maxTokens, model, key });
+  let data = await anthropicRequest({ system, user, maxTokens, model, key, cache });
+  if (onUsage) { try { onUsage(readUsage(data)); } catch (e) { /* never fail a grade over a measurement */ } }
 
   // stop_reason is the reliable signal — check it BEFORE parsing, because a
   // truncated body fails to parse for a reason the parse error cannot explain.
@@ -278,7 +350,10 @@ async function anthropicJson({ system, user, maxTokens = 2000, model }) {
     const bigger = Math.min(maxTokens * 2, MAX_TOKENS_CEILING);
     if (bigger > maxTokens) {
       console.warn('[anthropic] response hit max_tokens at ' + maxTokens + ' — retrying once at ' + bigger);
-      data = await anthropicRequest({ system, user, maxTokens: bigger, model, key });
+      // max_tokens is NOT part of the cached prefix, so the retry reads the
+      // same cache entry rather than writing a second one.
+      data = await anthropicRequest({ system, user, maxTokens: bigger, model, key, cache });
+      if (onUsage) { try { onUsage(readUsage(data)); } catch (e) { /* measurement never fails a grade */ } }
     }
     // Still truncated at the ceiling: fall through and let the parse fail with
     // MALFORMED_JSON, which the auto-grade path stores as Not Scoreable rather
@@ -322,7 +397,15 @@ async function gradeTranscript({ callType, agent, duration, transcript }) {
     + '\nDuration: ' + (duration || 'unknown') + ' seconds'
     + variantNote
     + '\n\nTRANSCRIPT:\n' + transcript;
-  const graded = await anthropicJson({ system: SYSTEM_PROMPT, user: userContent, maxTokens: 6000 });
+  const graded = await anthropicJson({
+    system: SYSTEM_PROMPT,
+    user: userContent,
+    maxTokens: 6000,
+    // The one call site where the same system prompt is reused thousands of
+    // times a year. See systemBlocks() for why this is not simply always on.
+    cache: true,
+    onUsage: u => { lastUsage = u; logUsage(u); },
+  });
   return normaliseScoreability(graded);
 }
 
@@ -399,4 +482,4 @@ async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs 
   return textBlock.text;
 }
 
-module.exports = { SYSTEM_PROMPT, classifyAnthropicError, FAILURE_ACTION, gradeTranscript, normaliseScoreability, parseModelJson, extractJsonObject, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };
+module.exports = { SYSTEM_PROMPT, systemBlocks, readUsage, lastGradeUsage, classifyAnthropicError, FAILURE_ACTION, gradeTranscript, normaliseScoreability, parseModelJson, extractJsonObject, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };

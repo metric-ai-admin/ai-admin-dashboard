@@ -179,8 +179,15 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
         transcript: call.transcript,
       });
       const g = gradeOf(fresh);
-      console.log(`new ${g.padEnd(3)} ${String(fresh.overall_score ?? '').padStart(3)}  (${(fresh.overall_score ?? 0) - (r.overall_score ?? 0) >= 0 ? '+' : ''}${(fresh.overall_score ?? 0) - (r.overall_score ?? 0)})`);
-      results.push({ stored: r, fresh });
+      // What the call cost, beside what it scored. A cache that silently does
+      // nothing produces identical grades and a 1.25x bill, so the only place
+      // the difference is visible is here.
+      const u = grading.lastGradeUsage();
+      const cost = u
+        ? `  [${u.cached} read=${u.cacheReadTokens} write=${u.cacheWriteTokens} out=${u.outputTokens}]`
+        : '  [no usage]';
+      console.log(`new ${g.padEnd(3)} ${String(fresh.overall_score ?? '').padStart(3)}  (${(fresh.overall_score ?? 0) - (r.overall_score ?? 0) >= 0 ? '+' : ''}${(fresh.overall_score ?? 0) - (r.overall_score ?? 0)})${cost}`);
+      results.push({ stored: r, fresh, usage: u });
     } catch (e) {
       console.log(`ERROR ${e.message.slice(0, 60)}`);
     }
@@ -188,6 +195,35 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
   }
 
   if (!results.length) { console.log('\nnothing graded.'); return; }
+
+  // ---- the cache verdict, stated rather than left to be eyeballed -------------
+  //
+  // The expected shape of a healthy batch: ONE write on the first call, a read
+  // on every call after it. All-miss means the breakpoint is not working and
+  // the run cost 1.25x for nothing.
+  const used = results.map(r => r.usage).filter(Boolean);
+  const reads = used.filter(u => u.cached === 'read').length;
+  const writes = used.filter(u => u.cached === 'write').length;
+  const misses = used.filter(u => u.cached === 'miss').length;
+  const readTok = used.reduce((a, u) => a + u.cacheReadTokens, 0);
+  const writeTok = used.reduce((a, u) => a + u.cacheWriteTokens, 0);
+  const inTok = used.reduce((a, u) => a + u.inputTokens, 0);
+  const outTok = used.reduce((a, u) => a + u.outputTokens, 0);
+  console.log('\nPROMPT CACHE');
+  console.log(`  calls ${used.length}   write ${writes}   read ${reads}   miss ${misses}`);
+  console.log(`  tokens  cache_read ${readTok}   cache_write ${writeTok}   uncached_in ${inTok}   out ${outTok}`);
+  if (!used.length) {
+    console.log('  NO USAGE REPORTED — nothing can be concluded about the cache.');
+  } else if (reads === 0) {
+    console.log('  CACHE IS NOT WORKING. cache_read_input_tokens was 0 on every call.');
+    console.log('  The grades are unaffected; the bill is 1.25x. Do not read this as a pass.');
+  } else {
+    // Priced at Sonnet 4.6: $3/MTok in, $3.75 write, $0.30 read.
+    const cached = (writeTok * 3.75 + readTok * 0.30 + inTok * 3) / 1e6;
+    const plain = ((readTok + writeTok + inTok) * 3) / 1e6;
+    console.log(`  input cost this run  $${cached.toFixed(4)}  vs  $${plain.toFixed(4)} uncached`
+      + `   (${Math.round((1 - cached / plain) * 100)}% less)`);
+  }
 
   const before = distribution(results.map(r => r.stored), gradeOf);
   const after = distribution(results.map(r => r.fresh), gradeOf);
