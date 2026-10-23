@@ -294,5 +294,33 @@ t('the probe prints no value from any row', () => {
   assert.match(probe, /after 6 PM CT/);
 });
 
+t('the matching probe reads and never writes', () => {
+  const probe = read('scripts/probe-inspection-matching.js');
+  // The one that cost us: a throwaway script pointed at .env is pointed at
+  // production, and two verification rows took Arturo's with them on 10/22.
+  const writes = probe.match(/\.(insert|update|upsert|delete|rpc)\s*\(/g) || [];
+  assert.deepStrictEqual(writes, [], 'this probe writes: ' + writes.join(', '));
+  assert.match(probe, /READ ONLY/);
+  assert.match(probe, /after 6 PM CT/);
+});
+
+t('the matching probe prints counts, never a row', () => {
+  const probe = read('scripts/probe-inspection-matching.js');
+  // Free text holds people's names — 31 rows of "Andres luevano". Names are
+  // bucketed by pattern and the buckets are what gets printed.
+  const logs = probe.match(/console\.log\([^\n]*\)/g) || [];
+  const leaks = logs.filter(l =>
+    /\b(r|t|row|insp)\.(property_name|unit|inspection_name|primary_resident|marked_done_by)\b/.test(l)
+    || /JSON\.stringify/.test(l));
+  assert.deepStrictEqual(leaks, [], 'a value reaches the terminal: ' + leaks.join(' | '));
+});
+
+t('an empty source is not reported as a clean result', () => {
+  const probe = read('scripts/probe-inspection-matching.js');
+  // Both sources empty prints the same zeros as "nothing wrong anywhere".
+  assert.match(probe, /NOTHING can be concluded/);
+  assert.match(probe, /process\.exitCode = 1/);
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
