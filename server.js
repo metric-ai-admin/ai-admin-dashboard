@@ -9495,8 +9495,21 @@ const MAINT_SUPPORT_REPORTS = {
       inspection_name:  mwoPick(r, ['inspection_name', 'name', 'inspection_template', 'template']),
       property_name:    mwoPick(r, ['property_name', 'property']),
       unit:             mwoPick(r, ['unit_name', 'unit']),
-      primary_resident: mwoPick(r, ['primary_tenant', 'primary_resident', 'resident']),
+      // NO RESIDENT. This mapped primary_tenant/resident into
+      // maintenance_inspections.primary_resident and filled it on 78 of 642
+      // rows, and NOTHING read it — the only consumers of a column by that
+      // name are on maintenance_work_orders. We do not keep resident data in
+      // the tools (Arturo, 2026-10-26), and migration 115 cleared the rows.
+      //
+      // The clearing only holds because of this line's absence: this table is
+      // FULL-REPLACED each sync, so a map that still carried the key would
+      // re-insert every name at the next 06:05 run.
       status:           mwoPick(r, ['status', 'inspection_status']),
+      // Who created the inspection. Probed 2026-10-26: filled on 643 of 643
+      // rows, better than anything else inspection_detail returns. It is the
+      // answer to the question a "Done under another name" row raises — the
+      // walk is filed under somebody's name and nothing on the row said whose.
+      created_by:       mwoPick(r, ['created_by', 'created_by_name', 'creator']),
       // THE COLUMN WE ASKED FOR DOES NOT EXIST. The probe of 2026-10-14 shows
       // inspection_detail returns `inspected_on` on all 635 rows and no
       // `inspection_date` at all — so this mapped a name AppFolio never sends
@@ -19379,8 +19392,12 @@ async function moveOutAlertData(db, todayCT) {
   //
   // Both have been in the table since migration 095. A column left out of a
   // select is invisible in exactly the same way as a column nobody syncs.
+  // created_by is selected here as well as synced. BOTH, or neither works: a
+  // column left out of a select is invisible in exactly the way a column
+  // nobody syncs is, and this screen has now been bitten by that three times
+  // (unit_turn_id/inspected_on here, the call grades, rubric_applied).
   const insp = await selectAll(() => db.from('maintenance_inspections')
-    .select('inspection_id,inspection_name,property_name,unit,status,marked_done_on,marked_done_by,created_on,inspected_on,unit_turn_id'),
+    .select('inspection_id,inspection_name,property_name,unit,status,marked_done_on,marked_done_by,created_on,created_by,inspected_on,unit_turn_id'),
   { label: 'inspections', order: 'inspection_id' });
   return {
     today: todayCT,

@@ -14000,6 +14000,16 @@ function moCollectionsTable(c) {
     if (r.status === 'done_elsewhere' && r.officialEmpty) {
       extra.push('official inspection still empty: ' + moInspectionLink(r.officialEmpty));
     }
+    // WHO FILED IT. This state exists because the walk is recorded under
+    // somebody's name instead of the move-out inspection, and the name was the
+    // one thing the row did not say — so Karla opened the link to find out.
+    //
+    // Omitted, not blanked, when it is missing: rows synced before migration
+    // 115 have no created_by, and "created by —" would read as an inspection
+    // nobody owns rather than a column we did not have yet.
+    if (r.status === 'done_elsewhere' && r.inspection && r.inspection.createdBy) {
+      extra.push('created by ' + esc(r.inspection.createdBy));
+    }
     if ((r.alsoOnUnit || []).length) {
       extra.push('also on this unit: ' + r.alsoOnUnit.map(moInspectionLink).join(', ')
         + (r.alsoOnUnitMore ? ' <span class="muted">and ' + r.alsoOnUnitMore + ' more</span>' : ''));

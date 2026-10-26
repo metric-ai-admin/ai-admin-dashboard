@@ -95,7 +95,14 @@ t('the sync stores the columns the report actually has', () => {
   const s = src('server.js');
   const at = s.indexOf("report: '/api/v2/reports/inspection_detail.json'");
   assert.ok(at > 0);
-  const block = s.slice(at, at + 2200);
+  // To the NEXT SLOT, not a fixed 2,200 characters. The magic width broke on
+  // 2026-10-26 when a comment was added above unit_turn_id and pushed it out
+  // of the window — the test failed saying "the structural link is still
+  // dropped" about a line that had not moved. A slice measured in characters
+  // reports edits to the comments as changes to the code.
+  const end = s.indexOf('billable: {', at);
+  assert.ok(end > at, 'the inspections slot is no longer followed by billable');
+  const block = s.slice(at, end);
   assert.ok(/inspected_on:\s+leasingDateOnly\(mwoPick\(r, \['inspected_on'/.test(block),
     'the real date column is still not stored');
   assert.ok(/unit_turn_id:\s+mwoStr\(mwoPick\(r, \['unit_turn_id'\]\)\)/.test(block),
