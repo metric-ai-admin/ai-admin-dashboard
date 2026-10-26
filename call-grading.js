@@ -263,7 +263,29 @@ function systemBlocks(system, cache) {
   return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
 }
 
-async function anthropicRequest({ system, user, maxTokens, model, key, cache }) {
+// TEMPERATURE IS OMITTED UNLESS SOMEBODY ASKS FOR IT, and the omission is the
+// point: with `temperature` undefined the body below serialises to exactly the
+// bytes it did before this parameter existed, so the nightly run is unchanged
+// and its cached prefix still matches. A `temperature: undefined` key would be
+// dropped by JSON.stringify anyway; the explicit spread says so out loud rather
+// than relying on that.
+//
+// MEASURING ONLY, FOR NOW. Grading runs at the API default (temperature 1.0),
+// which is what makes two runs of one transcript disagree. scripts/
+// regrade-sample.js can pin it to measure how much of the variance that
+// accounts for; nothing in the nightly path passes it, and a test asserts that.
+//
+// IT IS A LEVER WITH AN EXPIRY. We send anthropic-version 2023-06-01 and
+// claude-sonnet-4-6, which still accepts the parameter. On version 2026-10-21
+// and later `temperature` is REJECTED WITH A 400 on every model, so adopting it
+// in production would pin us to this API version until there is a replacement.
+function samplingFields(temperature) {
+  return (temperature === undefined || temperature === null || temperature === '')
+    ? {}
+    : { temperature: Number(temperature) };
+}
+
+async function anthropicRequest({ system, user, maxTokens, model, key, cache, temperature }) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -276,6 +298,7 @@ async function anthropicRequest({ system, user, maxTokens, model, key, cache }) 
       max_tokens: maxTokens,
       system: systemBlocks(system, cache),
       messages: [{ role: 'user', content: user }],
+      ...samplingFields(temperature),
     }),
   });
 
@@ -337,11 +360,11 @@ function logUsage(u) {
     + ' out=' + u.outputTokens);
 }
 
-async function anthropicJson({ system, user, maxTokens = 2000, model, cache, onUsage }) {
+async function anthropicJson({ system, user, maxTokens = 2000, model, cache, onUsage, temperature }) {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('Anthropic is not configured: set ANTHROPIC_API_KEY on the server.');
 
-  let data = await anthropicRequest({ system, user, maxTokens, model, key, cache });
+  let data = await anthropicRequest({ system, user, maxTokens, model, key, cache, temperature });
   if (onUsage) { try { onUsage(readUsage(data)); } catch (e) { /* never fail a grade over a measurement */ } }
 
   // stop_reason is the reliable signal — check it BEFORE parsing, because a
@@ -352,7 +375,7 @@ async function anthropicJson({ system, user, maxTokens = 2000, model, cache, onU
       console.warn('[anthropic] response hit max_tokens at ' + maxTokens + ' — retrying once at ' + bigger);
       // max_tokens is NOT part of the cached prefix, so the retry reads the
       // same cache entry rather than writing a second one.
-      data = await anthropicRequest({ system, user, maxTokens: bigger, model, key, cache });
+      data = await anthropicRequest({ system, user, maxTokens: bigger, model, key, cache, temperature });
       if (onUsage) { try { onUsage(readUsage(data)); } catch (e) { /* measurement never fails a grade */ } }
     }
     // Still truncated at the ceiling: fall through and let the parse fail with
@@ -382,7 +405,7 @@ async function anthropicJson({ system, user, maxTokens = 2000, model, cache, onU
 // breakdown for rubrics with up to twenty criteria, which is a longer response
 // than the previous format. anthropicJson() still retries once at double on a
 // max_tokens stop, so an unusually long call is covered.
-async function gradeTranscript({ callType, agent, duration, transcript }) {
+async function gradeTranscript({ callType, agent, duration, transcript, temperature }) {
   if (!transcript || !String(transcript).trim()) throw new Error('No transcript to grade.');
   // Tell the grader how this agent's name gets mangled, so a transcription
   // error is not read as the wrong person being on the call. Phrased as
@@ -404,6 +427,8 @@ async function gradeTranscript({ callType, agent, duration, transcript }) {
     // The one call site where the same system prompt is reused thousands of
     // times a year. See systemBlocks() for why this is not simply always on.
     cache: true,
+    // Undefined on every production path; only scripts/regrade-sample.js sets it.
+    temperature,
     onUsage: u => { lastUsage = u; logUsage(u); },
   });
   return normaliseScoreability(graded);
@@ -482,4 +507,4 @@ async function anthropicText({ system, user, maxTokens = 2000, model, timeoutMs 
   return textBlock.text;
 }
 
-module.exports = { SYSTEM_PROMPT, systemBlocks, readUsage, lastGradeUsage, classifyAnthropicError, FAILURE_ACTION, gradeTranscript, normaliseScoreability, parseModelJson, extractJsonObject, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };
+module.exports = { SYSTEM_PROMPT, systemBlocks, samplingFields, readUsage, lastGradeUsage, classifyAnthropicError, FAILURE_ACTION, gradeTranscript, normaliseScoreability, parseModelJson, extractJsonObject, anthropicJson, anthropicText, GRADE_MODEL, detectAgentFromTranscript, canonicalAgentName, AGENT_ALIASES, AGENT_ASR_VARIANTS, agentAsrVariants };

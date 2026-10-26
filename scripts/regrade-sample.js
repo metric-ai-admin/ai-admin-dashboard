@@ -33,6 +33,21 @@ const arg = (name, dflt) => {
 const DATE = arg('date', null);
 const N = Number(arg('n', 15));
 const WRITE_CSV = process.argv.includes('--write-csv');
+// MEASURING ONLY. Pins sampling so two runs of one transcript can be compared
+// without run-to-run noise in the way. Absent by default, and it reaches only
+// this script: nothing in the nightly path passes it, and
+// test/grading-temperature.test.js asserts that.
+//
+// '0' must survive: Number('0') is 0 and 0 is falsy, so a `|| undefined`
+// anywhere here would silently drop the one value the test exists to send.
+const tempAt = process.argv.indexOf('--temperature');
+const TEMPERATURE = tempAt > -1 && process.argv[tempAt + 1] !== undefined
+  && !String(process.argv[tempAt + 1]).startsWith('--')
+  ? Number(process.argv[tempAt + 1]) : undefined;
+if (tempAt > -1 && (TEMPERATURE === undefined || Number.isNaN(TEMPERATURE))) {
+  console.error('--temperature needs a number, e.g. --temperature 0');
+  process.exit(2);
+}
 // Restrict to calls that actually carry a score. The default is everything,
 // because a rubric change can move a call ACROSS the N/S line in either
 // direction and that is worth seeing — but "the 55 scored calls" is the usual
@@ -61,7 +76,7 @@ if (idsAt > -1 && (!RECORDING_IDS || !RECORDING_IDS.length)) {
   process.exit(2);
 }
 
-const KNOWN_FLAGS = ['--date', '--n', '--write-csv', '--scored-only', '--dry-run', '--write-grades', '--recording-ids'];
+const KNOWN_FLAGS = ['--date', '--n', '--write-csv', '--scored-only', '--dry-run', '--write-grades', '--recording-ids', '--temperature'];
 const unknown = process.argv.slice(2).filter(a => a.startsWith('--') && !KNOWN_FLAGS.includes(a));
 if (unknown.length) {
   console.error('Unknown flag(s): ' + unknown.join(', '));
@@ -179,6 +194,7 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
         agent: r.agent_name,
         duration: call.duration,
         transcript: call.transcript,
+        temperature: TEMPERATURE,
       });
       // THE NUMBER PRODUCTION WOULD STORE, not the one the model reports
       // about itself. Until 2026-10-26 this printed fresh.overall_score, the
@@ -197,6 +213,9 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
       fresh.not_scoreable = v.notScoreable;
       fresh.not_scoreable_reason = v.reason;
       fresh.flags = v.flags;
+      // Kept for the CSV: what the model claimed about itself, beside what its
+      // own breakdown produces. The gap is the drift signal.
+      fresh.__modelScore = v.modelScore;
       const g = gradeOf(fresh);
       // What the call cost, beside what it scored. A cache that silently does
       // nothing produces identical grades and a 1.25x bill, so the only place
@@ -212,8 +231,57 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
       const drift = (!v.notScoreable && v.computed && v.modelScore !== null
         && Math.abs(v.modelScore - v.score) > 5)
         ? `  (model said ${v.modelScore})` : '';
-      console.log(`new ${g.padEnd(3)} ${String(fresh.overall_score ?? '').padStart(3)}  (${(fresh.overall_score ?? 0) - (r.overall_score ?? 0) >= 0 ? '+' : ''}${(fresh.overall_score ?? 0) - (r.overall_score ?? 0)})${drift}${cost}`);
-      results.push({ stored: r, fresh, usage: u });
+      // ---- WHERE THE SCORE CAME FROM, not just what it was -------------------
+      //
+      // The computed score is earned / weight, and the DENOMINATOR is whatever
+      // the model chose to emit. Within one rubric that floats hard on real
+      // data: "B — Leasing Agent" shows 15 distinct total weights and category
+      // counts from 5 to 22, and "Step 6 — Outbound Voicemail Standard" comes
+      // back as 5 or as 100. So a score can move a long way between two runs
+      // of the same call without any criterion being judged differently.
+      //
+      // Decomposed by holding one side still: the denominator-only part is what
+      // the score would have been with the SAME earned points over the NEW
+      // weight. The two parts do not sum to the whole — there is an interaction
+      // term — so the residual is reported rather than quietly folded in.
+      const brk = cats => {
+        const a = Array.isArray(cats) ? cats : [];
+        return {
+          n: a.length,
+          weight: a.reduce((s, c) => s + (Number(c.weight) || 0), 0),
+          earned: a.reduce((s, c) => s + (Number(c.score) || 0), 0),
+        };
+      };
+      const bs = brk(r.categories), bn = brk(fresh.categories);
+      const pct = (e, w) => (w > 0 ? (100 * e / w) : null);
+      const rawS = pct(bs.earned, bs.weight), rawN = pct(bn.earned, bn.weight);
+      let denomOnly = null, numerOnly = null, residual = null, denomShare = null;
+      if (rawS !== null && rawN !== null) {
+        const total = rawN - rawS;
+        denomOnly = pct(bs.earned, bn.weight) - rawS;   // numerator held still
+        numerOnly = pct(bn.earned, bs.weight) - rawS;   // denominator held still
+        residual = total - denomOnly - numerOnly;
+        denomShare = Math.abs(total) > 0.5
+          ? Math.round(100 * denomOnly / total) : null;
+      }
+
+      const route = [fresh.rubric_applied, fresh.agent_role, fresh.call_type]
+        .map(x => (x == null ? '' : String(x)));
+      const routeChanged = (fresh.rubric_applied || '') !== (r.rubric_applied || '');
+      const shape = `  [${bn.n}cat w=${bn.weight}`
+        + (bs.weight !== bn.weight ? ` was ${bs.weight}` : '')
+        + (denomShare !== null ? ` denom=${denomShare}%` : '')
+        + ']' + (routeChanged ? '  ROUTE CHANGED' : '');
+
+      console.log(`new ${g.padEnd(3)} ${String(fresh.overall_score ?? '').padStart(3)}  (${(fresh.overall_score ?? 0) - (r.overall_score ?? 0) >= 0 ? '+' : ''}${(fresh.overall_score ?? 0) - (r.overall_score ?? 0)})${drift}${shape}${cost}`);
+      if (routeChanged) {
+        console.log(`        rubric: ${r.rubric_applied || '—'}  ->  ${fresh.rubric_applied || '—'}`);
+      }
+      results.push({
+        stored: r, fresh, usage: u, route,
+        breakdown: { stored: bs, fresh: bn },
+        decomposition: { denomOnly, numerOnly, residual, denomShare },
+      });
     } catch (e) {
       console.log(`ERROR ${e.message.slice(0, 60)}`);
     }
@@ -290,14 +358,41 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
 
   if (WRITE_CSV) {
     const fs = require('fs');
-    const out = 'exports/regrade_' + day + '.csv';
+    // A UNIQUE NAME PER RUN. This was exports/regrade_<day>.csv, so the second
+    // run of a two-run comparison overwrote the first — losing exactly the
+    // file the comparison needs, silently, with a cheerful "wrote" line.
+    const tag = (TEMPERATURE === undefined ? 'tdefault' : 't' + String(TEMPERATURE).replace('.', '_'));
+    const out = 'exports/regrade_' + day + '_' + tag + '_'
+      + new Date().toISOString().replace(/[:.]/g, '-') + '.csv';
     const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
     fs.mkdirSync('exports', { recursive: true });
-    fs.writeFileSync(out, ['recording_id,agent,stored_grade,stored_score,new_grade,new_score,delta']
-      .concat(results.map(r => [r.stored.recording_id, r.stored.agent_name, gradeOf(r.stored),
-        r.stored.overall_score, gradeOf(r.fresh), r.fresh.overall_score,
-        (r.fresh.overall_score ?? 0) - (r.stored.overall_score ?? 0)].map(esc).join(','))).join('\n'));
+    // Enough to attribute a change, not just to see one: the routing the model
+    // chose, the shape of the breakdown it produced, and how much of the move
+    // came from the denominator alone.
+    const header = 'recording_id,agent,stored_grade,stored_score,new_grade,new_score,delta,'
+      + 'not_scoreable,ns_reason,rubric_applied,agent_role,call_type,'
+      + 'cat_count,total_weight,earned,stored_cat_count,stored_total_weight,stored_earned,'
+      + 'denom_only,numer_only,residual,denom_share_pct,model_self_score,temperature';
+    fs.writeFileSync(out, [header]
+      .concat(results.map(r => {
+        const d = r.decomposition || {};
+        const b = (r.breakdown || {}).fresh || {};
+        const bs = (r.breakdown || {}).stored || {};
+        const round = v => (v == null ? null : Math.round(v * 10) / 10);
+        return [
+          r.stored.recording_id, r.stored.agent_name, gradeOf(r.stored),
+          r.stored.overall_score, gradeOf(r.fresh), r.fresh.overall_score,
+          (r.fresh.overall_score ?? 0) - (r.stored.overall_score ?? 0),
+          r.fresh.not_scoreable ? 'Y' : 'n', r.fresh.not_scoreable_reason,
+          r.fresh.rubric_applied, r.fresh.agent_role, r.fresh.call_type,
+          b.n, b.weight, b.earned, bs.n, bs.weight, bs.earned,
+          round(d.denomOnly), round(d.numerOnly), round(d.residual), d.denomShare,
+          r.fresh.__modelScore == null ? '' : r.fresh.__modelScore,
+          TEMPERATURE === undefined ? 'default' : TEMPERATURE,
+        ].map(esc).join(',');
+      })).join('\n'));
     console.log('\nwrote ' + out + ' (gitignored)');
+    console.log('  compare two runs with:  node scripts/regrade-compare.js <runA.csv> <runB.csv>');
   }
 
   if (!WRITE_GRADES) {
