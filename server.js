@@ -9798,56 +9798,14 @@ function normalizeAgentName(name) {
 
 // ---- Scoring ----------------------------------------------------------------
 //
-// The SCORE IS COMPUTED HERE, not taken from the model.
+// THE DEFINITION LIVES IN lib/call-score.js, and it is the only one.
 //
-// Rubric v2.0 asks for a per-criterion breakdown and a total. The breakdown is
-// reliable — across the 2026-09-18 canaries every category score equalled the
-// sum of its items — but the total was not. Two rounds of prompt instruction
-// failed to fix it, the second stating the division as an explicit formula:
-//
-//     breakdown 53/100 -> reported 72      breakdown 52/100 -> reported 72
-//     breakdown  4/75  -> reported 38      breakdown 35/90  -> reported 43
-//
-// The model judged a grade holistically and then wrote a breakdown that did not
-// produce it, always erring high. A score a reviewer cannot derive from the
-// criteria printed beside it is not reviewable, and review is the entire point
-// of the export. So the model supplies the evidence and the server does the
-// arithmetic — deterministic, and auditable by adding up the column.
-//
-// Step 9 bands. Kept as a table so the thresholds read the way the rubric writes
-// them rather than as a chain of comparisons.
-const GRADE_BANDS = [[90, 'A'], [80, 'B'], [70, 'C'], [60, 'D'], [0, 'F']];
-const gradeForScore = score => (GRADE_BANDS.find(([min]) => score >= min) || [0, 'F'])[1];
-
-// Step 9: "A LEGAL flag ... should result in a score no higher than D (60)
-// regardless of other performance."
-const LEGAL_VIOLATION_CAP = 60;
-
-function computeGradeScore(parsed) {
-  const cats = Array.isArray(parsed.categories) ? parsed.categories : [];
-  const weight = cats.reduce((s, c) => s + (Number(c.weight) || 0), 0);
-  const earned = cats.reduce((s, c) => s + (Number(c.score) || 0), 0);
-
-  // No usable breakdown — fall back to whatever the model reported rather than
-  // discarding the grade. Rare, and flagged in the return so callers can log it.
-  // null/undefined must stay null, not become 0: +null is 0 and passes
-  // Number.isFinite, which would turn "the model gave us nothing" into a
-  // legitimate-looking score of 0 and an F on a call nobody scored.
-  const asScore = v => (v === null || v === undefined || v === '' || !Number.isFinite(+v))
-    ? null : Math.round(+v);
-
-  if (!cats.length || !(weight > 0)) {
-    const fallback = asScore(parsed.overall_score);
-    return { score: fallback, computed: false, modelScore: fallback };
-  }
-
-  let score = Math.round(100 * earned / weight);
-  score = Math.max(0, Math.min(100, score));   // a mis-scored item cannot push it out of range
-  if (parsed.legal_violation === true) score = Math.min(score, LEGAL_VIOLATION_CAP);
-
-  const modelScore = asScore(parsed.overall_score);
-  return { score, computed: true, modelScore };
-}
+// It was here, which meant scripts/regrade-sample.js could not reach it: the
+// script printed the model's self-reported total while this file stored the
+// computed one, and on 2026-10-26 the two were read side by side as if they
+// were the same number. See the header of that file for what that cost.
+const CALL_SCORE = require('./lib/call-score.js');
+const { gradeForScore, LEGAL_VIOLATION_CAP, computeGradeScore } = CALL_SCORE;
 
 // Shapes a parsed grade + call metadata into a call_grades row. A call the AI
 // declines to score (vendor/utility/internal, or a different agent than the one
@@ -9855,15 +9813,10 @@ function computeGradeScore(parsed) {
 // overall_grade 'N/S' with no score, so it never reads as a real F or drags the
 // averages.
 function callGradeRow(parsed, meta) {
-  const flags = Array.isArray(parsed.flags) ? parsed.flags.slice() : [];
-  const flagStr = flags.join(' | ').toLowerCase();
-  const notScoreable = parsed.not_scoreable === true
-    || /agent identity mismatch|wrong call|mislabel|not[\s_]*scoreable|no scoreable criteria/i.test(flagStr);
-  const reason = notScoreable
-    ? (parsed.not_scoreable_reason || parsed.reason
-        || flags.find(f => /identity mismatch|wrong call|mislabel|scoreable/i.test(String(f)))
-        || 'Vendor/internal or wrong-agent call')
-    : null;
+  // The N/S rule is the library's too, and for the same reason as the score:
+  // regrade-sample applied only `not_scoreable` and so reported two calls as
+  // scored that production stores as Not Scoreable by the flag route.
+  const { notScoreable, reason, flags } = CALL_SCORE.scoreability(parsed);
   // Compute the score before building the row; also surfaces how far the model's
   // own figure was off, which is the signal that the prompt is drifting again.
   const scoring = computeGradeScore(parsed);
@@ -9876,8 +9829,8 @@ function callGradeRow(parsed, meta) {
     logLine(`[grading] ${meta.recording_id}: no usable category breakdown — `
       + `falling back to the model's score (${scoring.score})`);
   }
-  // Keep a canonical N/S flag so any flag-based consumer still detects it.
-  if (notScoreable && !/not[\s_]*scoreable/i.test(flagStr)) flags.unshift('Not Scoreable — ' + reason);
+  // The canonical "Not Scoreable — …" flag is added by scoreability() above,
+  // so every caller of it gets the same flag list and not just this one.
   return {
     recording_id:      meta.recording_id,
     agent_name:        normalizeAgentName(meta.agent_name),

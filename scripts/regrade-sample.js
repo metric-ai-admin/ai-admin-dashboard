@@ -75,6 +75,8 @@ if (!process.env.ANTHROPIC_API_KEY && !DRY_RUN) {
   process.exit(2);
 }
 
+// The one definition of what a grade is worth, shared with server.js.
+const SCORE = require('../lib/call-score.js');
 const grading = require(path.join(__dirname, '..', 'call-grading.js'));
 const db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY);
 
@@ -178,6 +180,23 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
         duration: call.duration,
         transcript: call.transcript,
       });
+      // THE NUMBER PRODUCTION WOULD STORE, not the one the model reports
+      // about itself. Until 2026-10-26 this printed fresh.overall_score, the
+      // model's holistic total — which server.js discards in favour of the
+      // weighted breakdown, and which can be wildly out: one call here
+      // self-reported 0 against a breakdown that computes 45. Read beside the
+      // stored (computed) grades, that looked like grading had changed. It had
+      // not; the two columns were different quantities.
+      //
+      // The N/S rule comes with it: two calls were stored Not Scoreable by the
+      // flag route ("Suspected agent mismatch"), which this script did not
+      // apply, so they appeared to have gained a score.
+      const v = SCORE.verdict(fresh);
+      fresh.overall_score = v.score;
+      fresh.overall_grade = v.grade;
+      fresh.not_scoreable = v.notScoreable;
+      fresh.not_scoreable_reason = v.reason;
+      fresh.flags = v.flags;
       const g = gradeOf(fresh);
       // What the call cost, beside what it scored. A cache that silently does
       // nothing produces identical grades and a 1.25x bill, so the only place
@@ -186,7 +205,14 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
       const cost = u
         ? `  [${u.cached} read=${u.cacheReadTokens} write=${u.cacheWriteTokens} out=${u.outputTokens}]`
         : '  [no usage]';
-      console.log(`new ${g.padEnd(3)} ${String(fresh.overall_score ?? '').padStart(3)}  (${(fresh.overall_score ?? 0) - (r.overall_score ?? 0) >= 0 ? '+' : ''}${(fresh.overall_score ?? 0) - (r.overall_score ?? 0)})${cost}`);
+      // Said out loud rather than silently corrected: the gap between what the
+      // model claimed and what its own breakdown produces is the signal that
+      // the prompt is drifting, and it is the reason this script used to
+      // disagree with production.
+      const drift = (!v.notScoreable && v.computed && v.modelScore !== null
+        && Math.abs(v.modelScore - v.score) > 5)
+        ? `  (model said ${v.modelScore})` : '';
+      console.log(`new ${g.padEnd(3)} ${String(fresh.overall_score ?? '').padStart(3)}  (${(fresh.overall_score ?? 0) - (r.overall_score ?? 0) >= 0 ? '+' : ''}${(fresh.overall_score ?? 0) - (r.overall_score ?? 0)})${drift}${cost}`);
       results.push({ stored: r, fresh, usage: u });
     } catch (e) {
       console.log(`ERROR ${e.message.slice(0, 60)}`);
@@ -336,6 +362,12 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
 
   let written = 0, failed = 0;
   for (const { stored: s0, fresh } of results) {
+    // `fresh` ALREADY CARRIES THE VERDICT, not the model's raw reply: the
+    // grading loop above replaces overall_score / overall_grade /
+    // not_scoreable / flags with SCORE.verdict() before anything reaches here.
+    // Do not "simplify" that away. Writing the model's self-reported total put
+    // 56 rows into call_grades on a scale nothing else uses — 45 of them
+    // disagreeing with their own category breakdown — and they are still there.
     const patch = {
       overall_score: fresh.overall_score ?? null,
       overall_grade: fresh.overall_grade ?? null,

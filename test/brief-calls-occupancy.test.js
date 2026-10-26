@@ -40,10 +40,14 @@ t('the default threshold is the Call Analyzer\'s own C/D boundary', () => {
   // "12 calls below 70" in the email and a green row in the tool would both be
   // correct and nobody could reconcile them.
   assert.strictEqual(CALLS.DEFAULT_MIN, 70);
-  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  const bands = server.match(/const GRADE_BANDS = \[([^\]]*\])[^;]*/);
-  assert.ok(bands, 'GRADE_BANDS still exists in server.js');
-  assert.match(bands[0], /\[70, 'C'\]/, 'and 70 is still where C starts');
+  // The bands moved from server.js to lib/call-score.js on 2026-10-26, so that
+  // scripts/regrade-sample.js could reach the same definition the writer uses.
+  // Read from the module rather than scraped out of a file: the coupling this
+  // asserts is to the VALUE, and a regex over source could only ever have been
+  // a proxy for it.
+  const SCORE = require('../lib/call-score.js');
+  assert.strictEqual(SCORE.gradeForScore(70), 'C', '70 is no longer where C starts');
+  assert.strictEqual(SCORE.gradeForScore(69), 'D', 'and 69 is no longer a D');
 });
 
 t('counts below the threshold, with the denominator', () => {
