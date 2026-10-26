@@ -20707,6 +20707,30 @@ cron.schedule('0 5 * * *', () => {
 // a single try/catch around a sweep is how that happens.
 const EARLY_FEEDS = [
   // minute, label, run
+  // THE BRIEF CHECKED THIS FEED AND NOTHING SYNCED IT.
+  //
+  // unit_turn_detail went into MORNING_FEEDS on 2026-10-13, so the 06:00 brief
+  // asks every morning whether it was written TODAY. The only thing that synced
+  // it ran at 17:45 for the KPI report, so the answer was always no: twelve
+  // consecutive emails, 10/15 to 10/26, all carrying '1 morning sync did not
+  // run — unit_turn_detail'. Nothing had failed. The 17:45 run was working and
+  // the data was twelve hours old, which is what the brief's own note said if
+  // you read past the headline. An alarm wrong twelve mornings running is one
+  // nobody reads on the morning it is real.
+  //
+  // 04:45, AND NOT IN THE 05:00 HOUR AT ALL. That hour is full: 05:00 and
+  // 05:30 are the two UNLIMITED AppFolio pulls (leasing occupancy and guest
+  // cards, both through appfolioReportsFetch — no limiter, and they paginate),
+  // and the rest of this table is five minutes apart so each job has
+  // appfolio-client's 7-per-15s queue to itself. There is no gap left that
+  // keeps both rules. 04:45 displaces nothing: fifteen minutes after the 04:30
+  // collections sync, fifteen before 05:00, and still this morning.
+  //
+  // A 429 here would leave yesterday's rows in the store and the brief saying
+  // 'did not run' — the exact line this entry exists to stop, except true.
+  //
+  // The evening run stays: the KPI comparison reads this store too.
+  [45, 'unit_turn_detail',       () => require('./appfolio-reports.js').syncReport('unit_turn_detail').then(r => r?.rowCount), 4],
   [5,  'applications',           () => callOwnRoute('/api/leasing/sync/applications', {}).then(r => r?.count)],
   [10, 'lease-history',          () => callOwnRoute('/api/leasing/sync/lease-history', {}).then(r => r?.count)],
   [15, 'showings',               () => callOwnRoute('/api/leasing/sync/showings', {}).then(r => r?.count)],
@@ -20869,8 +20893,15 @@ cron.schedule('30 6 * * *', () => {
     .then(r => logLine(`[tenant-directory] ${r?.ok ? (r.rowCount ?? '?') + ' residents' : 'FAILED: ' + (r?.error || 'unknown')}`))
     .catch(err => logLine(`[tenant-directory] FAILED: ${err.message}`));
 }, { timezone: LYNDSAY_TIMEZONE });
-EARLY_FEEDS.forEach(([minute, label, run]) => {
-  cron.schedule(`${minute} 5 * * *`, () => {
+// The hour is optional and defaults to 5, because every feed here ran in the
+// 05:00 hour until unit_turn_detail needed a slot and there was none: with
+// 05:00 and 05:30 reserved for the two unlimited pulls and the rest of this
+// table five minutes apart, the 05:00 hour is full. The comment above says
+// anything else has to displace something rather than squeeze between, and
+// 04:45 displaces nothing — fifteen minutes clear of the 04:30 collections
+// sync and of the 05:00 occupancy pull, and still the same morning.
+EARLY_FEEDS.forEach(([minute, label, run, hour = 5]) => {
+  cron.schedule(`${minute} ${hour} * * *`, () => {
     if (!CRM_CONFIGURED) return;
     run()
       .then(n => logLine(`[early-sync] ${label}: ${n == null ? '?' : n} rows`))

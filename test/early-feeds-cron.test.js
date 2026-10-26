@@ -23,11 +23,33 @@ console.log('early feeds cron');
 const AT = server.indexOf('const EARLY_FEEDS = [');
 const BLOCK = AT < 0 ? '' : server.slice(AT, server.indexOf("cron.schedule('30 5 * * *'"));
 // [minute, 'label'] pairs, read out of the table itself.
-const SCHEDULE = [...BLOCK.matchAll(/\[(\d+),\s*'([a-z_-]+)'/g)].map(m => [Number(m[1]), m[2]]);
+//
+// AND THE HOUR, which used to be implicit. Every entry ran in the 05:00 hour
+// until unit_turn_detail needed a slot on 2026-10-26 and that hour had none
+// left, so an entry may now carry a trailing hour that defaults to 5. The
+// checks below compare ABSOLUTE times: with a 04:45 entry in the table,
+// comparing bare minutes would read it as the last feed of the morning rather
+// than the first, and the stagger gap between it and 05:05 as -40.
+// Line by line: each entry is one line, and a multiline regex over the whole
+// block silently swallowed one of them when the trailing-hour form appeared.
+const SCHEDULE = BLOCK.split('\n')
+  .map(line => {
+    const head = line.match(/^\s*\[(\d+),\s*'([a-z_-]+)'/);
+    if (!head) return null;
+    const tail = line.match(/,\s*(\d+)\s*\],?\s*$/);
+    return [Number(head[1]), head[2], tail ? Number(tail[1]) : 5];
+  })
+  .filter(Boolean);
+const absMinutes = s => s[2] * 60 + s[0];
 
-t('all ten early feeds are scheduled', () => {
+t('all eleven early feeds are scheduled, in time order', () => {
   assert.ok(AT >= 0, 'the EARLY_FEEDS table is gone');
-  const want = ['applications', 'lease-history', 'showings',
+  // unit_turn_detail joined on 2026-10-26. It had been in MORNING_FEEDS since
+  // 10/13 with nothing syncing it before 06:00, so the brief reported it as a
+  // failed sync on twelve consecutive mornings — see
+  // test/morning-feeds-covered.test.js, which asserts the rule rather than
+  // this list.
+  const want = ['unit_turn_detail', 'applications', 'lease-history', 'showings',
     'unit_vacancy', 'rent_roll', 'lease_expiration_detail',
     'tenant_tickler', 'work_order_labor_summary', 'occupancy_custom_fields',
     'delinquency_kpi'];
@@ -45,14 +67,28 @@ t('all four Monday Brief sources are scheduled together', () => {
 });
 
 t('they are staggered, never two on the same minute', () => {
-  const minutes = SCHEDULE.map(s => s[0]);
-  assert.strictEqual(new Set(minutes).size, minutes.length, 'two feeds share a minute');
-  const sorted = [...minutes].sort((a, b) => a - b);
-  assert.deepStrictEqual(minutes, sorted, 'the table is out of order — it is read by people too');
+  const times = SCHEDULE.map(absMinutes);
+  assert.strictEqual(new Set(times).size, times.length, 'two feeds share a minute');
+  const sorted = [...times].sort((a, b) => a - b);
+  assert.deepStrictEqual(times, sorted, 'the table is out of order — it is read by people too');
   for (let i = 1; i < sorted.length; i++) {
     assert.ok(sorted[i] - sorted[i - 1] >= 5,
       'only ' + (sorted[i] - sorted[i - 1]) + ' minutes between two AppFolio jobs');
   }
+});
+
+t('a feed outside the 05:00 hour still clears the jobs around it', () => {
+  // 04:00 (deposit snapshot) and 04:30 (collections MTD) both pull AppFolio
+  // through appfolio-reports, so an entry placed in the 04:00 hour has to keep
+  // the same five-minute discipline against them as it would against its
+  // siblings here.
+  const OTHER_APPFOLIO = [4 * 60 + 0, 4 * 60 + 30, 5 * 60 + 0, 5 * 60 + 30];
+  const tooClose = SCHEDULE
+    .map(s => ({ label: s[1], at: absMinutes(s) }))
+    .filter(x => OTHER_APPFOLIO.some(o => Math.abs(x.at - o) < 5));
+  assert.deepStrictEqual(tooClose.map(x => x.label), [],
+    'these run within five minutes of another AppFolio job: '
+    + tooClose.map(x => x.label).join(', '));
 });
 
 t('nothing is scheduled on the 05:30 minute that is already taken', () => {
@@ -84,8 +120,17 @@ t('delinquency lands before the 06:00 brief reads it', () => {
 });
 
 t('every feed finishes well before the 8 AM reports', () => {
+  // "They are all in the 5 AM hour" was the check until unit_turn_detail moved
+  // to 04:45, which it had to: the 05:00 hour had no slot left that kept both
+  // the five-minute spacing and clear of the two unlimited pulls. So the
+  // window is asserted on the real times instead of on the template.
   assert.ok(Math.max(...SCHEDULE.map(s => s[0])) < 60, 'a feed is scheduled past the hour');
-  assert.ok(/\$\{minute\} 5 \* \* \*/.test(BLOCK), 'the feeds are not all in the 5 AM hour');
+  assert.ok(Math.max(...SCHEDULE.map(absMinutes)) < 8 * 60,
+    'a feed runs at or after 08:00, when the reports already want what it writes');
+  assert.ok(Math.min(...SCHEDULE.map(absMinutes)) >= 4 * 60,
+    'a feed runs before 04:00 — outside the window this block is paced for');
+  assert.ok(/\$\{minute\} \$\{hour\} \* \* \*/.test(BLOCK),
+    'the schedule template no longer honours a per-entry hour');
 });
 
 t('each is its own cron, and a failure is logged not swallowed', () => {
@@ -140,7 +185,9 @@ t('every scheduled maintenance feed is a route that exists', () => {
 });
 
 t('no two AppFolio jobs share a minute across the two blocks', () => {
-  const all = SCHEDULE.map(s => '5:' + s[0]).concat(MSCHED.map(m => '6:' + m[0]));
+  // Keyed on the entry's real hour: with a 04:45 feed in the table, '5:' + 45
+  // would claim it runs at 05:45 and collide with work_order_labor_summary.
+  const all = SCHEDULE.map(s => s[2] + ':' + s[0]).concat(MSCHED.map(m => '6:' + m[0]));
   all.push('5:0', '5:30', '6:0');   // occupancy, the leasing block, the WO sync
   assert.strictEqual(new Set(all).size, all.length, 'two jobs collide');
 });
