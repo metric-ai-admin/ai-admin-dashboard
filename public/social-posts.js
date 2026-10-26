@@ -134,8 +134,8 @@
   /* The "Posted by (agent)" selector.
    *
    * Drawn only when the SERVER says this account may upload on somebody's
-   * behalf — Katrina (marketing_bd_agent) and admins. Katie keeps the tab and
-   * the upload; she just files posts as herself.
+   * behalf — Katrina (marketing_bd_agent), Katie (leasing_bd) and admins.
+   * Everybody else keeps the tab and the upload and files posts as themselves.
    *
    * Hidden, not disabled: a control that is visible and refuses to work is a
    * support question. And hiding it is a courtesy only — POST re-checks the

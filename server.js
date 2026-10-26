@@ -20936,9 +20936,14 @@ const SOCIAL_OWN_ONLY_ROLES = ['social_agent', 'collections_leasing'];
 // belongs to.
 //
 // Only these roles may say who a post is for. Everybody else uploads as
-// themselves, Katie included — she keeps the tab and the upload, she just does
-// not get the selector.
-const SOCIAL_UPLOAD_FOR_OTHERS_ROLES = ['marketing_bd_agent', 'admin'];
+// themselves.
+//
+// Jay, 2026-10-26 (same day, later): Katie (leasing_bd) gets it too. She
+// already chases the agents for the links, and Katrina is on PTO Friday, so
+// without this the links either wait for Monday or get filed under Katie and
+// the weekly count is wrong for two people at once. This widens who can write
+// somebody else's name onto a post — it is a deliberate grant, not a tidy-up.
+const SOCIAL_UPLOAD_FOR_OTHERS_ROLES = ['marketing_bd_agent', 'leasing_bd', 'admin'];
 function socialMayUploadForOthers(req) {
   const role = String((req.user && req.user.role) || '').toLowerCase();
   return SOCIAL_UPLOAD_FOR_OTHERS_ROLES.indexOf(role) >= 0;

@@ -66,11 +66,28 @@ t('an admin may too', () => {
   assert.strictEqual(resolver.socialResolveAuthor(as('admin', 'Oscar'), ROSTER).ok, true);
 });
 
-t('KATIE CANNOT — she uploads, but only as herself', () => {
-  // She keeps the tab and the upload. What she does not get is the selector.
+t('KATIE MAY TOO — leasing_bd files for an agent', () => {
+  // Jay, 2026-10-26 (same day, later): Katie already chases the agents for
+  // the links and Katrina is on PTO Friday. Without this the links wait for
+  // Monday or land under Katie's name, which is two wrong weekly counts.
   const r = resolver.socialResolveAuthor(as('leasing_bd', 'Sammy'), ROSTER);
-  assert.strictEqual(r.ok, false);
-  assert.strictEqual(r.status, 403);
+  assert.strictEqual(r.ok, true, 'Katie cannot file for an agent');
+  assert.strictEqual(r.person.person, 'Sammy');
+  assert.strictEqual(r.person.email, 'sammy@metric.internal');
+});
+
+t('the grant is to the ROLE, by name, and to nobody else', () => {
+  // Spelled out because this list is the whole access decision: a typo here
+  // either locks Katie out or hands the selector to a leasing agent, and both
+  // look like the form working.
+  const at = sCode.indexOf('const SOCIAL_UPLOAD_FOR_OTHERS_ROLES');
+  assert.ok(at > 0, 'the role list moved');
+  const line = sCode.slice(at, sCode.indexOf('\n', at));
+  assert.match(line, /'leasing_bd'/, 'leasing_bd is not on the list');
+  assert.match(line, /'marketing_bd_agent'/, 'Katrina lost the selector');
+  assert.match(line, /'admin'/, 'admins lost the selector');
+  assert.ok(!/'social_agent'|'collections_leasing'/.test(line),
+    'an own-only role was granted the selector');
 });
 
 t('an agent cannot file under another agent', () => {
@@ -188,6 +205,28 @@ t('A POST FILED BY KATRINA COUNTS FOR THE AGENT', () => {
   assert.strictEqual(sammy.posts, 1, 'the post did not count for Sammy');
   assert.strictEqual(sammy.matchedBy, 'login');
   // And Katrina is not invented as a sixth person who posted today.
+  assert.deepStrictEqual((check.extra || []).map(e => e.name), []);
+});
+
+t('AND SO DOES ONE KATIE FILED', () => {
+  // The same path, asserted separately: the point of giving Katie the
+  // selector is that Friday's links still land on the agents' counts. If
+  // this ever fails the agents look like they posted nothing that day.
+  const day = '2026-10-30';
+  const check = SOCIAL.dailyCheck([{
+    author: 'Oscar', author_email: 'oscar@metric.internal',
+    uploaded_by: 'Katie', uploaded_by_email: 'katie@metric.internal',
+    posted_on: day,
+  }], [
+    { name: 'Sammy', email: 'sammy@metric.internal', expected: 1 },
+    { name: 'Oscar', email: 'oscar@metric.internal', expected: 1 },
+  ], day);
+  const rows = check.posted.concat(check.missing, check.noTarget || []);
+  assert.strictEqual(rows.find(r => r.name === 'Oscar').posts, 1,
+    'the post did not count for Oscar');
+  assert.strictEqual(rows.find(r => r.name === 'Sammy').posts, 0,
+    'it counted for the wrong agent');
+  // And Katie is not invented as a third person who posted that day.
   assert.deepStrictEqual((check.extra || []).map(e => e.name), []);
 });
 
