@@ -259,9 +259,13 @@ t('the printed file stops guessing a percentage from its size', () => {
   // The Chateau is at 100% occupancy and its owner's PDF printed "1". The page
   // and the comparison panel were both fixed to read the card's own flag; the
   // file an owner keeps was still guessing.
-  const at = server.indexOf('FORMATTED BY THE METRIC, NOT BY THE MAGNITUDE');
+  // One source for both the index and the slice. The layout moved to
+  // lib/kpi-pdf.js on 2026-10-26; taking the offset from the new file and then
+  // slicing the old one reads 800 characters of unrelated code.
+  const pdfSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-pdf.js'), 'utf8');
+  const at = pdfSrc.indexOf('FORMATTED BY THE METRIC, NOT BY THE MAGNITUDE');
   assert.ok(at > 0, 'the PDF still guesses');
-  const block = server.slice(at, at + 800);
+  const block = pdfSrc.slice(at, at + 800);
   assert.match(block, /card\.percent \? \(f\.value \* 100\)/);
   assert.ok(!/Math\.abs\(f\.value\) < 1/.test(block), 'the magnitude guess is still there');
 });

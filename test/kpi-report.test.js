@@ -358,7 +358,10 @@ t('the upload defaults to the same week as the report', () => {
 });
 
 // ---- the exports ------------------------------------------------------------
-const EXPORT = server.slice(server.indexOf("app.get('/api/kpi/report/export/:format'"));
+const EXPORT = server.slice(server.indexOf("app.get('/api/kpi/report/export/:format'"))
+  // The PDF half of the export now lives in lib/kpi-pdf.js; the assertions
+  // below are about what the printed page does, so they read both.
+  + fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-pdf.js'), 'utf8');
 
 t('both modes exist: one property, or every column', () => {
   assert.ok(/req\.query\.property/.test(EXPORT));

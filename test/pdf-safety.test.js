@@ -181,13 +181,16 @@ t('the document actually renders', () => {
 t('the KPI owner PDF sanitises what it draws', () => {
   // It used a black triangle (U+25B2) as the alarm marker, on the one line
   // trying to raise an alarm, in a file that goes to a property owner.
-  const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  const body = server.slice(server.indexOf('function kpiPdf('),
-    server.indexOf('async function kpiComputedValue'));
+  // The layout moved to lib/kpi-pdf.js on 2026-10-26 and brought the
+  // sanitising with it; the alias went with the move, so the call is pdfSafe()
+  // rather than kpiPdfSafe().
+  const body = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-pdf.js'), 'utf8');
   assert.ok(!/▲/.test(body), 'the triangle is still being drawn');
-  assert.match(body, /kpiPdfSafe\(/, 'nothing is sanitised');
+  assert.match(body, /pdfSafe\(/, 'nothing is sanitised');
   // The alert TEXT comes from data, so the marker alone is not enough.
-  assert.match(body, /kpiPdfSafe\(\(a\.severity === 'alarm'/);
+  assert.match(body, /pdfSafe\(\(a\.severity === 'alarm'/);
+  // And the module it comes from is the shared one, not a local copy.
+  assert.match(body, /require\('\.\/pdf-text\.js'\)/, 'the sanitiser is not the shared one');
 });
 
 t('the AppFolio table PDF is clean', () => {

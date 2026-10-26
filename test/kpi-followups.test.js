@@ -283,10 +283,17 @@ t('the note reaches the page, the Excel and the PDF', () => {
   assert.match(app, /NOT IN THE FOLLOW UPS GOAL/);
   assert.match(app, /krReport\.goalNotes/);
 
+  // Once for the Excel and once for the PDF, both filtered by column. The PDF
+  // half moved to lib/kpi-pdf.js on 2026-10-26, so the two live in two files
+  // now — counting them in server.js alone found one and read it as the note
+  // having been dropped from an export.
   const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  // Once for the Excel and once for the PDF, both filtered by column.
-  const hits = server.match(/report\.goalNotes \|\| \[\]\)\.filter\(n => scope\.mine\(n\.property\)\)/g) || [];
-  assert.strictEqual(hits.length, 2, 'the note is in ' + hits.length + ' of the two exports');
+  const pdf = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-pdf.js'), 'utf8');
+  const pattern = /report\.goalNotes \|\| \[\]\)\.filter\(n => scope\.mine\(n\.property\)\)/g;
+  const inExcel = (server.match(pattern) || []).length;
+  const inPdf = (pdf.match(pattern) || []).length;
+  assert.strictEqual(inExcel, 1, 'the Excel no longer carries the note');
+  assert.strictEqual(inPdf, 1, 'the printed page no longer carries the note');
 });
 
 t('the note follows the same scoping as every other row', () => {

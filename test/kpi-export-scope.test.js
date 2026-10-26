@@ -144,8 +144,15 @@ t('a group file carries its members’ notes, not strangers’', () => {
 t('the PDF filters the same way, from the same helper', () => {
   // The printed page is the one people keep; a filter on one side only would
   // make the quieter file the leaky one.
-  const pdf = src.slice(src.indexOf('function kpiPdf('), src.indexOf('function kpiComputedValue'));
-  assert.match(pdf, /kpiRowsForColumns\(report, only \? \[only\] : report\.columns\)/);
+  // Follows the layout into lib/kpi-pdf.js; the filter is the point, not the file.
+  const pdf = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-pdf.js'), 'utf8');
+  // The drawer is handed the helper now instead of calling it by name, so the
+  // assertion is that it scopes from the SAME helper the Excel uses — which is
+  // what "from the same helper" meant all along.
+  assert.match(pdf, /deps\.rowsForColumns\(report, only \? \[only\] : report\.columns\)/);
+  const server2 = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(server2, /rowsForColumns: kpiRowsForColumns/,
+    'server.js hands the PDF a different scope helper from the Excel');
   assert.match(pdf, /rentableAlerts \|\| \[\]\)\.filter\(a => scope\.mine\(a\.property\)\)/);
   assert.match(pdf, /scope\.anyRentable/);
 });

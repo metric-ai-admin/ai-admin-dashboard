@@ -11911,7 +11911,7 @@ app.get('/api/kpi/report/export/:format', requireAuth, requireRole(...KPI_REPORT
 // mangled glyph on the one line that was trying to raise an alarm. The alert
 // TEXT comes from data as well, so sanitising only the marker would fix the
 // character somebody noticed and leave the ones nobody has hit yet.
-const { pdfSafe: kpiPdfSafe } = require('./lib/pdf-text.js');
+const KPI_PDF = require('./lib/kpi-pdf.js');
 
 // WHOSE ROWS BELONG IN THIS FILE.
 //
@@ -12059,107 +12059,16 @@ function kpiBackupSheet(report, columns) {
   return ws;
 }
 
+// The layout lives in lib/kpi-pdf.js so it can be rendered and measured in a
+// test rather than only by downloading it. It was here, and two formatting
+// faults shipped that a reader hits immediately: a constant row height that
+// let wrapped column headers be overdrawn, and a column-width floor that was
+// allowed to overrun the page and cut off Greystone. See that file.
 function kpiPdf(doc, report, only) {
-  const scope = kpiRowsForColumns(report, only ? [only] : report.columns);
-  const L = doc.page.margins.left;
-  const W = doc.page.width - L - doc.page.margins.right;
-  const columns = only ? [only] : report.columns;
-  const colOf = name => (name === 'Portfolio' ? report.portfolio : report.properties[name]);
-
-  doc.fontSize(16).font('Helvetica-Bold').text('Metric Property Management — Executive KPI Dashboard');
-  doc.fontSize(9).font('Helvetica').fillColor('#555')
-    .text('Leasing week ' + report.range.from + ' .. ' + report.range.to
-      + (only ? '  ·  ' + only : '') + '  ·  generated from the Metric AI Admin Dashboard', { width: W });
-  if (!report.workbook.loaded) {
-    // On its face, because the Income Snapshot is empty without it and an
-    // owner should not be left to wonder whether the month was zero.
-    doc.fillColor('#a00').text(report.workbook.note, { width: W });
-  }
-  doc.fillColor('#000').moveDown(0.6);
-
-  const labelW = 190;
-  const cw = Math.max(52, Math.min(96, (W - labelW) / Math.max(1, columns.length)));
-  const row = (cells, bold) => {
-    doc.font(bold ? 'Helvetica-Bold' : 'Helvetica');
-    let x = L; const y = doc.y;
-    cells.forEach((c, i) => {
-      doc.text(String(c), x, y, { width: (i === 0 ? labelW : cw) - 4, ellipsis: true });
-      x += i === 0 ? labelW : cw;
-    });
-    doc.y = y + 12;
-  };
-
-  kpiReport.SECTIONS.forEach((sec, si) => {
-    if (doc.y > doc.page.height - doc.page.margins.bottom - 90) doc.addPage();
-    doc.fontSize(11).font('Helvetica-Bold').fillColor('#13294b').text(sec.title).moveDown(0.15);
-    doc.fillColor('#000').fontSize(7.5);
-    row(['Metric'].concat(columns), true);
-    (sec.cards || []).concat(sec.funnel || []).forEach(card => {
-      row([card.label].concat(columns.map(c => {
-        const col = colOf(c);
-        if (!col) return '';
-        const f = (col[si].cards.concat(col[si].funnel || [])).find(x => x.metric === card.metric);
-        if (!f || f.value === null || f.value === undefined) return '—';
-        // FORMATTED BY THE METRIC, NOT BY THE MAGNITUDE.
-        //
-        // This read "is it between 0 and 1? then it is a percentage", which is
-        // wrong at exactly 1: The Chateau is at 100% occupancy and its owner's
-        // PDF printed "1". It is wrong the other way too — a goal of 1.0 would
-        // have done the same. The card already says which it is, and the page
-        // and the comparison panel were both fixed to use that; the printed
-        // file an owner keeps was still guessing.
-        const v = typeof f.value === 'number'
-          ? (f.money ? '$' + Math.round(f.value).toLocaleString('en-US')
-            : (card.percent ? (f.value * 100).toFixed(1) + '%'
-              : String(Math.round(f.value * 100) / 100)))
-          : String(f.value);
-        // A hand-adjusted figure is marked wherever it is shown.
-        return f.source === 'manual' ? v + ' *' : v;
-      })));
-    });
-    // The same note as the Excel. The printed page is the one people keep, so
-    // a caveat that lives only in the workbook is the one that gets lost.
-    if ((sec.cards || []).some(c => c.metric === 'followUpsGoal')) {
-      (report.goalNotes || []).filter(n => scope.mine(n.property)).forEach(n => {
-        doc.fontSize(7).fillColor('#555')
-          .text(kpiPdfSafe(n.property + ': ' + n.text), L, doc.y + 2, { width: W });
-      });
-      doc.fillColor('#000').fontSize(7.5);
-    }
-    // The rentable lines, under Occupancy only. Same two rows as the Excel,
-    // then the alerts in red — an owner reading the printed page gets the
-    // same warning as somebody opening the workbook, or the printed page
-    // becomes the quieter of the two and that is the one people keep.
-    if (sec.key === 'occupancy' && scope.anyRentable) {
-      const cell = (c, f) => {
-        const r = (report.rentable || {})[c];
-        return r ? f(r) : '';
-      };
-      row(['Rentable Units (excludes unlettable buildings)']
-        .concat(columns.map(c => String(cell(c, r => r.rentableUnits)))));
-      row(['Rentable Occupancy %'].concat(columns.map(c =>
-        String(cell(c, r => (r.rentablePct === null ? '—' : (r.rentablePct * 100).toFixed(1) + '%'))))));
-      columns.forEach(c => {
-        const r = (report.rentable || {})[c];
-        if (!r || !r.rules.length) return;
-        doc.fontSize(7).fillColor('#555').text(kpiPdfSafe(c + ': ' + r.excludedUnits
-          + ' units excluded — ' + r.rules.map(x => x.label + ', ' + x.reason).join('; ')),
-        L, doc.y + 2, { width: W });
-      });
-      // The same filter as the Excel. The printed page is the one people keep.
-      (report.rentableAlerts || []).filter(a => scope.mine(a.property)).forEach(a => {
-        doc.fontSize(7).fillColor(a.severity === 'alarm' ? '#b00020' : '#555')
-          .text(kpiPdfSafe((a.severity === 'alarm' ? 'WARNING: ' : '') + a.property + ': ' + a.text),
-            L, doc.y + 2, { width: W });
-      });
-      doc.fillColor('#000').fontSize(7.5);
-    }
-    doc.moveDown(0.5);
+  return KPI_PDF.drawKpiPdf(doc, report, only, {
+    SECTIONS: kpiReport.SECTIONS,
+    rowsForColumns: kpiRowsForColumns,
   });
-
-  doc.fontSize(7.5).fillColor('#555')
-    .text('—  no value for this week.   *  adjusted by hand; the calculated figure is on the Backup sheet of the Excel export.',
-      L, doc.y + 6, { width: W });
 }
 
 // The computed value of one metric, for one property, this week — read out of

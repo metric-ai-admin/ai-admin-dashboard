@@ -243,8 +243,7 @@ t('the Excel puts it under Occupancy and nowhere else', () => {
 });
 
 t('the PDF warns in red, so the printed page is not the quieter one', () => {
-  const pdf = server.slice(server.indexOf('kpiReport.SECTIONS.forEach((sec, si) => {'),
-    server.indexOf('no value for this week'));
+  const pdf = fs.readFileSync(path.join(__dirname, '..', 'lib', 'kpi-pdf.js'), 'utf8');
   assert.ok(/Rentable Occupancy %/.test(pdf));
   assert.ok(/#b00020/.test(pdf), 'an alarm must be visible on paper');
 });
