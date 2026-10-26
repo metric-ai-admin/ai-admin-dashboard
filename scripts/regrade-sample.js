@@ -108,7 +108,13 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
 (async () => {
   // Pick the batch.
   let q = db.from('call_grades')
-    .select('recording_id,agent_name,call_date,overall_grade,overall_score,not_scoreable,categories')
+    // rubric_applied, agent_role and call_type ride along so the run can be
+    // compared against the stored routing. They were missing, so
+    // `r.rubric_applied` was undefined on every row and "ROUTE CHANGED" fired
+    // on all twenty — a column dropped from a projection reads exactly like a
+    // value that changed.
+    .select('recording_id,agent_name,call_date,overall_grade,overall_score,not_scoreable,'
+      + 'categories,rubric_applied,agent_role,call_type')
     .limit(1000);
   if (DATE) q = q.eq('call_date', DATE);
   else q = q.gte('call_date', '2026-09-01');
@@ -267,7 +273,14 @@ const mean = xs => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.le
 
       const route = [fresh.rubric_applied, fresh.agent_role, fresh.call_type]
         .map(x => (x == null ? '' : String(x)));
-      const routeChanged = (fresh.rubric_applied || '') !== (r.rubric_applied || '');
+      // AND NOTHING IS CLAIMED WHEN THERE IS NOTHING TO COMPARE. Rows graded
+      // before migration 055 carry no rubric_applied at all; against those,
+      // "changed" would mean "the old row never recorded it", which is a
+      // different statement and not one worth shouting on every line. The
+      // run-vs-run comparison that answers the routing question properly is
+      // scripts/regrade-compare.js, over two fresh runs.
+      const storedRoute = (r.rubric_applied || '').trim();
+      const routeChanged = storedRoute !== '' && (fresh.rubric_applied || '') !== storedRoute;
       const shape = `  [${bn.n}cat w=${bn.weight}`
         + (bs.weight !== bn.weight ? ` was ${bs.weight}` : '')
         + (denomShare !== null ? ` denom=${denomShare}%` : '')

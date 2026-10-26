@@ -178,6 +178,26 @@ t('two runs cannot overwrite each other', () => {
   assert.match(line, /tag/, 'the filename does not say which temperature produced it');
 });
 
+t('the stored routing is actually read before it is compared', () => {
+  // ROUTE CHANGED fired on all twenty calls. Not because the routing moved —
+  // rubric_applied was missing from the stored-row projection, so it was
+  // undefined on every row and every comparison was "undefined !== something".
+  // A column dropped from a projection reads exactly like a value that changed.
+  const sel = (script.match(/\.select\('recording_id,agent_name[^;]*/) || [''])[0];
+  ['rubric_applied', 'agent_role', 'call_type'].forEach(c =>
+    assert.ok(sel.includes(c), 'the stored-row projection does not read ' + c));
+});
+
+t('no routing change is claimed when nothing was stored', () => {
+  // Rows graded before migration 055 carry no rubric at all. "Changed" against
+  // those means "the old row never recorded it", which is a different claim
+  // and not one worth printing on every line.
+  assert.match(script, /const storedRoute = \(r\.rubric_applied \|\| ''\)\.trim\(\)/,
+    'the stored routing is not normalised before comparison');
+  assert.match(script, /storedRoute !== '' &&/,
+    'an empty stored rubric still reports a route change');
+});
+
 t('the denominator is decomposed, with the residual reported', () => {
   // denomOnly and numerOnly do not sum to the whole — there is an interaction
   // term — and folding it in silently would overstate whichever is reported.
