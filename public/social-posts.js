@@ -95,9 +95,29 @@
       el.innerHTML = '<p class="mb-empty">No posts uploaded yet.</p>';
       return;
     }
+    // The uploader, when it is somebody other than the author. Compared on the
+    // EMAIL where both are present — two people can share a display name and a
+    // login cannot, and "Rocío" vs "Rocio" would otherwise read as a different
+    // person uploading for herself.
+    const spUploader = p => {
+      const by = String(p.uploaded_by || '').trim();
+      if (!by) return '';
+      const a = String(p.author_email || '').toLowerCase().trim();
+      const u = String(p.uploaded_by_email || '').toLowerCase().trim();
+      if (a && u) return a === u ? '' : by;
+      return by.toLowerCase() === String(p.author || '').toLowerCase().trim() ? '' : by;
+    };
     const row = p => '<tr>'
       + '<td>' + esc(String(p.posted_on || p.created_at || '').slice(0, 10)) + '</td>'
-      + '<td>' + esc(p.author) + '</td>'
+      // WHOSE POST, then who entered it — and only when those differ. Katrina
+      // files the leasing agents' links for them now, so "Who" alone would
+      // read as though Sammy pressed the button, and the daily count below is
+      // measured on the agent either way.
+      + '<td>' + esc(p.author)
+        + (spUploader(p)
+          ? '<div class="muted small">uploaded by ' + esc(spUploader(p)) + '</div>'
+          : '')
+        + '</td>'
       + '<td>' + esc(p.platform) + '</td>'
       + '<td>' + esc(p.property || '—') + '</td>'
       + '<td><a href="' + esc(p.url) + '" target="_blank" rel="noopener">open</a></td>'
@@ -111,6 +131,37 @@
       + posts.map(row).join('') + '</tbody></table></div>';
   }
 
+  /* The "Posted by (agent)" selector.
+   *
+   * Drawn only when the SERVER says this account may upload on somebody's
+   * behalf — Katrina (marketing_bd_agent) and admins. Katie keeps the tab and
+   * the upload; she just files posts as herself.
+   *
+   * Hidden, not disabled: a control that is visible and refuses to work is a
+   * support question. And hiding it is a courtesy only — POST re-checks the
+   * role and refuses the field outright, so a hand-made request gets the same
+   * answer as the form.
+   */
+  function spRenderUploadFor() {
+    const field = $('#sp-for-field');
+    const sel = $('#sp-for');
+    if (!field || !sel) return;
+    const people = (spData && spData.uploadFor) || [];
+    if (!spData || !spData.mayUploadForOthers || !people.length) {
+      field.classList.add('hidden');
+      sel.value = '';                       // never submit a stale name
+      return;
+    }
+    field.classList.remove('hidden');
+    const keep = sel.value;
+    sel.innerHTML = '<option value="">Me</option>'
+      + people.map(p => '<option value="' + esc(p.name) + '">' + esc(p.name) + '</option>').join('');
+    // The agent stays selected between uploads: Katrina enters several links
+    // for one person at a time, and re-picking the name every time is how the
+    // wrong one gets picked.
+    if (keep && people.some(p => p.name === keep)) sel.value = keep;
+  }
+
   async function loadSocialPosts() {
     const sub = $('#sp-sub');
     try {
@@ -122,6 +173,7 @@
         '<div class="al">' + (setup ? 'SETUP' : 'ERROR') + '</div>' + esc(err.message));
       return;
     }
+    spRenderUploadFor();
     if (sub) {
       // SAY WHOSE POSTS THESE ARE. A leasing agent sees only her own rows, and
       // an unlabelled list of three would read as a quiet day for the whole
@@ -150,9 +202,13 @@
     btn.disabled = true;
     spMessage('', '');
     try {
-      // FormData, because a screenshot comes with it. The author is NOT in
-      // here: the server takes it from the session, or a post could be filed
-      // under somebody else's name.
+      // FormData, because a screenshot comes with it.
+      //
+      // posted_by RIDES ALONG, and is the one field here the sender does not
+      // get to decide the meaning of: the server honours it only for the
+      // roles that may file on somebody's behalf, and REFUSES it for anyone
+      // else rather than quietly filing the post under their own name. A
+      // request made by hand gets the same answer as this form.
       const res = await fetch('/api/social-posts', { method: 'POST', body: new FormData(form) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -169,7 +225,14 @@
         note += ' The screenshot did NOT reach SharePoint: ' + data.screenshotError;
       }
       spMessage('', esc(note));
+      // The agent stays picked across the reset. Katrina enters several links
+      // for one person at a time, and a selector that silently returns to "Me"
+      // between uploads files the next one against the wrong person — with no
+      // error, because uploading as yourself is always allowed.
+      const keepFor = (document.getElementById('sp-for') || {}).value || '';
       form.reset();
+      const selAfter = document.getElementById('sp-for');
+      if (selAfter && keepFor) selAfter.value = keepFor;
       await loadSocialPosts();
     } catch (err) {
       spMessage('warn', '<div class="al">ERROR</div>' + esc(err.message));

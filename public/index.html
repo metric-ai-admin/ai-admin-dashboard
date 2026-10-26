@@ -2405,6 +2405,14 @@
           <input type="text" name="property" list="sp-properties" placeholder="optional"></label>
         <label class="sp-field"><span>Posted on</span>
           <input type="date" name="posted_on"></label>
+        <!-- Only drawn for roles the server says may upload on somebody's
+             behalf (Katrina, admins). Hidden rather than disabled: a visible
+             control nobody can use is a support question. The server refuses
+             the field regardless of what this does. -->
+        <label class="sp-field hidden" id="sp-for-field"><span>Posted by (agent)</span>
+          <select name="posted_by" id="sp-for">
+            <option value="">Me</option>
+          </select></label>
         <label class="sp-field"><span>Screenshot</span>
           <input type="file" name="screenshot" accept="image/*"></label>
         <button class="btn" type="submit">Add post</button>

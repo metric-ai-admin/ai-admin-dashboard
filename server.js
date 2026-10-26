@@ -20910,6 +20910,54 @@ async function socialUploadScreenshot(file, dayCT) {
 // Katie keeps the weekly workbook and Katrina did the duplicate checking, so
 // both need every post and the whole daily check.
 const SOCIAL_OWN_ONLY_ROLES = ['social_agent', 'collections_leasing'];
+
+// WHO MAY FILE A POST UNDER SOMEBODY ELSE'S NAME.
+//
+// Jay, 2026-10-26: the leasing agents stop uploading their own links. Katie
+// chases them in the WhatsApp group and Katrina enters the links on their
+// behalf, so the person pressing the button is no longer the person the post
+// belongs to.
+//
+// Only these roles may say who a post is for. Everybody else uploads as
+// themselves, Katie included — she keeps the tab and the upload, she just does
+// not get the selector.
+const SOCIAL_UPLOAD_FOR_OTHERS_ROLES = ['marketing_bd_agent', 'admin'];
+function socialMayUploadForOthers(req) {
+  const role = String((req.user && req.user.role) || '').toLowerCase();
+  return SOCIAL_UPLOAD_FOR_OTHERS_ROLES.indexOf(role) >= 0;
+}
+
+/**
+ * Resolve who a post is FOR, from the form's `posted_by`.
+ *
+ * REFUSES RATHER THAN FALLING BACK. A social_agent who sends posted_by for
+ * somebody else gets an error, not a post quietly filed under their own name:
+ * a form that looks like it worked and files the post against the wrong person
+ * is worse than one that stops, because the weekly count is wrong and nobody
+ * is looking for a reason.
+ *
+ * The name must match an ACTIVE roster row. Free text would put the spelling
+ * back in — "Rocío" and "Rocio" are the same person to a reader and two people
+ * to the daily check, which is the bug the email matching exists to fix.
+ *
+ * @returns {{ok:true, person:object|null} | {ok:false, status:number, error:string}}
+ */
+function socialResolveAuthor(req, roster) {
+  const asked = SOCIAL.clean(req.body && req.body.posted_by);
+  if (!asked) return { ok: true, person: null };          // uploading as yourself
+  if (!socialMayUploadForOthers(req)) {
+    return { ok: false, status: 403,
+      error: 'Your account cannot upload on behalf of another agent.' };
+  }
+  const want = asked.toLowerCase();
+  const hit = (roster || []).find(r => String(r.person || '').toLowerCase() === want
+    || String(r.email || '').toLowerCase() === want);
+  if (!hit) {
+    return { ok: false, status: 400,
+      error: asked + ' is not an active agent on the social roster.' };
+  }
+  return { ok: true, person: hit };
+}
 function socialOwnOnly(req) {
   const role = String((req.user && req.user.role) || '').toLowerCase();
   if (SOCIAL_OWN_ONLY_ROLES.indexOf(role) < 0) return null;
@@ -20934,6 +20982,25 @@ app.post('/api/social-posts', requireAuth, socialUpload.single('screenshot'), as
     if (!check.ok) return res.status(400).json({ error: check.error });
 
     const db = supabaseAdmin || supabasePublic;
+
+    // WHOSE POST IS THIS. Resolved before the duplicate check, so a refusal
+    // for the wrong agent costs nothing and the duplicate message names the
+    // person the post is actually for.
+    const rosterRows = await db.from('social_post_roster')
+      .select('person,email,active').then(r => r, () => ({ data: [] }));
+    const activeRoster = ((rosterRows && rosterRows.data) || []).filter(r => r.active !== false);
+    const forWhom = socialResolveAuthor(req, activeRoster);
+    if (!forWhom.ok) return res.status(forWhom.status).json({ error: forWhom.error });
+
+    // The author stays the AGENT. Everything downstream reads this field — the
+    // daily check counts it, the duplicate message names it, and Rocío's
+    // own-posts-only view filters on it — so filing Katrina here would take a
+    // post out of Rocío's history and off the agent's daily count at once.
+    const author = forWhom.person ? SOCIAL.clean(forWhom.person.person) : who;
+    const authorEmail = forWhom.person
+      ? String(forWhom.person.email || '').toLowerCase() || null
+      : ((req.user && req.user.email) || null);
+
     const imageHash = SOCIAL.imageHash(req.file && req.file.buffer);
 
     // READ BEFORE WRITE, so the rejection can say who and when. The unique
@@ -20959,8 +21026,13 @@ app.post('/api/social-posts', requireAuth, socialUpload.single('screenshot'), as
       normalised_url: link.normalised,
       platform,
       property: SOCIAL_PA.canonical(SOCIAL.clean(req.body && req.body.property)) || null,
-      author: who,
-      author_email: (req.user && req.user.email) || null,
+      author,
+      author_email: authorEmail,
+      // Set on EVERY post, including a self-upload, so "who entered this" has
+      // one answer everywhere rather than a null that has to be read as "the
+      // same person, probably".
+      uploaded_by: who,
+      uploaded_by_email: (req.user && req.user.email) || null,
       posted_on: /^\d{4}-\d{2}-\d{2}$/.test(postedOn) ? postedOn : null,
       screenshot_url: shot.url,
       screenshot_name: shot.name,
@@ -20988,7 +21060,12 @@ app.get('/api/social-posts', requireAuth, async (req, res) => {
       ? String(req.query.day) : ctDateStr(0);
     const own = socialOwnOnly(req);
     let pq = db.from('social_posts')
-      .select('id,url,platform,property,author,author_email,posted_on,screenshot_url,created_at,note')
+      // uploaded_by rides along so the day's list can show who entered a post
+      // when that is not the person it is for. A column left out of a
+      // projection is invisible in exactly the same way as a column nobody
+      // writes — this screen has been bitten by that before.
+      .select('id,url,platform,property,author,author_email,posted_on,screenshot_url,'
+        + 'created_at,note,uploaded_by,uploaded_by_email')
       .order('created_at', { ascending: false }).limit(2000);
     // An id that cannot match anything, rather than no filter at all: an empty
     // email must narrow the query to nothing, never widen it to everyone.
@@ -21030,6 +21107,13 @@ app.get('/api/social-posts', requireAuth, async (req, res) => {
       // Off until Lyndsay answers. The screen shows that rather than implying
       // a summary is going out.
       emailEnabled: false,
+      // Whether to draw the "Posted by" selector, and what goes in it. The
+      // SERVER decides: the client hiding a control it should not have is a
+      // courtesy, and POST re-checks the role regardless.
+      mayUploadForOthers: socialMayUploadForOthers(req),
+      uploadFor: socialMayUploadForOthers(req)
+        ? active.map(r => ({ name: r.name, email: r.email }))
+        : [],
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
