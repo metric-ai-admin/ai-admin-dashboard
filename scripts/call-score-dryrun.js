@@ -61,6 +61,24 @@ const WRITER = arg('writer', 'AI (rubric v2.1 regrade)');
 const ALL = process.argv.includes('--all');
 const SINCE = arg('since', '2026-01-01');
 
+// ---- apply mode --------------------------------------------------------------
+//
+// OFF UNLESS --apply IS TYPED. Without it this file has no write path at all:
+// the update below is the only one, and it is unreachable.
+//
+// THE SCOPE IS NOT A FLAG. The rows it may touch are pinned here as constants —
+// graded_by = "AI (rubric v2.1 regrade)" AND call_date = 2026-09-22 — so no
+// combination of arguments can aim it at the nightly rows or at the 515 from
+// the older era. --writer and --since steer the REPORT; they do not widen what
+// apply may write, and it refuses if they have been moved off the pinned set.
+//
+// It also refuses if the count is not what the dry run showed. A selection that
+// has quietly grown is a selection nobody has looked at.
+const APPLY = process.argv.includes('--apply');
+const APPLY_WRITER = 'AI (rubric v2.1 regrade)';
+const APPLY_DATE = '2026-09-22';
+const APPLY_EXPECT = Number(arg('expect', '45'));
+
 const db = createClient(process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY,
   { auth: { persistSession: false } });
@@ -275,9 +293,166 @@ const f1 = v => (v == null ? '—' : v.toFixed(1));
   });
 
   console.log('');
+
+  if (!APPLY) {
+    console.log('='.repeat(78));
+    console.log('NOTHING WAS WRITTEN. No transcript, resident name or phone number was read.');
+    console.log('');
+    console.log('To correct the ' + APPLY_EXPECT + ' rows above, re-run with --apply. It backs up');
+    console.log('first (call_grades_history AND a file), reads the backup back before');
+    console.log('touching anything, and prints the restore command.');
+    console.log('='.repeat(78));
+    return;
+  }
+
+  // ======================= APPLY ============================================
+  //
+  // Everything below runs only with --apply. The guards come first and each one
+  // exits rather than narrowing silently: a correction that quietly did less
+  // than it said is worse than one that refused.
   console.log('='.repeat(78));
-  console.log('NOTHING WAS WRITTEN. No transcript, resident name or phone number was read.');
-  console.log('If these rows are corrected, call_grades_history should take the previous');
-  console.log('values first — scripts/restore-call-grades.js is the undo.');
+  console.log('APPLY — correcting stored scores from each row\'s own breakdown');
+  console.log('='.repeat(78));
+
+  if (ALL || WRITER !== APPLY_WRITER) {
+    console.error('REFUSED: apply is pinned to graded_by = "' + APPLY_WRITER + '".');
+    console.error('  --all and --writer steer the report only. Drop them to apply.');
+    process.exitCode = 2;
+    return;
+  }
+
+  // Re-select from the database rather than reusing the report's rows, pinned
+  // to BOTH constants. The report may have been filtered by --since.
+  const target = changed.filter(a => a.r.graded_by === APPLY_WRITER
+    && a.r.call_date === APPLY_DATE);
+  const outOfScope = changed.length - target.length;
+  if (outOfScope) {
+    console.error('REFUSED: ' + outOfScope + ' row(s) in the report are outside the pinned'
+      + ' scope (' + APPLY_WRITER + ' on ' + APPLY_DATE + ').');
+    process.exitCode = 2;
+    return;
+  }
+  if (target.length !== APPLY_EXPECT) {
+    console.error('REFUSED: expected ' + APPLY_EXPECT + ' rows to correct, found ' + target.length + '.');
+    console.error('  The selection has changed since it was reviewed. Re-run the dry run,');
+    console.error('  look at what moved, then pass --expect ' + target.length + ' if it is right.');
+    process.exitCode = 2;
+    return;
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const batchId = 'scorefix_' + APPLY_DATE + '_' + stamp;
+
+  // ---- backup, in the database, BEFORE anything is written -------------------
+  //
+  // call_grades_history first and read back: the exports/ file lives on a Render
+  // disk that the next deploy destroys, which is the backup you want precisely
+  // when you cannot have it. A backup nobody can restore from is a comfort.
+  const ids = target.map(a => a.r.recording_id);
+  const fullRows = await selectAll(() => db.from('call_grades')
+    .select('*').in('recording_id', ids), 'rows to back up');
+  if (fullRows.length !== target.length) {
+    console.error('REFUSED: read back ' + fullRows.length + ' of ' + target.length
+      + ' rows for the backup. Nothing was written.');
+    process.exitCode = 2;
+    return;
+  }
+
+  const historyRows = fullRows.map(row => ({
+    recording_id: row.recording_id,
+    previous: row,
+    previous_score: row.overall_score ?? null,
+    previous_grade: row.overall_grade ?? null,
+    previous_graded_by: row.graded_by ?? null,
+    previous_graded_at: row.graded_at ?? null,
+    batch_id: batchId,
+    replaced_by: 'score recomputed from the stored breakdown',
+    source: 'scripts/call-score-dryrun.js --apply',
+  }));
+  const { error: histErr } = await db.from('call_grades_history').insert(historyRows);
+  if (histErr) {
+    console.error('REFUSED: could not write call_grades_history: ' + histErr.message);
+    console.error('  Nothing was written to call_grades.');
+    process.exitCode = 2;
+    return;
+  }
+  const { count: histCount, error: histCountErr } = await db.from('call_grades_history')
+    .select('id', { count: 'exact', head: true }).eq('batch_id', batchId);
+  if (histCountErr || histCount !== historyRows.length) {
+    console.error('REFUSED: history did not read back intact ('
+      + histCount + ' of ' + historyRows.length + '). Nothing was written to call_grades.');
+    process.exitCode = 2;
+    return;
+  }
+  console.log('backup: ' + histCount + ' row(s) in call_grades_history, batch ' + batchId);
+
+  // The file copy too, for a restore that does not need the database. Gitignored
+  // — these rows carry summaries and coaching notes about real calls.
+  const fs = require('fs');
+  const path = require('path');
+  let backupPath = null;
+  try {
+    const dir = path.join(__dirname, '..', 'exports');
+    fs.mkdirSync(dir, { recursive: true });
+    backupPath = path.join(dir, 'call_grades_backup_' + APPLY_DATE + '_' + stamp + '.json');
+    fs.writeFileSync(backupPath, JSON.stringify(fullRows, null, 2), 'utf8');
+    console.log('backup: ' + backupPath);
+  } catch (e) {
+    // Not fatal: the database copy is the one that survives a deploy, and it is
+    // already verified. Said out loud rather than swallowed.
+    console.log('note: the file backup could not be written (' + e.message + ').');
+    console.log('      call_grades_history batch ' + batchId + ' is intact and is the restore source.');
+  }
+
+  // ---- the correction --------------------------------------------------------
+  //
+  // ONLY the fields the verdict determines. graded_by and graded_at are left
+  // exactly as they were: these rows are not being re-graded, their stored
+  // score is being recomputed from evidence they already carried. Rewriting the
+  // provenance would erase which run produced them.
+  console.log('');
+  let ok = 0, failed = 0;
+  for (const a of target) {
+    const patch = {
+      overall_score: a.v.notScoreable ? null : a.v.score,
+      overall_grade: a.v.notScoreable ? 'N/S' : a.v.grade,
+      not_scoreable: a.v.notScoreable,
+      not_scoreable_reason: a.v.reason,
+      flags: a.v.flags,
+    };
+    const { error } = await db.from('call_grades')
+      .update(patch).eq('recording_id', a.r.recording_id);
+    if (error) { failed++; console.log('  FAILED ' + a.r.recording_id + ': ' + error.message); }
+    else ok++;
+  }
+  console.log('corrected: ' + ok + ' row(s)' + (failed ? ', ' + failed + ' FAILED' : ''));
+
+  // ---- did it take? ----------------------------------------------------------
+  //
+  // Read back and re-derive. "The update returned no error" is not the same
+  // claim as "the stored score now equals its breakdown".
+  const after2 = await selectAll(() => db.from('call_grades')
+    .select('recording_id,overall_score,overall_grade,not_scoreable,categories,legal_violation,flags')
+    .in('recording_id', ids), 'verification');
+  const stillOff = after2.filter(r => {
+    const v = SCORE.verdict(r);
+    if (v.notScoreable !== !!r.not_scoreable) return true;
+    return !v.notScoreable && v.score !== null && v.score !== r.overall_score;
+  });
+  console.log('verified : ' + (after2.length - stillOff.length) + ' of ' + after2.length
+    + ' row(s) now match their own breakdown'
+    + (stillOff.length ? '  — ' + stillOff.length + ' STILL DO NOT' : ''));
+
+  console.log('');
+  console.log('='.repeat(78));
+  console.log('TO UNDO, either form:');
+  console.log('  node scripts/restore-call-grades.js --batch ' + batchId + ' --dry-run');
+  console.log('  node scripts/restore-call-grades.js --batch ' + batchId);
+  if (backupPath) {
+    console.log('  node scripts/restore-call-grades.js ' + backupPath);
+  }
+  console.log('');
+  console.log('The --batch form reads call_grades_history and survives a deploy;');
+  console.log('the file does not. Prefer the batch.');
   console.log('='.repeat(78));
 })().catch(e => { console.error('FAILED: ' + e.message); process.exitCode = 1; });
