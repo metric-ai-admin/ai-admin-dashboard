@@ -137,7 +137,12 @@ const show = (label, s) => {
         + 'past move-out: ' + s.pastMoveOut
         + '   statuses: ' + (Object.keys(s.byStatus).sort().join(', ') || '—'));
     }
-    await sleep(900);
+    // 2.3s, not 0.9s. The rate limiter in appfolio-client.js is PER PROCESS:
+    // this script shares no counter with the dashboard's crons, and the 7-per-
+    // 15s budget belongs to the AppFolio ACCOUNT. At 900ms this probe alone
+    // asks for ~16 per 15s, so it only ever fit in a gap between syncs. At
+    // 2300ms it asks for ~6.5 per 15s and is safe to run in any gap.
+    await sleep(2300);
   }
 
   console.log('\nWHAT THE ANSWER MEANS');

@@ -13963,13 +13963,26 @@ const MO_STATE_STYLE = {
 
 function moInspectionLink(ins) {
   if (!ins) return '<span class="muted">—</span>';
+  // WHAT KIND OF INSPECTION, from its name alone. The server computes it so
+  // there is one set of rules; the screen only prints it.
+  //
+  // It is a reading aid, NOT evidence. A turn-linked inspection named
+  // "Untitled" is the move-out walk as far as matching is concerned and still
+  // reads "Untitled" here, so the label must never be used to argue with the
+  // state in the column beside it.
+  //
+  // Omitted when absent, like created by: a row served before this shipped
+  // has no type, and an empty bracket reads as a type we failed to work out.
+  const kind = ins.type ? ' <span class="muted small">· ' + esc(ins.type) + '</span>' : '';
   const label = esc(ins.name) + (ins.date ? ' <span class="muted small">' + esc(ins.date) + '</span>' : '');
   // NO LINK IS NOT NO INFORMATION. Without a usable id the name and date are
   // still what somebody searches by, so they are shown as plain text rather
   // than dropped or turned into a URL that opens the wrong record.
-  return ins.url
+  // The type sits OUTSIDE the anchor: it is not part of what you click to
+  // open the inspection, and inside it would read as part of the name.
+  return (ins.url
     ? '<a href="' + esc(ins.url) + '" target="_blank" rel="noopener">' + label + '</a>'
-    : label;
+    : label) + kind;
 }
 
 function moCollectionsTable(c) {
@@ -13985,6 +13998,23 @@ function moCollectionsTable(c) {
     + '<b>' + (n.empty || 0) + '</b> empty &nbsp;·&nbsp; '
     + '<b>' + (n.none || 0) + '</b> none'
     + '</p>';
+  // THE OTHER COUNT, WITH ITS DENOMINATOR SAID OUT LOUD.
+  //
+  // Jay asked for it because "Other" is the bucket that says our name rules
+  // are not keeping up — 301 of 643 in yesterday's probe. What is counted
+  // here is only the inspections THIS SCREEN shows, which is a smaller and
+  // different set, so the line says so: a number whose denominator is guessed
+  // would be compared against the probe's and read as the backlog shrinking.
+  const tc = c.typeCounts || {};
+  const other = (tc.Other || 0) + (tc.Untitled || 0);
+  const types = c.typeTotal
+    ? '<p class="small muted" style="margin:0 0 8px">'
+      + 'Of the <b>' + c.typeTotal + '</b> inspection(s) shown on this screen, '
+      + '<b>' + (tc.Other || 0) + '</b> have an unrecognised name and '
+      + '<b>' + (tc.Untitled || 0) + '</b> are untitled'
+      + (other ? ' — ' + other + ' that the name rules cannot classify.' : '.')
+      + '</p>'
+    : '';
   // A MOVE-OUT NOBODY COULD LOOK UP IS NOT A MOVE-OUT WITH NO INSPECTION.
   // 83 of 110 recent inspections carry no unit_turn_id and 10 no unit at all.
   const caveat = c.unmatchable
@@ -14023,7 +14053,7 @@ function moCollectionsTable(c) {
       + (extra.length ? '<div class="muted small">' + extra.join('<br>') + '</div>' : '')
       + '</td></tr>';
   }).join('');
-  return head + caveat
+  return head + types + caveat
     + '<div style="overflow-x:auto"><table class="data-table"><thead><tr>'
     + '<th>Property / unit</th><th>Moved out</th><th>Inspection</th><th>Open in AppFolio</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
