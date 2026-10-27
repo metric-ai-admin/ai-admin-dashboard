@@ -2356,6 +2356,21 @@ tr.ca-sel { background: var(--accent-glow); }
 .dq-meta { font-size:12px; color: var(--text-secondary); margin-top:11px; }
 .dq-decided { margin-top:11px; padding:8px 10px; border-radius:7px; background: var(--bg-elevated); font-size:12px; }
 .dq-note { margin-top:4px; font-style:italic; color: var(--text-secondary); }
+/* The expanded call history. Five columns on a grid rather than a table so
+   the empty agent cell on an ungraded call collapses to nothing instead of
+   leaving a ruled box that reads as missing data. */
+.dq-calls-more { margin-top:6px; }
+.dq-calls-more > summary { cursor:pointer; font-size:12px; color: var(--text-secondary); }
+.dq-call-list { list-style:none; margin:6px 0 0; padding:0; }
+.dq-call { display:grid; grid-template-columns: auto auto auto 1fr auto; gap:8px;
+  align-items:center; padding:3px 0; font-size:12px; border-top:1px solid var(--border); }
+.dq-call-dir { text-transform:capitalize; color: var(--text-secondary); }
+.dq-call-dur, .dq-call-agent { color: var(--text-secondary); }
+.dq-call-grade { background:none; border:none; padding:0; font:inherit; color: var(--accent);
+  cursor:pointer; text-decoration:underline; }
+.dq-call-grade:empty { cursor:default; text-decoration:none; }
+.dq-wrap .dq-call { border-top-color:#333333; }
+.dq-wrap .dq-call-dir, .dq-wrap .dq-call-dur, .dq-wrap .dq-call-agent { color:#bbbbbb; }
 .dq-actions { display:flex; gap:7px; margin-top:13px; flex-wrap:wrap; }
 .dq-actions .btn { font-size:12px; padding:5px 11px; }
 .dq-notebox { display:flex; gap:7px; margin-top:9px; }

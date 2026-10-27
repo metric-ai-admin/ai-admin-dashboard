@@ -327,5 +327,103 @@ t('the Hyde Park spellings map, and the lookalikes still do not', () => {
     .forEach(v => assert.strictEqual(PA.canonical(v), null, v + ' was guessed'));
 });
 
+// ---- the expanded call history ---------------------------------------------
+
+const hcall = (d, dir, dur, num, rec) => ({
+  call_date: d, call_direction: dir, duration: dur, counterparty_number: num, recording_id: rec,
+});
+
+const H = CM.indexCalls([
+  hcall('2026-10-11', 'outbound', '95', '512-555-0100', 'r1'),
+  hcall('2026-10-09', 'inbound', '240', '512-555-0100', 'r2'),
+  hcall('2026-10-07', 'outbound', '30', '512-555-0200', 'r3'),   // their OTHER line
+  hcall('2026-10-05', 'inbound', '45', '512-555-0100', 'r4'),
+  hcall('2026-10-03', 'outbound', '12', '512-555-0100', 'r5'),
+  hcall('2026-10-01', 'inbound', '80', '512-555-0100', 'r6'),
+  hcall('2026-09-30', 'inbound', '20', '512-555-9999', 'r9'),    // somebody else
+]);
+
+t('history merges every number the resident has, newest first', () => {
+  // THE ONE THAT MATTERS. summarise picks one number and answers about it; a
+  // history that did the same would silently omit the home line's calls and
+  // look like a complete list.
+  const h = CM.history(['512-555-0100', '512-555-0200'], { callsByNumber: H }, 5);
+  assert.deepStrictEqual(h.map(c => c.date),
+    ['2026-10-11', '2026-10-09', '2026-10-07', '2026-10-05', '2026-10-03']);
+  assert.ok(h.some(c => c.recordingId === 'r3'), 'the second line is missing');
+});
+
+t('history stops at N and never reaches another resident', () => {
+  const h = CM.history(['512-555-0100', '512-555-0200'], { callsByNumber: H }, 5);
+  assert.strictEqual(h.length, 5);
+  assert.ok(!h.some(c => c.recordingId === 'r9'), "someone else's call is on the card");
+});
+
+t('the default limit is five', () => {
+  assert.strictEqual(CM.HISTORY_LIMIT, 5);
+  assert.strictEqual(CM.history(['512-555-0100'], { callsByNumber: H }).length, 5);
+});
+
+t('no number, or a number with nothing on it, is an empty list', () => {
+  // Empty is what lets the card fall back to summarise()'s note, which says
+  // WHICH of the two reasons it is. A placeholder row would hide that.
+  [[], [''], ['not a phone'], null].forEach(v =>
+    assert.deepStrictEqual(CM.history(v, { callsByNumber: H }), [], JSON.stringify(v)));
+  assert.deepStrictEqual(CM.history('512-555-7777', { callsByNumber: H }), []);
+});
+
+t('the agent is set only when the call was graded', () => {
+  // The archive's user_name is the LINE OWNER, not who spoke. Filling the
+  // agent from it would print one person's name on another's calls.
+  const h = CM.history(['512-555-0100'], {
+    callsByNumber: H, agentByRecording: new Map([['r2', 'Karla Gonzalez']]),
+  }, 3);
+  assert.strictEqual(h[1].agent, 'Karla Gonzalez');
+  assert.ok(!('agent' in h[0]), 'an ungraded call carries an agent');
+  assert.ok(!('agent' in h[2]), 'an ungraded call carries an agent');
+});
+
+t('an absent agent is an absent KEY, not an empty string', () => {
+  // '' renders as a blank column, which reads as data we lost. Omitted
+  // renders as nothing at all, which is the truth: it was never asked.
+  const h = CM.history(['512-555-0100'], {
+    callsByNumber: H, agentByRecording: new Map([['r1', '   ']]),
+  }, 1);
+  assert.ok(!('agent' in h[0]));
+  assert.strictEqual(JSON.stringify(h[0]).includes('"agent"'), false);
+});
+
+t('history carries no transcript, summary or score', () => {
+  // Resident-facing. A grade is reachable by LINK and by nothing else.
+  const rich = CM.indexCalls([{
+    call_date: '2026-10-11', call_direction: 'inbound', duration: '95',
+    counterparty_number: '512-555-0100', recording_id: 'r1',
+    transcript: 'SHOULD NEVER APPEAR', summary: 'NOR THIS', overall_score: 88,
+    user_name: 'Line Owner Name',
+  }]);
+  const h = CM.history(['512-555-0100'], { callsByNumber: rich }, 5);
+  assert.deepStrictEqual(Object.keys(h[0]).sort(), ['date', 'direction', 'duration', 'recordingId']);
+  const blob = JSON.stringify(h);
+  ['SHOULD NEVER APPEAR', 'NOR THIS', '88', 'Line Owner Name']
+    .forEach(v => assert.ok(!blob.includes(v), v + ' reached the card'));
+});
+
+t('a call stored under two of the resident numbers is one line', () => {
+  const dup = CM.indexCalls([
+    hcall('2026-10-11', 'inbound', '95', '512-555-0100', 'rdup'),
+    hcall('2026-10-11', 'inbound', '95', '512-555-0200', 'rdup'),
+  ]);
+  const h = CM.history(['512-555-0100', '512-555-0200'], { callsByNumber: dup }, 5);
+  assert.strictEqual(h.length, 1);
+});
+
+t('duration is formatted the same way the summary line formats it', () => {
+  // One formatter, so the collapsed line and the expanded list cannot
+  // disagree about the same call.
+  const h = CM.history(['512-555-0100'], { callsByNumber: H }, 5);
+  assert.strictEqual(h[0].duration, CM.duration('95'));
+  assert.strictEqual(h[0].duration, '1m 35s');
+});
+
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);

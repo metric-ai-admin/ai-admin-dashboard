@@ -5911,10 +5911,37 @@ async function decisionQueueData({ refresh = false } = {}) {
     try {
       const rows = await selectAll(() => (supabaseAdmin || supabasePublic)
         .from('simplevoip_daily_calls')
-        .select('call_date,call_direction,duration,counterparty_number')
+        .select('call_date,call_direction,duration,counterparty_number,recording_id')
         .gte('call_date', CM.CAPTURE_START), { label: 'dq calls' });
       return CM.indexCalls(rows);
     } catch (e) { return new Map(); }
+  })();
+
+  // WHO SPOKE, for the expanded call history — and ONLY where a grade says so.
+  //
+  // simplevoip_daily_calls.user_name is the LINE OWNER, not the agent. The
+  // trustworthy attribution is call_grades.agent_name, which comes from
+  // self-identification in the transcript. Auto-grade only runs above the
+  // duration and transcript-length floors, so a short collections attempt
+  // usually has no grade and therefore no agent — and that call shows no agent
+  // at all rather than the line owner's name, which would print Karla on calls
+  // Karla did not make.
+  //
+  // Fetched for the whole window in one paged read rather than per card: the
+  // queue is ~72 accounts and batching .in() on their recordings would be
+  // dozens of round trips to save nothing.
+  const agentByRecording = await (async () => {
+    const m = new Map();
+    try {
+      const rows = await selectAll(() => (supabaseAdmin || supabasePublic)
+        .from('call_grades')
+        .select('recording_id,agent_name')
+        .gte('call_date', CM.CAPTURE_START), { label: 'dq grades', order: 'recording_id' });
+      (rows || []).forEach(r => {
+        if (r.recording_id && r.agent_name) m.set(String(r.recording_id), r.agent_name);
+      });
+    } catch (e) { /* no grades = no agents, which is the honest fallback */ }
+    return m;
   })();
   // Who shares a number, from the projected tenant directory. Absent store =
   // no sharing reported, which is the safe direction: it never claims a call
@@ -5982,6 +6009,12 @@ async function decisionQueueData({ refresh = false } = {}) {
     calls: a.externallyManaged ? null : CM.summarise(CM.numbersFor(a, directoryIndex), {
       callsByNumber, residentsByNumber, name: a.name, today: todayCT,
     }),
+    // The last five, for the expanded list. Computed from the SAME number
+    // list as the summary above, so the collapsed line and the list it opens
+    // can never be about different phones.
+    callHistory: a.externallyManaged ? null : CM.history(CM.numbersFor(a, directoryIndex), {
+      callsByNumber, agentByRecording,
+    }),
   }));
 
   // RESIDENTS IN CREDIT (Bekah, 2026-09-25).
@@ -6025,6 +6058,11 @@ async function decisionQueueData({ refresh = false } = {}) {
     credits,
     creditsError,
     thresholds: { smallBalanceCeiling: SMALL_BALANCE_CEILING, creditFloor: CREDIT_FLOOR },
+    // SENT, NOT HARDCODED IN THE CLIENT. The expanded call list has to name the
+    // day the record begins, and a second copy of that date in app.js would be
+    // free to drift from lib/call-match.js — leaving the card confidently
+    // naming a date the matching no longer uses.
+    callCaptureStart: CM.CAPTURE_START,
     meta: { syncedAt: data.fetchedAt || null, rowCount: (data.rows || []).length, syncError },
   };
 }

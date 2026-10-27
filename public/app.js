@@ -10853,7 +10853,56 @@ function dqCalls(a) {
       + ' other resident' + (c.sharedWith.length === 1 ? '' : 's')
       + ' — these calls may not be theirs.</div>';
   }
+  out += dqCallHistory(a, c);
   return out;
+}
+
+// The expanded list: the last five calls on every number this resident has.
+//
+// THREE COLUMNS, NOT FIVE. Date, direction and duration come straight from the
+// archive. The agent is shown ONLY where a grade identified them — the
+// archive's user_name is the line owner, not who spoke — and there is no
+// "outcome" column because no such field exists anywhere; the nearest things
+// are the grade's score and its transcript summary, and neither belongs on a
+// resident's card.
+//
+// BOTH CAVEATS TRAVEL WITH THE LIST. The capture floor, because five rows look
+// like a complete history and the record only begins on 2026-09-29; and the
+// shared-number warning, because the collapsed line carrying it is hidden the
+// moment somebody opens the list that needs it most.
+// The day the call record begins, as the SERVER reports it. The fallback is
+// the date as of this writing and exists only so the caveat is never an empty
+// sentence; if the two ever disagree it is the server that is right.
+function dqCaptureStart() {
+  return (dqData && dqData.callCaptureStart) || '2026-09-29';
+}
+
+function dqCallHistory(a, c) {
+  const h = a.callHistory;
+  if (!h || !h.length) return '';
+  const shared = c && c.sharedWith && c.sharedWith.length;
+  const rows = h.map(x =>
+    '<li class="dq-call">'
+    + '<span class="dq-call-date">' + dqEsc(dqDate(x.date) || x.date) + '</span>'
+    + '<span class="dq-call-dir">' + dqEsc(x.direction) + '</span>'
+    + '<span class="dq-call-dur">' + (x.duration ? dqEsc(x.duration) : '') + '</span>'
+    // An agent we were not told is left EMPTY, not filled with a guess.
+    + '<span class="dq-call-agent">' + (x.agent ? dqEsc(x.agent) : '') + '</span>'
+    + (x.recordingId
+      ? '<button type="button" class="dq-call-grade" data-rid="' + dqEsc(x.recordingId)
+        + '" title="Open this call in the Call Analyzer">grade</button>'
+      : '<span class="dq-call-grade"></span>')
+    + '</li>').join('');
+  return '<details class="dq-calls-more">'
+    + '<summary>' + h.length + ' recent call' + (h.length === 1 ? '' : 's') + '</summary>'
+    + '<ul class="dq-call-list">' + rows + '</ul>'
+    + (shared
+      ? '<div class="dq-note">This number is shared with ' + shared + ' other resident'
+        + (shared === 1 ? '' : 's') + ' — these calls may not be theirs.</div>'
+      : '')
+    + '<div class="dq-note muted">Calls recorded since ' + dqEsc(dqCaptureStart())
+      + '. Anything earlier left no number to match.</div>'
+    + '</details>';
 }
 
 function dqCard(a) {
@@ -11013,6 +11062,19 @@ function renderDecisionQueue() {
       : section(`Residents in credit — ${dqMoney(creditFloor)} and over`,
         'Accounts carrying a credit balance. From the rent roll, not the delinquency report — a credit cannot appear in that one.',
         credits, dqCreditCard, 'No resident is in credit by that much.'));
+
+  // The grade chip: switch to the Call Analyzer's grades view and open that
+  // recording. A LINK AND NOTHING MORE — no score, summary or transcript is
+  // fetched into the Collections screen, which is where a resident's name is.
+  cards.querySelectorAll('.dq-call-grade[data-rid]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      document.querySelector('#tabs button[data-tab="calls"]')?.click();
+      svSetView('grades');
+      svgSelect(btn.dataset.rid);
+    });
+  });
 
   cards.querySelectorAll('.dq-card').forEach(card => {
     const key = card.dataset.key;
