@@ -442,7 +442,24 @@ t('an approval needs a name, and the three approvers are named', () => {
   const s = src('server.js');
   assert.ok(/An approval needs a name/.test(s),
     '"approved" with nobody\'s name on it is the same as not approved');
-  assert.deepStrictEqual(R.APPROVERS, ['Josue Garcia', 'Rebekah Hernandez', 'Jay Manuel']);
+  assert.deepStrictEqual(R.APPROVERS, ['Josue Garcia', 'Rebekah Tuckner', 'Jay Manuel']);
+});
+
+t('REBEKAH\'S SURNAME IS TUCKNER, AND IT IS SPELT ONCE', () => {
+  // It read "Hernandez" here and in the approve prompt until 2026-10-27, in
+  // front of the three people who approve the month. The deepStrictEqual
+  // above would catch the constant coming back; this catches the copy that
+  // actually caused it — a second hard-coded list in the client.
+  const client = src('public/app.js');
+  assert.ok(!/Rebekah Hernandez/.test(client), 'the wrong surname is back in the client');
+  assert.ok(!/Rebekah Hernandez/.test(src('lib/oncall-rotation.js')));
+  assert.ok(!/Rebekah Hernandez/.test(src('lib/oncall-export.js')));
+  // And the prompt reads the server's list rather than keeping its own, so
+  // there is one place for a name to be wrong instead of two.
+  assert.match(client, /onCallDoc && onCallDoc\.approvers/,
+    'the approve prompt hard-codes the approver names again');
+  assert.ok(!/Approving as \(Josue/.test(client),
+    'the hard-coded name list is still in the prompt text');
 });
 
 t('an approved month cannot be edited without going back to draft', () => {

@@ -13883,7 +13883,13 @@ async function ocSetState(state) {
   // not approved, and the server refuses it anyway.
   let by = null;
   if (state === 'approved') {
-    by = prompt('Approving as (Josue Garcia, Rebekah Hernandez, Jay Manuel):', '');
+    // ASK THE SERVER WHO THE APPROVERS ARE. This list was typed out here as
+    // well as in lib/oncall-rotation.js, and the copy here is the one that
+    // spelled Rebekah's surname wrong — in the one place a person reads it.
+    // The payload already carries `approvers`; using it means the names can
+    // only ever be wrong in one place.
+    const names = (onCallDoc && onCallDoc.approvers || []).join(', ');
+    by = prompt('Approving as' + (names ? ' (' + names + ')' : '') + ':', '');
     if (!by) return;
   }
   try {
