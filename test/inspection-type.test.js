@@ -84,6 +84,92 @@ t('A MOVE-OUT NAME CAN NEVER BE READ AS A MOVE-IN', () => {
     .forEach(n => assert.notStrictEqual(typeOf(n), 'Move-in', n + ' read as a move-in'));
 });
 
+// ---- Jay's four tweaks, 2026-10-27 -----------------------------------------
+
+t('FAS WITHOUT "move out" STILL READS FAS', () => {
+  // The thing Jay checked and wanted held: "Move Out - FAS Inspection" is the
+  // move-out walk (that form IS the walk) and reads Move-out walk because the
+  // walk check runs first. But a FAS that is only a FAS must not be swallowed
+  // by that, or the category becomes unreachable instead of merely rare.
+  assert.strictEqual(typeOf('Move Out - FAS Inspection'), 'Move-out walk');
+  assert.strictEqual(typeOf('FAS Inspection'), 'FAS');
+  assert.strictEqual(typeOf('FAS'), 'FAS');
+  assert.strictEqual(typeOf('Final Account Statement — 114'), 'FAS');
+  assert.strictEqual(typeOf('fas walkthrough'), 'FAS');
+});
+
+t('a copy takes the label of what it is a copy of', () => {
+  // AppFolio's duplicate button prefixes the name. "Copy of Untitled" read
+  // Other, which is the one case where the answer was obviously wrong.
+  assert.strictEqual(typeOf('Copy of Untitled'), 'Untitled');
+  assert.strictEqual(typeOf('copy of untitled'), 'Untitled');
+  assert.strictEqual(typeOf('Copy of Move Out Occupancy Inspection'), 'Move-out walk');
+  assert.strictEqual(typeOf('Copy of General Make Ready Items'), 'Make-ready');
+  assert.strictEqual(typeOf('Copy of FAS'), 'FAS');
+  assert.strictEqual(typeOf('Copy of Andres luevano'), 'Other', 'a copy of a name is still a name');
+  // Repeated, and the degenerate case where nothing is left.
+  assert.strictEqual(typeOf('Copy of Copy of Untitled'), 'Untitled');
+  // A name that is ONLY the prefix is a name somebody typed, not an absence:
+  // the trailing space is trimmed before anything else looks at it, so both
+  // of these are the literal name "Copy of" and neither is Untitled.
+  assert.strictEqual(typeOf('Copy of'), 'Other');
+  assert.strictEqual(typeOf('Copy of '), 'Other');
+  // Whereas a prefix followed by an empty-meaning name IS untitled.
+  assert.strictEqual(typeOf('Copy of   Untitled'), 'Untitled');
+  assert.strictEqual(typeOf('Second copy of Untitled'), 'Other');
+  // ANCHORED, and this is the only kind of name that proves it. I searched
+  // for a realistic one and there is none: `clean()` trims, every other
+  // pattern is an unanchored substring test, and the one anchored test is
+  // /^untitled$/ — so stripping from the middle gives the same answer on
+  // ordinary names. It differs only where removing the words JOINS two
+  // fragments into a pattern, which is exactly the damage an unanchored
+  // strip would do. Contrived name, real regression.
+  assert.strictEqual(typeOf('move copy of inspection'), 'Other',
+    'the prefix is stripped from inside the name, joining words into a match');
+});
+
+t('STRIPPING THE COPY PREFIX CHANGED NO MATCHING', () => {
+  // The claim made in the comment, asserted. Every other pattern is an
+  // unanchored substring test, so the prefix never affected them; only the
+  // anchored /^untitled$/ was wrong, and isUnrecognised does not strip.
+  const un = n => MO.isUnrecognised(ins(n));
+  assert.strictEqual(un('Copy of General Make Ready Items'), false,
+    'a copied make-ready became a maybe-walk');
+  assert.strictEqual(un('Copy of Move Out Occupancy Inspection'), false);
+  assert.strictEqual(un('Copy of Untitled'), true,
+    'a copied Untitled stopped being a maybe-walk — that is a matching change');
+});
+
+t('the make-ready pattern tolerates "maje ready"', () => {
+  assert.strictEqual(typeOf('Maje Ready'), 'Make-ready');
+  assert.strictEqual(typeOf('maje-ready items'), 'Make-ready');
+  assert.strictEqual(typeOf('General Make Ready Items'), 'Make-ready', 'the correct spelling broke');
+  // And nothing wider: only that one letter varies.
+  assert.strictEqual(typeOf('mate ready'), 'Other');
+  assert.strictEqual(typeOf('made ready'), 'Other');
+});
+
+t('THE TYPO FIX REACHES MATCHING TOO, ON PURPOSE', () => {
+  // MAKE_READY_NAME is shared with isUnrecognised. This is the one change in
+  // this batch that is NOT display-only, and it is asserted so that nobody
+  // later reads the batch as purely cosmetic: a typo'd make-ready is no
+  // longer offered as a maybe-walk.
+  assert.strictEqual(MO.isUnrecognised(ins('Maje Ready')), false,
+    'a typo\'d make-ready is still offered as a possible move-out walk');
+  assert.strictEqual(MO.isUnrecognised(ins('General Make Ready Items')), false);
+  assert.strictEqual(MO.isUnrecognised(ins('Andres luevano')), true,
+    'the widened pattern swallowed a technician name');
+});
+
+t('Move-in is kept, and still reachable', () => {
+  // Arturo probed it 2026-10-27: 3 move-in names exist overall, none in the
+  // current window. Empty on screen is not the same as unreachable, and this
+  // asserts which one it is.
+  assert.strictEqual(typeOf('Move In Inspection'), 'Move-in');
+  assert.strictEqual(typeOf('move-in'), 'Move-in');
+  assert.ok(MO.INSPECTION_TYPES.indexOf('Move-in') >= 0);
+});
+
 t('every answer is one of the six declared categories', () => {
   ['Move Out Occupancy Inspection', 'FAS', 'General Make Ready Items', 'Move In',
     'Untitled', 'Andres luevano', '', 'Monthly Management Inspection']
