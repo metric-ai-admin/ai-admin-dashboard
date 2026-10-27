@@ -409,7 +409,26 @@ const REPORTS = [
     group: 'Collections',
     priority: 8,
     feeds: 'Kara brief — Final Account Statements (deposit settled as the signal)',
-    params: { property_visibility: 'active' },
+    // EVERY TENANT STATUS, NOT THE FOUR THAT RETURN ROWS TODAY.
+    //
+    // Probed 2026-10-27. Without tenant_statuses this report answers for
+    // CURRENT residents only: 216 rows, Current 212 + Notice 4, and ZERO past
+    // move-outs. With 0..12 it returns 258 — the same 216 plus Past 35 (all
+    // past their move-out) and Evict 7. So the report does keep movers-out;
+    // the sync was never asking for them, and a resident who moved out simply
+    // fell off the list. Since deposit_held derives settlement from a row
+    // STOPPING coming back, that absence read as "deposit returned".
+    //
+    // ALL THIRTEEN because asking for exactly {0,1,3,4} re-creates the bug one
+    // category down: the day a deposit first appears under a code we did not
+    // list, it is absent, and absent is indistinguishable from settled. The
+    // probe proved all thirteen are accepted in one request at no extra cost,
+    // and an unknown code would 400 the fetch — which the guard records as
+    // `failed` and which settles nothing. A loud failure beats a quiet one.
+    params: {
+      property_visibility: 'active',
+      tenant_statuses: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'],
+    },
     // Names, emails, phones and addresses never reach the disk. The amount
     // DOES: it is the measurement here, unlike on the tenant directory where
     // a copied balance is a stale second answer.

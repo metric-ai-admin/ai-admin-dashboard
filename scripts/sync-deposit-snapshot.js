@@ -69,12 +69,15 @@ async function syncDepositSnapshot(opts) {
   const D = db();
 
   // ---- the previous good run, which the guard measures against ------------
+  // status_counts comes back too: the composition guard needs the SHAPE of
+  // the last good run, not only its size.
   const prev = await D.from('deposit_sync_runs')
-    .select('ran_on,rows_returned,status').eq('status', 'ok')
+    .select('ran_on,rows_returned,status,status_counts').eq('status', 'ok')
     .order('ran_on', { ascending: false }).limit(1);
   if (prev.error) throw new Error(prev.error.message);
   const previousRows = prev.data && prev.data.length ? prev.data[0].rows_returned : 0;
   const previousOn = prev.data && prev.data.length ? prev.data[0].ran_on : null;
+  const previousCounts = prev.data && prev.data.length ? prev.data[0].status_counts : null;
 
   // ---- today's feed -------------------------------------------------------
   let feed = null;
@@ -86,7 +89,19 @@ async function syncDepositSnapshot(opts) {
   } catch (e) { fetchError = e.message; }
 
   const counts = feed ? FAS.statusCounts(feed) : null;
-  const guard = FAS.feedGuard(feed ? feed.length : null, previousRows, MAX_DROP);
+  const sizeGuard = FAS.feedGuard(feed ? feed.length : null, previousRows, MAX_DROP);
+  // TWO GUARDS, AND EITHER ONE REFUSES. The size guard catches a feed that
+  // came back short; the composition guard catches one that came back the
+  // right size with a whole tenant status missing — which is what losing the
+  // tenant_statuses parameter looks like, and which is a 16% fall the size
+  // guard waves through. `first` is preserved so the first run still settles
+  // nothing.
+  const shapeGuard = feed ? FAS.compositionGuard(counts, previousCounts)
+    : { ok: true, vanished: [], reason: null };
+  const guard = sizeGuard.ok && !shapeGuard.ok
+    ? { ok: false, status: 'suspect', first: sizeGuard.first,
+        dropPct: sizeGuard.dropPct, reason: shapeGuard.reason, vanished: shapeGuard.vanished }
+    : sizeGuard;
 
   log((write ? 'WRITE' : 'DRY RUN') + ' — deposits for ' + day);
   log('  previous good run : ' + (previousOn || 'none') + '  (' + previousRows + ' rows)');
@@ -97,6 +112,9 @@ async function syncDepositSnapshot(opts) {
   }
   log('  guard             : ' + guard.status + (guard.dropPct === null ? ''
     : '  (' + guard.dropPct + '% change)'));
+  if (guard.vanished && guard.vanished.length) {
+    log('  statuses vanished : ' + guard.vanished.join(', '));
+  }
   if (guard.reason) log('  ' + guard.reason);
 
   const run = {

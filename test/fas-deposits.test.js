@@ -382,6 +382,113 @@ t('the section is PREVIEW ONLY — the 06:00 email is untouched', () => {
   assert.ok(!/fas:\s*true/.test(server), 'the live brief turns the FAS section on');
 });
 
+// ---- the parameter, and the blind spot it created --------------------------
+
+t('THE DEPOSIT REPORT ASKS FOR EVERY TENANT STATUS', () => {
+  // Probed 2026-10-27: without tenant_statuses the report answers for CURRENT
+  // residents only — 216 rows, zero past move-outs. Since settlement is
+  // derived from a row STOPPING coming back, every move-out read as a
+  // returned deposit. This is the fix, asserted where it lives.
+  const reports = read('appfolio-reports.js');
+  const at = reports.indexOf("id: 'security_deposit_funds_detail'");
+  assert.ok(at > 0, 'the deposit report registration moved');
+  const block = reports.slice(at, reports.indexOf('project:', at));
+  assert.match(block, /tenant_statuses:/, 'the deposit sync still asks for current residents only');
+  // All thirteen. Asking for only the four that return rows today re-creates
+  // the bug one category down, which is the whole argument for the list.
+  for (let i = 0; i <= 12; i++) {
+    assert.ok(new RegExp("'" + i + "'").test(block), 'tenant_status ' + i + ' is not asked for');
+  }
+  assert.match(block, /property_visibility: 'active'/, 'the visibility filter was lost');
+});
+
+t('258 -> 216: THE OLD GUARD MISSES IT, THE NEW ONE CATCHES IT', () => {
+  // The exact regression the fix created. If the tenant_statuses parameter is
+  // ever lost, the feed falls 258 -> 216 — 16.3%, UNDER the 20% threshold —
+  // and the size guard waves through a run that settles 42 deposits.
+  const before = { Current: 212, Past: 35, Evict: 7, Notice: 4 };   // 258
+  const after = { Current: 212, Notice: 4 };                        // 216
+
+  const size = F.feedGuard(216, 258, 20);
+  assert.strictEqual(size.ok, true,
+    'this test is no longer reproducing the blind spot — check the threshold');
+  assert.ok(size.dropPct < 20 && size.dropPct > 15, 'the drop should be ~16%, got ' + size.dropPct);
+
+  const shape = F.compositionGuard(after, before);
+  assert.strictEqual(shape.ok, false, 'a vanished tenant status was not caught');
+  assert.deepStrictEqual(shape.vanished, ['Evict', 'Past']);
+  assert.match(shape.reason, /Past \(35 last time, none now\)/);
+  assert.match(shape.reason, /Nothing was settled/);
+});
+
+t('the composition guard does not fire on ordinary movement', () => {
+  const before = { Current: 212, Past: 35, Evict: 7, Notice: 4 };
+  // Small statuses genuinely bounce. Seven becoming three is a Tuesday.
+  assert.strictEqual(F.compositionGuard({ Current: 210, Past: 40, Evict: 3, Notice: 9 }, before).ok, true);
+  // A status appearing for the first time is not a vanishing.
+  assert.strictEqual(F.compositionGuard({ ...before, Renewal: 2 }, before).ok, true);
+  // And the growth that the fix itself causes must pass, or the first run
+  // after the parameter lands refuses itself.
+  assert.strictEqual(F.compositionGuard(before, { Current: 212, Notice: 4 }).ok, true,
+    'the day the fix lands, the guard blocks its own improvement');
+  assert.strictEqual(F.feedGuard(258, 216, 20).ok, true, 'the size guard blocked a RISE');
+});
+
+t('a status that was already zero cannot vanish', () => {
+  // Only statuses that HAD rows count. A zero going to zero is not evidence.
+  const g = F.compositionGuard({ Current: 5 }, { Current: 5, Past: 0, Evict: 0 });
+  assert.strictEqual(g.ok, true);
+  assert.deepStrictEqual(g.vanished, []);
+});
+
+t('NO PREVIOUS SHAPE IS NOT A FAILED CHECK', () => {
+  // The first run, or a run recorded before status_counts existed. Absence of
+  // a comparison must read as "cannot say", never as "something vanished" —
+  // a guard that refuses on its first morning is a guard nobody keeps.
+  [null, undefined, {}, 'nonsense', 5].forEach(prev => {
+    const g = F.compositionGuard({ Current: 212 }, prev);
+    assert.strictEqual(g.ok, true, String(prev) + ' was treated as evidence');
+    assert.strictEqual(g.reason, null);
+  });
+  // And a feed that returned nothing at all is the size guard's business,
+  // not this one's: it still reports the vanishing rather than inventing a
+  // different verdict.
+  assert.strictEqual(F.compositionGuard({}, { Current: 212 }).ok, false);
+});
+
+t('EITHER GUARD REFUSES, AND THE SYNC WIRES BOTH', () => {
+  const sync = read('scripts/sync-deposit-snapshot.js');
+  assert.match(sync, /compositionGuard\(counts, previousCounts\)/,
+    'the sync never calls the composition guard');
+  assert.match(sync, /status_counts/, 'the previous run\'s shape is not read back');
+  // The combined verdict must be a refusal when EITHER says so, and must not
+  // throw away the size guard's `first` flag — the first run settles nothing.
+  assert.match(sync, /sizeGuard\.ok && !shapeGuard\.ok/);
+  assert.match(sync, /first: sizeGuard\.first/,
+    'the first-run flag is dropped when the composition guard fires');
+  // And nothing is settled on a refusal: that logic is shared, so this
+  // asserts the refusal path still gates the settle.
+  assert.match(sync, /if \(!guard\.ok\)/);
+});
+
+// ---- the brief reads what is there, all of it ------------------------------
+
+t('THE BRIEF PAGES deposit_held, AND ORDERS IT BY THE RIGHT COLUMN', () => {
+  // PostgREST caps a response at 1000 rows and .limit() does not raise it, so
+  // a plain select returns a plausible short answer as the table grows — and
+  // a deposit missing from the read is a deposit the brief does not report as
+  // overdue. deposit_held is keyed on occupancy_id and has NO id column, so
+  // the default order would page it unordered.
+  const gather = read('lib/kara-brief-gather.js');
+  const fn = gather.slice(gather.indexOf('async function gatherFas'),
+    gather.indexOf('async function gather(deps)'));
+  assert.match(fn, /order: 'occupancy_id'/, 'deposit_held is paged unordered, or not paged');
+  assert.ok(!/await db\.from\('deposit_held'\)\s*\n?\s*\.select\([^)]*\);/.test(fn),
+    'the unpaged select is still there');
+  assert.match(gather, /gatherFas\(d\.db, todayCT, d\.fasDeadline, d\.fasDeadlineUnconfirmed, d\.selectAll\)/,
+    'the caller does not hand gatherFas a pager');
+});
+
 t('the brief reads, and the snapshot is taken by the cron', () => {
   const gather = read('lib/kara-brief-gather.js');
   const fn = gather.slice(gather.indexOf('async function gatherFas'),
