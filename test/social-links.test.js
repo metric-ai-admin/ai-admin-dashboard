@@ -323,9 +323,16 @@ t('the author comes from the session, never the form', () => {
 t('a failed screenshot upload does not lose the post', () => {
   // The link is what Lyndsay asked for; losing it because SharePoint was slow
   // would be the wrong trade.
+  // BOUNDED BY THE NEXT FUNCTION, not by the POST route. It used to run to
+  // `app.post('/api/social-posts'` and other code has since been added in
+  // between — socialScreenshotGraphUrl and the streaming GET route — so the
+  // "it rethrows" check below was reading a `throw` belonging to neither.
   const at = server.indexOf('async function socialUploadScreenshot');
-  const body = server.slice(at, server.indexOf("app.post('/api/social-posts'", at));
-  assert.match(body, /return \{ url: null, name, error: e\.message \}/);
+  const body = server.slice(at, server.indexOf('\nfunction socialScreenshotGraphUrl', at));
+  // `id` joined this shape with migration 116 — the Graph item id the
+  // streaming route reads. A failed upload has no id either, and the point
+  // stands: the catch RETURNS, so the post is inserted without a screenshot.
+  assert.match(body, /return \{ url: null, id: null, name, error: e\.message \}/);
   assert.ok(!/throw/.test(body.slice(body.indexOf('catch (e)'))), 'it rethrows');
 });
 

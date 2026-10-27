@@ -121,8 +121,16 @@
       + '<td>' + esc(p.platform) + '</td>'
       + '<td>' + esc(p.property || '—') + '</td>'
       + '<td><a href="' + esc(p.url) + '" target="_blank" rel="noopener">open</a></td>'
-      + '<td>' + (p.screenshot_url
-        ? '<a href="' + esc(p.screenshot_url) + '" target="_blank" rel="noopener">screenshot</a>'
+      // THROUGH US, NOT INTO SHAREPOINT. p.screenshot_url is a webUrl in
+      // admin@'s personal OneDrive: everybody else who clicked it got "You
+      // need access" (Daria's 10/27 post). This route streams the bytes with
+      // the app credentials and re-applies the own-posts-only scoping, so no
+      // folder has to be shared with anyone. The row still carries
+      // screenshot_url — it is what says a screenshot EXISTS, and it stays as
+      // the admin's own path back to the file.
+      + '<td>' + (p.screenshot_url || p.screenshot_name
+        ? '<a href="/api/social-posts/' + encodeURIComponent(p.id) + '/screenshot"'
+          + ' target="_blank" rel="noopener">screenshot</a>'
         : '<span class="muted">none</span>') + '</td>'
       + '</tr>';
     el.innerHTML = '<div class="table-wrap"><table class="tbl"><thead><tr>'

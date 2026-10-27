@@ -20912,7 +20912,7 @@ const SOCIAL_FOLDER = process.env.SOCIAL_SCREENSHOT_FOLDER
 // Screenshot -> SharePoint, under a per-week folder. Returns the link, or
 // null with a reason: a failed upload must not lose the post.
 async function socialUploadScreenshot(file, dayCT) {
-  if (!file || !file.buffer || !file.buffer.length) return { url: null, name: null, error: null };
+  if (!file || !file.buffer || !file.buffer.length) return { url: null, id: null, name: null, error: null };
   const folder = SOCIAL.weekFolder(dayCT) || 'Unfiled';
   const safe = String(file.originalname || 'screenshot.png').replace(/[^\w.\- ]+/g, '_').slice(-80);
   const name = Date.now() + '-' + safe;
@@ -20929,13 +20929,126 @@ async function socialUploadScreenshot(file, dayCT) {
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error((j.error && j.error.message) || ('Graph ' + r.status));
-    return { url: j.webUrl || null, name, error: null };
+    // THE ID IS THE READ HANDLE. webUrl is a browser link into admin@'s own
+    // OneDrive and is useless to the server; the id is what
+    // /drive/items/{id}/content takes. It has been in this response all along
+    // and was being discarded — see migration 116.
+    return { url: j.webUrl || null, id: j.id || null, name, error: null };
   } catch (e) {
     // REPORTED, NOT FATAL. The link is the thing Lyndsay asked for; losing it
     // because SharePoint was slow would be the wrong trade.
-    return { url: null, name, error: e.message };
+    return { url: null, id: null, name, error: e.message };
   }
 }
+
+// Where a screenshot lives, for the streaming route below.
+//
+// TWO WAYS, AND THE ID IS THE GOOD ONE. Rows uploaded from 2026-10-27 carry
+// the Graph item id; everything older has only the name and the day it was
+// created, so the path is rebuilt the way the upload built it. The rebuild
+// works but it re-derives the folder from a date instead of reading where the
+// file actually went, and a file moved or renamed in SharePoint breaks it —
+// which is exactly why new rows store the id.
+//
+// Returns a Graph URL or null. Null means "this row cannot be located", which
+// the route must report as its own thing and not as a missing file.
+function socialScreenshotGraphUrl(row) {
+  const owner = process.env.CV_WORKBOOK_OWNER || 'admin@metricpropertymanagement.com';
+  const base = 'https://graph.microsoft.com/v1.0/users/' + encodeURIComponent(owner) + '/drive';
+  const id = SOCIAL.clean(row && row.screenshot_item_id);
+  if (id) return base + '/items/' + encodeURIComponent(id) + '/content';
+
+  const name = SOCIAL.clean(row && row.screenshot_name);
+  if (!name) return null;
+  const day = String((row && row.created_at) || '').slice(0, 10);
+  const folder = SOCIAL.weekFolder(day) || 'Unfiled';
+  const target = SOCIAL_FOLDER + '/' + folder + '/' + name;
+  return base + '/root:/' + target.split('/').map(encodeURIComponent).join('/') + ':/content';
+}
+
+// GET /api/social-posts/:id/screenshot — the image, through us.
+//
+// WHY THIS EXISTS. The screenshots live in admin@'s PERSONAL OneDrive, so the
+// stored webUrl opens "You need access" for everybody else (Daria's 10/27
+// post). Sharing the folder would hand every agent every other agent's
+// screenshots at once and permanently. This hands over one file, to one
+// signed-in person, for one request.
+//
+// THE SCOPING IS THE POINT, NOT THE AUTH. requireAuth alone would let a
+// social_agent walk the ids and pull screenshots belonging to posts the list
+// route deliberately hides from them — the own-posts-only rule undone through
+// a side door. socialOwnOnly() is REUSED here rather than re-derived so the
+// two cannot drift apart.
+app.get('/api/social-posts/:id/screenshot', requireAuth, async (req, res) => {
+  try {
+    const db = supabaseAdmin || supabasePublic;
+    const own = socialOwnOnly(req);
+    let q = db.from('social_posts')
+      .select('id,author_email,screenshot_name,screenshot_url,screenshot_item_id,created_at')
+      .eq('id', String(req.params.id || ''));
+    // Same guard as the list route: an empty email narrows to nothing, never
+    // widens to everyone.
+    if (own) q = q.eq('author_email', own.email || '\u0000no-such-login');
+    const found = await q.maybeSingle();
+    if (found.error && /screenshot_item_id/.test(found.error.message || '')) {
+      return res.status(503).json({
+        error: 'run supabase/migrations/116_social_posts_screenshot_item_id.sql first',
+        needsMigration: true });
+    }
+    if (found.error) throw new Error(found.error.message);
+    // ONE ANSWER FOR "not yours" AND "not there". Two would let somebody probe
+    // which ids exist on other people's posts.
+    if (!found.data) return res.status(404).json({ error: 'No such screenshot.' });
+
+    const row = found.data;
+    // The upload failed when this post was made — the post survived without a
+    // screenshot, by design. That is not the same as a file we cannot fetch.
+    if (!row.screenshot_name && !row.screenshot_item_id) {
+      return res.status(404).json({ error: 'This post has no screenshot — the upload to SharePoint failed.' });
+    }
+    const graphUrl = socialScreenshotGraphUrl(row);
+    if (!graphUrl) return res.status(404).json({ error: 'This post has no screenshot on file.' });
+
+    const token = await graphMailToken();
+    // REDIRECT FOLLOWED HERE, NEVER BY THE BROWSER. Graph answers /content
+    // with a 302 to a pre-authenticated download URL that carries NO bearer
+    // token — anyone holding it can fetch the file. Sending the browser there
+    // would re-share the thing this route exists to stop, and put the URL in
+    // history and in any logging proxy on the way. `redirect: 'follow'` is the
+    // default and is written out so nobody "tidies" it to manual.
+    const r = await fetch(graphUrl, {
+      headers: { Authorization: 'Bearer ' + token },
+      redirect: 'follow',
+    });
+    if (r.status === 404) {
+      return res.status(404).json({ error: 'The screenshot is no longer in SharePoint — moved, renamed or deleted.' });
+    }
+    if (!r.ok) {
+      // 502, NOT 404. "SharePoint would not answer" and "the file is gone"
+      // need different people to do different things.
+      return res.status(502).json({ error: 'SharePoint did not return the file (Graph ' + r.status + ').' });
+    }
+
+    // Graph knows the type; the extension is the fallback, and a type we do
+    // not recognise is sent as a download rather than guessed into the page.
+    const ext = (SOCIAL.clean(row.screenshot_name).match(/\.([a-z0-9]+)$/i) || [])[1];
+    const byExt = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+      gif: 'image/gif', webp: 'image/webp' }[String(ext || '').toLowerCase()];
+    const type = r.headers.get('content-type') || byExt || 'application/octet-stream';
+    res.setHeader('Content-Type', type);
+    // PRIVATE AND NOT STORED. The image is one agent's, fetched under their
+    // session; a shared cache holding it would hand it to the next person.
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Disposition',
+      (/^image\//.test(type) ? 'inline' : 'attachment')
+      + '; filename="' + String(row.screenshot_name || 'screenshot').replace(/["\\]/g, '') + '"');
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.setHeader('Content-Length', String(buf.length));
+    return res.end(buf);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 // WHO SEES THE WHOLE BOARD, AND WHO SEES ONLY THEIR OWN ROW.
 //
@@ -21096,10 +21209,22 @@ app.post('/api/social-posts', requireAuth, socialUpload.single('screenshot'), as
       posted_on: /^\d{4}-\d{2}-\d{2}$/.test(postedOn) ? postedOn : null,
       screenshot_url: shot.url,
       screenshot_name: shot.name,
+      // The read handle. See migration 116 — webUrl points into admin@'s own
+      // OneDrive and nobody else can open it.
+      screenshot_item_id: shot.id || null,
       image_hash: imageHash,
       note: SOCIAL.clean(req.body && req.body.note) || null,
     };
-    const { data, error } = await db.from('social_posts').insert(row).select().single();
+    let { data, error } = await db.from('social_posts').insert(row).select().single();
+    // IF THE MIGRATION HAS NOT RUN, THE POST STILL LANDS. The column is new in
+    // 116 and the deploy could reach Render before it is applied; losing a
+    // link over a column that only makes the screenshot viewable would be the
+    // wrong trade, and it is the same trade socialUploadScreenshot already
+    // makes when SharePoint is slow. The screenshot falls back to the path.
+    if (error && /screenshot_item_id/.test(error.message || '')) {
+      const { screenshot_item_id, ...withoutId } = row;
+      ({ data, error } = await db.from('social_posts').insert(withoutId).select().single());
+    }
     if (error) {
       if (/duplicate key|social_posts_normalised_idx/i.test(error.message || '')) {
         return res.status(409).json({ error: 'Already here — the same link was uploaded a moment ago.' });
@@ -21124,8 +21249,13 @@ app.get('/api/social-posts', requireAuth, async (req, res) => {
       // when that is not the person it is for. A column left out of a
       // projection is invisible in exactly the same way as a column nobody
       // writes — this screen has been bitten by that before.
+      // screenshot_name rides along because the table now decides whether to
+      // offer the link from "is there a file" rather than "did Graph return a
+      // webUrl". Leaving it out would make a post whose upload stored a name
+      // but no URL show "none" — a column missing from a projection is
+      // invisible in exactly the way a column nobody writes is.
       .select('id,url,platform,property,author,author_email,posted_on,screenshot_url,'
-        + 'created_at,note,uploaded_by,uploaded_by_email')
+        + 'screenshot_name,created_at,note,uploaded_by,uploaded_by_email')
       .order('created_at', { ascending: false }).limit(2000);
     // An id that cannot match anything, rather than no filter at all: an empty
     // email must narrow the query to nothing, never widen it to everyone.
