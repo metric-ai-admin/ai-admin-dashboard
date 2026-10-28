@@ -425,18 +425,19 @@ const fs = require('fs');
 const path = require('path');
 const read = f => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
 
-t('the section is PREVIEW ONLY — the 06:00 email is untouched', () => {
-  // A section that starts appearing in a live email because a flag defaulted
-  // the other way is how a half-checked number reaches Kara.
+t('the section is still behind an explicit flag, now switched ON', () => {
+  // THIS TEST USED TO ASSERT THE OPPOSITE and it did its job: it failed the
+  // moment the section was wired into the 06:00 email, which is exactly what
+  // a guard against "a flag defaulted the other way" is for. The section went
+  // live on 2026-10-29 by decision, so the assertion moves with it — what
+  // still has to hold is that NOTHING DEFAULTS. The gather returns no `fas`
+  // unless asked, and both callers ask in one visible line.
   const gather = read('lib/kara-brief-gather.js');
   assert.match(gather, /if \(d\.fas\) \{/, 'the FAS gather is not behind a flag');
   const preview = read('scripts/kara-brief-preview.js');
   assert.match(preview, /fas: true/, 'the preview does not turn it on');
-  // server.js renders the real brief; it must not pass the flag.
   const server = read('server.js');
-  const at = server.indexOf('karaBriefRender');
-  assert.ok(at > 0);
-  assert.ok(!/fas:\s*true/.test(server), 'the live brief turns the FAS section on');
+  assert.ok(/fas: true/.test(server), 'the live brief no longer turns the section on');
 });
 
 // ---- the parameter, and the blind spot it created --------------------------
@@ -952,6 +953,49 @@ t('the excluded-property note reaches the page', () => {
   const text = B.render(brief, { testMode: true });
   assert.ok(/23 deposit\(s\) on properties Metric does not manage/.test(text));
   assert.ok(/Brazos Lofts, Lily Pad Lane/.test(text));
+});
+
+// ---- live in Kara's 06:00 email from 2026-10-29 ----------------------------
+
+t('the caveat names the case this section cannot see', () => {
+  // deposit_held lists deposits HELD, so a move-out with no deposit has no
+  // row and cannot be counted — the very case Kara asked about. Without this
+  // line the section reads as a complete list of what is owed.
+  const c = F.caveats({ deadline: F.DEFAULT_DEADLINE });
+  assert.ok(c.some(l =>
+    /Move-outs with no deposit on file are not detected yet — being added next\./.test(l)),
+  JSON.stringify(c));
+});
+
+t('the caveat is on the page in both renderers', () => {
+  const B = require('../lib/kara-brief.js');
+  const H = require('../lib/kara-brief-html.js');
+  const brief = B.build({
+    properties: [], portfolio: null, thresholds: null,
+    fas: {
+      measurable: true, deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+      unresolvedCount: 0, excludedCount: 0, excludedProperties: {},
+      settlementsObserved: 0, properties: {},
+      caveats: F.caveats({ deadline: F.DEFAULT_DEADLINE }),
+    },
+  });
+  assert.ok(/no deposit on file are not detected yet/.test(B.render(brief, {})));
+  assert.ok(/no deposit on file are not detected yet/.test(H.renderHtml(brief, {})));
+});
+
+t('the 06:00 email actually asks for the section', () => {
+  // THE ONE THAT MATTERS, and it is the reason this section sat in preview
+  // for a week: the gather returns no `fas` unless it is asked, and the brief
+  // then prints NOT MEASURABLE. Turning it on is this one flag.
+  const server = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'server.js'), 'utf8');
+  const fn = server.slice(server.indexOf('async function karaBriefGather()'),
+    server.indexOf('async function karaBriefRender'));
+  assert.ok(/\n\s*fas: true,/.test(fn), 'the live brief still skips the FAS section');
+  // And it does NOT hand over a deadline: 5 business days lives in
+  // DEFAULT_DEADLINE, where it cannot revert to a longer one on a host that
+  // is missing a variable.
+  assert.ok(!/fasDeadline/.test(fn), 'the live brief overrides the confirmed deadline');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

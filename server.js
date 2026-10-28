@@ -19581,6 +19581,16 @@ async function karaBriefGather() {
     // leasingGoalPct is a percentage; the brief works in fractions, the same
     // way occPct does.
     goalPctFor: name => leasingGoalPct(name) / 100,
+    // THE FAS SECTION IS LIVE FROM 2026-10-29, approved by Arturo after
+    // reading the preview of the 28th. Until this line existed the gather
+    // returned no `fas` at all and the brief printed its NOT MEASURABLE note,
+    // which is why turning it on is one deliberate flag and not a default.
+    //
+    // The deadline is NOT passed: it is 5 business days in
+    // FAS.DEFAULT_DEADLINE, confirmed by Kara on 2026-10-28, and a rule kept
+    // in config here would revert silently to a longer one the first time
+    // this ran somewhere the variable was unset.
+    fas: true,
   });
 }
 
