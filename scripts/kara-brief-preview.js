@@ -68,19 +68,20 @@ async function selectAll(build, opts) {
     // that turning it on for the real email is a deliberate edit somebody
     // makes, not a line nobody noticed.
     fas: true,
-    // 15 calendar days, Kara's figure. Business days is the other basis she
-    // might mean and was not asked about, so it is a parameter rather than a
-    // constant: --deadline 15 --basis business renders the other reading
-    // without anybody editing code to find out what it looks like.
-    // --deadline / --basis, then the environment, then 15 calendar. The
-    // environment matters because the answer is one message from Kara away:
-    // FAS_DEADLINE_DAYS=5 FAS_DEADLINE_BASIS=business changes it in Render
-    // without a deploy, and without anybody editing a number in code.
+    // 5 BUSINESS DAYS, confirmed by Kara on 2026-10-28, and it now lives in
+    // FAS.DEFAULT_DEADLINE rather than in an environment variable: a decided
+    // rule kept in config is a rule that reverts the first time somebody runs
+    // this where the variable is not set.
+    //
+    // --deadline / --basis, then the environment, then the confirmed default.
+    // The overrides stay so a future change can be SEEN before it is made.
     fasDeadline: FAS.readDeadline(
       arg('deadline', process.env.FAS_DEADLINE_DAYS),
       arg('basis', process.env.FAS_DEADLINE_BASIS)),
-    // Until she answers, the section prints both candidates and which it used.
-    fasDeadlineUnconfirmed: process.env.FAS_DEADLINE_CONFIRMED !== 'yes',
+    // Opt OUT, not in. The rule is confirmed, so the section no longer prints
+    // the "not confirmed yet" caveat unless somebody deliberately says the
+    // deadline is open again — FAS_DEADLINE_CONFIRMED=no.
+    fasDeadlineUnconfirmed: process.env.FAS_DEADLINE_CONFIRMED === 'no',
     buildKpiReport: kpiBuild.buildKpiReport,
     readReportData: id => af.readReportData(id),
     // THE REAL GOALS, from the same table server.js uses. Passing () => null

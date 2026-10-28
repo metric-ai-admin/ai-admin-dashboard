@@ -31,10 +31,24 @@ const row = o => Object.assign({
 
 // ---- the clock ----------------------------------------------------------------
 
-t('calendar days are the default', () => {
-  assert.strictEqual(F.DEFAULT_DEADLINE.days, 15);
-  assert.strictEqual(F.DEFAULT_DEADLINE.basis, 'calendar');
+t('five business days is the default, because Kara confirmed it', () => {
+  // 2026-10-28. It lives in code rather than in an environment variable on
+  // purpose: a decided rule kept in config reverts the first time somebody
+  // runs this where the variable is not set, and reverts SILENTLY, to a
+  // deadline three times longer.
+  assert.strictEqual(F.DEFAULT_DEADLINE.days, 5);
+  assert.strictEqual(F.DEFAULT_DEADLINE.basis, 'business');
   assert.strictEqual(F.daysBetween('2026-10-01', '2026-10-16', 'calendar'), 15);
+});
+
+t('the refund deadline is recorded, and is NOT this one', () => {
+  // Both numbers are real and they measure different things: 5 business days
+  // for the statement, 15 calendar for the refund. The file used to call them
+  // two readings of one rule, which is what made "OVERDUE: 2" ambiguous.
+  assert.strictEqual(F.REFUND_DEADLINE.days, 15);
+  assert.strictEqual(F.REFUND_DEADLINE.basis, 'calendar');
+  assert.notStrictEqual(F.REFUND_DEADLINE.days, F.DEFAULT_DEADLINE.days);
+  assert.match(F.REFUND_DEADLINE.source, /refund/i);
 });
 
 t('business days skip the weekend', () => {
@@ -46,13 +60,36 @@ t('business days skip the weekend', () => {
 });
 
 t('exactly on the deadline is still in time', () => {
-  // 15 days is the deadline, so day 15 is not late. An off-by-one here is a
-  // property called out on a day it had not missed anything.
-  const c = F.classify(row({ move_out: '2026-10-01' }), '2026-10-16');
+  // Day N is not late; day N+1 is. An off-by-one here is a property called
+  // out on a day it had not missed anything.
+  //
+  // THE CLOCK IS PASSED IN, not left to the default. These dates were picked
+  // for calendar arithmetic, and reading the default would make this test
+  // about whatever the default happens to be rather than about the boundary.
+  const CAL = { days: 15, basis: 'calendar' };
+  const c = F.classify(row({ move_out: '2026-10-01' }), '2026-10-16', CAL);
   assert.strictEqual(c.days, 15);
   assert.strictEqual(c.bucket, 'withinWindow');
-  const d = F.classify(row({ move_out: '2026-10-01' }), '2026-10-17');
+  const d = F.classify(row({ move_out: '2026-10-01' }), '2026-10-17', CAL);
   assert.strictEqual(d.bucket, 'overdue');
+});
+
+t('the boundary holds on the clock Kara actually chose', () => {
+  // 5 business days from Thursday 2026-10-01: Fri 2, Mon 5, Tue 6, Wed 7,
+  // Thu 8. So Thursday the 8th is day 5 and still in time, and Friday the
+  // 9th is day 6 and late — a weekend sits inside the window, which is the
+  // whole reason the basis matters.
+  const c = F.classify(row({ move_out: '2026-10-01' }), '2026-10-08');
+  assert.strictEqual(c.days, 5);
+  assert.strictEqual(c.bucket, 'withinWindow');
+  const d = F.classify(row({ move_out: '2026-10-01' }), '2026-10-09');
+  assert.strictEqual(d.days, 6);
+  assert.strictEqual(d.bucket, 'overdue');
+  // And the same move-out is comfortably inside the 15 calendar refund clock
+  // on that day. Two deadlines, not two readings of one.
+  assert.strictEqual(
+    F.classify(row({ move_out: '2026-10-01' }), '2026-10-09', F.REFUND_DEADLINE).bucket,
+    'withinWindow');
 });
 
 // ---- which deadline Kara means --------------------------------------------------
@@ -75,7 +112,7 @@ t('both candidates are written down, with where each came from', () => {
   assert.strictEqual(F.DEADLINE_CANDIDATES.length, 2);
   const five = F.DEADLINE_CANDIDATES.find(c => c.days === 5);
   assert.strictEqual(five.basis, 'business');
-  assert.match(five.source, /2026-10-09/);
+  assert.match(five.source, /confirmed 2026-10-28/);
   const fifteen = F.DEADLINE_CANDIDATES.find(c => c.days === 15);
   assert.strictEqual(fifteen.basis, 'calendar');
   assert.match(fifteen.source, /2026-10-14/);
@@ -172,17 +209,24 @@ t('a settlement is a bracket, never one date', () => {
 t('days to settlement are measured to the EARLIER end', () => {
   // So a settlement is never reported as later than it might have been — the
   // direction that would call somebody late who was not.
+  // Calendar clock, passed in: the 14 below is a calendar count.
   const c = F.classify(row({
     move_out: '2026-10-20', last_seen_on: '2026-11-03', gone_first_seen_on: '2026-11-06',
-  }), '2026-11-10');
+  }), '2026-11-10', { days: 15, basis: 'calendar' });
   assert.strictEqual(c.days, 14);
   assert.strictEqual(c.bucket, 'settledInTime');
+  // On the deadline Kara chose, the SAME settlement is late — 10 business
+  // days against a window of 5. The bucket follows the clock, as it must.
+  const live = F.classify(row({
+    move_out: '2026-10-20', last_seen_on: '2026-11-03', gone_first_seen_on: '2026-11-06',
+  }), '2026-11-10');
+  assert.strictEqual(live.bucket, 'settledLate');
 });
 
 t('a settlement after the deadline is its own bucket', () => {
   const c = F.classify(row({
     move_out: '2026-10-01', last_seen_on: '2026-10-30', gone_first_seen_on: '2026-10-31',
-  }), '2026-11-10');
+  }), '2026-11-10', { days: 15, basis: 'calendar' });
   assert.strictEqual(c.bucket, 'settledLate');
   assert.strictEqual(c.days, 29);
 });
@@ -234,7 +278,8 @@ t('every row lands in exactly one bucket', () => {
     row({ occupancy_id: '3', move_out: '2027-01-01' }),                      // future
     row({ occupancy_id: '4', move_out: '' }),                                // no move-out
     row({ occupancy_id: '5', move_out: '2026-09-01', amount: '0' }),         // no deposit
-    row({ occupancy_id: '6', move_out: '2026-10-01', last_seen_on: '2026-10-10', gone_first_seen_on: '2026-10-11' }),
+    // Thu 10-01 to Mon 10-05 is 2 business days, inside the 5 Kara chose.
+    row({ occupancy_id: '6', move_out: '2026-10-01', last_seen_on: '2026-10-05', gone_first_seen_on: '2026-10-06' }),
   ];
   const r = F.byProperty(rows, '2026-10-22');
   const b = r.properties['Ascent at Northgate'];
@@ -256,7 +301,15 @@ t('overdue units are named, worst first', () => {
   ], '2026-10-22');
   const b = r.properties['Ascent at Northgate'];
   assert.deepStrictEqual(b.overdueUnits.map(u => u.unit), ['108', '311']);
-  assert.strictEqual(b.overdueUnits[0].days, 23);
+  // BUSINESS days, on the default clock: 2026-09-29 to 2026-10-22 is 23
+  // calendar days and 17 working ones. The order is what this test is for,
+  // and it does not change with the basis — but the number printed beside
+  // the unit does, and Kara reads that number.
+  assert.strictEqual(b.overdueUnits[0].days, 17);
+  assert.strictEqual(
+    F.byProperty([row({ occupancy_id: '1', unit: '108', move_out: '2026-09-29' })],
+      '2026-10-22', { deadline: { days: 15, basis: 'calendar' } })
+      .properties['Ascent at Northgate'].overdueUnits[0].days, 23);
 });
 
 // ---- the guard ---------------------------------------------------------------------
@@ -626,6 +679,76 @@ t('the preview would no longer report a disagreement', () => {
     assert.strictEqual(inText, inHtml,
       'shape ' + i + ': text ' + inText + ' html ' + inHtml + ' — THEY DISAGREE');
   });
+});
+
+// ---- Kara's rules, confirmed 2026-10-28 ------------------------------------
+
+t('a move-out with no deposit stays in the alert, with its age', () => {
+  // HER RULE, IN HER WORDS: "no deposit — FAS still required", the charges go
+  // to collections. The old line read "no deposit on file", which sounds like
+  // a row with nothing to do — the opposite of what she asked for.
+  const B = require('../lib/kara-brief.js');
+  const brief = B.build({
+    properties: [], portfolio: null, thresholds: null,
+    fas: {
+      measurable: true, deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+      unresolvedCount: 0, caveats: [],
+      properties: {
+        'Ascent at Northgate': {
+          settledInTime: 0, settledLate: 0, withinWindow: 0, overdue: 0,
+          noDeposit: 2, future: 0, noMoveOut: 0,
+          overdueUnits: [], withinUnits: [],
+          noDepositUnits: [{ unit: '108', days: 9 }, { unit: '311', days: 2 }],
+        },
+      },
+    },
+  });
+  const text = B.render(brief, { testMode: true });
+  assert.ok(/no deposit — FAS still required: 2/.test(text), text.slice(0, 400));
+  // The units and HOW LONG. A move-out from last week and one from March are
+  // not the same job, which is why the overdue line carries the age too.
+  assert.ok(/108, 9 days/.test(text), 'the age is missing from the no-deposit line');
+  assert.ok(/311, 2 days/.test(text));
+  assert.ok(/charges go to collections/.test(text), 'the reason is not on the page');
+  // And it is not quietly folded into the overdue count, which would put a
+  // deadline figure on a clock this data cannot read.
+  assert.ok(!/OVERDUE/.test(text), 'a no-deposit move-out was counted as overdue');
+});
+
+t('both renderers word it the same', () => {
+  // They go to the same person. A difference between them is a question Kara
+  // has to ask somebody.
+  const B = require('../lib/kara-brief.js');
+  const H = require('../lib/kara-brief-html.js');
+  const input = {
+    properties: [], portfolio: null, thresholds: null,
+    fas: {
+      measurable: true, deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+      unresolvedCount: 0, caveats: [],
+      properties: {
+        'The Chateau': {
+          settledInTime: 0, settledLate: 0, withinWindow: 0, overdue: 0,
+          noDeposit: 1, future: 0, noMoveOut: 0,
+          overdueUnits: [], withinUnits: [], noDepositUnits: [{ unit: '12B', days: 4 }],
+        },
+      },
+    },
+  };
+  const brief = B.build(input);
+  assert.ok(/no deposit — FAS still required/.test(B.render(brief, { testMode: true })));
+  assert.ok(/no deposit — FAS still required/.test(H.renderHtml(brief, { testMode: true })),
+    'the HTML still says something else');
+});
+
+t('the confirmed caveat names the refund clock as a DIFFERENT rule', () => {
+  const c = F.caveats({ deadline: F.DEFAULT_DEADLINE, deadlineUnconfirmed: false });
+  assert.ok(c.some(l => /5 business days from move-out, confirmed by Kara/.test(l)));
+  assert.ok(c.some(l => /REFUND deadline and is not what this section measures/.test(l)));
+  // And it no longer asks for an answer it has.
+  assert.ok(!c.some(l => /NOT CONFIRMED YET/.test(l)),
+    'the section still says the deadline is open');
+  assert.ok(!c.some(l => /sort differently/.test(l)),
+    'the two deadlines are still offered as rival readings of one rule');
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
