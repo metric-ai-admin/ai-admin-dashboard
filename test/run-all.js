@@ -51,7 +51,13 @@ for (const f of files) {
 
 // Two summary styles are in use — "N passing" and "N passed, 0 failed" — so
 // both are read rather than silently counting one of them as zero.
+//
+// `^\s*` AND NOT `^`. Some suites indent their summary ("  58 passed, 0
+// failed") and some do not, and the anchored version counted every indented
+// one as ZERO. The headline sat at 2268 across three commits on 2026-10-28
+// while the suites really did grow — a total that cannot move is worse than
+// no total, because it reads as proof that nothing changed.
 const total = results.reduce((n, r) =>
-  n + (Number((r.tail.match(/^(\d+) pass(?:ing|ed)/) || [])[1]) || 0), 0);
+  n + (Number((r.tail.match(/^\s*(\d+) pass(?:ing|ed)/) || [])[1]) || 0), 0);
 console.log(`\n${files.length} suites, ${total} assertions, ${failed ? failed + ' FAILED' : 'all passing'}`);
 process.exit(failed ? 1 : 0);

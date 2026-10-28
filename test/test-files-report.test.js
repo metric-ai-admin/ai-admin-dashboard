@@ -86,5 +86,27 @@ t('a counting suite acts on its count', () => {
     'these count failures and never act on the count: ' + offenders.join(', '));
 });
 
+t('the total counts the indented suites too', () => {
+  // The same family of mistake as the two above: a number that cannot move
+  // reads as proof that nothing changed. run-all.js anchored its summary
+  // regex at ^, so every suite that indents its count was added as ZERO. The
+  // headline sat at 2268 across three commits on 2026-10-28 while the real
+  // figure was 3154 — a third of the assertions in this repo were invisible.
+  //
+  // The REGEX IS LIFTED OUT AND EXERCISED rather than the source text being
+  // matched: what matters is that both spellings parse, not how it is typed.
+  const src = fs.readFileSync(path.join(DIR, 'run-all.js'), 'utf8');
+  const m = src.match(/r\.tail\.match\((\/.+?\/)\)/);
+  assert.ok(m, 'the summary regex in run-all.js is gone or was rewritten');
+  const re = new RegExp(m[1].slice(1, -1));
+  const read = line => Number((String(line).match(re) || [])[1]) || 0;
+  assert.strictEqual(read('  58 passed, 0 failed'), 58, 'an indented count reads as zero');
+  assert.strictEqual(read('28 passing'), 28);
+  assert.strictEqual(read('\t7 passed, 0 failed'), 7, 'a tab-indented count reads as zero');
+  // Still anchored, though: a number loose in a line of output is not a total.
+  assert.strictEqual(read('ok  wo-columns.test.js  19 passing'), 0,
+    'the regex matches mid-line and will count the wrong number');
+});
+
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);
