@@ -9275,6 +9275,170 @@ app.post('/api/collections/probe-tenant-statuses', requireMetricAdmin, async (re
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
+// POST /api/collections/probe-directory-statuses — READ ONLY.
+//
+// Does tenant_directory accept a tenant_statuses filter, and what is it
+// answering for when nobody passes one?
+//
+// THE QUESTION. The Collections card looks up calls on the numbers
+// CM.numbersFor() can find, and for one delinquent account (The Chateau,
+// 2026-10-28) it finds none: no phone on the delinquency row and no row for
+// that resident in the tenant directory at all. The two reports are filtered
+// differently and only one of them says so:
+//
+//   delinquency_as_of  tenant_statuses: ['0','4']   Current + Notice, explicit
+//   tenant_directory   (nothing)                    whatever the default is
+//
+// If the directory's default scope is narrower than Current + Notice, a
+// resident on notice is on the delinquency report and absent from the
+// directory, and the card reports "no number on file" about somebody whose
+// number we never asked for.
+//
+// WHY A PROBE AND NOT A ONE-LINE FIX. This API answers a filter it does not
+// honour without ever erring, so a status nobody asks for comes back as zero
+// rows — indistinguishable from a status the account does not have. That
+// mistake sat in the repo for weeks about work-order statuses, and again
+// about deposits this month. A filtered pull is not evidence about what it
+// excludes, so this asks for everything and compares.
+//
+// WHAT IT MEASURES, and it is not row counts. A variant that returns two
+// hundred more rows and none of them the accounts we cannot serve is not a
+// fix. Every variant is scored on how many of TODAY'S gap accounts become
+// reachable under it.
+//
+// NOTHING PERSONAL LEAVES THIS ROUTE. Row counts, counts of rows carrying a
+// phone, column NAMES and property names — which are ours. No resident name,
+// unit, phone or birthdate, and the raw directory carries all of those.
+// Nothing is written: the registered report and its params are untouched.
+app.post('/api/collections/probe-directory-statuses', requireMetricAdmin, async (req, res) => {
+  const CM = require('./lib/call-match.js');
+  const TD = require('./lib/tenant-directory.js');
+  // 2.3s between AppFolio calls. The rate limiter is per process and the
+  // 7-per-15s budget belongs to the ACCOUNT, so a probe that shares no counter
+  // with the crons has to space itself: ~6.5 per 15s is safe to run in a
+  // business hour alongside whatever the dashboard is doing.
+  const SPACING_MS = 2300;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const clean = v => String(v == null ? '' : v).trim();
+
+  try {
+    // 1. THE ACCOUNTS THE CARD CANNOT SERVE, from the stores the card reads.
+    const RD = require('./appfolio-reports.js');
+    const rowsOfStore = async id => {
+      try { const d = await RD.readReportData(id); return (d && d.rows) || []; }
+      catch (e) { return []; }
+    };
+    const dqRows = await rowsOfStore('delinquency_as_of');
+    const storedDir = await rowsOfStore('tenant_directory');
+    const storedIndex = CM.indexDirectory(storedDir);
+    const isExternal = n => ['cedar and sage']
+      .some(f => String(n || '').toLowerCase().includes(f));
+
+    const gapAccounts = [];
+    let considered = 0;
+    dqRows.forEach(row => {
+      const shaped = collectionsTriggers.shapeAccount(row);
+      // `.phone` is built by buildDecisionQueue, not by shapeAccount, and
+      // CM.numbersFor reads it. Omitting this line makes every account look
+      // numberless — it is what made the first run of the sibling probe
+      // report a 100% gap.
+      const a = { ...shaped, phone: collectionsTriggers.primaryPhone(shaped.phones) };
+      if (EXCLUDED.propertyIsExcluded(a.property) || isExternal(a.property)) return;
+      considered++;
+      if (CM.normPhone(a.phone && a.phone.tel ? a.phone.tel : a.phone)) return;
+      if (CM.numbersFor(a, storedIndex).length) return;
+      gapAccounts.push(a);
+    });
+    const gapByProperty = {};
+    gapAccounts.forEach(a => {
+      const k = clean(a.property) || '(no property on row)';
+      gapByProperty[k] = (gapByProperty[k] || 0) + 1;
+    });
+
+    const scoreOf = rows => {
+      const index = CM.indexDirectory(rows);
+      const byProperty = {};
+      let found = 0;
+      gapAccounts.forEach(a => {
+        if (!CM.numbersFor(a, index).length) return;
+        found++;
+        const k = clean(a.property) || '(no property on row)';
+        byProperty[k] = (byProperty[k] || 0) + 1;
+      });
+      const byStatus = {};
+      rows.forEach(r => {
+        const st = clean(r.tenant_status || r['Tenant Status'] || r.status) || '(no status column)';
+        byStatus[st] = (byStatus[st] || 0) + 1;
+      });
+      return {
+        rows: rows.length,
+        rowsWithAPhone: rows.filter(r => TD.phonesOfRow(r).length).length,
+        byStatus,
+        gapAccountsReachable: found,
+        gapRecoveredByProperty: byProperty,
+      };
+    };
+
+    const variants = [
+      { name: '(baseline — exactly what the sync asks for today)', params: {} },
+      { name: 'tenant_statuses 0..12 (everything)',
+        params: { tenant_statuses: Array.from({ length: 13 }, (_, i) => String(i)) } },
+      { name: 'tenant_statuses 0,4 — Current + Notice, the candidate',
+        params: { tenant_statuses: ['0', '4'] } },
+      ...Array.from({ length: 13 }, (_, i) => ({
+        name: 'tenant_statuses ' + i + ' alone', params: { tenant_statuses: [String(i)] },
+      })),
+    ];
+
+    const out = [];
+    let baselineRows = null;
+    for (const v of variants) {
+      try {
+        const rows = await appfolioReportsFetch('/api/v2/reports/tenant_directory.json',
+          { property_visibility: 'active', paginate_results: false, ...v.params });
+        const score = scoreOf(rows || []);
+        if (baselineRows === null) baselineRows = score.rows;
+        out.push({
+          variant: v.name,
+          ...score,
+          // An unrecognised parameter is dropped in SILENCE, so "same count as
+          // the baseline" is the signature of a filter that did nothing. It is
+          // reported per variant rather than concluded once, because one code
+          // legitimately matching the whole population looks the same.
+          verdict: v.name.startsWith('(baseline') ? 'baseline'
+            : score.rows === baselineRows ? 'SAME COUNT AS BASELINE — filter may be ignored'
+              : 'HONOURED — row count differs from baseline',
+        });
+      } catch (e) {
+        out.push({ variant: v.name, error: e.message, verdict: 'REJECTED' });
+      }
+      await sleep(SPACING_MS);
+    }
+
+    // Every code returning one identical number is the parameter being
+    // accepted and ignored, which is a different answer from "rejected" and
+    // leads to the same place: widening the sync would change nothing.
+    const singles = out.filter(v => / \d+ alone$/.test(v.variant) && !v.error).map(v => v.rows);
+    const ignored = singles.length > 1 && new Set(singles).size === 1;
+
+    res.json({
+      ok: true, readOnly: true,
+      note: 'nothing written; the registered tenant_directory params are untouched',
+      spacingMs: SPACING_MS,
+      gap: {
+        delinquentAccountsConsidered: considered,
+        withNoNumberAnywhere: gapAccounts.length,
+        byProperty: gapByProperty,
+        note: gapAccounts.length ? null
+          : 'the gap is empty right now — the variants still answer whether the '
+            + 'parameter is accepted, but nothing can be proven about recovery',
+      },
+      everySingleCodeReturnedTheSameCount: ignored,
+      variants: out,
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // POST /api/leasing/probe-showings-window — READ ONLY. Which date-parameter
 // spelling, if any, the showings report honours.
 //
