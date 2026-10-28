@@ -13261,6 +13261,24 @@ function krRenderNotes() {
              + ' — they are the latest snapshot, not a reading taken that day.' : '.')
       + '</p>');
   }
+  // AND THE SAME FOR THE MONEY, which until now had no date anywhere on the
+  // page. delinquency_kpi is a CURRENT balance with no week dimension: it
+  // cannot be asked what was owed on a past Saturday. On 2026-10-28 that cost
+  // a reconciliation nine "differences" between a capture taken on the 26th
+  // and a feed pulled on the 28th — two readings of the same moving number.
+  //
+  // The wording is deliberately not "stale". A sync would not fix this; the
+  // figure for that week does not exist.
+  const df = krReport.delinquencyFreshness;
+  if (df && df.as_of) {
+    const off = df.matchesWeek === false;
+    bits.push('<p class="' + (off ? 'kr-flag' : 'muted') + ' small">Delinquency is as of <b>'
+      + kcEsc(df.as_of) + '</b>'
+      + (off ? ' — a balance read that day, not the week ending ' + kcEsc(krReport.week_ending)
+             + '. This feed reports what is owed when it is pulled and keeps no history, '
+             + 'so there is no figure for a past week to show instead.' : '.')
+      + '</p>');
+  }
   // THE TWO GOAL TABLES, WHERE THEY DISAGREE. The row above shows the
   // workbook's goal because that is the number on the report Katie sends; the
   // dashboard keeps its own, and that is what decides whether a property shows

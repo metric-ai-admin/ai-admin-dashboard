@@ -159,6 +159,56 @@ t('a missing table names its migration instead of throwing', () => {
   assert.ok(/074_unit_vacancy_history\.sql/.test(UV));
 });
 
+console.log('\nthe source_as_of stamp');
+
+const EXCL = require('../lib/excluded-properties.js');
+
+// These CALL the rule. The stamp is the field whose only job is to say whether
+// a history row can be trusted, and for every snapshot ever written it has
+// been wrong — an assertion that the source mentions liveRows would not have
+// caught that.
+t('a frozen excluded property cannot age the stamp', () => {
+  // The Sidney left the portfolio in September; leasing_occupancy never
+  // deletes, so its row sits at 2026-09-16 for ever. Before this fix every
+  // snapshot was stamped with that date and looked 38 days stale.
+  const rows = [
+    { property_name: 'The Sidney', as_of: '2026-09-16' },
+    { property_name: 'Ascent at Northgate', as_of: '2026-10-25' },
+    { property_name: 'Hyde Park Square', as_of: '2026-10-25' },
+  ];
+  assert.strictEqual(EXCL.sourceAsOf(rows), '2026-10-25');
+});
+
+t('a genuinely stale ARCHIVED property still ages the stamp', () => {
+  // The other half: the field has to keep working. A snapshot is only as
+  // current as its stalest real property.
+  const rows = [
+    { property_name: 'The Sidney', as_of: '2026-09-16' },
+    { property_name: 'Ascent at Northgate', as_of: '2026-10-02' },
+    { property_name: 'Hyde Park Square', as_of: '2026-10-25' },
+  ];
+  assert.strictEqual(EXCL.sourceAsOf(rows), '2026-10-02');
+});
+
+t('no date at all is null, not a date', () => {
+  assert.strictEqual(EXCL.sourceAsOf([{ property_name: 'Ascent at Northgate', as_of: null }]), null);
+  assert.strictEqual(EXCL.sourceAsOf([]), null);
+  assert.strictEqual(EXCL.sourceAsOf(null), null);
+  // Only excluded rows: still null. "We do not know" is not 2026-09-16.
+  assert.strictEqual(EXCL.sourceAsOf([{ property_name: 'The Sidney', as_of: '2026-09-16' }]), null);
+});
+
+t('the writer uses that rule rather than its own sort', () => {
+  assert.ok(/EXCLUDED\.sourceAsOf\(/.test(W), 'the stamp is computed inline again');
+  assert.ok(!/rows\.map\(r => String\(r\.as_of/.test(W), 'the old whole-table sort is back');
+});
+
+t('the stamp and the archived rows come from one list', () => {
+  // Two filters spelled the same way is how they drift apart again.
+  assert.ok(/const archived = EXCLUDED\.liveRows\(rows\)/.test(W));
+  assert.ok(/const payload = archived/.test(W), 'the payload re-filters separately');
+});
+
 console.log('\nnothing user-facing changed');
 t('no route, no tab, no UI reads any of this', () => {
   const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');

@@ -205,7 +205,10 @@ t('the weekly occupancy snapshot stops archiving excluded properties', () => {
   const fn = server.slice(server.indexOf('const dropped = rows.filter'),
     server.indexOf('let { error: wErr }'));
   assert.ok(fn.length > 0, 'the snapshot block was found');
-  assert.match(fn, /!propertyIsExcluded\(r\.property_name\)/);
+  // EITHER SPELLING. The inline filter became EXCLUDED.liveRows(rows), the
+  // same rule in a place a test can call; pinning the old text would have
+  // failed the refactor without a single behaviour changing.
+  assert.match(fn, /!propertyIsExcluded\(r\.property_name\)|EXCLUDED\.liveRows\(|const payload = archived/);
   assert.match(fn, /not archived \(excluded properties\)/,
     'and it says which ones it dropped rather than dropping them quietly');
 });

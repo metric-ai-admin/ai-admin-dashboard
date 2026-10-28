@@ -121,7 +121,10 @@ t('both snapshots stop archiving excluded properties', () => {
   // vacancy one both.
   const occ = server.slice(server.indexOf('EXCLUDED PROPERTIES ARE NOT ARCHIVED'),
     server.indexOf('let { error: wErr }'));
-  assert.match(occ, /!propertyIsExcluded\(r\.property_name\)/);
+  // EITHER SPELLING. The inline filter became EXCLUDED.liveRows(rows), the
+  // same rule in a place a test can call; pinning the old text would have
+  // failed the refactor without a single behaviour changing.
+  assert.match(occ, /!propertyIsExcluded\(r\.property_name\)|EXCLUDED\.liveRows\(|const payload = archived/);
 
   const uv = server.slice(server.indexOf('async function captureUnitVacancySnapshot'));
   const body = uv.slice(0, uv.indexOf('.upsert('));

@@ -318,7 +318,11 @@ t('the note follows the same scoping as every other row', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const code = src.slice(src.indexOf('// WHOSE ROWS BELONG IN THIS FILE.'),
     src.indexOf('function kpiPdf(')) + '\nreturn { kpiSummarySheet };';
-  const M = new Function('XLSX', 'kpiReport', 'WEEK', 'report', code)(XL, R, WEEK, report);
+  // kpiBuild joined the list when the Summary sheet started printing the
+  // as-of footer; the harness names every dependency so a new one fails
+  // loudly instead of dropping a line.
+  const M = new Function('XLSX', 'kpiReport', 'WEEK', 'kpiBuild', 'report', code)(
+    XL, R, WEEK, require('../lib/kpi-build.js'), report);
   const text = cols => XL.utils.sheet_to_json(M.kpiSummarySheet(report, cols),
     { header: 1, raw: true, defval: '' }).map(r => r.join(' ')).join('\n');
 

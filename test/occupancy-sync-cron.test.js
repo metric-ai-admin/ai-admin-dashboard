@@ -23,7 +23,10 @@ const t = (name, fn) => {
 console.log('occupancy sync cron');
 
 const AT = server.indexOf("cron.schedule('0 5 * * *'");
-const CRON = AT < 0 ? '' : server.slice(AT, AT + 700);
+// WIDE ENOUGH FOR THE WHOLE BLOCK. It was 700 characters, which stopped
+// reaching the timezone argument as soon as the cron started recording its
+// state — a window that silently shrinks past the thing it is checking.
+const CRON = AT < 0 ? '' : server.slice(AT, server.indexOf('async function writeOccupancySyncState'));
 
 t('the occupancy sync is on a schedule at all', () => {
   assert.ok(AT >= 0, 'there is no 05:00 cron');
@@ -87,8 +90,18 @@ t('source_as_of is written to the row, not only returned', () => {
 t('the stalest property wins when the sources disagree', () => {
   // A snapshot is only as current as its oldest row; taking the newest would
   // describe it more kindly than it deserves.
-  assert.ok(/sourceAsOf\.length \? sourceAsOf\[0\] : null/.test(W),
-    'sourceAsOf is sorted ascending, so [0] is the oldest');
+  //
+  // CALLED, not matched. This used to pin the literal `sourceAsOf[0]` in
+  // server.js, which said nothing about whose rows were in the sort — and the
+  // answer was "all of them, including properties Metric stopped managing",
+  // so every snapshot ever written was stamped 2026-09-16. The rule now lives
+  // in lib/excluded-properties.js where a test can run it.
+  const EXCL = require('../lib/excluded-properties.js');
+  assert.strictEqual(EXCL.sourceAsOf([
+    { property_name: 'Ascent at Northgate', as_of: '2026-10-25' },
+    { property_name: 'Hyde Park Square', as_of: '2026-10-02' },
+  ]), '2026-10-02');
+  assert.ok(/EXCLUDED\.sourceAsOf\(/.test(W), 'the writer computes the stamp its own way again');
 });
 
 t('a missing migration costs the description, not the week', () => {

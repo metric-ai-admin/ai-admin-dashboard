@@ -5416,6 +5416,10 @@ async function collectionsVoipUsers(db) {
 // list that will disagree with itself. Same reason lib/leasing-goals.js came
 // out of here.
 const EXCLUDED = require('./lib/excluded-properties.js');
+// Did a scheduled sync miss its slot, or has it not come round yet? Shared by
+// the leasing and occupancy syncs so they cannot disagree about what "missed"
+// means.
+const SYNC_SLOT = require('./lib/sync-slot.js');
 const METRIC_EXCLUDED_PROPERTY_FRAGMENTS = EXCLUDED.METRIC_EXCLUDED_PROPERTY_FRAGMENTS;
 const propertyIsExcluded = EXCLUDED.propertyIsExcluded;
 
@@ -12186,8 +12190,17 @@ function kpiSummarySheet(report, columns) {
     ['Metric Property Management — Executive KPI Dashboard'],
     ['Leasing Week:', report.range.from + ' .. ' + report.range.to],
     ['Generated:', WEEK.todayYMD() + ' — Metric AI Admin Dashboard'],
-    [],
   ];
+  // WHAT DAY THE FIGURES DESCRIBE, in the report's own words — the same
+  // sentences the PDF prints, from lib/kpi-build.js, so the two exports cannot
+  // disagree about whether a number is current.
+  //
+  // AT THE TOP, NOT THE BOTTOM, which is where the PDF puts it. A page has an
+  // end a reader arrives at; a sheet of sixty rows has a bottom nobody
+  // scrolls to, and a date that is only true if you scroll is the same as no
+  // date. "Generated" is already here and is the line this qualifies.
+  kpiBuild.asOfLines(report).forEach(line => aoa.push(['', line]));
+  aoa.push([]);
   const colOf = name => (name === 'Portfolio' ? report.portfolio : report.properties[name]);
   kpiReport.SECTIONS.forEach((sec, si) => {
     aoa.push([sec.title].concat(columns.map(() => '')));
@@ -18915,26 +18928,33 @@ async function eodGather() {
       // Process start, not a 24h window: a service deployed at 09:00 has not
       // missed anything, and one that has been up since yesterday and still
       // wrote nothing has. Both are "never ran" and they mean opposite things.
-      const startedAt = Date.now() - process.uptime() * 1000;
-      const lastSlot = (() => {
-        const nowCT = new Date(new Date().toLocaleString('en-US', { timeZone: LYNDSAY_TIMEZONE }));
-        const slot = new Date(nowCT); slot.setHours(5, 30, 0, 0);
-        if (slot > nowCT) slot.setDate(slot.getDate() - 1);   // today's has not arrived
-        // Back to a real instant: nowCT is wall-clock Central expressed as if
-        // it were local, so the difference from now() is the offset to undo.
-        return new Date(slot.getTime() + (Date.now() - nowCT.getTime()));
-      })();
-      const nextSlotCT = new Date(lastSlot.getTime() + 24 * 3600 * 1000);
-      S.leasingSync = {
-        missedItsSlot: startedAt < lastSlot.getTime(),
-        nextRunLabel: nextSlotCT.toLocaleDateString('en-US',
-          { timeZone: LYNDSAY_TIMEZONE, month: 'short', day: 'numeric' }),
-        error: startedAt < lastSlot.getTime()
-          ? 'The 05:30 run did not happen and wrote no state.'
-          : null,
-      };
+      // MOVED TO lib/sync-slot.js so the occupancy sync below asks the same
+      // question the same way. It used to be twenty lines inlined here, and
+      // the obvious way to give occupancy an alert was to copy them.
+      S.leasingSync = SYNC_SLOT.missedSlotState({
+        startedAt: Date.now() - process.uptime() * 1000,
+        hour: 5, minute: 30, timezone: LYNDSAY_TIMEZONE,
+      });
     }
   } catch (e) { S.leasingSync = { error: e.message }; }
+
+  // The 05:00 occupancy sync, read the same way.
+  //
+  // IT MATTERS MORE THAN ITS SIZE SUGGESTS. The Sunday snapshot copies
+  // leasing_occupancy into history at 05:30, so a silent failure here writes a
+  // week of wrong occupancy that is then kept for ever — the weeks of
+  // 2026-10-03 and 2026-10-10 are both 10/02's figures for exactly that
+  // reason, and no alert said so at the time.
+  try {
+    const st = await readJSON(OCCUPANCY_SYNC_STATE, null);
+    if (st) S.occupancySync = st;
+    else {
+      S.occupancySync = SYNC_SLOT.missedSlotState({
+        startedAt: Date.now() - process.uptime() * 1000,
+        hour: 5, minute: 0, timezone: LYNDSAY_TIMEZONE,
+      });
+    }
+  } catch (e) { S.occupancySync = { error: e.message }; }
 
   // 5 — MAINTENANCE (AppFolio work orders + labor)
   try {
@@ -19252,6 +19272,39 @@ function eodRenderHtml(data) {
       lines.push(eodErr(`${ls.deleted.length} lead(s) DELETED from leasing_leads since yesterday `
         + `(${eodEsc(ls.deleted.map(d => d.id).slice(0, 3).join(', '))}${ls.deleted.length > 3 ? '…' : ''}) — `
         + 'nothing in this code deletes leads. Check Supabase.'));
+    }
+
+    // 4 — THE 05:00 OCCUPANCY SYNC, in this section rather than its own.
+    //
+    // It is the same kind of fact and it earns attention on the same terms:
+    // only when it breaks. A section of its own would say "ran fine" every
+    // day for ever, and one more block that is always green is one more block
+    // nobody reads — which is how the thing it is watching stayed broken.
+    //
+    // It is worth watching at all because of what runs thirty minutes later:
+    // the Sunday snapshot copies leasing_occupancy into history at 05:30, so a
+    // silent failure here does not just leave today stale, it writes a wrong
+    // week and keeps it. The weeks of 2026-10-03 and 2026-10-10 are both
+    // 10/02's figures for exactly that reason.
+    const os = S.occupancySync;
+    if (os) {
+      const osStale = os.at && (Date.now() - Date.parse(os.at)) > 36 * 3600 * 1000;
+      // Same three-way reading as the leasing sync above, and the same reason:
+      // "has not run yet" in red sends an EOD that looks broken on the day the
+      // alert ships.
+      if (os.error) {
+        lines.push(eodErr('Occupancy (05:00): ' + eodEsc(os.error)));
+      } else if (!os.at && !os.missedItsSlot) {
+        lines.push(`<span style="color:${EOD.muted}">Occupancy (05:00): first run scheduled `
+          + `${eodEsc(os.nextRunLabel || 'tomorrow')} 05:00 CT.</span>`);
+      } else if (osStale) {
+        lines.push(eodErr('Occupancy (05:00): last ran '
+          + eodEsc(String(os.at).slice(0, 16).replace('T', ' '))
+          + ' — over a day ago. Sunday\'s occupancy history will be written from stale figures.'));
+      } else if (os.at) {
+        lines.push(`<span style="color:${EOD.muted}">Occupancy (05:00): `
+          + `${os.synced == null ? '?' : os.synced} properties.</span>`);
+      }
     }
 
     P.push(eodSectionHtml('🔄', 'Leasing sync (05:30)', lines.join('<br>'), ''));
@@ -20411,6 +20464,14 @@ app.post('/api/reports/eod-email/send', requireAuth, requireRole('admin'), async
 const LEASING_SYNC_WINDOW_DAYS = 7;
 // Where the last run is recorded, so the EOD can report it.
 const LEASING_SYNC_STATE = path.join(DATA_DIR, 'leasing_sync_state.json');
+// The same, for the 05:00 occupancy sync.
+//
+// IT HAD NO STATE AND NO ALERT — only a logLine on failure, which is a line
+// nobody reads in a file nobody opens. A feed that stops is exactly the
+// failure that leaves no error anywhere to find, and occupancy is the feed the
+// Sunday snapshot copies into history thirty minutes later: a silent failure
+// at 05:00 writes a wrong week at 05:30 and keeps it for ever.
+const OCCUPANCY_SYNC_STATE = path.join(DATA_DIR, 'occupancy_sync_state.json');
 
 // A daily record of WHICH leads are in each week, taken after the sync.
 //
@@ -20550,16 +20611,28 @@ async function captureOccupancySnapshot(asOf) {
   // What the source says about itself. If its own as_of is not the Saturday
   // being filed, the numbers are from another day and the row would be a
   // quiet lie — recorded either way, so the discrepancy is visible later.
-  const sourceAsOf = [...new Set(rows.map(r => String(r.as_of || '').slice(0, 10)).filter(Boolean))].sort();
+  //
+  // ONLY THE PROPERTIES BEING ARCHIVED, which is the whole correctness of this
+  // field. It used to read the oldest as_of across the WHOLE table, and the
+  // table keeps a row for ever for every property that ever left the portfolio
+  // — the sync upserts and never deletes. The Sidney went into cession in
+  // September and its row is frozen at 2026-09-16, so every snapshot since has
+  // been stamped 2026-09-16 no matter how fresh the data was. On 2026-10-28
+  // that sent a reconciliation looking for a 38-day-old occupancy feed that
+  // had in fact run every morning.
+  //
+  // kpi-build.js's occupancyFreshness already learned this and filters the
+  // same list; this is the same bug in the writer, where it is worse, because
+  // a wrong number on a screen is corrected by the next render and a wrong
+  // number in history is there for good.
+  //
+  // THE RULE IS IN THE LIB, not a .sort()[0] here, so a test can call it.
+  const archived = EXCLUDED.liveRows(rows).filter(r => r.property_name);
   // STORED ON THE ROW, not only returned. This used to travel out in the
   // function's result and into a log line, which is no use a week later when
   // somebody is comparing two snapshots and wants to know whether the
   // comparison means anything. The row has to carry it (086).
-  //
-  // The oldest when the sources disagree: a snapshot is only as current as its
-  // stalest property, and taking the newest would describe the row more
-  // kindly than it deserves.
-  const rowSourceAsOf = sourceAsOf.length ? sourceAsOf[0] : null;
+  const rowSourceAsOf = EXCLUDED.sourceAsOf(archived);
 
   const now = new Date().toISOString();
   // EXCLUDED PROPERTIES ARE NOT ARCHIVED. Every leasing VIEW filters this list
@@ -20578,8 +20651,9 @@ async function captureOccupancySnapshot(asOf) {
     logLine('[occ-snapshot] not archived (excluded properties): '
       + dropped.map(r => r.property_name).join(', '));
   }
-  const payload = rows
-    .filter(r => r.property_name && !propertyIsExcluded(r.property_name))
+  // The SAME list the stamp was computed from. Two filters spelled the same
+  // way is how the stamp and the rows drift apart again.
+  const payload = archived
     .map(r => {
       const units = Number(r.total_units) || 0;
       const occ = Number(r.occupied_units) || 0;
@@ -20789,9 +20863,31 @@ app.post('/api/leasing/sync/run-now', requireMetricAccess, async (req, res) => {
 cron.schedule('0 5 * * *', () => {
   if (!CRM_CONFIGURED) return;
   callOwnRoute('/api/leasing/sync/occupancy', {})
-    .then(r => logLine(`[occupancy-sync] ${r?.synced ?? '?'} properties`))
-    .catch(err => logLine(`[occupancy-sync] FAILED: ${err.message}`));
+    .then(async r => {
+      logLine(`[occupancy-sync] ${r?.synced ?? '?'} properties`);
+      // RECORDED ON SUCCESS TOO, not only on failure. A state file that only
+      // appears when something breaks cannot tell "ran fine" from "never
+      // ran" — and those are the two cases the EOD has to separate.
+      await writeOccupancySyncState({
+        at: new Date().toISOString(), error: null,
+        synced: r?.synced ?? null, properties: r?.properties ?? null,
+      });
+    })
+    .catch(async err => {
+      logLine(`[occupancy-sync] FAILED: ${err.message}`);
+      await writeOccupancySyncState({
+        at: new Date().toISOString(), error: err.message,
+        synced: null, properties: null,
+      });
+    });
 }, { timezone: LYNDSAY_TIMEZONE });
+
+// Writing the state must never be what breaks the sync. The log line above
+// already carries the outcome; this is the copy the EOD reads.
+async function writeOccupancySyncState(state) {
+  try { await writeJSON(OCCUPANCY_SYNC_STATE, state); }
+  catch (e) { logLine(`[occupancy-sync] could not record state: ${e.message}`); }
+}
 
 // THE REST OF THE EARLY-MORNING FEEDS, FIVE MINUTES APART.
 //

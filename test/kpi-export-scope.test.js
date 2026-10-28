@@ -77,7 +77,11 @@ function makeReport() {
 }
 
 const report = makeReport();
-const M = new Function('XLSX', 'kpiReport', 'WEEK', 'report', code)(XLSX, R, WEEK, report);
+// kpiBuild joined the list when the Summary sheet started printing the as-of
+// footer. The harness names every dependency on purpose: a new one shows up
+// here as a missing binding rather than as a silently absent line.
+const M = new Function('XLSX', 'kpiReport', 'WEEK', 'kpiBuild', 'report', code)(
+  XLSX, R, WEEK, require('../lib/kpi-build.js'), report);
 const sheetText = cols => XLSX.utils.sheet_to_json(M.kpiSummarySheet(report, cols),
   { header: 1, raw: true, defval: '' }).map(r => r.join(' ')).join('\n');
 const sheetRows = cols => XLSX.utils.sheet_to_json(M.kpiSummarySheet(report, cols),
