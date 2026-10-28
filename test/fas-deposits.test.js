@@ -25,7 +25,11 @@ const row = o => Object.assign({
   occupancy_id: 'o1', unit: '101', property: 'Ascent at Northgate',
   property_source: 'occupancy_custom_fields', tenant_status: 'Past',
   move_in: '2024-01-01', move_out: '2026-10-01', amount: '750.00',
-  first_seen_on: '2026-10-22', last_seen_on: '2026-10-22', in_feed: true,
+  // FIRST SEEN WHILE THE TENANCY WAS STILL RUNNING, which is the ordinary
+  // case: a deposit is held from the move-in, so the row is in the table long
+  // before the move-out. A row first seen AFTER its deadline had already
+  // passed is the backlog case and sets this explicitly.
+  first_seen_on: '2024-01-02', last_seen_on: '2026-10-22', in_feed: true,
   gone_first_seen_on: null,
 }, o);
 
@@ -749,6 +753,205 @@ t('the confirmed caveat names the refund clock as a DIFFERENT rule', () => {
     'the section still says the deadline is open');
   assert.ok(!c.some(l => /sort differently/.test(l)),
     'the two deadlines are still offered as rival readings of one rule');
+});
+
+// ---- the backlog, and the properties we do not manage ----------------------
+
+t('a row already late the first time we saw it is backlog, not daily overdue', () => {
+  // The 36 that appeared on 2026-10-28 have move-outs going back to March and
+  // became visible only when the sync started asking for Past and Evict. In
+  // the daily list they read as statements missed yesterday.
+  const c = F.classify(row({
+    move_out: '2026-06-23', first_seen_on: '2026-10-28',
+  }), '2026-10-28');
+  assert.strictEqual(c.bucket, 'overdueBacklog');
+  assert.strictEqual(c.firstSeen, '2026-10-28');
+  assert.ok(c.daysWhenFirstSeen > 5, 'it was not actually late when first seen');
+});
+
+t('a LATER backfill is backlog too, on any date', () => {
+  // THE RULE IS A QUESTION, NOT A DATE. Pinning it to 2026-10-28 would be
+  // right for one morning and then silently stop meaning anything: the next
+  // time somebody widens a filter, months-old move-outs would pour into the
+  // daily list as if they had just been missed.
+  const c = F.classify(row({
+    move_out: '2026-09-01', first_seen_on: '2026-11-15',
+  }), '2026-11-20');
+  assert.strictEqual(c.bucket, 'overdueBacklog');
+  assert.strictEqual(c.firstSeen, '2026-11-15');
+});
+
+t('a move-out we WATCHED cross the line stays in the daily list', () => {
+  // THE ONE THAT MATTERS. The test is "was it already late when it arrived",
+  // not "did it arrive on the day the filter changed" — a date-based rule
+  // would be right for one morning and then quietly stop meaning anything,
+  // and everything after it would be filed as backlog forever.
+  const c = F.classify(row({
+    move_in: '2024-01-01', move_out: '2026-10-01', first_seen_on: '2024-01-02',
+  }), '2026-10-28');
+  assert.strictEqual(c.bucket, 'overdue');
+});
+
+t('a row first seen inside its window is daily overdue when it ages out', () => {
+  // Seen on day 2, late by day 9: we had the chance to warn, so this is ours.
+  const c = F.classify(row({
+    move_out: '2026-10-19', first_seen_on: '2026-10-21',
+  }), '2026-10-28');
+  assert.strictEqual(c.bucket, 'overdue');
+  assert.ok(c.daysWhenFirstSeen <= 5);
+});
+
+t('a row with no first_seen_on is never guessed into the backlog', () => {
+  // Absent is not "long ago". Calling it backlog would quietly move a real
+  // miss out of the list Kara acts on.
+  const c = F.classify(row({ move_out: '2026-06-23', first_seen_on: null }), '2026-10-28');
+  assert.strictEqual(c.bucket, 'overdue');
+  assert.strictEqual(c.daysWhenFirstSeen, null);
+});
+
+t('backlog and daily overdue are counted apart, and every row still lands once', () => {
+  const r = F.byProperty([
+    row({ occupancy_id: '1', unit: '101', move_out: '2026-10-19', first_seen_on: '2026-10-21' }),
+    row({ occupancy_id: '2', unit: '3-116', move_out: '2026-06-23', first_seen_on: '2026-10-28' }),
+    row({ occupancy_id: '3', unit: '3-216', move_out: '2026-06-23', first_seen_on: '2026-10-28' }),
+  ], '2026-10-28');
+  const b = r.properties['Ascent at Northgate'];
+  assert.strictEqual(b.overdue, 1);
+  assert.strictEqual(b.overdueBacklog, 2);
+  assert.deepStrictEqual(b.overdueUnits.map(u => u.unit), ['101']);
+  assert.deepStrictEqual(b.backlogUnits.map(u => u.unit).sort(), ['3-116', '3-216']);
+  const total = b.settledInTime + b.settledLate + b.withinWindow + b.overdue
+    + b.overdueBacklog + b.noDeposit + b.future + b.noMoveOut;
+  assert.strictEqual(total, 3, JSON.stringify(b));
+});
+
+t('the deposit feed drops properties Metric does not manage, and says it did', () => {
+  // Brazos Lofts (22 deposits, one of them overdue) and Lily Pad Lane were
+  // being put in front of Kara as work. Both fragments have been on the
+  // excluded list all along; this section never asked.
+  const r = F.byProperty([
+    row({ occupancy_id: '1' }),
+    row({ occupancy_id: '2', property: 'Brazos Lofts' }),
+    row({ occupancy_id: '3', property: 'Lily Pad Lane' }),
+  ], '2026-10-28');
+  assert.deepStrictEqual(Object.keys(r.properties), ['Ascent at Northgate']);
+  assert.strictEqual(r.excludedCount, 2);
+  assert.deepStrictEqual(Object.keys(r.excludedProperties).sort(),
+    ['Brazos Lofts', 'Lily Pad Lane']);
+  // Counted, not silently dropped: a property that vanishes without trace is
+  // how a filter becomes a thing nobody remembers is running.
+  assert.strictEqual(r.excludedProperties['Brazos Lofts'], 1);
+});
+
+t('an excluded property is not counted as unresolved either', () => {
+  const r = F.byProperty([row({ occupancy_id: '2', property: 'Brazos Lofts' })], '2026-10-28');
+  assert.strictEqual(r.unresolvedCount, 0);
+  assert.strictEqual(r.unresolved.overdue + r.unresolved.overdueBacklog, 0);
+});
+
+t('settlementsObserved counts across every property, placed or not', () => {
+  const none = F.byProperty([row({ occupancy_id: '1' })], '2026-10-28');
+  assert.strictEqual(none.settlementsObserved, 0);
+  const some = F.byProperty([
+    row({ occupancy_id: '1' }),
+    row({ occupancy_id: '2', move_out: '2026-10-01',
+      last_seen_on: '2026-10-05', gone_first_seen_on: '2026-10-06' }),
+  ], '2026-10-28');
+  assert.strictEqual(some.settlementsObserved, 1);
+});
+
+// ---- what the two renderers do with all of that ----------------------------
+
+const fasBrief = extra => {
+  const B = require('../lib/kara-brief.js');
+  return B.build({
+    properties: [], portfolio: null, thresholds: null,
+    fas: Object.assign({
+      measurable: true, deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+      unresolvedCount: 0, excludedCount: 0, excludedProperties: {},
+      settlementsObserved: 0, caveats: [], properties: {},
+    }, extra),
+  });
+};
+
+t('with nothing settled yet, the zero line is held back and says why', () => {
+  const B = require('../lib/kara-brief.js');
+  const brief = fasBrief({
+    properties: {
+      'Ascent at Northgate': Object.assign(F.EMPTY(), {
+        overdue: 1, overdueUnits: [{ unit: '101', days: 9 }],
+      }),
+    },
+  });
+  const text = B.render(brief, { testMode: true });
+  assert.ok(/No settlement has been observed yet — measuring since 2026-10-22/.test(text));
+  // "settled within 5 days: 0" under every property reads as nine properties
+  // getting it wrong, when it means nothing has had time to settle.
+  assert.ok(!/settled within 5 days: 0/.test(text), 'the cold-start zero is still printed');
+  assert.ok(/OVERDUE/.test(text), 'the overdue count went with it');
+});
+
+t('one real settlement brings the line back', () => {
+  const B = require('../lib/kara-brief.js');
+  const brief = fasBrief({
+    settlementsObserved: 1,
+    properties: {
+      'Ascent at Northgate': Object.assign(F.EMPTY(), { settledInTime: 1 }),
+    },
+  });
+  const text = B.render(brief, { testMode: true });
+  assert.ok(/settled within 5 days: 1/.test(text));
+  assert.ok(!/No settlement has been observed yet/.test(text));
+});
+
+t('the backlog is its own block, out of the daily list, in both renderers', () => {
+  const B = require('../lib/kara-brief.js');
+  const H = require('../lib/kara-brief-html.js');
+  const brief = fasBrief({
+    properties: {
+      'Ascent at Northgate': Object.assign(F.EMPTY(), {
+        overdue: 1, overdueUnits: [{ unit: '101', days: 9 }],
+        overdueBacklog: 2,
+        backlogUnits: [{ unit: '3-116', days: 91, firstSeen: '2026-10-28' },
+          { unit: '3-216', days: 91, firstSeen: '2026-10-28' }],
+      }),
+    },
+  });
+  const text = B.render(brief, { testMode: true });
+  assert.ok(/BACKLOG — deposits not visible before 2026-10-28: 2/.test(text), text);
+  assert.ok(/none of these was missed on our watch/.test(text));
+  // The daily OVERDUE line is still 1 — the backlog did not inflate it.
+  assert.ok(/OVERDUE:\s+1\s/.test(text), 'the backlog leaked into the daily count');
+  const html = H.renderHtml(brief, { testMode: true });
+  assert.ok(/Backlog — deposits not visible before 2026-10-28: 2/.test(html),
+    'the HTML has no backlog block');
+});
+
+t('no backlog means no block at all', () => {
+  const B = require('../lib/kara-brief.js');
+  const brief = fasBrief({
+    properties: {
+      'Ascent at Northgate': Object.assign(F.EMPTY(), {
+        overdue: 1, overdueUnits: [{ unit: '101', days: 9 }],
+      }),
+    },
+  });
+  assert.ok(!/BACKLOG/.test(B.render(brief, { testMode: true })));
+});
+
+t('the excluded-property note reaches the page', () => {
+  const B = require('../lib/kara-brief.js');
+  const brief = fasBrief({
+    excludedCount: 23, excludedProperties: { 'Brazos Lofts': 22, 'Lily Pad Lane': 1 },
+    properties: {
+      'Ascent at Northgate': Object.assign(F.EMPTY(), {
+        overdue: 1, overdueUnits: [{ unit: '101', days: 9 }],
+      }),
+    },
+  });
+  const text = B.render(brief, { testMode: true });
+  assert.ok(/23 deposit\(s\) on properties Metric does not manage/.test(text));
+  assert.ok(/Brazos Lofts, Lily Pad Lane/.test(text));
 });
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
