@@ -6018,6 +6018,15 @@ async function decisionQueueData({ refresh = false } = {}) {
     // directory's for that unit, then for that name.
     calls: a.externallyManaged ? null : CM.summarise(CM.numbersFor(a, directoryIndex), {
       callsByNumber, residentsByNumber, name: a.name, today: todayCT,
+      // Which "no number on file" this is. The probe on 2026-10-28 proved the
+      // directory already answers for Current + Notice — the exact scope
+      // Collections asks about — so a resident missing from it is not a
+      // filter we can widen, and the card should send Rocío to AppFolio
+      // instead of leaving her at a dead end.
+      //
+      // A directory that failed to load returns null here, not false: it must
+      // not tell 71 residents they are absent from a list nobody read.
+      inDirectory: CM.directoryKnows(a, directoryIndex),
     }),
     // The last five, for the expanded list. Computed from the SAME number
     // list as the summary above, so the collapsed line and the list it opens

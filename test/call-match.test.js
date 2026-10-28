@@ -515,5 +515,105 @@ t('the N/S rule matches the Analyzer badge rule character for character', () => 
   assert.strictEqual(client, CM.NOT_SCOREABLE_PATTERNS.map(String).join(','));
 });
 
+// ---- which "no number on file" is this? ------------------------------------
+//
+// The probe on 2026-10-28 proved tenant_directory already answers for Current
+// + Notice, the exact scope Collections asks about, so a resident missing from
+// it is not a filter anybody can widen. The card has to say where to look
+// instead: AppFolio.
+
+const dirRow = (prop, unit, name, phones) => ({
+  'Property': prop, 'Unit': unit, 'Tenant Name': name, 'Phone Numbers': phones || '',
+});
+
+t('a resident with no directory row is sent to AppFolio', () => {
+  const idx = CM.indexDirectory([dirRow('The Chateau', '101', 'Someone Else', '512-555-0100')]);
+  const s = CM.summarise([], { inDirectory: false });
+  assert.strictEqual(s.note, 'no number on file — not in the tenant directory');
+  // And the index agrees about who it has never heard of.
+  assert.strictEqual(
+    CM.directoryKnows({ property: 'The Chateau', unit: '999', name: 'Nobody Here' }, idx), false);
+});
+
+t('a directory row with no phone says so, and does not blame the directory', () => {
+  // A different fact and a different fix: the number is missing where it is
+  // entered. Telling Rocío this resident is "not in the tenant directory"
+  // would send her looking for a row that is right there.
+  const s = CM.summarise([], { inDirectory: true });
+  assert.strictEqual(s.note, 'no number on file — the tenant directory has no phone for them');
+});
+
+t('not being told leaves the old wording alone', () => {
+  // THE ONE THAT MATTERS. A directory that failed to load indexes to nothing,
+  // and `false` for every account would put a confident wrong sentence on 71
+  // cards. Silence is the only safe answer to a question nobody answered.
+  assert.strictEqual(CM.summarise([], {}).note, 'no number on file');
+  assert.strictEqual(CM.summarise([], { inDirectory: null }).note, 'no number on file');
+  assert.strictEqual(CM.summarise('', {}).note, 'no number on file');
+  assert.strictEqual(CM.directoryKnows({ property: 'x', unit: '1', name: 'y' },
+    CM.indexDirectory([])), null, 'an empty directory answers false instead of null');
+  assert.strictEqual(CM.directoryKnows({ property: 'x' }, null), null);
+  assert.strictEqual(CM.directoryKnows({ property: 'x' }, { byUnit: new Map(), byName: new Map() }),
+    null, 'an index built before knownUnits existed answers false instead of null');
+});
+
+t('the wording is only ever added to "no number", never to "no calls"', () => {
+  // These are different states with different answers. A resident we have a
+  // number for and have not called is not a directory problem.
+  const calls = CM.indexCalls([]);
+  const s = CM.summarise(['512-555-0100'], { callsByNumber: calls, inDirectory: false });
+  assert.ok(/^No calls since /.test(s.note), s.note);
+  assert.ok(!/directory/i.test(s.note), 'the directory note leaked onto a no-calls card');
+});
+
+t('a row with no phone is still KNOWN, though it lends no number', () => {
+  // knownUnits/knownNames cover every row; byUnit/byName cover only rows that
+  // carry a number. Building both from the same pass is what lets the card
+  // tell "absent" from "present and blank".
+  const idx = CM.indexDirectory([dirRow('The Chateau', '101', 'Dana Ruiz', '')]);
+  assert.deepStrictEqual(
+    CM.numbersFor({ property: 'The Chateau', unit: '101', name: 'Dana Ruiz' }, idx), [],
+    'a blank phone column produced a number');
+  assert.strictEqual(
+    CM.directoryKnows({ property: 'The Chateau', unit: '101', name: 'Dana Ruiz' }, idx), true);
+});
+
+t('the unit alone is enough when the name is spelled differently', () => {
+  // The stronger key, and the only one that works when the two reports
+  // disagree about the name — a married name on one and not the other. Nobody
+  // shares a unit.
+  const idx = CM.indexDirectory([dirRow('The Chateau', '101', 'Dana Ruiz-Hall', '')]);
+  assert.strictEqual(
+    CM.directoryKnows({ property: 'The Chateau', unit: '101', name: 'Dana Ruiz' }, idx), true);
+});
+
+t('the name alone is enough when the unit is spelled differently', () => {
+  // The same fallback numbersFor uses, so "known" and "reachable" cannot
+  // disagree about which key found the resident.
+  const idx = CM.indexDirectory([dirRow('The Chateau', 'Apt 101', 'Dana Ruiz', '512-555-0100')]);
+  assert.strictEqual(
+    CM.directoryKnows({ property: 'The Chateau', unit: '101', name: 'Dana Ruiz' }, idx), true);
+  // And the fixture is a REAL one: this column spelling is the one the
+  // projection keeps, so the no-phone row above is blank by intent rather
+  // than by a column name the reader does not recognise.
+  assert.deepStrictEqual(
+    CM.numbersFor({ property: 'The Chateau', unit: '101', name: 'Dana Ruiz' }, idx),
+    ['5125550100']);
+});
+
+t('the card prints the note as the server wrote it', () => {
+  // CM.line returns the note untouched, so the wording decided here is the
+  // wording on the screen — there is no second copy to keep in step.
+  assert.strictEqual(CM.line({ note: 'no number on file — not in the tenant directory' }),
+    'no number on file — not in the tenant directory');
+});
+
+t('the server tells summarise which case it is', () => {
+  const server = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'server.js'), 'utf8');
+  assert.ok(/inDirectory: CM\.directoryKnows\(a, directoryIndex\)/.test(server),
+    'the decision queue never passes inDirectory, so the card cannot say which case it is');
+});
+
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);
