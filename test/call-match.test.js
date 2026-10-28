@@ -425,5 +425,95 @@ t('duration is formatted the same way the summary line formats it', () => {
   assert.strictEqual(h[0].duration, '1m 35s');
 });
 
+// ---- when there is no grade to link to -------------------------------------
+//
+// The link opens the Call Analyzer on one recording. Two kinds of call open it
+// on nothing: a zero-second call, which has no audio and so will never have a
+// transcript, and a grade already marked N/S. Both used to get a link.
+
+t('a zero-second call carries no recording to link to', () => {
+  const Z = CM.indexCalls([
+    hcall('2026-10-11', 'outbound', '0', '512-555-0100', 'rz'),
+    hcall('2026-10-10', 'outbound', '0:00', '512-555-0100', 'rz2'),
+  ]);
+  const h = CM.history(['512-555-0100'], { callsByNumber: Z }, 5);
+  assert.ok(!('recordingId' in h[0]), 'a 0s call still offers a grade link');
+  assert.ok(!('recordingId' in h[1]), '"0:00" is not being read as zero');
+  // The call itself is STILL LISTED. A dialled-and-dropped attempt is a real
+  // attempt and the row is the evidence of it; only the link goes.
+  assert.strictEqual(h.length, 2);
+  assert.strictEqual(h[0].date, '2026-10-11');
+});
+
+t('an unknown duration is not treated as zero', () => {
+  // null is "the archive did not store it", which is not evidence of a dead
+  // call. Dropping the link on those would hide real grades.
+  const U = CM.indexCalls([hcall('2026-10-11', 'inbound', '', '512-555-0100', 'ru')]);
+  const h = CM.history(['512-555-0100'], { callsByNumber: U }, 5);
+  assert.strictEqual(h[0].duration, null);
+  assert.strictEqual(h[0].recordingId, 'ru');
+});
+
+t('an N/S grade carries no recording to link to', () => {
+  const h = CM.history(['512-555-0100'], {
+    callsByNumber: H,
+    notScoreableRecordings: new Set(['r2']),
+  }, 3);
+  assert.ok(!('recordingId' in h[1]), 'an N/S call still offers a grade link');
+  assert.strictEqual(h[0].recordingId, 'r1', 'the other calls lost their link too');
+  assert.strictEqual(h[2].recordingId, 'r4');
+});
+
+t('an N/S call keeps its agent, its date and its place in the list', () => {
+  // Only the LINK is wrong on an N/S call. The call happened, and an agent the
+  // grade named is still who the grade named.
+  const h = CM.history(['512-555-0100'], {
+    callsByNumber: H,
+    agentByRecording: new Map([['r2', 'Karla Gonzalez']]),
+    notScoreableRecordings: new Set(['r2']),
+  }, 3);
+  assert.strictEqual(h.length, 3);
+  assert.strictEqual(h[1].agent, 'Karla Gonzalez');
+  assert.strictEqual(h[1].date, '2026-10-09');
+});
+
+t('no N/S set at all leaves every link in place', () => {
+  // The option is additive: an old caller that never passes it must behave
+  // exactly as before.
+  const h = CM.history(['512-555-0100'], { callsByNumber: H }, 3);
+  assert.deepStrictEqual(h.map(x => x.recordingId), ['r1', 'r2', 'r4']);
+});
+
+// ---- the N/S rule itself ---------------------------------------------------
+
+t('gradeNotScoreable reads all three eras of stored grade', () => {
+  assert.strictEqual(CM.gradeNotScoreable({ not_scoreable: true }), true);
+  assert.strictEqual(CM.gradeNotScoreable({ overall_grade: 'N/S' }), true);
+  assert.strictEqual(CM.gradeNotScoreable({ flags: ['Agent identity mismatch'] }), true);
+  assert.strictEqual(CM.gradeNotScoreable({ flags: ['no scoreable criteria met'] }), true);
+});
+
+t('a real grade is never mistaken for N/S', () => {
+  // The cost of a false positive here is a grade nobody can reach from the
+  // card, so these are the ones that must not drift.
+  [{ overall_grade: 'F', not_scoreable: false },
+   { overall_grade: 'A', flags: ['did not state the balance'] },
+   { overall_grade: 'C', flags: [] },
+   { overall_grade: 'D' }, {}, null].forEach(g =>
+     assert.strictEqual(CM.gradeNotScoreable(g), false, JSON.stringify(g)));
+});
+
+t('the N/S rule matches the Analyzer badge rule character for character', () => {
+  // THE ONE THAT MATTERS. A call badged N/S in the Analyzer and linked from
+  // the card is the contradiction this change removes, and the two rules live
+  // in two files because the client cannot require() the library.
+  const app = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const m = app.match(/const SVG_NS_PATTERNS = \[([\s\S]*?)\];/);
+  assert.ok(m, 'the client rule is gone or renamed — the twin is unguarded');
+  const client = m[1].split(',').map(x => x.trim()).filter(Boolean).join(',');
+  assert.strictEqual(client, CM.NOT_SCOREABLE_PATTERNS.map(String).join(','));
+});
+
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exit(1);

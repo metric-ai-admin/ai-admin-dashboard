@@ -5930,18 +5930,28 @@ async function decisionQueueData({ refresh = false } = {}) {
   // Fetched for the whole window in one paged read rather than per card: the
   // queue is ~72 accounts and batching .in() on their recordings would be
   // dozens of round trips to save nothing.
-  const agentByRecording = await (async () => {
-    const m = new Map();
+  //
+  // The N/S set rides along on the same read. The card links to a grade and
+  // an N/S row has none to read, so those recordings are reported here and
+  // CM.history drops the link — the badge in the Analyzer and the link on the
+  // card now say the same thing about the same call. No score, grade letter
+  // or flag text leaves this block: the queue gets a set of recording ids.
+  const gradeIndex = await (async () => {
+    const agentByRecording = new Map();
+    const notScoreableRecordings = new Set();
     try {
       const rows = await selectAll(() => (supabaseAdmin || supabasePublic)
         .from('call_grades')
-        .select('recording_id,agent_name')
+        .select('recording_id,agent_name,overall_grade,not_scoreable,flags')
         .gte('call_date', CM.CAPTURE_START), { label: 'dq grades', order: 'recording_id' });
       (rows || []).forEach(r => {
-        if (r.recording_id && r.agent_name) m.set(String(r.recording_id), r.agent_name);
+        if (!r.recording_id) return;
+        const rec = String(r.recording_id);
+        if (r.agent_name) agentByRecording.set(rec, r.agent_name);
+        if (CM.gradeNotScoreable(r)) notScoreableRecordings.add(rec);
       });
     } catch (e) { /* no grades = no agents, which is the honest fallback */ }
-    return m;
+    return { agentByRecording, notScoreableRecordings };
   })();
   // Who shares a number, from the projected tenant directory. Absent store =
   // no sharing reported, which is the safe direction: it never claims a call
@@ -6013,7 +6023,9 @@ async function decisionQueueData({ refresh = false } = {}) {
     // list as the summary above, so the collapsed line and the list it opens
     // can never be about different phones.
     callHistory: a.externallyManaged ? null : CM.history(CM.numbersFor(a, directoryIndex), {
-      callsByNumber, agentByRecording,
+      callsByNumber,
+      agentByRecording: gradeIndex.agentByRecording,
+      notScoreableRecordings: gradeIndex.notScoreableRecordings,
     }),
   }));
 

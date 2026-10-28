@@ -35,12 +35,12 @@ t('the calls select asks for recording_id', () => {
 });
 
 t('the agent comes from call_grades, never from the archive line owner', () => {
-  assert.ok(/from\('call_grades'\)[\s\S]{0,120}select\('recording_id,agent_name'\)/.test(server),
+  assert.ok(/from\('call_grades'\)[\s\S]{0,160}select\('recording_id,agent_name[^']*'\)/.test(server),
     'the grade join is gone');
   // THE ONE THAT MATTERS. user_name is the line owner. If it ever becomes the
   // fallback, every ungraded call gets a name on it and the name is wrong.
-  const block = server.slice(server.indexOf('const agentByRecording'),
-    server.indexOf('const agentByRecording') + 1200);
+  const block = server.slice(server.indexOf('const gradeIndex'),
+    server.indexOf('const gradeIndex') + 1200);
   assert.ok(!/user_name/.test(block), 'the line owner is being used as an agent');
 });
 
@@ -125,6 +125,51 @@ t('the client fallback date matches the library', () => {
   const m = app.match(/dqData\.callCaptureStart\) \|\| '(\d{4}-\d{2}-\d{2})'/);
   assert.ok(m, 'no fallback found');
   assert.strictEqual(m[1], CM.CAPTURE_START);
+});
+
+// ---- the N/S wiring --------------------------------------------------------
+
+t('the grade join reads what it needs to recognise an N/S row', () => {
+  // All three eras, because the rule reads all three. Dropping one column
+  // here does not fail anything loudly — it just starts linking N/S calls
+  // again, which is what this change removed.
+  const sel = server.match(/from\('call_grades'\)[\s\S]{0,160}select\('([^']+)'\)/);
+  assert.ok(sel, 'the grade join is gone');
+  ['recording_id', 'agent_name', 'overall_grade', 'not_scoreable', 'flags']
+    .forEach(c => assert.ok(sel[1].split(',').includes(c), c + ' is not selected'));
+});
+
+t('the N/S recordings are collected and handed to the history', () => {
+  const block = code(server.slice(server.indexOf('const gradeIndex'),
+    server.indexOf('const gradeIndex') + 1400));
+  assert.ok(/CM\.gradeNotScoreable\(r\)/.test(block),
+    'the server has its own copy of the N/S rule');
+  assert.ok(/notScoreableRecordings\.add\(rec\)/.test(block));
+  assert.ok(/notScoreableRecordings: gradeIndex\.notScoreableRecordings/.test(server),
+    'the set is built and then never passed to CM.history');
+});
+
+t('no score, grade letter or flag text reaches the card', () => {
+  // The columns are read to ANSWER A YES/NO. What leaves this block is a set
+  // of recording ids — a card is resident-facing and a grade is a staff
+  // performance number.
+  const block = code(server.slice(server.indexOf('const gradeIndex'),
+    server.indexOf('const gradeIndex') + 1400));
+  assert.ok(!/overall_grade:|score|r\.flags\b/.test(block.replace(/select\([^)]*\)/g, '')),
+    'a grade value is being carried out of the join');
+  const q = code(server.slice(server.indexOf('callHistory: a.externallyManaged'),
+    server.indexOf('callHistory: a.externallyManaged') + 300));
+  assert.ok(!/grade|score/i.test(q.replace(/notScoreableRecordings/g, '')
+    .replace(/gradeIndex/g, '')), 'the queue row carries grade data');
+});
+
+t('the card prints nothing where the link would have been', () => {
+  // An empty cell, not the word "none" and not a disabled button: the grid
+  // keeps its columns and the row says nothing it cannot support.
+  const fn = app.slice(app.indexOf('function dqCallHistory'),
+    app.indexOf('function dqCallHistory') + 2200);
+  assert.ok(/: '<span class="dq-call-grade"><\/span>'/.test(fn),
+    'a call with no recording no longer falls back to an empty cell');
 });
 
 console.log('\n  ' + pass + ' passed, ' + fail + ' failed');
