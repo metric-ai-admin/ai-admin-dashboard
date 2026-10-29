@@ -543,8 +543,13 @@ t('THE BRIEF PAGES deposit_held, AND ORDERS IT BY THE RIGHT COLUMN', () => {
   assert.match(fn, /order: 'occupancy_id'/, 'deposit_held is paged unordered, or not paged');
   assert.ok(!/await db\.from\('deposit_held'\)\s*\n?\s*\.select\([^)]*\);/.test(fn),
     'the unpaged select is still there');
-  assert.match(gather, /gatherFas\(d\.db, todayCT, d\.fasDeadline, d\.fasDeadlineUnconfirmed, d\.selectAll\)/,
+  assert.match(gather, /gatherFas\(d\.db, todayCT, d\.fasDeadline, d\.fasDeadlineUnconfirmed, d\.selectAll[,)]/,
     'the caller does not hand gatherFas a pager');
+  // AND THE TURN LIST, handed in rather than read again: `gather` already
+  // loads unit_turn_detail for the move-out sections, and a second read of
+  // the same store is a second chance for the two to disagree about the day.
+  assert.match(gather, /d\.selectAll, turns\)/,
+    'the no-deposit rule gets no move-outs, so it can only ever report none');
 });
 
 t('the brief reads, and the snapshot is taken by the cron', () => {
@@ -997,6 +1002,189 @@ t('the 06:00 email actually asks for the section', () => {
   // is missing a variable.
   assert.ok(!/fasDeadline/.test(fn), 'the live brief overrides the confirmed deadline');
 });
+// ---- move-outs with no deposit at all, forward-only -----------------------
+//
+// deposit_held holds deposits HELD, so this case has no row there. The
+// whole-history join was probed on 2026-10-28 and rejected: unit_turn_detail
+// has no occupancy id, 147 of 304 past move-outs matched a unit whose deposit
+// belongs to the NEXT tenancy, and before our snapshots "no row" is
+// indistinguishable from a deposit refunded normally.
+
+const WIN = { snapshotsStart: '2026-10-22' };
+const turn = (property, unit, move_out_date) => ({ property, unit, move_out_date });
+const dep = (property, unit, move_out) => ({ property, unit, move_out, amount: '500.00' });
+
+t('a move-out in the window, past the deadline, with no deposit is reported', () => {
+  const r = F.noDepositFromTurns(
+    [turn('The Highlander', '116', '2026-10-23')], [], '2026-11-03', WIN);
+  assert.strictEqual(r.units.length, 1, JSON.stringify(r.units));
+  assert.strictEqual(r.units[0].unit, '116');
+  assert.strictEqual(r.units[0].days, 7);
+});
+
+t('a deposit recorded against THAT move-out clears it', () => {
+  const r = F.noDepositFromTurns(
+    [turn('The Highlander', '116', '2026-10-23')],
+    [dep('The Highlander', '116', '2026-10-23')], '2026-11-03', WIN);
+  assert.deepStrictEqual(r.units, []);
+});
+
+t('the NEXT tenancy\'s deposit on the same unit does NOT clear it', () => {
+  // THE FINDING THAT KILLED THE WHOLE-HISTORY JOIN. deposit_held shows what
+  // is held TODAY, so a unit whose former tenant was refunded now carries the
+  // new tenant's row. 147 of 304 past move-outs looked like this.
+  const r = F.noDepositFromTurns(
+    [turn('The Highlander', '116', '2026-10-23')],
+    [dep('The Highlander', '116', '2027-06-30')], '2026-11-03', WIN);
+  assert.strictEqual(r.units.length, 1, 'a later tenancy\'s deposit answered for an earlier one');
+});
+
+t('a deposit on the unit with NO move-out date is given the benefit of the doubt', () => {
+  // A sitting deposit with no move-out recorded could be this tenancy's. The
+  // cost of calling it absent is telling Kara a resident was never charged;
+  // the cost of staying quiet is one missed statement. Quiet is cheaper.
+  const r = F.noDepositFromTurns(
+    [turn('The Highlander', '116', '2026-10-23')],
+    [{ property: 'The Highlander', unit: '116', move_out: null, amount: '500.00' }],
+    '2026-11-03', WIN);
+  assert.deepStrictEqual(r.units, []);
+});
+
+t('a move-out BEFORE the window is counted, never judged', () => {
+  // The whole point of forward-only. Before 2026-10-22 a tenancy that never
+  // had a deposit and one whose deposit was returned look identical.
+  const r = F.noDepositFromTurns(
+    [turn('Ascent at Northgate', '3-116', '2026-07-01')], [], '2026-11-03', WIN);
+  assert.deepStrictEqual(r.units, [], 'it judged a move-out it cannot see the history of');
+  assert.strictEqual(r.beforeWindow, 1, 'and it did not say how many it skipped');
+});
+
+t('a move-out still inside the 5 business days is not yet owed', () => {
+  const r = F.noDepositFromTurns(
+    [turn('The Highlander', '116', '2026-10-23')], [], '2026-10-28', WIN);
+  assert.deepStrictEqual(r.units, []);
+  assert.strictEqual(r.beforeWindow, 0);
+});
+
+t('a scheduled move-out is not a move-out', () => {
+  const r = F.noDepositFromTurns(
+    [turn('The Highlander', '116', '2026-12-31')], [], '2026-11-03', WIN);
+  assert.deepStrictEqual(r.units, []);
+  assert.strictEqual(r.beforeWindow, 0, 'a future date was counted as predating the window');
+});
+
+t('properties Metric does not manage are dropped and counted', () => {
+  const r = F.noDepositFromTurns(
+    [turn('Brazos Lofts', '5', '2026-10-23')], [], '2026-11-03', WIN);
+  assert.deepStrictEqual(r.units, []);
+  assert.strictEqual(r.excludedCount, 1);
+});
+
+t('the address AppFolio appends does not split a property in two', () => {
+  const r = F.noDepositFromTurns(
+    [turn('Ascent at Northgate - 9315 Northgate Blvd', '3-116', '2026-10-23')],
+    [dep('Ascent at Northgate', '3-116', '2026-10-23')], '2026-11-03', WIN);
+  assert.deepStrictEqual(r.units, [], 'the two sides keyed on different spellings');
+});
+
+console.log('\nnot measurable is not "none found"');
+
+t('no turn list at all is NOT a clean section', () => {
+  // unit_turn_detail lives on Render's disk. Anywhere else readReportData
+  // returns null and `turns` arrives empty — which produced a section on
+  // 2026-10-29 claiming every move-out had a deposit. A missing file must
+  // never render as good news.
+  const r = F.noDepositFromTurns([], [], '2026-11-03', WIN);
+  assert.strictEqual(r.measurable, false);
+});
+
+t('no snapshot window is NOT a clean section either', () => {
+  const r = F.noDepositFromTurns([turn('A', '1', '2026-10-23')], [], '2026-11-03', {});
+  assert.strictEqual(r.measurable, false, 'with no window it became the join that does not work');
+});
+
+t('the counts are NULL, not 0, when it could not run', () => {
+  const g = F.byProperty([], '2026-11-03', {
+    deadline: F.DEFAULT_DEADLINE,
+    noDeposit: F.noDepositFromTurns([], [], '2026-11-03', WIN),
+  });
+  assert.strictEqual(g.noDepositMeasurable, false);
+  assert.strictEqual(g.noDepositBeforeWindow, null, '0 would read as "none predate the window"');
+  assert.strictEqual(g.noDepositUnseenTotal, null);
+});
+
+t('the caveat says it could not check, not that it is unbuilt', () => {
+  const built = F.caveats({
+    deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+    noDepositBuilt: true, noDepositMeasurable: false,
+  });
+  assert.ok(built.some(l => /COULD NOT BE CHECKED/.test(l)), JSON.stringify(built));
+  assert.ok(!built.some(l => /being added next/.test(l)), 'it still claims to be unbuilt');
+});
+
+t('the caveat names the window and the count it cannot answer for', () => {
+  const live = F.caveats({
+    deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+    noDepositBuilt: true, noDepositMeasurable: true, noDepositBeforeWindow: 304,
+  });
+  assert.ok(live.some(l => /detected from 2026-10-22 onward only/.test(l)), JSON.stringify(live));
+  assert.ok(live.some(l => /304 move-out\(s\) predate the window/.test(l)));
+  assert.ok(!live.some(l => /being added next|COULD NOT BE CHECKED/.test(l)));
+});
+
+console.log('\nthe no-deposit line reaches both renderers');
+
+t('a property whose ONLY finding is a no-deposit move-out still appears', () => {
+  // It was skipped by the gate that lists a property at all, so the one case
+  // this rule exists to surface would never have been printed.
+  const B = require('../lib/kara-brief.js');
+  const H = require('../lib/kara-brief-html.js');
+  const grouped = F.byProperty([], '2026-11-03', {
+    deadline: F.DEFAULT_DEADLINE,
+    noDeposit: F.noDepositFromTurns(
+      [turn('The Highlander', '116', '2026-10-23')], [], '2026-11-03', WIN),
+  });
+  const fas = {
+    measurable: true, deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+    unresolvedCount: 0, excludedCount: 0, excludedProperties: {},
+    settlementsObserved: 0, caveats: [], ...grouped,
+  };
+  const brief = B.build({ properties: [], portfolio: null, thresholds: null, fas });
+  const text = B.render(brief, {});
+  const html = H.renderHtml(brief, {});
+  assert.ok(/The Highlander/.test(text), 'the property is missing from the text brief');
+  assert.ok(/no deposit — FAS still required: 1/.test(text), text.slice(text.indexOf('FINAL')));
+  assert.ok(/116/.test(text), 'the unit is not named');
+  assert.ok(/The Highlander/.test(html) && /no deposit — FAS still required: 1/.test(html));
+});
+
+t('a zero-amount deposit row and an unseen tenancy add up on one line', () => {
+  // Two provenances, one job. They are counted apart in the data and summed
+  // for Kara — a number she cannot take apart is one she cannot check, but a
+  // split she does not care about is noise in an alert.
+  const B = require('../lib/kara-brief.js');
+  const grouped = F.byProperty(
+    [row({ property: 'The Highlander', unit: '9', move_out: '2026-10-23', amount: '0.00' })],
+    '2026-11-03', {
+      deadline: F.DEFAULT_DEADLINE,
+      noDeposit: F.noDepositFromTurns(
+        [turn('The Highlander', '116', '2026-10-23')], [], '2026-11-03', WIN),
+    });
+  assert.strictEqual(grouped.properties['The Highlander'].noDeposit, 1);
+  assert.strictEqual(grouped.properties['The Highlander'].noDepositUnseen, 1);
+  const brief = B.build({
+    properties: [], portfolio: null, thresholds: null,
+    fas: {
+      measurable: true, deadline: F.DEFAULT_DEADLINE, snapshotsStart: '2026-10-22',
+      unresolvedCount: 0, excludedCount: 0, excludedProperties: {},
+      settlementsObserved: 0, caveats: [], ...grouped,
+    },
+  });
+  assert.ok(/no deposit — FAS still required: 2/.test(B.render(brief, {})),
+    'the two sources did not add up on the line');
+});
+
+
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
