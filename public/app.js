@@ -14144,6 +14144,42 @@ function moCollectionsTable(c) {
     + '<th>Property / unit</th><th>Moved out</th><th>Inspection</th><th>Open in AppFolio</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
+
+/* Move-outs the table above CANNOT contain.
+ *
+ * It is built from unit_turn_detail, so a move-out with no turn row is not a
+ * row with a missing inspection — it is absent, and absent reads as nothing
+ * to do. Karla hit this on 2026-10-29 chasing a deposit she could not match
+ * to a walk.
+ *
+ * THE FIX IS IN APPFOLIO, NOT HERE, and the block says so: the unit turn is
+ * missing or was never stamped with a move-out date. The occupancy id is
+ * printed because it is the thing she can quote to whoever corrects it.
+ *
+ * SILENT WHEN THERE ARE NONE. A block that says "0" every day is one more
+ * line to scroll past on a screen that already has three tables.
+ */
+function moDepositsWithoutTurn(g) {
+  if (!g || !(g.rows || []).length) return '';
+  const rows = g.rows.map(r => '<tr>'
+    + '<td>' + esc(r.property) + ' <b>' + esc(r.unit) + '</b></td>'
+    + '<td class="small">' + esc(r.moveOut) + '</td>'
+    + '<td class="small muted">' + esc(r.occupancyId || '—') + '</td>'
+    + '</tr>').join('');
+  return '<div style="margin-top:10px">'
+    + '<h5 style="margin:0 0 2px 0;color:var(--warning)">'
+    + 'Deposit on file, but no unit turn record — ' + g.count + '</h5>'
+    + '<p class="small" style="color:var(--warning);margin:0 0 6px">'
+    + 'These have a deposit against a move-out in the last ' + (g.days || 90)
+    + ' days, and no unit turn in AppFolio for it — so they cannot appear in the '
+    + 'table above and no inspection can be matched to them. The unit turn is '
+    + 'missing, or exists with no move-out date on it. Fixing that is an AppFolio '
+    + 'change, not a dashboard one.</p>'
+    + '<div style="overflow-x:auto"><table class="data-table"><thead><tr>'
+    + '<th>Property / unit</th><th>Moved out</th><th>Occupancy id</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+}
+
 async function loadMoveOutAlerts() {
   const body = document.getElementById('mo-body');
   if (!body) return;
@@ -14166,7 +14202,8 @@ async function loadMoveOutAlerts() {
     // gets switched off.
     // Collections' own table, every move-out in 90 days. Built before the
     // two alert tables below so the state is the first thing read.
-    const collections = moCollectionsTable(d.collections);
+    const collections = moCollectionsTable(d.collections)
+      + moDepositsWithoutTurn(d.depositsWithoutTurn);
 
     const rowFor = a => {
       const maybe = (a.unnamedInspections || []).length

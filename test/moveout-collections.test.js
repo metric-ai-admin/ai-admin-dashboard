@@ -321,6 +321,139 @@ t('an empty source is not reported as a clean result', () => {
   assert.match(probe, /NOTHING can be concluded/);
   assert.match(probe, /process\.exitCode = 1/);
 });
+console.log('\ndeposits with no unit turn record');
+
+// The table above is built from unit_turn_detail, so a move-out with no turn
+// row is not a row with a missing inspection — it is absent, and absent reads
+// as nothing to do. Karla hit this on 2026-10-29 chasing a deposit she could
+// not match to a walk.
+
+const { propertyIsExcluded } = require('../lib/excluded-properties.js');
+const DWT_OPTS = { days: 90, isExcluded: propertyIsExcluded };
+const dwt = (turns, deposits, today) =>
+  M.depositsWithoutTurn({ turns, deposits }, today || '2026-10-29', DWT_OPTS);
+const tn = (property, unit, move_out_date) => ({ property, unit, move_out_date });
+const dp = (property, unit, move_out, occupancy_id) => ({ property, unit, move_out, occupancy_id });
+
+t('a deposit move-out with no turn row at all is listed', () => {
+  // Windy Hill 332 on 2026-10-29: a deposit against a September move-out and
+  // no unit turn in AppFolio whatsoever.
+  const g = dwt([], [dp('Windy Hill Apartment', '332', '2026-09-25', 5749)]);
+  assert.strictEqual(g.count, 1);
+  assert.strictEqual(g.rows[0].unit, '332');
+  assert.strictEqual(g.rows[0].moveOut, '2026-09-25');
+  assert.strictEqual(g.rows[0].occupancyId, '5749', 'the id Karla quotes to AppFolio is missing');
+});
+
+t('a unit spelled differently on the two sides is NOT a false alarm', () => {
+  // 10-221 and 10221 are the same unit — the spelling that started this, and
+  // the one that would fill this block with units already on the screen.
+  const g = dwt(
+    [tn('Ascent at Northgate - 9315 Northgate Blvd', '10-221', '2026-09-04')],
+    [dp('Ascent at Northgate', '10221', '2026-09-04', 5423)]);
+  assert.strictEqual(g.count, 0, JSON.stringify(g.rows));
+});
+
+t('a turn OUTSIDE the window does not cover a move-out inside it', () => {
+  // iConic RR 204: the only dated turn is 2025-09-02, a year before the
+  // move-out the deposit is against. Treating it as cover would hide exactly
+  // the case this block exists for.
+  const g = dwt(
+    [tn('iConic Round Rock', '204', '2025-09-02')],
+    [dp('iConic Round Rock', '204', '2026-09-03', 4997)]);
+  assert.strictEqual(g.count, 1);
+  assert.strictEqual(g.rows[0].moveOut, '2026-09-03');
+});
+
+t('a turn with no move-out date does not cover one either', () => {
+  const g = dwt(
+    [tn('iConic Round Rock', '204', null)],
+    [dp('iConic Round Rock', '204', '2026-09-03', 4997)]);
+  assert.strictEqual(g.count, 1);
+});
+
+t('a matching turn in the window clears it', () => {
+  const g = dwt(
+    [tn('Windy Hill Apartment', '332', '2026-09-25')],
+    [dp('Windy Hill Apartment', '332', '2026-09-25', 5749)]);
+  assert.strictEqual(g.count, 0);
+});
+
+t('a sitting deposit with no move-out date is not a move-out', () => {
+  const g = dwt([], [dp('iConic Round Rock', '204', null, 5750)]);
+  assert.strictEqual(g.count, 0, 'a current resident was reported as a missing move-out');
+});
+
+t('a malformed date between the bounds is not a move-out', () => {
+  // null is caught by the range test on its own, so the shape that actually
+  // needs isYmd is a string that SORTS inside the window without being a
+  // date. Without the check it would be listed as a move-out on a day that
+  // does not exist.
+  const g = dwt([], [dp('Ascent at Northgate', '3-116', '2026-09-9x', 1)]);
+  assert.strictEqual(g.count, 0, JSON.stringify(g.rows));
+});
+
+t('a move-out outside the window is not listed', () => {
+  const g = dwt([], [dp('Ascent at Northgate', '3-116', '2026-01-04', 1)]);
+  assert.strictEqual(g.count, 0);
+});
+
+t('a move-out in the future is not listed', () => {
+  const g = dwt([], [dp('Ascent at Northgate', '3-116', '2026-12-31', 1)]);
+  assert.strictEqual(g.count, 0);
+});
+
+t('properties Metric does not manage are dropped and counted', () => {
+  const g = dwt([], [dp('Brazos Lofts', '5', '2026-09-25', 1)]);
+  assert.strictEqual(g.count, 0);
+  assert.strictEqual(g.excluded, 1, 'the filter ran silently');
+});
+
+t('newest first, so the freshest gap is the one read', () => {
+  const g = dwt([], [
+    dp('A Place', '1', '2026-08-01', 1),
+    dp('B Place', '2', '2026-10-01', 2),
+  ]);
+  assert.deepStrictEqual(g.rows.map(r => r.moveOut), ['2026-10-01', '2026-08-01']);
+});
+
+console.log('\nit reaches the route and the screen');
+
+t('the route reads deposit_held, paged and ordered', () => {
+  // deposit_held has no `id` column, so the default order pages it
+  // unpredictably past 1000 — and a deposit missing from THIS read is a gap
+  // the screen stops reporting.
+  const server = read('server.js');
+  const fn = server.slice(server.indexOf('async function moveOutAlertData'),
+    server.indexOf('async function moveOutRegisterData'));
+  assert.match(fn, /depositsWithoutTurn:/, 'the route does not compute it');
+  assert.match(fn, /order: 'occupancy_id'/, 'deposit_held is paged unordered, or not paged');
+  assert.match(fn, /isExcluded: propertyIsExcluded/, 'unmanaged properties would be listed');
+});
+
+t('the screen renders it under the table, and stays silent at zero', () => {
+  const app = read('public/app.js');
+  assert.match(app, /moDepositsWithoutTurn\(d\.depositsWithoutTurn\)/, 'it is never rendered');
+  const fn = app.slice(app.indexOf('function moDepositsWithoutTurn'));
+  assert.match(fn.slice(0, 300), /if \(!g \|\| !\(g\.rows \|\| \[\]\)\.length\) return '';/,
+    'a block that says 0 every day is one more line to scroll past');
+  assert.match(fn.slice(0, 2000), /occupancyId/, 'the id to quote is not shown');
+  // Matched on a fragment that survives the string concatenation the sentence
+  // is built from — pinning the whole line would pin the line breaks rather
+  // than the meaning.
+  assert.match(fn.slice(0, 2000), /not a dashboard one/,
+    'it does not say where the fix belongs');
+});
+
+t('no balance or resident name reaches this block', () => {
+  // The Collections tab carries balances; this block is about move-outs.
+  const server = read('server.js');
+  const fn = server.slice(server.indexOf('depositsWithoutTurn: MOVEOUT.depositsWithoutTurn'),
+    server.indexOf('// Stated on the screen, not just in the code'));
+  assert.ok(!/amount|balance|tenant|name/i.test(fn.replace(/property_name|unit_turn|inspection_name/g, '')),
+    'the select carries more than it needs: ' + fn);
+});
+
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -19694,6 +19694,22 @@ async function moveOutAlertData(db, todayCT) {
     // inspection holds the photos, and AppFolio's Inspections tab does not
     // open on a unit.
     collections: MOVEOUT.collectionsView({ turns, inspections: insp }, todayCT, { days: 90 }),
+    // THE MOVE-OUTS THAT VIEW CANNOT CONTAIN. collectionsView loops over
+    // unit_turn_detail, so a move-out with no turn row is not a row with a
+    // missing inspection — it is absent, and absent looks exactly like
+    // "nothing to do here". Karla found this on 2026-10-29 chasing a deposit
+    // she could not match to a walk.
+    //
+    // PAGED, AND ORDERED BY occupancy_id. deposit_held has no `id` column, so
+    // the default order pages it unpredictably past the first 1000 — and a
+    // deposit missing from THIS read is a gap the screen stops reporting. The
+    // same read gatherFas makes, for the same reason.
+    depositsWithoutTurn: MOVEOUT.depositsWithoutTurn({
+      turns,
+      deposits: await selectAll(() => db.from('deposit_held')
+        .select('occupancy_id,unit,property,move_out'),
+      { label: 'deposit_held', order: 'occupancy_id' }),
+    }, todayCT, { days: 90, isExcluded: propertyIsExcluded }),
     // Stated on the screen, not just in the code: the alert can only speak
     // about what was RECORDED, and 388 of 635 inspections carry a name nobody
     // can classify.
